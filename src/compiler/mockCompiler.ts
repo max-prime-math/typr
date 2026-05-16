@@ -1,0 +1,61 @@
+import type { CompileResult, TypstCompiler } from "./types";
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+export function createMockCompiler(): TypstCompiler {
+  return {
+    async compileDocument(source: string): Promise<CompileResult> {
+      if (source.includes("wrytr: error")) {
+        return {
+          ok: false,
+          engine: "mock",
+          errors: [
+            {
+              message:
+                "Mock compiler error triggered by the marker `wrytr: error`.",
+              severity: "error"
+            }
+          ]
+        };
+      }
+
+      const escapedSource = escapeHtml(source);
+
+      return {
+        ok: true,
+        engine: "mock",
+        diagnostics: [
+          {
+            message:
+              "Preview is using the mock compiler. Wire Typst WASM in src/compiler/typstCompiler.ts for real rendering.",
+            severity: "warning"
+          }
+        ],
+        output: {
+          kind: "placeholder",
+          content: `
+            <article class="preview-placeholder">
+              <header class="preview-placeholder__header">
+                <span class="preview-placeholder__badge">Mock preview</span>
+                <h3>Typst compilation adapter is connected</h3>
+              </header>
+              <p>
+                This placeholder keeps the app functional before bundling the real
+                Typst WebAssembly compiler.
+              </p>
+              <pre>${escapedSource}</pre>
+            </article>
+          `
+        }
+      };
+    },
+    dispose(): void {
+      // No-op: the mock compiler does not own external resources.
+    }
+  };
+}

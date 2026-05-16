@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="typr icon">
+  <rect width="512" height="512" rx="96" fill="#f5f2ea" />
+  <rect x="32" y="32" width="448" height="448" rx="74" fill="#ffffff" stroke="#d7d0c3" stroke-width="4" />
+
+  <!-- Stylized monospace 't' -->
+  <g transform="translate(256, 256)">
+    <!-- Horizontal top bar -->
+    <rect x="-85" y="-128" width="170" height="36" rx="18" fill="#1f7a67" />
+    <!-- Vertical stem -->
+    <rect x="-22" y="-106" width="44" height="192" rx="22" fill="#1f7a67" />
+  </g>
+</svg>

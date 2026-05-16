@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="36" fill="#f5f2ea" />
+  <rect x="12" y="12" width="168" height="168" rx="28" fill="#ffffff" stroke="#d7d0c3" stroke-width="2" />
+
+  <!-- Stylized monospace 't' -->
+  <g transform="translate(96, 96)">
+    <!-- Horizontal top bar -->
+    <rect x="-32" y="-48" width="64" height="14" rx="7" fill="#1f7a67" />
+    <!-- Vertical stem -->
+    <rect x="-8" y="-40" width="16" height="72" rx="8" fill="#1f7a67" />
+  </g>
+</svg>
