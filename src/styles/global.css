@@ -633,6 +633,13 @@ button {
   gap: 0.75rem;
 }
 
+.preview-toolbar__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .preview-engine {
   display: inline-flex;
   align-items: center;
@@ -641,6 +648,31 @@ button {
   color: var(--text);
   padding: 0.45rem 0.8rem;
   font-size: 0.9rem;
+}
+
+.preview-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.preview-zoom-button,
+.preview-zoom-select {
+  min-height: 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--text);
+}
+
+.preview-zoom-button {
+  min-width: 2.35rem;
+  padding: 0 0.65rem;
+  font-size: 1rem;
+}
+
+.preview-zoom-select {
+  padding: 0.45rem 0.75rem;
 }
 
 .preview-document {
@@ -671,7 +703,7 @@ button {
   border-radius: inherit;
   background: color-mix(in srgb, var(--danger) 10%, transparent);
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
   opacity: 0;
   transition: opacity 320ms ease;
 }
@@ -688,15 +720,40 @@ button {
   shape-rendering: geometricPrecision;
 }
 
+.preview-document__canvas {
+  position: relative;
+  margin: 0 auto;
+}
+
 .preview-document__object {
   display: block;
   width: 100%;
-  min-height: 58vh;
+  min-height: 0;
   border: 0;
   background: var(--surface-strong);
   image-rendering: auto;
   position: relative;
   z-index: 1;
+}
+
+.preview-interaction-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.preview-interaction-layer .typst-page,
+.preview-interaction-layer .typst-page > div,
+.preview-interaction-layer canvas {
+  pointer-events: none;
+}
+
+.preview-interaction-layer .typst-html-semantics,
+.preview-interaction-layer .typst-html-semantics * {
+  opacity: 0;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .preview-document--canvas {
@@ -896,6 +953,15 @@ button {
   .preview-toolbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .preview-toolbar__group,
+  .preview-zoom-controls {
+    width: 100%;
+  }
+
+  .preview-zoom-select {
+    flex: 1;
   }
 
   .file-pill,

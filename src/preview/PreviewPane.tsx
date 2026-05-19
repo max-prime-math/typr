@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
+import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
 
 interface PreviewPaneProps {
   result: CompileResult | null;
@@ -8,16 +9,32 @@ interface PreviewPaneProps {
   isErrorSettled: boolean;
   isCompiling: boolean;
   compilerStatus: CompilerStatus;
+  onSourceJump?: (sourceLocation: string) => void;
 }
+
+type PreviewZoomMode = "fit-width" | "fit-height" | "fit-page" | "percent";
+
+interface PreviewZoomState {
+  mode: PreviewZoomMode;
+  percent: number;
+}
+
+const ZOOM_PERCENT_STEPS = [50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+const DEFAULT_ZOOM: PreviewZoomState = {
+  mode: "fit-width",
+  percent: 100
+};
 
 export function PreviewPane({
   result,
   lastSuccessfulResult,
   isErrorSettled,
   isCompiling,
-  compilerStatus
+  compilerStatus,
+  onSourceJump
 }: PreviewPaneProps) {
   const [showDebug, setShowDebug] = useState(false);
+  const [zoom, setZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
 
   if (result === null) {
     return (
@@ -40,7 +57,13 @@ export function PreviewPane({
         {fallbackResult ? (
           <div className="preview-surface">
             <div className="preview-toolbar">
-              <div className="preview-engine">Engine: {fallbackResult.engine}</div>
+              <div className="preview-toolbar__group">
+                <div className="preview-engine">Engine: {fallbackResult.engine}</div>
+                <PreviewZoomControls
+                  onZoomChange={setZoom}
+                  zoom={zoom}
+                />
+              </div>
               <button
                 className="preview-debug-toggle"
                 onClick={() => setShowDebug((current) => !current)}
@@ -56,8 +79,12 @@ export function PreviewPane({
               />
             ) : (
               <PreviewDocument
+                artifactData={fallbackResult.output.artifactData}
+                isCompiling={isCompiling}
                 isFaulted={isErrorSettled}
                 markup={fallbackResult.output.content}
+                onSourceJump={onSourceJump}
+                zoom={zoom}
               />
             )}
             {showDebug ? (
@@ -82,7 +109,13 @@ export function PreviewPane({
     <div className="preview-layout">
       <div className="preview-surface">
         <div className="preview-toolbar">
-          <div className="preview-engine">Engine: {result.engine}</div>
+          <div className="preview-toolbar__group">
+            <div className="preview-engine">Engine: {result.engine}</div>
+            <PreviewZoomControls
+              onZoomChange={setZoom}
+              zoom={zoom}
+            />
+          </div>
           <button
             className="preview-debug-toggle"
             onClick={() => setShowDebug((current) => !current)}
@@ -94,7 +127,13 @@ export function PreviewPane({
         {shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} />
         ) : (
-          <PreviewDocument markup={result.output.content} />
+          <PreviewDocument
+            artifactData={result.output.artifactData}
+            isCompiling={isCompiling}
+            markup={result.output.content}
+            onSourceJump={onSourceJump}
+            zoom={zoom}
+          />
         )}
         {showDebug ? (
           <PreviewDebugPanel markup={result.output.content} />
@@ -104,17 +143,82 @@ export function PreviewPane({
   );
 }
 
-function PreviewDocument({
-  markup,
-  isFaulted = false
+function PreviewZoomControls({
+  zoom,
+  onZoomChange
 }: {
+  zoom: PreviewZoomState;
+  onZoomChange: (zoom: PreviewZoomState) => void;
+}) {
+  const selectValue =
+    zoom.mode === "percent"
+      ? `${zoom.percent}`
+      : zoom.mode;
+
+  return (
+    <div className="preview-zoom-controls" aria-label="Preview zoom controls">
+      <button
+        className="preview-zoom-button"
+        onClick={() => onZoomChange(nextZoomStep(zoom, -1))}
+        type="button"
+      >
+        -
+      </button>
+      <select
+        aria-label="Preview zoom"
+        className="preview-zoom-select"
+        onChange={(event) => onZoomChange(parseZoomSelection(event.target.value))}
+        value={selectValue}
+      >
+        <option value="fit-width">Fit Width</option>
+        <option value="fit-height">Fit Height</option>
+        <option value="fit-page">Fit Page</option>
+        {ZOOM_PERCENT_STEPS.map((percent) => (
+          <option key={percent} value={`${percent}`}>
+            {percent}%
+          </option>
+        ))}
+      </select>
+      <button
+        className="preview-zoom-button"
+        onClick={() => onZoomChange(nextZoomStep(zoom, 1))}
+        type="button"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+function PreviewDocument({
+  artifactData,
+  isCompiling = false,
+  markup,
+  isFaulted = false,
+  onSourceJump,
+  zoom
+}: {
+  artifactData?: Uint8Array;
+  isCompiling?: boolean;
   markup: string;
   isFaulted?: boolean;
+  onSourceJump?: (sourceLocation: string) => void;
+  zoom: PreviewZoomState;
 }) {
   const blobStartedAt =
     typeof performance === "undefined" ? 0 : performance.now();
   const normalizedMarkup = useMemo(() => normalizePreviewSvg(markup), [markup]);
   const displayMarkup = normalizedMarkup;
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const dimensions = useMemo(
+    () => extractSvgDimensions(displayMarkup),
+    [displayMarkup]
+  );
+  const resolvedZoom = useMemo(
+    () => resolveZoomValue(zoom, viewportSize, dimensions),
+    [dimensions, viewportSize, zoom]
+  );
 
   const blobUrl = useMemo(() => {
     const blob = new Blob([displayMarkup], { type: "image/svg+xml" });
@@ -129,15 +233,124 @@ function PreviewDocument({
     };
   }, [blobStartedAt, blobUrl]);
 
+  useEffect(() => {
+    const viewport = viewportRef.current;
+
+    if (!viewport || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const updateViewportSize = () => {
+      setViewportSize({
+        width: Math.max(0, viewport.clientWidth - 28),
+        height: Math.max(0, viewport.clientHeight - 28)
+      });
+    };
+
+    updateViewportSize();
+    const observer = new ResizeObserver(() => {
+      updateViewportSize();
+    });
+    observer.observe(viewport);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const contentWidth = dimensions
+    ? Math.max(240, Math.round(dimensions.width * resolvedZoom.scale))
+    : Math.max(240, viewportSize.width || 0);
+
   return (
-    <div className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}>
-      <img
-        alt="Typst preview document"
-        className="preview-document__object"
-        draggable={false}
-        src={blobUrl}
-      />
+    <div
+      className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}
+      ref={viewportRef}
+    >
+      <div
+        className="preview-document__canvas"
+        style={{
+          width: `${contentWidth}px`
+        }}
+      >
+        <img
+          alt="Typst preview document"
+          className="preview-document__object"
+          draggable={false}
+          src={blobUrl}
+        />
+        {artifactData && onSourceJump ? (
+          <PreviewSourceMappingOverlay
+            artifactData={artifactData}
+            isCompiling={isCompiling}
+            onSourceJump={onSourceJump}
+            overlayWidth={contentWidth}
+          />
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+function PreviewSourceMappingOverlay({
+  artifactData,
+  isCompiling,
+  onSourceJump,
+  overlayWidth
+}: {
+  artifactData: Uint8Array;
+  isCompiling: boolean;
+  onSourceJump: (sourceLocation: string) => void;
+  overlayWidth: number;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+
+    if (!container || isCompiling) {
+      return;
+    }
+
+    let cancelled = false;
+    let disposeOverlay = () => {};
+    const handle = window.setTimeout(() => {
+      void renderSourceMappingOverlay(container, artifactData)
+        .then((overlay) => {
+          if (cancelled) {
+            overlay.dispose();
+            return;
+          }
+
+          disposeOverlay = overlay.dispose;
+          container.ondblclick = (event) => {
+            const sourceLocation = overlay.resolveSourceLocation(event.target);
+
+            if (sourceLocation) {
+              onSourceJump(sourceLocation);
+            }
+          };
+        })
+        .catch(() => {
+          container.innerHTML = "";
+          container.ondblclick = null;
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+      container.ondblclick = null;
+      disposeOverlay();
+    };
+  }, [artifactData, isCompiling, onSourceJump, overlayWidth]);
+
+  return (
+    <div
+      aria-hidden="true"
+      className="preview-interaction-layer"
+      ref={containerRef}
+    />
   );
 }
 
@@ -199,6 +412,147 @@ function ChromiumCanvasPreview({
       ref={containerRef}
     />
   );
+}
+
+function parseZoomSelection(value: string): PreviewZoomState {
+  if (value === "fit-width" || value === "fit-height" || value === "fit-page") {
+    return {
+      mode: value,
+      percent: 100
+    };
+  }
+
+  const percent = Number.parseInt(value, 10);
+
+  return {
+    mode: "percent",
+    percent: Number.isFinite(percent) ? percent : 100
+  };
+}
+
+function nextZoomStep(
+  zoom: PreviewZoomState,
+  direction: -1 | 1
+): PreviewZoomState {
+  const currentPercent = zoom.mode === "percent" ? zoom.percent : 100;
+  const currentIndex = ZOOM_PERCENT_STEPS.findIndex((percent) => percent >= currentPercent);
+  const fallbackIndex =
+    currentIndex === -1
+      ? ZOOM_PERCENT_STEPS.length - 1
+      : ZOOM_PERCENT_STEPS[currentIndex] === currentPercent
+        ? currentIndex
+        : direction > 0
+          ? currentIndex
+          : Math.max(0, currentIndex - 1);
+  const nextIndex = Math.max(
+    0,
+    Math.min(ZOOM_PERCENT_STEPS.length - 1, fallbackIndex + direction)
+  );
+
+  return {
+    mode: "percent",
+    percent: ZOOM_PERCENT_STEPS[nextIndex]
+  };
+}
+
+function resolveZoomValue(
+  zoom: PreviewZoomState,
+  viewportSize: {
+    width: number;
+    height: number;
+  },
+  dimensions: SvgDimensions | null
+) {
+  if (!dimensions || viewportSize.width <= 0 || viewportSize.height <= 0) {
+    return {
+      scale: 1
+    };
+  }
+
+  if (zoom.mode === "fit-height") {
+    return {
+      scale: viewportSize.height / dimensions.height
+    };
+  }
+
+  if (zoom.mode === "fit-page") {
+    return {
+      scale: Math.min(
+        viewportSize.width / dimensions.width,
+        viewportSize.height / dimensions.height
+      )
+    };
+  }
+
+  if (zoom.mode === "percent") {
+    return {
+      scale: (viewportSize.width / dimensions.width) * (zoom.percent / 100)
+    };
+  }
+
+  return {
+    scale: viewportSize.width / dimensions.width
+  };
+}
+
+interface SvgDimensions {
+  width: number;
+  height: number;
+}
+
+function extractSvgDimensions(markup: string): SvgDimensions | null {
+  const dataWidth = parseNumericAttribute(extractAttribute(markup, "data-width"));
+  const dataHeight = parseNumericAttribute(extractAttribute(markup, "data-height"));
+
+  if (dataWidth && dataHeight) {
+    return {
+      width: dataWidth,
+      height: dataHeight
+    };
+  }
+
+  const width = parseNumericAttribute(extractAttribute(markup, "width"));
+  const height = parseNumericAttribute(extractAttribute(markup, "height"));
+
+  if (width && height) {
+    return {
+      width,
+      height
+    };
+  }
+
+  const viewBox = extractAttribute(markup, "viewBox");
+
+  if (viewBox) {
+    const parts = viewBox
+      .split(/[,\s]+/)
+      .map((part) => Number.parseFloat(part))
+      .filter((part) => Number.isFinite(part));
+
+    if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+      return {
+        width: parts[2],
+        height: parts[3]
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseNumericAttribute(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(/^([0-9]+(?:\.[0-9]+)?)/);
+
+  if (!match) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function PreviewDebugPanel({ markup }: { markup: string }) {
