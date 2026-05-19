@@ -3,6 +3,8 @@
 import { createMockCompiler } from "./mockCompiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
+import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
+import { normalizeTypstDiagnostic } from "./diagnostics";
 import type {
   CompilerWorkerRequest,
   CompilerWorkerResponse
@@ -47,29 +49,7 @@ interface TypstStructuredDiagnostic {
   severity: string;
   message: string;
 }
-
-const MAIN_FILE_PATH = "/main.typ";
 const COMPILER_TIMEOUT_MS = 15000;
-const FONT_ASSET_BASE_URL =
-  "https://cdn.jsdelivr.net/gh/typst/typst-assets@v0.13.1/files/fonts/";
-const CORE_FONT_URLS = [
-  "LibertinusSerif-Regular.otf",
-  "LibertinusSerif-Bold.otf",
-  "LibertinusSerif-Italic.otf",
-  "LibertinusSerif-BoldItalic.otf",
-  "LibertinusSerif-Semibold.otf",
-  "LibertinusSerif-SemiboldItalic.otf",
-  "NewCM10-Regular.otf",
-  "NewCM10-Bold.otf",
-  "NewCM10-Italic.otf",
-  "NewCM10-BoldItalic.otf",
-  "NewCMMath-Regular.otf",
-  "NewCMMath-Book.otf",
-  "DejaVuSansMono.ttf",
-  "DejaVuSansMono-Bold.ttf",
-  "DejaVuSansMono-Oblique.ttf",
-  "DejaVuSansMono-BoldOblique.ttf"
-].map((fontFile) => `${FONT_ASSET_BASE_URL}${fontFile}`);
 
 let loadPromise: Promise<TypstSnippetModule> | null = null;
 let initConfigured = false;
@@ -282,14 +262,7 @@ function normalizeTypstDiagnostics(
     return [];
   }
 
-  return diagnostics.map((diagnostic) => ({
-    message: diagnostic.message,
-    severity:
-      diagnostic.severity.toLowerCase() === "warning" ? "warning" : "error",
-    path: diagnostic.path || undefined,
-    range: diagnostic.range || undefined,
-    packageName: diagnostic.package || undefined
-  }));
+  return diagnostics.map(normalizeTypstDiagnostic);
 }
 
 function formatUnknownError(error: unknown): string {

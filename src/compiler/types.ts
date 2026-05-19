@@ -24,6 +24,10 @@ export interface CompileDiagnostic {
   path?: string;
   range?: string;
   packageName?: string;
+  line?: number;
+  column?: number;
+  endLine?: number;
+  endColumn?: number;
 }
 
 export interface CompileOutput {

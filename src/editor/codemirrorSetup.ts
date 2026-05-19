@@ -3,17 +3,22 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
 import type { ThemeMode } from "../app/appState";
+import type { CompileDiagnostic } from "../compiler/types";
+import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { typstLanguage } from "./typstLanguage";
 
 interface EditorSetupOptions {
   onChange: (value: string) => void;
   vimMode: boolean;
   theme: ThemeMode;
+  diagnostics: CompileDiagnostic[];
 }
+
+export const diagnosticsCompartment = new Compartment();
 
 function createEditorTheme(theme: ThemeMode): Extension {
   const dark = theme === "dark";
@@ -74,12 +79,14 @@ export function createEditorState(
 export function createEditorExtensions({
   onChange,
   vimMode,
-  theme
+  theme,
+  diagnostics
 }: EditorSetupOptions): Extension[] {
   const keymaps = [...defaultKeymap, ...historyKeymap, ...searchKeymap];
 
   return [
     lineNumbers(),
+    diagnosticsCompartment.of(createEditorDiagnosticExtensions(diagnostics)),
     highlightActiveLineGutter(),
     drawSelection(),
     history(),

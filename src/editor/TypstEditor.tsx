@@ -1,12 +1,15 @@
 import { useEffect, useRef } from "react";
 import { EditorView } from "@codemirror/view";
-import { createEditorState } from "./codemirrorSetup";
+import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import type { ThemeMode } from "../app/appState";
+import type { CompileDiagnostic } from "../compiler/types";
+import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 
 interface TypstEditorProps {
   value: string;
   vimMode: boolean;
   theme: ThemeMode;
+  diagnostics: CompileDiagnostic[];
   onChange: (value: string) => void;
 }
 
@@ -14,6 +17,7 @@ export function TypstEditor({
   value,
   vimMode,
   theme,
+  diagnostics,
   onChange
 }: TypstEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -33,7 +37,8 @@ export function TypstEditor({
       state: createEditorState(value, {
         onChange: (nextValue) => latestOnChangeRef.current(nextValue),
         vimMode,
-        theme
+        theme,
+        diagnostics
       }),
       parent: containerRef.current
     });
@@ -67,6 +72,20 @@ export function TypstEditor({
       }
     });
   }, [value]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({
+      effects: diagnosticsCompartment.reconfigure(
+        createEditorDiagnosticExtensions(diagnostics)
+      )
+    });
+  }, [diagnostics]);
 
   return <div className="editor-root" ref={containerRef} />;
 }
