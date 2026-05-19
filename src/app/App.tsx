@@ -1108,7 +1108,8 @@ function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
     return "Compile error.";
   }
 
-  const location = [firstError.packageName, firstError.path, firstError.range]
+  const range = formatDiagnosticRange(firstError);
+  const location = [firstError.packageName, firstError.path, range]
     .filter(Boolean)
     .join(" ");
   const prefix = location ? `${location}: ` : "";
@@ -1116,4 +1117,31 @@ function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
     result.errors.length > 1 ? ` (+${result.errors.length - 1} more)` : "";
 
   return `Compile error: ${prefix}${firstError.message}${suffix}`;
+}
+
+function formatDiagnosticRange(diagnostic: {
+  range?: string;
+  line?: number;
+  column?: number;
+  endLine?: number;
+  endColumn?: number;
+}): string | undefined {
+  if (diagnostic.line && diagnostic.column) {
+    const start = `${diagnostic.line}:${diagnostic.column}`;
+
+    if (diagnostic.endLine && diagnostic.endColumn) {
+      if (
+        diagnostic.endLine === diagnostic.line &&
+        diagnostic.endColumn === diagnostic.column
+      ) {
+        return start;
+      }
+
+      return `${start}-${diagnostic.endLine}:${diagnostic.endColumn}`;
+    }
+
+    return start;
+  }
+
+  return diagnostic.range;
 }
