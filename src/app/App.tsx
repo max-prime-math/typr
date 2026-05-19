@@ -38,7 +38,7 @@ import {
 } from "../storage/indexedDbStorage";
 import { useTheme } from "../theme/ThemeProvider";
 
-const COMPILE_DEBOUNCE_MS = 90;
+const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
 
@@ -81,6 +81,10 @@ export function App() {
   );
   const [isHydrated, setIsHydrated] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
+  const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
+    Extract<CompileResult, { ok: true }> | null
+  >(null);
+  const [isErrorSettled, setIsErrorSettled] = useState(false);
   const [isCompiling, setIsCompiling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [storageStatus, setStorageStatus] = useState<"idle" | "saving" | "saved" | "error">(
@@ -247,6 +251,8 @@ export function App() {
     const requestId = compileRequestRef.current + 1;
     compileRequestRef.current = requestId;
     compileInFlightRef.current = true;
+    const compileStartedAt =
+      typeof performance === "undefined" ? 0 : performance.now();
 
     try {
       const result = await compiler.compileDocument(source);
@@ -255,7 +261,28 @@ export function App() {
         return;
       }
 
-      setCompileResult(result);
+      const compileDurationMs =
+        typeof performance === "undefined"
+          ? 0
+          : performance.now() - compileStartedAt;
+      const nextResult = shouldReuseCompileResult(compileResult, result)
+        ? compileResult
+        : result;
+
+      if (nextResult === result) {
+        setCompileResult(result);
+      }
+
+      if (result.ok && nextResult === result) {
+        setLastSuccessfulResult(result);
+      }
+
+      logCompileTiming({
+        durationMs: compileDurationMs,
+        changed: nextResult === result,
+        ok: result.ok,
+        diagnosticsCount: result.ok ? result.diagnostics.length : result.errors.length
+      });
     } catch (error) {
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
         return;
@@ -282,12 +309,12 @@ export function App() {
       }
 
       if (pendingSourceRef.current !== source) {
-        scheduleCompile();
+        void runCompile();
       } else {
         setIsCompiling(false);
       }
     }
-  }, [compiler, isHydrated]);
+  }, [compileResult, compiler, isHydrated]);
 
   const scheduleCompile = useCallback(() => {
     if (compileTimerRef.current !== null) {
@@ -295,6 +322,11 @@ export function App() {
     }
 
     setIsCompiling(true);
+
+    if (compileInFlightRef.current) {
+      return;
+    }
+
     compileTimerRef.current = window.setTimeout(() => {
       compileTimerRef.current = null;
       void runCompile();
@@ -309,6 +341,22 @@ export function App() {
     pendingSourceRef.current = activeDocument.content;
     scheduleCompile();
   }, [activeDocument.content, isHydrated, scheduleCompile]);
+
+  useEffect(() => {
+    if (!compileResult || compileResult.ok) {
+      setIsErrorSettled(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setIsErrorSettled(true);
+    }, 2200);
+
+    return () => {
+      window.clearTimeout(timer);
+      setIsErrorSettled(false);
+    };
+  }, [compileResult]);
 
   const handleDocumentChange = useCallback((content: string) => {
     setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
@@ -654,11 +702,17 @@ export function App() {
           </div>
           <TypstEditor
             diagnostics={editorDiagnostics}
+            highlightErrors={isErrorSettled}
             value={activeDocument.content}
             vimMode={snapshot.preferences.vimMode}
             theme={theme}
             onChange={handleDocumentChange}
           />
+          {compileResult && !compileResult.ok ? (
+            <div className="source-inline-status source-inline-status--error">
+              {formatSourceError(compileResult)}
+            </div>
+          ) : null}
         </section>
 
         <section className="pane pane--preview" aria-label="Typst preview">
@@ -673,7 +727,9 @@ export function App() {
           </div>
           <PreviewPane
             compilerStatus={compilerStatus}
+            isErrorSettled={isErrorSettled}
             isCompiling={isCompiling}
+            lastSuccessfulResult={lastSuccessfulResult}
             result={compileResult}
           />
         </section>
@@ -954,4 +1010,110 @@ function MenuDropdown({
       ) : null}
     </div>
   );
+}
+
+function shouldReuseCompileResult(
+  current: CompileResult | null,
+  next: CompileResult
+): current is CompileResult {
+  if (!current || current.ok !== next.ok || current.engine !== next.engine) {
+    return false;
+  }
+
+  if (current.ok && next.ok) {
+    return (
+      current.output.kind === next.output.kind &&
+      current.output.content === next.output.content &&
+      areDiagnosticsEqual(current.diagnostics, next.diagnostics)
+    );
+  }
+
+  if (!current.ok && !next.ok) {
+    return areDiagnosticsEqual(current.errors, next.errors);
+  }
+
+  return false;
+}
+
+function areDiagnosticsEqual(
+  current: {
+    message: string;
+    severity: "error" | "warning";
+    path?: string;
+    range?: string;
+    packageName?: string;
+    line?: number;
+    column?: number;
+    endLine?: number;
+    endColumn?: number;
+  }[],
+  next: {
+    message: string;
+    severity: "error" | "warning";
+    path?: string;
+    range?: string;
+    packageName?: string;
+    line?: number;
+    column?: number;
+    endLine?: number;
+    endColumn?: number;
+  }[]
+): boolean {
+  if (current.length !== next.length) {
+    return false;
+  }
+
+  return current.every((currentDiagnostic, index) => {
+    const nextDiagnostic = next[index];
+
+    return (
+      currentDiagnostic.message === nextDiagnostic.message &&
+      currentDiagnostic.severity === nextDiagnostic.severity &&
+      currentDiagnostic.path === nextDiagnostic.path &&
+      currentDiagnostic.range === nextDiagnostic.range &&
+      currentDiagnostic.packageName === nextDiagnostic.packageName &&
+      currentDiagnostic.line === nextDiagnostic.line &&
+      currentDiagnostic.column === nextDiagnostic.column &&
+      currentDiagnostic.endLine === nextDiagnostic.endLine &&
+      currentDiagnostic.endColumn === nextDiagnostic.endColumn
+    );
+  });
+}
+
+function logCompileTiming({
+  durationMs,
+  changed,
+  ok,
+  diagnosticsCount
+}: {
+  durationMs: number;
+  changed: boolean;
+  ok: boolean;
+  diagnosticsCount: number;
+}): void {
+  if (typeof console === "undefined") {
+    return;
+  }
+
+  console.debug(
+    `[typr] compile ${ok ? "ok" : "error"} in ${durationMs.toFixed(1)}ms` +
+      ` (${changed ? "updated preview" : "unchanged output"}, ${diagnosticsCount} diagnostics)`
+  );
+}
+
+function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
+  const [firstError] = result.errors;
+
+  if (!firstError) {
+    return "Compile error.";
+  }
+
+  const location = [firstError.packageName, firstError.path, firstError.range]
+    .filter(Boolean)
+    .join(" ");
+  const prefix = location ? `${location}: ` : "";
+  const suffix =
+    result.errors.length > 1 ? ` (+${result.errors.length - 1} more)` : "";
+
+  return `Compile error: ${prefix}${firstError.message}${suffix}`;
 }

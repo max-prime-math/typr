@@ -16,6 +16,7 @@ interface EditorSetupOptions {
   vimMode: boolean;
   theme: ThemeMode;
   diagnostics: CompileDiagnostic[];
+  highlightErrors: boolean;
 }
 
 export const diagnosticsCompartment = new Compartment();
@@ -80,13 +81,16 @@ export function createEditorExtensions({
   onChange,
   vimMode,
   theme,
-  diagnostics
+  diagnostics,
+  highlightErrors
 }: EditorSetupOptions): Extension[] {
   const keymaps = [...defaultKeymap, ...historyKeymap, ...searchKeymap];
 
   return [
     lineNumbers(),
-    diagnosticsCompartment.of(createEditorDiagnosticExtensions(diagnostics)),
+    diagnosticsCompartment.of(
+      createEditorDiagnosticExtensions(diagnostics, highlightErrors)
+    ),
     highlightActiveLineGutter(),
     drawSelection(),
     history(),

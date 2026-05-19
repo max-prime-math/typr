@@ -337,6 +337,17 @@ button {
   min-height: 0;
 }
 
+.source-inline-status {
+  border-top: 1px solid var(--border);
+  padding: 0.68rem 0.85rem 0.78rem;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.source-inline-status--error {
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface-strong));
+}
+
 .editor-root .cm-diagnostic-gutter {
   width: 1.2rem;
 }
@@ -614,6 +625,7 @@ button {
   gap: 0.9rem;
 }
 
+
 .preview-toolbar {
   display: flex;
   align-items: center;
@@ -638,8 +650,34 @@ button {
   background: var(--surface-strong);
   padding: 0.85rem;
   overflow: auto;
+  position: relative;
   --glyph_fill: var(--text);
   --glyph_stroke: transparent;
+  transition:
+    background 280ms ease,
+    border-color 280ms ease,
+    box-shadow 280ms ease;
+}
+
+.preview-document--faulted {
+  border-color: color-mix(in srgb, var(--danger) 26%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.preview-document::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 320ms ease;
+}
+
+.preview-document--faulted::after {
+  opacity: 1;
 }
 
 .preview-document svg {
@@ -657,6 +695,8 @@ button {
   border: 0;
   background: var(--surface-strong);
   image-rendering: auto;
+  position: relative;
+  z-index: 1;
 }
 
 .preview-document--canvas {

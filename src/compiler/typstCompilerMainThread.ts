@@ -21,19 +21,21 @@ interface TypstSnippetModule {
     setCompilerInitOptions(options: { getModule: () => string }): void;
     setRendererInitOptions(options: { getModule: () => string }): void;
     use(...providers: unknown[]): void;
-    addSource(path: string, content: string): Promise<void>;
-    getCompilerReset(): Promise<{
-      compile(options: {
-        mainFilePath: string;
-        diagnostics: "full";
-      }): Promise<{
-        hasError?: boolean;
-        diagnostics?: TypstStructuredDiagnostic[];
-        result?: Uint8Array;
-      }>;
-    }>;
+    getCompiler(): Promise<TypstCompilerDriver>;
     svg(options: { vectorData: Uint8Array }): Promise<string>;
   };
+}
+
+interface TypstCompilerDriver {
+  addSource(path: string, source: string): void;
+  compile(options: {
+    mainFilePath: string;
+    diagnostics: "full";
+  }): Promise<{
+    hasError?: boolean;
+    diagnostics?: TypstStructuredDiagnostic[];
+    result?: Uint8Array;
+  }>;
 }
 
 interface TypstStructuredDiagnostic {
@@ -54,6 +56,7 @@ export function createMainThreadTypstCompiler(
   let bootstrapFailed = false;
   let fallbackWarning: CompileDiagnostic | null = null;
   let fontsPrimed = false;
+  let compilerDriverPromise: Promise<TypstCompilerDriver> | null = null;
 
   function emitStatus(status: CompilerStatus): void {
     notifyStatus(status);
@@ -85,6 +88,14 @@ export function createMainThreadTypstCompiler(
     }
 
     return module;
+  }
+
+  async function getCompilerDriver(): Promise<TypstCompilerDriver> {
+    if (!compilerDriverPromise) {
+      compilerDriverPromise = loadTypstModule().then((module) => module.$typst.getCompiler());
+    }
+
+    return compilerDriverPromise;
   }
 
   async function warmCompiler(): Promise<void> {
@@ -143,7 +154,8 @@ export function createMainThreadTypstCompiler(
         return await withTimeout(
           (async () => {
             const module = await loadTypstModule();
-            await module.$typst.addSource(MAIN_FILE_PATH, source);
+            const compiler = await getCompilerDriver();
+            compiler.addSource(MAIN_FILE_PATH, source);
 
             if (!fontsPrimed) {
               emitStatus({
@@ -158,7 +170,6 @@ export function createMainThreadTypstCompiler(
               mode: "main-thread",
               label: "Compiling Typst document"
             });
-            const compiler = await module.$typst.getCompilerReset();
             const compileOutput = await compiler.compile({
               mainFilePath: MAIN_FILE_PATH,
               diagnostics: "full"

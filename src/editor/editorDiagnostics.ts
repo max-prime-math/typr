@@ -28,9 +28,10 @@ class DiagnosticMarker extends GutterMarker {
 }
 
 export function createEditorDiagnosticExtensions(
-  diagnostics: CompileDiagnostic[]
+  diagnostics: CompileDiagnostic[],
+  highlightErrors: boolean
 ): Extension[] {
-  const lines = collectDiagnosticLines(diagnostics);
+  const lines = collectDiagnosticLines(diagnostics, highlightErrors);
   const decorationField = StateField.define({
     create: (state) => createLineDecorations(state, lines),
     update: (value, transaction) => value.map(transaction.changes),
@@ -89,7 +90,8 @@ function createLineDecorations(
 }
 
 function collectDiagnosticLines(
-  diagnostics: CompileDiagnostic[]
+  diagnostics: CompileDiagnostic[],
+  highlightErrors: boolean
 ): EditorDiagnosticLine[] {
   const lines = new Map<number, EditorDiagnosticLine>();
 
@@ -109,7 +111,8 @@ function collectDiagnosticLines(
 
     lines.set(diagnostic.line, {
       line: diagnostic.line,
-      severity: nextSeverity,
+      severity:
+        nextSeverity === "error" && !highlightErrors ? "warning" : nextSeverity,
       message: nextMessage
     });
   }

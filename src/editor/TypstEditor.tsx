@@ -10,6 +10,7 @@ interface TypstEditorProps {
   vimMode: boolean;
   theme: ThemeMode;
   diagnostics: CompileDiagnostic[];
+  highlightErrors: boolean;
   onChange: (value: string) => void;
 }
 
@@ -18,6 +19,7 @@ export function TypstEditor({
   vimMode,
   theme,
   diagnostics,
+  highlightErrors,
   onChange
 }: TypstEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -38,7 +40,8 @@ export function TypstEditor({
         onChange: (nextValue) => latestOnChangeRef.current(nextValue),
         vimMode,
         theme,
-        diagnostics
+        diagnostics,
+        highlightErrors
       }),
       parent: containerRef.current
     });
@@ -82,10 +85,10 @@ export function TypstEditor({
 
     view.dispatch({
       effects: diagnosticsCompartment.reconfigure(
-        createEditorDiagnosticExtensions(diagnostics)
+        createEditorDiagnosticExtensions(diagnostics, highlightErrors)
       )
     });
-  }, [diagnostics]);
+  }, [diagnostics, highlightErrors]);
 
   return <div className="editor-root" ref={containerRef} />;
 }

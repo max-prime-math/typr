@@ -4,12 +4,16 @@ import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
 
 interface PreviewPaneProps {
   result: CompileResult | null;
+  lastSuccessfulResult: Extract<CompileResult, { ok: true }> | null;
+  isErrorSettled: boolean;
   isCompiling: boolean;
   compilerStatus: CompilerStatus;
 }
 
 export function PreviewPane({
   result,
+  lastSuccessfulResult,
+  isErrorSettled,
   isCompiling,
   compilerStatus
 }: PreviewPaneProps) {
@@ -29,44 +33,53 @@ export function PreviewPane({
   }
 
   if (!result.ok) {
+    const fallbackResult = lastSuccessfulResult;
+
     return (
       <div className="preview-layout">
-        <div className="diagnostics diagnostics--error">
-          <h3>Compile errors</h3>
-          <ul>
-            {result.errors.map((error, index) => (
-              <li key={`${error.message}-${index}`}>
-                {formatDiagnostic(error)}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className="preview-state">
-          <div className="preview-status">
-            <p>The preview could not be generated.</p>
-            {compilerStatus.detail ? (
-              <p className="preview-status__detail">{compilerStatus.detail}</p>
+        {fallbackResult ? (
+          <div className="preview-surface">
+            <div className="preview-toolbar">
+              <div className="preview-engine">Engine: {fallbackResult.engine}</div>
+              <button
+                className="preview-debug-toggle"
+                onClick={() => setShowDebug((current) => !current)}
+                type="button"
+              >
+                {showDebug ? "Hide debug" : "Show debug"}
+              </button>
+            </div>
+            {shouldUseChromiumCanvasPreview(fallbackResult) ? (
+              <ChromiumCanvasPreview
+                artifactData={fallbackResult.output.artifactData!}
+                isFaulted={isErrorSettled}
+              />
+            ) : (
+              <PreviewDocument
+                isFaulted={isErrorSettled}
+                markup={fallbackResult.output.content}
+              />
+            )}
+            {showDebug ? (
+              <PreviewDebugPanel markup={fallbackResult.output.content} />
             ) : null}
           </div>
-        </div>
+        ) : (
+          <div className="preview-state">
+            <div className="preview-status">
+              <p>The preview could not be generated.</p>
+              {compilerStatus.detail ? (
+                <p className="preview-status__detail">{compilerStatus.detail}</p>
+              ) : null}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   return (
     <div className="preview-layout">
-      {result.diagnostics.length > 0 ? (
-        <div className="diagnostics diagnostics--warning">
-          <h3>Diagnostics</h3>
-          <ul>
-            {result.diagnostics.map((diagnostic, index) => (
-              <li key={`${diagnostic.message}-${index}`}>
-                {formatDiagnostic(diagnostic)}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
       <div className="preview-surface">
         <div className="preview-toolbar">
           <div className="preview-engine">Engine: {result.engine}</div>
@@ -91,7 +104,15 @@ export function PreviewPane({
   );
 }
 
-function PreviewDocument({ markup }: { markup: string }) {
+function PreviewDocument({
+  markup,
+  isFaulted = false
+}: {
+  markup: string;
+  isFaulted?: boolean;
+}) {
+  const blobStartedAt =
+    typeof performance === "undefined" ? 0 : performance.now();
   const normalizedMarkup = useMemo(() => normalizePreviewSvg(markup), [markup]);
   const displayMarkup = normalizedMarkup;
 
@@ -101,13 +122,15 @@ function PreviewDocument({ markup }: { markup: string }) {
   }, [displayMarkup]);
 
   useEffect(() => {
+    logPreviewTiming("svg", blobStartedAt);
+
     return () => {
       URL.revokeObjectURL(blobUrl);
     };
-  }, [blobUrl]);
+  }, [blobStartedAt, blobUrl]);
 
   return (
-    <div className="preview-document">
+    <div className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}>
       <img
         alt="Typst preview document"
         className="preview-document__object"
@@ -119,9 +142,11 @@ function PreviewDocument({ markup }: { markup: string }) {
 }
 
 function ChromiumCanvasPreview({
-  artifactData
+  artifactData,
+  isFaulted = false
 }: {
   artifactData: Uint8Array;
+  isFaulted?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
@@ -134,15 +159,23 @@ function ChromiumCanvasPreview({
     }
 
     let cancelled = false;
+    const renderStartedAt =
+      typeof performance === "undefined" ? 0 : performance.now();
     setRenderError(null);
 
-    void renderTypstArtifactToCanvas(container, artifactData).catch((error) => {
-      if (!cancelled) {
-        setRenderError(
-          error instanceof Error ? error.message : "Canvas preview failed."
-        );
-      }
-    });
+    void renderTypstArtifactToCanvas(container, artifactData)
+      .then(() => {
+        if (!cancelled) {
+          logPreviewTiming("canvas", renderStartedAt);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRenderError(
+            error instanceof Error ? error.message : "Canvas preview failed."
+          );
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -152,13 +185,20 @@ function ChromiumCanvasPreview({
 
   if (renderError) {
     return (
-      <div className="preview-document">
+      <div className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}>
         <div className="preview-canvas-error">{renderError}</div>
       </div>
     );
   }
 
-  return <div className="preview-document preview-document--canvas" ref={containerRef} />;
+  return (
+    <div
+      className={`preview-document preview-document--canvas ${
+        isFaulted ? "preview-document--faulted" : ""
+      }`}
+      ref={containerRef}
+    />
+  );
 }
 
 function PreviewDebugPanel({ markup }: { markup: string }) {
@@ -241,8 +281,20 @@ function analyzePreviewMarkup(markup: string) {
   };
 }
 
-function shouldUseChromiumCanvasPreview(result: CompileResult): boolean {
+function shouldUseChromiumCanvasPreview(
+  result: CompileResult
+): boolean {
   return false;
+}
+
+function logPreviewTiming(mode: "svg" | "canvas", startedAt: number): void {
+  if (typeof console === "undefined" || typeof performance === "undefined") {
+    return;
+  }
+
+  console.debug(
+    `[typr] preview ${mode} prepared in ${(performance.now() - startedAt).toFixed(1)}ms`
+  );
 }
 
 function normalizePreviewSvg(markup: string): string {
