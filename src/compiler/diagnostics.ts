@@ -15,6 +15,11 @@ interface ParsedDiagnosticRange {
   endColumn: number;
 }
 
+// Typst's structured diagnostic ranges appear to land one line early relative
+// to the editor's document model in this app, so normalize them here before
+// they reach CodeMirror decorations.
+const TYPST_DIAGNOSTIC_LINE_OFFSET = 1;
+
 const TYPST_RANGE_PATTERN =
   /^(\d+):(\d+)(?:-(?:(\d+):)?(\d+))?$/;
 
@@ -62,9 +67,9 @@ function parseTypstRange(range: string): ParsedDiagnosticRange | null {
   }
 
   return {
-    line,
+    line: line + TYPST_DIAGNOSTIC_LINE_OFFSET,
     column,
-    endLine: explicitEndLine,
+    endLine: explicitEndLine + TYPST_DIAGNOSTIC_LINE_OFFSET,
     endColumn
   };
 }
