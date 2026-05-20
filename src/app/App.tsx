@@ -77,27 +77,36 @@ const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
 
 interface SourceSymbolItem {
   label: string;
-  snippet: string;
+  template: string;
   glyph: string;
 }
 
 const SOURCE_SYMBOL_ITEMS: SourceSymbolItem[] = [
-  { label: "Arrow right", glyph: "→", snippet: "#sym.arrow.r" },
-  { label: "Arrow left", glyph: "←", snippet: "#sym.arrow.l" },
-  { label: "Arrow both", glyph: "↔", snippet: "#sym.arrow.l.r" },
-  { label: "Double arrow", glyph: "⇒", snippet: "#sym.arrow.r.double" },
-  { label: "Check", glyph: "✓", snippet: "#sym.ballot.check" },
-  { label: "Cross", glyph: "✕", snippet: "#sym.ballot.cross" },
-  { label: "Alpha", glyph: "α", snippet: "#sym.alpha" },
-  { label: "Beta", glyph: "β", snippet: "#sym.beta" },
-  { label: "Gamma", glyph: "γ", snippet: "#sym.gamma" },
-  { label: "Pi", glyph: "π", snippet: "#sym.pi" },
-  { label: "Infinity", glyph: "∞", snippet: "#sym.infinity" },
-  { label: "Plus-minus", glyph: "±", snippet: "#sym.plus.minus" },
-  { label: "Star", glyph: "★", snippet: "#sym.star.filled" },
-  { label: "Subset", glyph: "⊂", snippet: "#sym.subset" },
-  { label: "Superset", glyph: "⊃", snippet: "#sym.supset" }
+  { label: "Limit", glyph: "lim", template: "lim_(${1:x} -> ${2:3})" },
+  { label: "Integral", glyph: "∫", template: "integral_(${1:a})^(${2:b}) ${3:f(x)} dif ${4:x}" },
+  { label: "Sum", glyph: "∑", template: "sum_(${1:n=1})^(${2:oo}) ${3:a_n}" },
+  { label: "Arrow right", glyph: "→", template: "#sym.arrow.r" },
+  { label: "Arrow left", glyph: "←", template: "#sym.arrow.l" },
+  { label: "Arrow both", glyph: "↔", template: "#sym.arrow.l.r" },
+  { label: "Double arrow", glyph: "⇒", template: "#sym.arrow.r.double" },
+  { label: "Check", glyph: "✓", template: "#sym.ballot.check" },
+  { label: "Cross", glyph: "✕", template: "#sym.ballot.cross" },
+  { label: "Alpha", glyph: "α", template: "#sym.alpha" },
+  { label: "Beta", glyph: "β", template: "#sym.beta" },
+  { label: "Gamma", glyph: "γ", template: "#sym.gamma" },
+  { label: "Pi", glyph: "π", template: "#sym.pi" },
+  { label: "Infinity", glyph: "∞", template: "#sym.infinity" },
+  { label: "Plus-minus", glyph: "±", template: "#sym.plus.minus" },
+  { label: "Star", glyph: "★", template: "#sym.star.filled" },
+  { label: "Subset", glyph: "⊂", template: "#sym.subset" },
+  { label: "Superset", glyph: "⊃", template: "#sym.supset" }
 ];
+
+interface SourceSymbolTooltipState {
+  item: SourceSymbolItem;
+  x: number;
+  y: number;
+}
 
 type CursorSize = "small" | "medium" | "large";
 
@@ -195,6 +204,17 @@ function isTypingTarget(target: EventTarget | null) {
   return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
 }
 
+function clampTooltipPosition(x: number, y: number) {
+  const offset = 16;
+  const width = 240;
+  const height = 88;
+
+  return {
+    x: Math.max(12, Math.min(x + offset, window.innerWidth - width - 12)),
+    y: Math.max(12, Math.min(y + offset, window.innerHeight - height - 12))
+  };
+}
+
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
   const menuStripRef = useRef<HTMLElement | null>(null);
@@ -225,7 +245,9 @@ export function App() {
   const [cursorSize, setCursorSize] = useState<CursorSize>("medium");
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
-  const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolItem | null>(null);
+  const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
+    null
+  );
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
@@ -259,6 +281,9 @@ export function App() {
     mode: "worker",
     label: "Waiting to compile"
   });
+  const symbolHoverTimerRef = useRef<number | null>(null);
+  const symbolHoverItemRef = useRef<SourceSymbolItem | null>(null);
+  const symbolHoverPointRef = useRef({ x: 0, y: 0 });
   const compiler = useMemo(
     () =>
       createTypstCompiler({
@@ -310,6 +335,15 @@ export function App() {
       isMountedRef.current = false;
       if (compileTimerRef.current !== null) {
         window.clearTimeout(compileTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (symbolHoverTimerRef.current !== null) {
+        window.clearTimeout(symbolHoverTimerRef.current);
+        symbolHoverTimerRef.current = null;
       }
     };
   }, []);
@@ -737,8 +771,8 @@ export function App() {
     editorRef.current?.insertText(text);
   }, []);
 
-  const handleInsertSymbol = useCallback((snippet: string) => {
-    editorRef.current?.insertSymbol(snippet);
+  const handleInsertSymbol = useCallback((template: string) => {
+    editorRef.current?.insertSymbol(template);
   }, []);
 
   const handleWrapEditorSelection = useCallback(
@@ -761,12 +795,51 @@ export function App() {
   }, [handleWrapEditorSelection]);
 
   const clearSourceSymbolPreview = useCallback(() => {
+    if (symbolHoverTimerRef.current !== null) {
+      window.clearTimeout(symbolHoverTimerRef.current);
+      symbolHoverTimerRef.current = null;
+    }
+
+    symbolHoverItemRef.current = null;
     setHoveredSourceSymbol(null);
   }, []);
 
-  const showSourceSymbolPreview = useCallback((symbol: SourceSymbolItem) => {
-    setHoveredSourceSymbol(symbol);
+  const positionSourceSymbolTooltip = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    symbolHoverPointRef.current = clampTooltipPosition(event.clientX, event.clientY);
+
+    setHoveredSourceSymbol((current) =>
+      current && symbolHoverItemRef.current === current.item
+        ? {
+            item: current.item,
+            x: symbolHoverPointRef.current.x,
+            y: symbolHoverPointRef.current.y
+          }
+        : current
+    );
   }, []);
+
+  const showSourceSymbolPreview = useCallback(
+    (symbol: SourceSymbolItem, event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (symbolHoverTimerRef.current !== null) {
+        window.clearTimeout(symbolHoverTimerRef.current);
+      }
+
+      symbolHoverItemRef.current = symbol;
+      symbolHoverPointRef.current = clampTooltipPosition(event.clientX, event.clientY);
+      symbolHoverTimerRef.current = window.setTimeout(() => {
+        if (symbolHoverItemRef.current !== symbol) {
+          return;
+        }
+
+        setHoveredSourceSymbol({
+          item: symbol,
+          x: symbolHoverPointRef.current.x,
+          y: symbolHoverPointRef.current.y
+        });
+      }, 1100);
+    },
+    []
+  );
 
   const handleBulletList = useCallback(() => {
     handleToggleCurrentLines("- ", "+ ");
@@ -1736,27 +1809,21 @@ export function App() {
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--symbols" />
                   </summary>
                   <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
-                    <div className="source-symbol-menu__preview" aria-live="polite">
-                      <span className="source-symbol-menu__preview-label">Typst code</span>
-                      <code className="source-symbol-menu__preview-code">
-                        {hoveredSourceSymbol?.snippet ?? "Hover a symbol"}
-                      </code>
-                    </div>
                     {SOURCE_SYMBOL_ITEMS.map((item) => (
                       <button
-                        key={item.snippet}
+                        key={item.template}
                         className="source-symbol-menu__item"
                         onBlur={clearSourceSymbolPreview}
                         onClick={(event) => {
-                          handleInsertSymbol(item.snippet);
-                          setHoveredSourceSymbol(null);
+                          handleInsertSymbol(item.template);
+                          clearSourceSymbolPreview();
                           const details = event.currentTarget.closest("details");
                           if (details instanceof HTMLDetailsElement) {
                             details.open = false;
                           }
                         }}
-                        onFocus={() => showSourceSymbolPreview(item)}
-                        onPointerEnter={() => showSourceSymbolPreview(item)}
+                        onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
+                        onPointerMove={positionSourceSymbolTooltip}
                         onPointerLeave={clearSourceSymbolPreview}
                         type="button"
                       >
@@ -1783,6 +1850,25 @@ export function App() {
           {compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}
+            </div>
+          ) : null}
+          {hoveredSourceSymbol ? (
+            <div
+              className="source-symbol-tooltip"
+              style={
+                {
+                  left: `${hoveredSourceSymbol.x}px`,
+                  top: `${hoveredSourceSymbol.y}px`
+                } as CSSProperties
+              }
+            >
+              <div className="source-symbol-tooltip__label">{hoveredSourceSymbol.item.label}</div>
+              <code className="source-symbol-tooltip__code">
+                {hoveredSourceSymbol.item.template}
+              </code>
+              {hoveredSourceSymbol.item.template.includes("${") ? (
+                <span className="source-symbol-tooltip__hint">Tab moves through fields</span>
+              ) : null}
             </div>
           ) : null}
         </section>

@@ -589,16 +589,16 @@ button {
 
 .source-symbol-menu__panel {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.3rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.18rem;
   position: absolute;
   top: calc(100% + 0.45rem);
   right: 0;
   z-index: 12;
-  width: min(18.5rem, calc(100vw - 2rem));
-  max-height: 18rem;
+  width: min(15.5rem, calc(100vw - 1.5rem));
+  max-height: 16rem;
   overflow: auto;
-  padding: 0.45rem;
+  padding: 0.3rem;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--surface-strong);
@@ -680,32 +680,6 @@ button {
   font-weight: 700;
 }
 
-.source-symbol-menu__preview {
-  display: flex;
-  flex-direction: column;
-  gap: 0.22rem;
-  margin-bottom: 0.45rem;
-  padding: 0.55rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface-muted) 65%, transparent);
-}
-
-.source-symbol-menu__preview-label {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.source-symbol-menu__preview-code {
-  color: var(--text);
-  font-size: 0.86rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .source-symbol-menu__item {
   display: grid;
   place-items: center;
@@ -717,7 +691,7 @@ button {
   background: transparent;
   color: var(--text);
   text-align: center;
-  font-size: 1.15rem;
+  font-size: 0.95rem;
   line-height: 1;
 }
 
@@ -735,6 +709,42 @@ button {
   min-width: 1em;
   min-height: 1em;
   font-weight: 700;
+}
+
+.source-symbol-tooltip {
+  position: fixed;
+  z-index: 40;
+  width: min(14rem, calc(100vw - 1.5rem));
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-strong) 94%, transparent);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.source-symbol-tooltip__label {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.2rem;
+}
+
+.source-symbol-tooltip__code {
+  display: block;
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.source-symbol-tooltip__hint {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
 }
 
 .pane__collapsed-toggle {

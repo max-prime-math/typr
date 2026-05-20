@@ -1,5 +1,6 @@
 import { autocompletion } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { clearSnippet, nextSnippetField, prevSnippetField } from "@codemirror/autocomplete";
 import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
@@ -102,7 +103,13 @@ export function createEditorExtensions({
     highlightActiveLine(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     typstLanguage(),
-    keymap.of([indentWithTab, ...keymaps]),
+    keymap.of([
+      { key: "Tab", run: nextSnippetField },
+      { key: "Shift-Tab", run: prevSnippetField },
+      { key: "Escape", run: clearSnippet },
+      indentWithTab,
+      ...keymaps
+    ]),
     EditorView.lineWrapping,
     createEditorTheme(theme),
     EditorView.updateListener.of((update) => {

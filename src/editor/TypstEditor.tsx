@@ -4,6 +4,7 @@ import {
   useImperativeHandle,
   useRef
 } from "react";
+import { snippet } from "@codemirror/autocomplete";
 import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel, gotoLine } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
@@ -292,16 +293,23 @@ function wrapSelection(view: EditorView, before: string, after: string): void {
   replaceSelection(view, before, after);
 }
 
-function insertSymbolIntoView(view: EditorView, snippet: string): void {
+function insertSymbolIntoView(view: EditorView, template: string): void {
   const selection = view.state.selection.main;
-  const symbolName = snippet.replace(/^#sym\./, "");
+  const insertion = isCursorInsideMathMode(view, selection.from)
+    ? template
+    : `$${template}$`;
 
-  if (isCursorInsideMathMode(view, selection.from)) {
-    insertTextIntoView(view, symbolName);
-    return;
-  }
-
-  insertTextIntoView(view, `$${symbolName}$`);
+  snippet(insertion)(
+    {
+      state: view.state,
+      dispatch(tr) {
+        view.dispatch(tr);
+      }
+    },
+    null,
+    selection.from,
+    selection.to
+  );
 }
 
 function toggleDelimitedSelection(view: EditorView, delimiter: string): void {
