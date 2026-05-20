@@ -1,4 +1,6 @@
-export type ThemeMode = "light" | "dark";
+import { AUTO_THEME_ID } from "../theme/themes";
+
+export type ThemePreference = string;
 
 export interface TypstDocumentFile {
   id: string;
@@ -17,7 +19,7 @@ export interface TypstProject {
 }
 
 export interface AppPreferences {
-  theme: ThemeMode;
+  theme: ThemePreference;
   vimMode: boolean;
 }
 
@@ -69,7 +71,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       updatedAt: now
     },
     preferences: {
-      theme: "light",
+      theme: AUTO_THEME_ID,
       vimMode: false
     }
   };
@@ -153,7 +155,7 @@ export function createDocument(
 
 export function updateThemePreference(
   snapshot: AppSnapshot,
-  theme: ThemeMode
+  theme: ThemePreference
 ): AppSnapshot {
   return {
     ...snapshot,

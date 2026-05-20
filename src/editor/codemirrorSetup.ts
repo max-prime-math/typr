@@ -6,23 +6,23 @@ import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
-import type { ThemeMode } from "../app/appState";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { typstLanguage } from "./typstLanguage";
+import type { ThemeDefinition } from "../theme/themes";
 
 interface EditorSetupOptions {
   onChange: (value: string) => void;
   vimMode: boolean;
-  theme: ThemeMode;
+  theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
 }
 
 export const diagnosticsCompartment = new Compartment();
 
-function createEditorTheme(theme: ThemeMode): Extension {
-  const dark = theme === "dark";
+function createEditorTheme(theme: ThemeDefinition): Extension {
+  const dark = theme.mode === "dark";
 
   return EditorView.theme(
     {

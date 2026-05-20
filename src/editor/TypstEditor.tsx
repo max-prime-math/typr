@@ -1,14 +1,14 @@
 import { useEffect, useRef } from "react";
 import { EditorView } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
-import type { ThemeMode } from "../app/appState";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
+import type { ThemeDefinition } from "../theme/themes";
 
 interface TypstEditorProps {
   value: string;
   vimMode: boolean;
-  theme: ThemeMode;
+  theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
   onChange: (value: string) => void;
