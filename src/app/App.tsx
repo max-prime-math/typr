@@ -81,7 +81,6 @@ const EDITOR_MIN_WIDTH = 420;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
 const APP_VERSION = packageJson.version;
-const CURSOR_SIZE_STORAGE_KEY = "typr.cursor-size";
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
 
@@ -117,22 +116,6 @@ interface SourceSymbolTooltipState {
   x: number;
   y: number;
 }
-
-type CursorSize = "small" | "medium" | "large";
-
-const CURSOR_SIZE_VALUES: Record<CursorSize, string> = {
-  small: "1px",
-  medium: "2px",
-  large: "3px"
-};
-
-const CURSOR_SIZE_LABELS: Record<CursorSize, string> = {
-  small: "Small",
-  medium: "Medium",
-  large: "Large"
-};
-
-const CURSOR_SIZE_ORDER: CursorSize[] = ["small", "medium", "large"];
 
 const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
@@ -253,7 +236,6 @@ export function App() {
     tone: "neutral",
     text: ""
   });
-  const [cursorSize, setCursorSize] = useState<CursorSize>("medium");
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
@@ -332,6 +314,11 @@ export function App() {
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
+  const handleVimToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateVimPreference(currentSnapshot, !currentSnapshot.preferences.vimMode)
+    );
+  }, []);
   const {
     theme,
     builtinThemes,
@@ -463,15 +450,6 @@ export function App() {
       return;
     }
 
-    const storedCursorSize = window.localStorage.getItem(CURSOR_SIZE_STORAGE_KEY);
-    if (
-      storedCursorSize === "small" ||
-      storedCursorSize === "medium" ||
-      storedCursorSize === "large"
-    ) {
-      setCursorSize(storedCursorSize);
-    }
-
     const storedPopup = window.localStorage.getItem(PREVIEW_POPUP_STORAGE_KEY);
     setIsPreviewPopupOpen(storedPopup === "true");
 
@@ -536,6 +514,17 @@ export function App() {
         setActiveMenu(null);
         setIsSettingsOpen(false);
         setWorkspaceMode("split");
+        return;
+      }
+
+      if (
+        event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        event.key.toLowerCase() === "v"
+      ) {
+        event.preventDefault();
+        handleVimToggle();
         return;
       }
 
@@ -606,7 +595,14 @@ export function App() {
       window.removeEventListener("online", updateOnlineStatus);
       window.removeEventListener("offline", updateOnlineStatus);
     };
-  }, [cancelPendingMenuClose, cancelPendingMenuOpen, handlePanelToggle, resetPanelWidths, setFullscreenMode]);
+  }, [
+    cancelPendingMenuClose,
+    cancelPendingMenuOpen,
+    handlePanelToggle,
+    handleVimToggle,
+    resetPanelWidths,
+    setFullscreenMode
+  ]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -656,15 +652,6 @@ export function App() {
 
     return () => window.clearTimeout(handle);
   }, [customSnippets, isHydrated]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(CURSOR_SIZE_STORAGE_KEY, cursorSize);
-    document.documentElement.style.setProperty("--editor-cursor-width", CURSOR_SIZE_VALUES[cursorSize]);
-  }, [cursorSize]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -924,12 +911,6 @@ export function App() {
     );
   };
 
-  const handleVimToggle = () => {
-    setSnapshot((currentSnapshot) =>
-      updateVimPreference(currentSnapshot, !currentSnapshot.preferences.vimMode)
-    );
-  };
-
   const handleGitHubConfigChange = (
     field: keyof GitHubRemoteConfig,
     value: string
@@ -1145,13 +1126,6 @@ export function App() {
   const handleSearch = () => editorRef.current?.search();
   const handleGoToLine = () => editorRef.current?.goToLine();
   const handleSelectAll = () => editorRef.current?.selectAll();
-
-  const cycleCursorSize = () => {
-    setCursorSize((current) => {
-      const nextIndex = (CURSOR_SIZE_ORDER.indexOf(current) + 1) % CURSOR_SIZE_ORDER.length;
-      return CURSOR_SIZE_ORDER[nextIndex] ?? "medium";
-    });
-  };
 
   const togglePreviewPopup = () => {
     setIsPreviewPopupOpen((current) => !current);
@@ -1645,9 +1619,6 @@ export function App() {
             <button className="menu-action" onClick={handleSearch} type="button">
               Search
             </button>
-            <button className="menu-action" onClick={cycleCursorSize} type="button">
-              Cursor size: {CURSOR_SIZE_LABELS[cursorSize]}
-            </button>
             <button className="menu-action" onClick={togglePreviewPopup} type="button">
               {isPreviewPopupOpen ? "Hide preview in popup" : "Show preview in popup"}
             </button>
@@ -1984,6 +1955,16 @@ export function App() {
                   aria-label="Snippets"
                 >
                   <span aria-hidden="true" className="toolbar-icon toolbar-icon--snippets" />
+                </button>
+                <button
+                  className="pane__button pane__button--compact pane__icon-button"
+                  onClick={handleVimToggle}
+                  type="button"
+                  aria-label={snapshot.preferences.vimMode ? "Disable Vim mode" : "Enable Vim mode"}
+                  aria-pressed={snapshot.preferences.vimMode}
+                  title={snapshot.preferences.vimMode ? "Vim mode on" : "Vim mode off"}
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--vim" />
                 </button>
               </div>
             </div>

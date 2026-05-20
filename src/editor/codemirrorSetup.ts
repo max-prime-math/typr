@@ -65,13 +65,6 @@ function createEditorTheme(theme: ThemeDefinition): Extension {
       },
       ".cm-selectionBackground, .cm-content ::selection": {
         backgroundColor: "var(--editor-selection) !important"
-      },
-      "&.cm-focused": {
-        outline: "none"
-      },
-      ".cm-cursor": {
-        borderLeftColor: "var(--accent)",
-        borderLeftWidth: "var(--editor-cursor-width)"
       }
     },
     { dark }

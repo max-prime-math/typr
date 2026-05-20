@@ -24,7 +24,6 @@
   --editor-gutter-foreground: #8b8f84;
   --editor-active-line: rgba(23, 111, 95, 0.08);
   --editor-selection: rgba(23, 111, 95, 0.22);
-  --editor-cursor-width: 2px;
   --shadow: 0 24px 80px rgba(76, 66, 49, 0.12);
 }
 
@@ -49,7 +48,6 @@
   --editor-gutter-foreground: #7e897f;
   --editor-active-line: rgba(88, 186, 161, 0.12);
   --editor-selection: rgba(88, 186, 161, 0.24);
-  --editor-cursor-width: 2px;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
 }
 
@@ -454,6 +452,12 @@ button {
   padding: 0;
 }
 
+.pane__icon-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--surface-strong) 75%, var(--accent-soft));
+  color: var(--accent-strong);
+}
+
 .toolbar-icon {
   display: block;
   width: 0.98rem;
@@ -511,6 +515,11 @@ button {
 .toolbar-icon--snippets {
   mask-image: url("/icons/toolbar/snippets.svg");
   -webkit-mask-image: url("/icons/toolbar/snippets.svg");
+}
+
+.toolbar-icon--vim {
+  mask-image: url("/icons/toolbar/vim.svg");
+  -webkit-mask-image: url("/icons/toolbar/vim.svg");
 }
 
 .toolbar-icon--toggle {
