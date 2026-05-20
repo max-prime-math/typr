@@ -50,11 +50,20 @@ import packageJson from "../../package.json";
 import {
   loadGitHubConfig,
   loadSnapshot,
+  loadCustomSnippets,
   saveGitHubConfig,
-  saveSnapshot
+  saveSnapshot,
+  saveCustomSnippets
 } from "../storage/indexedDbStorage";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
+import {
+  DEFAULT_TYPST_SNIPPETS,
+  mergeSnippets,
+  parseSnippetImport,
+  SNIPPET_IMPORT_TEMPLATE,
+  type TypstSnippet
+} from "../snippets/snippets";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
@@ -70,6 +79,7 @@ const PANEL_COLLAPSED_WIDTH = 56;
 const PANEL_HANDLE_WIDTH = 8;
 const EDITOR_MIN_WIDTH = 420;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
+const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
 const APP_VERSION = packageJson.version;
 const CURSOR_SIZE_STORAGE_KEY = "typr.cursor-size";
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
@@ -128,7 +138,7 @@ const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
-type SettingsTab = "github" | "themes";
+type SettingsTab = "github" | "themes" | "snippets";
 
 interface SyncFeedback {
   tone: "neutral" | "success" | "error";
@@ -221,6 +231,7 @@ export function App() {
   const workspaceRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
+  const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
   const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
@@ -249,6 +260,14 @@ export function App() {
     null
   );
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
+  const [customSnippets, setCustomSnippets] = useState<TypstSnippet[]>([]);
+  const [snippetImportText, setSnippetImportText] = useState(
+    JSON.stringify(SNIPPET_IMPORT_TEMPLATE, null, 2)
+  );
+  const [snippetImportFeedback, setSnippetImportFeedback] = useState<SyncFeedback>({
+    tone: "neutral",
+    text: ""
+  });
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
     () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isSidebarCollapsed
@@ -418,6 +437,7 @@ export function App() {
         loadSnapshot(),
         loadGitHubConfig()
       ]);
+      const storedSnippets = await loadCustomSnippets();
 
       if (cancelled) {
         return;
@@ -427,6 +447,7 @@ export function App() {
       setSnapshot(nextSnapshot);
       setTheme(nextSnapshot.preferences.theme);
       setGitHubConfig(storedGitHubConfig ?? createEmptyGitHubRemoteConfig());
+      setCustomSnippets(storedSnippets ?? []);
       setIsHydrated(true);
     }
 
@@ -618,6 +639,23 @@ export function App() {
 
     return () => window.clearTimeout(handle);
   }, [githubConfig, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    const handle = window.setTimeout(() => {
+      void saveCustomSnippets(customSnippets).catch(() => {
+        setSnippetImportFeedback({
+          tone: "error",
+          text: "Unable to save snippets locally."
+        });
+      });
+    }, SAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(handle);
+  }, [customSnippets, isHydrated]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -929,6 +967,75 @@ export function App() {
     setIsSettingsOpen(true);
   };
 
+  const handleSnippetImport = useCallback((nextSnippets: TypstSnippet[]) => {
+    setCustomSnippets((currentSnippets) =>
+      mergeSnippets([...currentSnippets, ...nextSnippets])
+    );
+    setSnippetImportFeedback({
+      tone: "success",
+      text: `Imported ${nextSnippets.length} snippet${nextSnippets.length === 1 ? "" : "s"}.`
+    });
+    setSettingsTab("snippets");
+    setIsSettingsOpen(true);
+  }, []);
+
+  const handleSnippetImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    const result = parseSnippetImport(await file.text());
+
+    if (!result.ok) {
+      setSnippetImportFeedback({
+        tone: "error",
+        text: result.message
+      });
+      return;
+    }
+
+    handleSnippetImport(result.snippets);
+  };
+
+  const handleImportPastedSnippets = () => {
+    const result = parseSnippetImport(snippetImportText);
+
+    if (!result.ok) {
+      setSnippetImportFeedback({
+        tone: "error",
+        text: result.message
+      });
+      return;
+    }
+
+    handleSnippetImport(result.snippets);
+  };
+
+  const handleSnippetImportTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    setSnippetImportText(event.target.value);
+  };
+
+  const handleClearCustomSnippets = () => {
+    setCustomSnippets([]);
+    setSnippetImportFeedback({
+      tone: "neutral",
+      text: "Cleared custom snippets."
+    });
+  };
+
+  const handleRemoveCustomSnippet = (prefix: string) => {
+    setCustomSnippets((currentSnippets) =>
+      currentSnippets.filter((snippet) => snippet.prefix !== prefix)
+    );
+    setSnippetImportFeedback({
+      tone: "neutral",
+      text: `Removed ${prefix}.`
+    });
+  };
+
   const handleDownloadThemeTemplate = () => {
     const blob = new Blob([JSON.stringify(THEME_IMPORT_TEMPLATE, null, 2)], {
       type: "application/json"
@@ -937,6 +1044,34 @@ export function App() {
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = THEME_TEMPLATE_FILENAME;
+    anchor.click();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+  const handleDownloadSnippetTemplate = () => {
+    const blob = new Blob([JSON.stringify(SNIPPET_IMPORT_TEMPLATE, null, 2)], {
+      type: "application/json"
+    });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = SNIPPET_TEMPLATE_FILENAME;
+    anchor.click();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+  const handleDownloadCustomSnippets = () => {
+    const blob = new Blob([JSON.stringify({ snippets: customSnippets }, null, 2)], {
+      type: "application/json"
+    });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "typr-snippets.json";
     anchor.click();
     window.setTimeout(() => {
       window.URL.revokeObjectURL(url);
@@ -1307,6 +1442,10 @@ export function App() {
           : "Local-first";
   const workspaceModeLabel = describeWorkspaceMode(workspaceMode);
   const allThemes = [...builtinThemes, ...customThemes];
+  const allSnippets = useMemo(
+    () => mergeSnippets([...DEFAULT_TYPST_SNIPPETS, ...customSnippets]),
+    [customSnippets]
+  );
   const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
   const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
   const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
@@ -1830,11 +1969,22 @@ export function App() {
                         <span aria-hidden="true" className="source-symbol-menu__glyph">
                           {item.glyph}
                         </span>
-                        <span className="visually-hidden">{item.label}</span>
+                      <span className="visually-hidden">{item.label}</span>
                       </button>
                     ))}
                   </div>
                 </details>
+                <button
+                  className="pane__button pane__button--compact pane__icon-button"
+                  onClick={() => {
+                    setSettingsTab("snippets");
+                    setIsSettingsOpen(true);
+                  }}
+                  type="button"
+                  aria-label="Snippets"
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--snippets" />
+                </button>
               </div>
             </div>
           ) : null}
@@ -1842,6 +1992,7 @@ export function App() {
             ref={editorRef}
             diagnostics={editorDiagnostics}
             highlightErrors={isErrorSettled}
+            snippets={allSnippets}
             value={activeDocument.content}
             vimMode={snapshot.preferences.vimMode}
             theme={theme}
@@ -1982,7 +2133,7 @@ export function App() {
               <div>
                 <h2>Typr Settings</h2>
                 <p className="settings-sheet__copy">
-                  Configure sync and themes from one place.
+                  Configure sync, themes, and snippets from one place.
                 </p>
               </div>
               <button
@@ -2013,6 +2164,15 @@ export function App() {
                   type="button"
                 >
                   Themes
+                </button>
+                <button
+                  aria-selected={settingsTab === "snippets"}
+                  className={`settings-tab ${settingsTab === "snippets" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("snippets")}
+                  role="tab"
+                  type="button"
+                >
+                  Snippets
                 </button>
               </div>
 
@@ -2100,7 +2260,7 @@ export function App() {
                     </span>
                   </div>
                 </div>
-              ) : (
+              ) : settingsTab === "themes" ? (
                 <div className="settings-panel" role="tabpanel">
                   <div className="settings-section">
                     <div className="settings-section__header">
@@ -2229,6 +2389,137 @@ export function App() {
                     </section>
                   </div>
                 </div>
+              ) : (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Snippets</h3>
+                      <span className="pane__meta">
+                        {allSnippets.length} total · {customSnippets.length} custom
+                      </span>
+                    </div>
+
+                    <div className="snippet-columns">
+                      <section className="snippet-column">
+                        <div className="snippet-column__header">
+                          <h4>Built in</h4>
+                          <span className="pane__meta">{DEFAULT_TYPST_SNIPPETS.length}</span>
+                        </div>
+                        <div className="snippet-list">
+                          {DEFAULT_TYPST_SNIPPETS.map((snippet) => (
+                            <article className="snippet-card" key={snippet.prefix}>
+                              <div className="snippet-card__top">
+                                <strong>{snippet.prefix}</strong>
+                                <span className="snippet-card__detail">{snippet.description}</span>
+                              </div>
+                              <code className="snippet-card__body">{snippet.body}</code>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="snippet-column">
+                        <div className="snippet-column__header">
+                          <h4>Custom</h4>
+                          <span className="pane__meta">{customSnippets.length}</span>
+                        </div>
+                        {customSnippets.length > 0 ? (
+                          <div className="snippet-list">
+                            {customSnippets.map((snippet) => (
+                              <article className="snippet-card" key={snippet.prefix}>
+                                <div className="snippet-card__top">
+                                  <strong>{snippet.prefix}</strong>
+                                  <button
+                                    className="snippet-card__remove"
+                                    onClick={() => handleRemoveCustomSnippet(snippet.prefix)}
+                                    type="button"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                                <code className="snippet-card__body">{snippet.body}</code>
+                                {snippet.description ? (
+                                  <span className="snippet-card__detail">{snippet.description}</span>
+                                ) : null}
+                              </article>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="snippet-empty">
+                            Import your own snippets to extend the autocomplete list.
+                          </div>
+                        )}
+                      </section>
+                    </div>
+
+                    <section className="snippet-import-card">
+                      <div className="snippet-import-card__copy">
+                        <h4>Import snippets</h4>
+                        <p>
+                          Paste JSON here or upload a file. Accepted shapes include a
+                          <code>snippets</code> array or a simple object map of <code>prefix</code> to
+                          snippet body.
+                        </p>
+                      </div>
+                      <textarea
+                        className="snippet-import-card__textarea"
+                        onChange={handleSnippetImportTextChange}
+                        placeholder={JSON.stringify(SNIPPET_IMPORT_TEMPLATE, null, 2)}
+                        value={snippetImportText}
+                      />
+                      <div className="snippet-import-card__actions">
+                        <button
+                          className="pane__button"
+                          onClick={() => snippetImportInputRef.current?.click()}
+                          type="button"
+                        >
+                          Import JSON
+                        </button>
+                        <button
+                          className="pane__button"
+                          onClick={handleImportPastedSnippets}
+                          type="button"
+                        >
+                          Import pasted JSON
+                        </button>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          onClick={handleDownloadSnippetTemplate}
+                          type="button"
+                        >
+                          Download template
+                        </button>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          onClick={handleDownloadCustomSnippets}
+                          type="button"
+                        >
+                          Download current
+                        </button>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          onClick={handleClearCustomSnippets}
+                          type="button"
+                        >
+                          Clear custom
+                        </button>
+                      </div>
+                      {snippetImportFeedback.text ? (
+                        <div
+                          className={`sync-feedback snippet-import-card__feedback ${
+                            snippetImportFeedback.tone === "success"
+                              ? "sync-feedback--success"
+                              : snippetImportFeedback.tone === "error"
+                                ? "sync-feedback--error"
+                                : ""
+                          }`}
+                        >
+                          <span>{snippetImportFeedback.text}</span>
+                        </div>
+                      ) : null}
+                    </section>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -2260,6 +2551,14 @@ export function App() {
         accept=".json,application/json"
         className="visually-hidden"
         onChange={handleThemeImport}
+        tabIndex={-1}
+        type="file"
+      />
+      <input
+        ref={snippetImportInputRef}
+        accept=".json,application/json"
+        className="visually-hidden"
+        onChange={handleSnippetImportFile}
         tabIndex={-1}
         type="file"
       />

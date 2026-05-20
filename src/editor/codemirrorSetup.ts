@@ -1,14 +1,22 @@
-import { autocompletion } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { clearSnippet, nextSnippetField, prevSnippetField } from "@codemirror/autocomplete";
+import {
+  acceptCompletion,
+  autocompletion,
+  clearSnippet,
+  completionStatus,
+  nextSnippetField,
+  prevSnippetField,
+  type CompletionSource
+} from "@codemirror/autocomplete";
+import { defaultKeymap, history, historyKeymap, indentMore } from "@codemirror/commands";
 import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
+import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, type Command } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
+import { toggleMathDelimiterCommand } from "./mathActions";
 import { typstLanguage } from "./typstLanguage";
 import type { ThemeDefinition } from "../theme/themes";
 
@@ -18,6 +26,7 @@ interface EditorSetupOptions {
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
+  snippetSource: CompletionSource;
 }
 
 export const diagnosticsCompartment = new Compartment();
@@ -84,9 +93,21 @@ export function createEditorExtensions({
   vimMode,
   theme,
   diagnostics,
-  highlightErrors
+  highlightErrors,
+  snippetSource
 }: EditorSetupOptions): Extension[] {
   const keymaps = [...defaultKeymap, ...historyKeymap, ...searchKeymap];
+  const tabCommand: Command = (view) => {
+    if (nextSnippetField(view)) {
+      return true;
+    }
+
+    if (completionStatus(view.state) !== null) {
+      return acceptCompletion(view);
+    }
+
+    return indentMore(view);
+  };
 
   return [
     lineNumbers(),
@@ -99,15 +120,17 @@ export function createEditorExtensions({
     foldGutter(),
     indentOnInput(),
     bracketMatching(),
-    autocompletion(),
+    autocompletion({
+      override: [snippetSource]
+    }),
     highlightActiveLine(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     typstLanguage(),
     keymap.of([
-      { key: "Tab", run: nextSnippetField },
+      { key: "$", run: toggleMathDelimiterCommand },
+      { key: "Tab", run: tabCommand },
       { key: "Shift-Tab", run: prevSnippetField },
       { key: "Escape", run: clearSnippet },
-      indentWithTab,
       ...keymaps
     ]),
     EditorView.lineWrapping,

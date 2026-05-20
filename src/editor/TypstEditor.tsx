@@ -2,17 +2,25 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef
 } from "react";
 import { snippet } from "@codemirror/autocomplete";
+import type { CompletionSource } from "@codemirror/autocomplete";
 import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel, gotoLine } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
+import { cycleMathDelimiter } from "./mathActions";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
+import {
+  createSnippetCompletionSource,
+  isPositionInsideMathMode,
+  type TypstSnippet
+} from "../snippets/snippets";
 
 interface TypstEditorProps {
   value: string;
@@ -20,6 +28,7 @@ interface TypstEditorProps {
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
+  snippets: TypstSnippet[];
   onChange: (value: string) => void;
 }
 
@@ -49,15 +58,25 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   theme,
   diagnostics,
   highlightErrors,
+  snippets,
   onChange
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latestOnChangeRef = useRef(onChange);
+  const snippetsRef = useRef(snippets);
+  const snippetCompletionSource = useMemo<CompletionSource>(
+    () => (context) => createSnippetCompletionSource(snippetsRef.current)(context),
+    []
+  );
 
   useEffect(() => {
     latestOnChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    snippetsRef.current = snippets;
+  }, [snippets]);
 
   useImperativeHandle(
     ref,
@@ -145,7 +164,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
           return;
         }
 
-        toggleDelimitedSelection(view, "$");
+        cycleMathDelimiter(view);
         view.focus();
       },
       undo() {
@@ -202,7 +221,8 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         vimMode,
         theme,
         diagnostics,
-        highlightErrors
+        highlightErrors,
+        snippetSource: snippetCompletionSource
       }),
       parent: containerRef.current
     });
@@ -213,7 +233,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
       view.destroy();
       viewRef.current = null;
     };
-  }, [theme, vimMode]);
+  }, [theme, vimMode, snippetCompletionSource]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -295,7 +315,7 @@ function wrapSelection(view: EditorView, before: string, after: string): void {
 
 function insertSymbolIntoView(view: EditorView, template: string): void {
   const selection = view.state.selection.main;
-  const insertion = isCursorInsideMathMode(view, selection.from)
+  const insertion = isPositionInsideMathMode(view.state, selection.from)
     ? template
     : `$${template}$`;
 
@@ -310,80 +330,6 @@ function insertSymbolIntoView(view: EditorView, template: string): void {
     selection.from,
     selection.to
   );
-}
-
-function toggleDelimitedSelection(view: EditorView, delimiter: string): void {
-  const selection = view.state.selection.main;
-  const selectedText = view.state.sliceDoc(selection.from, selection.to);
-  const hasSelection = selection.from !== selection.to;
-
-  if (hasSelection) {
-    const isWrapped =
-      selectedText.startsWith(delimiter) &&
-      selectedText.endsWith(delimiter) &&
-      selectedText.length >= delimiter.length * 2;
-
-    if (isWrapped) {
-      const start = selection.from;
-      const end = selection.to;
-      const innerLength = selectedText.length - delimiter.length * 2;
-
-      view.dispatch({
-        changes: [
-          {
-            from: start,
-            to: start + delimiter.length,
-            insert: ""
-          },
-          {
-            from: end - delimiter.length,
-            to: end,
-            insert: ""
-          }
-        ],
-        selection: EditorSelection.range(start, start + innerLength),
-        scrollIntoView: true
-      });
-      return;
-    }
-
-    replaceSelection(view, delimiter, delimiter);
-    return;
-  }
-
-  const beforeFrom = Math.max(0, selection.from - delimiter.length);
-  const afterTo = Math.min(view.state.doc.length, selection.to + delimiter.length);
-  const beforeText = view.state.sliceDoc(beforeFrom, selection.from);
-  const afterText = view.state.sliceDoc(selection.to, afterTo);
-
-  if (beforeText === delimiter && afterText === delimiter) {
-    view.dispatch({
-      changes: [
-        {
-          from: beforeFrom,
-          to: selection.from,
-          insert: ""
-        },
-        {
-          from: selection.to,
-          to: afterTo,
-          insert: ""
-        }
-      ],
-      selection: EditorSelection.cursor(beforeFrom),
-      scrollIntoView: true
-    });
-    return;
-  }
-
-  view.dispatch({
-    changes: {
-      from: selection.from,
-      insert: `${delimiter}${delimiter}`
-    },
-    selection: EditorSelection.cursor(selection.from + delimiter.length),
-    scrollIntoView: true
-  });
 }
 
 function toggleCurrentLines(view: EditorView, prefix: string, alternatePrefix?: string): void {
@@ -426,28 +372,6 @@ function toggleCurrentLines(view: EditorView, prefix: string, alternatePrefix?: 
     changes,
     scrollIntoView: true
   });
-}
-
-function isCursorInsideMathMode(view: EditorView, position: number): boolean {
-  const line = view.state.doc.lineAt(position);
-  const text = line.text.slice(0, position - line.from);
-  let isEscaped = false;
-  let delimiterCount = 0;
-
-  for (const character of text) {
-    if (character === "\\" && !isEscaped) {
-      isEscaped = true;
-      continue;
-    }
-
-    if (character === "$" && !isEscaped) {
-      delimiterCount += 1;
-    }
-
-    isEscaped = false;
-  }
-
-  return delimiterCount % 2 === 1;
 }
 
 function cycleCurrentLinesHeading(view: EditorView, maxLevel: number): void {
