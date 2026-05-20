@@ -14,14 +14,14 @@ function stripPreviewThemePrelude(source: string): string {
 export function createMockCompiler(): TypstCompiler {
   return {
     async compileDocument(source: string): Promise<CompileResult> {
-      if (source.includes("wrytr: error")) {
+      if (source.includes("typr: error")) {
         return {
           ok: false,
           engine: "mock",
           errors: [
             {
               message:
-                "Mock compiler error triggered by the marker `wrytr: error`.",
+                "Mock compiler error triggered by the marker `typr: error`.",
               severity: "error"
             }
           ]

@@ -29,8 +29,10 @@ import {
   type CompilerStatus,
   type CompileResult
 } from "../compiler/typstCompiler";
-import { TypstEditor } from "../editor/TypstEditor";
-import type { TypstEditorHandle } from "../editor/TypstEditor";
+import {
+  TypstEditor,
+  type TypstEditorHandle
+} from "../editor/TypstEditor";
 import {
   createEmptyGitHubRemoteConfig,
   hasRequiredConfig,
@@ -688,6 +690,16 @@ export function App() {
 
   const handleDocumentChange = useCallback((content: string) => {
     setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
+  }, []);
+
+  const handlePreviewSourceJump = useCallback((sourceLocation: string) => {
+    const sourceRange = parseSourceLocation(sourceLocation);
+
+    if (!sourceRange) {
+      return;
+    }
+
+    editorRef.current?.focusRange(sourceRange);
   }, []);
 
   const handleSelectDocument = (documentId: string) => {
@@ -2217,6 +2229,37 @@ function logCompileTiming({
     `[typr] compile ${ok ? "ok" : "error"} in ${durationMs.toFixed(1)}ms` +
       ` (${changed ? "updated preview" : "unchanged output"}, ${diagnosticsCount} diagnostics)`
   );
+}
+
+function parseSourceLocation(sourceLocation: string) {
+  const normalizedLocation = sourceLocation.trim();
+  const locationMatch = normalizedLocation.match(
+    /(\d+):(\d+)(?:-(\d+):(\d+))?$/
+  );
+
+  if (!locationMatch) {
+    return null;
+  }
+
+  const line = Number.parseInt(locationMatch[1], 10);
+  const column = Number.parseInt(locationMatch[2], 10);
+  const endLine = locationMatch[3]
+    ? Number.parseInt(locationMatch[3], 10)
+    : undefined;
+  const endColumn = locationMatch[4]
+    ? Number.parseInt(locationMatch[4], 10)
+    : undefined;
+
+  if (!Number.isFinite(line) || !Number.isFinite(column)) {
+    return null;
+  }
+
+  return {
+    line,
+    column,
+    endLine,
+    endColumn
+  };
 }
 
 function formatSourceError(result: Extract<CompileResult, { ok: false }>) {

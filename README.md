@@ -1,12 +1,12 @@
 # wrytr
 
-`wrytr` is a local-first, browser-based Typst editor for iPad and desktop built as a Progressive Web App. The initial version focuses on a clean editing experience, live preview plumbing, offline installability, and an architecture that is ready for real Typst WebAssembly compilation and future GitHub sync.
+`wrytr` is a local-first, browser-based Typst editor for iPad and desktop built as a Progressive Web App. The current version focuses on a clean editing experience, live preview, offline use after install, and a simple GitHub push flow that stays local-first.
 
 ## Goals
 
 - Run fully in the browser for the MVP.
 - Feel comfortable on iPad Safari and desktop browsers.
-- Keep documents local-first with IndexedDB autosave.
+- Keep documents local-first with IndexedDB autosave and offline reopen.
 - Support live preview, theme switching, and Vim-compatible editing.
 - Stay open-source friendly with small, readable modules.
 
@@ -17,7 +17,9 @@ This scaffold is intentionally conservative:
 - The editor, autosave, theme toggle, Vim toggle, and responsive layout are implemented.
 - The compiler layer is real code with a stable adapter interface.
 - The app now bundles the real `typst.ts` browser compiler and renderer WASM modules.
+- Core Typst font assets are cached for offline preview use inside the installed PWA.
 - A mock preview fallback still exists as a safety net if the WASM bootstrap fails in a target browser.
+- GitHub push is available from the app UI when the device is back online.
 - The exact integration points for `typst.ts` remain isolated in `src/compiler/typstCompiler.ts`.
 
 ## Tech Stack
@@ -124,9 +126,9 @@ The main-thread adapter now talks to a dedicated web worker, so Typst initializa
 
 `src/theme/ThemeProvider.tsx` owns the active theme and exposes it through React context. CSS variables in `src/styles/global.css` handle most of the visual system.
 
-### Future GitHub sync
+### GitHub sync
 
-`src/github/githubSync.ts` is a placeholder module for future push/pull operations. The first practical implementation can use the GitHub Contents API plus a personal access token before moving to OAuth or device flow.
+`src/github/githubSync.ts` currently implements a simple push flow against the GitHub Contents API. The owner, repo, branch, directory, and personal access token are stored locally on-device so the user can push the current project when connectivity returns.
 
 ## Compiler Notes
 
@@ -141,27 +143,26 @@ The compiler wrapper imports the peer-package `.wasm` assets directly, then pass
 The remaining compiler work is now narrower:
 
 1. Improve diagnostic mapping from raw thrown errors into line-aware editor diagnostics.
-2. Decide how bundled fonts should work for fully deterministic offline rendering.
-3. Decide how Typst package imports should be cached and synchronized for local-first projects.
-4. Explore incremental compile flows inside the warm worker to reduce repeat compile cost further.
+2. Decide how Typst package imports should be cached and synchronized for local-first projects.
+3. Explore incremental compile flows inside the warm worker to reduce repeat compile cost further.
+4. Replace token-based GitHub sync with a stronger auth flow and add pull/conflict handling.
 
 ## Known Issues
 
-### Chrome SVG Preview Pixelation
+### Offline font cache warmup
 
-The preview renders with visible pixelation and chunkiness in Chrome, while Firefox renders the same output cleanly. This appears to be a Chrome-specific SVG rendering limitation when scaling vector graphics. The Typst.ts compiler output is correct; the issue is how Chrome's rendering engine handles SVG scaling compared to Firefox. Workaround: use Firefox for sharper preview quality. This will be revisited when investigating performance optimizations or alternative rendering approaches.
+The first online launch should be allowed to finish its font warmup so the core Typst font assets are cached for later offline preview use. Saved documents themselves are already local in IndexedDB and remain available without a network connection.
 
 ## Roadmap
 
 ### Near term
 
-- Replace the mock compiler with fully bundled `typst.ts` WASM assets.
 - Add multi-document project navigation and export/import.
 - Add proper Typst syntax highlighting and richer diagnostics.
+- Add pull/conflict handling for GitHub sync.
 
 ### Mid term
 
-- GitHub backup and sync with conflict handling.
 - Font management for local/offline Typst rendering.
 - Shareable document bundles and installable templates.
 
