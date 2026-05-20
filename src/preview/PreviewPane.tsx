@@ -10,17 +10,19 @@ interface PreviewPaneProps {
   isCompiling: boolean;
   compilerStatus: CompilerStatus;
   onSourceJump?: (sourceLocation: string) => void;
+  zoom?: PreviewZoomState;
+  onZoomChange?: (zoom: PreviewZoomState) => void;
 }
 
-type PreviewZoomMode = "fit-width" | "fit-height" | "fit-page" | "percent";
+export type PreviewZoomMode = "fit-width" | "fit-height" | "fit-page" | "percent";
 
-interface PreviewZoomState {
+export interface PreviewZoomState {
   mode: PreviewZoomMode;
   percent: number;
 }
 
 const ZOOM_PERCENT_STEPS = [50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300];
-const DEFAULT_ZOOM: PreviewZoomState = {
+export const DEFAULT_ZOOM: PreviewZoomState = {
   mode: "fit-width",
   percent: 100
 };
@@ -31,10 +33,14 @@ export function PreviewPane({
   isErrorSettled,
   isCompiling,
   compilerStatus,
-  onSourceJump
+  onSourceJump,
+  zoom,
+  onZoomChange
 }: PreviewPaneProps) {
   const [showDebug, setShowDebug] = useState(false);
-  const [zoom, setZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
+  const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
+  const currentZoom = zoom ?? internalZoom;
+  const setZoom = onZoomChange ?? setInternalZoom;
 
   if (result === null) {
     return (
@@ -61,7 +67,7 @@ export function PreviewPane({
                 <div className="preview-engine">Engine: {fallbackResult.engine}</div>
                 <PreviewZoomControls
                   onZoomChange={setZoom}
-                  zoom={zoom}
+                  zoom={currentZoom}
                 />
               </div>
               <button
@@ -84,7 +90,7 @@ export function PreviewPane({
                 isFaulted={isErrorSettled}
                 markup={fallbackResult.output.content}
                 onSourceJump={onSourceJump}
-                zoom={zoom}
+                zoom={currentZoom}
               />
             )}
             {showDebug ? (
@@ -113,7 +119,7 @@ export function PreviewPane({
             <div className="preview-engine">Engine: {result.engine}</div>
             <PreviewZoomControls
               onZoomChange={setZoom}
-              zoom={zoom}
+              zoom={currentZoom}
             />
           </div>
           <button
@@ -132,7 +138,7 @@ export function PreviewPane({
             isCompiling={isCompiling}
             markup={result.output.content}
             onSourceJump={onSourceJump}
-            zoom={zoom}
+            zoom={currentZoom}
           />
         )}
         {showDebug ? (
@@ -430,7 +436,7 @@ function parseZoomSelection(value: string): PreviewZoomState {
   };
 }
 
-function nextZoomStep(
+export function nextZoomStep(
   zoom: PreviewZoomState,
   direction: -1 | 1
 ): PreviewZoomState {

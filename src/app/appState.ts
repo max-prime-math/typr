@@ -126,14 +126,7 @@ export function createDocument(
   name?: string
 ): AppSnapshot {
   const now = new Date().toISOString();
-  const existingNames = new Set(snapshot.project.documents.map((document) => document.name));
-  let nextIndex = snapshot.project.documents.length + 1;
-  let nextName = name?.trim() || `section-${nextIndex}.typ`;
-
-  while (existingNames.has(nextName)) {
-    nextIndex += 1;
-    nextName = `section-${nextIndex}.typ`;
-  }
+  const nextName = createUniqueDocumentName(snapshot.project.documents, name);
 
   const document: TypstDocumentFile = {
     id: createId("doc"),
@@ -151,6 +144,107 @@ export function createDocument(
       updatedAt: now
     }
   };
+}
+
+export function createDocumentFromFile(
+  snapshot: AppSnapshot,
+  name: string,
+  content: string
+): AppSnapshot {
+  const now = new Date().toISOString();
+  const document: TypstDocumentFile = {
+    id: createId("doc"),
+    name: createUniqueDocumentName(snapshot.project.documents, name),
+    content,
+    updatedAt: now
+  };
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      documents: [...snapshot.project.documents, document],
+      activeDocumentId: document.id,
+      updatedAt: now
+    }
+  };
+}
+
+export function renameProject(
+  snapshot: AppSnapshot,
+  name: string
+): AppSnapshot {
+  const nextName = name.trim();
+
+  if (!nextName || nextName === snapshot.project.name) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      name: nextName,
+      updatedAt: now
+    }
+  };
+}
+
+export function renameActiveDocument(
+  snapshot: AppSnapshot,
+  name: string
+): AppSnapshot {
+  const nextName = name.trim();
+  const activeDocument = getActiveDocument(snapshot.project);
+
+  if (!nextName || nextName === activeDocument.name) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const existingNames = new Set(
+    snapshot.project.documents
+      .filter((document) => document.id !== activeDocument.id)
+      .map((document) => document.name)
+  );
+  let finalName = nextName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName)) {
+    finalName = `${nextName}-${suffix}`;
+    suffix += 1;
+  }
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      updatedAt: now,
+      documents: snapshot.project.documents.map((document) =>
+        document.id === activeDocument.id
+          ? { ...document, name: finalName, updatedAt: now }
+          : document
+      )
+    }
+  };
+}
+
+function createUniqueDocumentName(
+  documents: TypstDocumentFile[],
+  requestedName?: string
+): string {
+  const existingNames = new Set(documents.map((document) => document.name));
+  let nextIndex = documents.length + 1;
+  let nextName = requestedName?.trim() || `section-${nextIndex}.typ`;
+
+  while (existingNames.has(nextName)) {
+    nextIndex += 1;
+    nextName = `section-${nextIndex}.typ`;
+  }
+
+  return nextName;
 }
 
 export function updateThemePreference(

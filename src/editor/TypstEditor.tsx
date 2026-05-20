@@ -1,4 +1,7 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { undo, redo } from "@codemirror/commands";
+import { openSearchPanel, gotoLine } from "@codemirror/search";
+import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import type { CompileDiagnostic } from "../compiler/types";
@@ -14,14 +17,25 @@ interface TypstEditorProps {
   onChange: (value: string) => void;
 }
 
-export function TypstEditor({
+export interface TypstEditorHandle {
+  undo: () => void;
+  redo: () => void;
+  search: () => void;
+  goToLine: () => void;
+  selectAll: () => void;
+}
+
+export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor(
+{
   value,
   vimMode,
   theme,
   diagnostics,
   highlightErrors,
   onChange
-}: TypstEditorProps) {
+},
+ref
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latestOnChangeRef = useRef(onChange);
@@ -90,5 +104,51 @@ export function TypstEditor({
     });
   }, [diagnostics, highlightErrors]);
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      undo() {
+        const view = viewRef.current;
+        if (view) {
+          undo(view);
+          view.focus();
+        }
+      },
+      redo() {
+        const view = viewRef.current;
+        if (view) {
+          redo(view);
+          view.focus();
+        }
+      },
+      search() {
+        const view = viewRef.current;
+        if (view) {
+          openSearchPanel(view);
+          view.focus();
+        }
+      },
+      goToLine() {
+        const view = viewRef.current;
+        if (view) {
+          gotoLine(view);
+          view.focus();
+        }
+      },
+      selectAll() {
+        const view = viewRef.current;
+        if (view) {
+          const doc = view.state.doc;
+          view.dispatch({
+            selection: EditorSelection.single(0, doc.length),
+            scrollIntoView: true
+          });
+          view.focus();
+        }
+      }
+    }),
+    []
+  );
+
   return <div className="editor-root" ref={containerRef} />;
-}
+});

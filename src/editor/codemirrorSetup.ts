@@ -60,7 +60,8 @@ function createEditorTheme(theme: ThemeDefinition): Extension {
         outline: "none"
       },
       ".cm-cursor": {
-        borderLeftColor: "var(--accent)"
+        borderLeftColor: "var(--accent)",
+        borderLeftWidth: "var(--editor-cursor-width)"
       }
     },
     { dark }

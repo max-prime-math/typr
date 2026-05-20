@@ -13,7 +13,10 @@ import {
 import {
   createDefaultSnapshot,
   createDocument,
+  createDocumentFromFile,
   getActiveDocument,
+  renameActiveDocument,
+  renameProject,
   setActiveDocument,
   updateActiveDocument,
   updateThemePreference,
@@ -27,6 +30,7 @@ import {
   type CompileResult
 } from "../compiler/typstCompiler";
 import { TypstEditor } from "../editor/TypstEditor";
+import type { TypstEditorHandle } from "../editor/TypstEditor";
 import {
   createEmptyGitHubRemoteConfig,
   hasRequiredConfig,
@@ -35,6 +39,12 @@ import {
 } from "../github/githubSync";
 import { PreviewPane } from "../preview/PreviewPane";
 import { AUTO_THEME_ID, THEME_IMPORT_TEMPLATE } from "../theme/themes";
+import {
+  DEFAULT_ZOOM,
+  nextZoomStep,
+  type PreviewZoomState
+} from "../preview/PreviewPane";
+import packageJson from "../../package.json";
 import {
   loadGitHubConfig,
   loadSnapshot,
@@ -48,19 +58,40 @@ const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
 const PANEL_LAYOUT_STORAGE_KEY = "typr.panel-layout";
+const PANEL_LAYOUT_VERSION = 5;
+const MOBILE_WORKSPACE_THRESHOLD = 1080;
 const SIDEBAR_DEFAULT_WIDTH = 300;
-const PREVIEW_DEFAULT_WIDTH = 420;
 const SIDEBAR_MIN_WIDTH = 240;
 const SIDEBAR_MAX_WIDTH = 460;
 const PREVIEW_MIN_WIDTH = 320;
 const PANEL_COLLAPSED_WIDTH = 56;
-const PANEL_HANDLE_WIDTH = 12;
+const PANEL_HANDLE_WIDTH = 8;
 const EDITOR_MIN_WIDTH = 420;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
+const APP_VERSION = packageJson.version;
+const CURSOR_SIZE_STORAGE_KEY = "typr.cursor-size";
+const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 
-const MENU_ITEMS = ["Typr", "File", "View", "Help"] as const;
+type CursorSize = "small" | "medium" | "large";
+
+const CURSOR_SIZE_VALUES: Record<CursorSize, string> = {
+  small: "1px",
+  medium: "2px",
+  large: "3px"
+};
+
+const CURSOR_SIZE_LABELS: Record<CursorSize, string> = {
+  small: "Small",
+  medium: "Medium",
+  large: "Large"
+};
+
+const CURSOR_SIZE_ORDER: CursorSize[] = ["small", "medium", "large"];
+
+const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
+type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SettingsTab = "github" | "themes";
 
 interface SyncFeedback {
@@ -68,8 +99,56 @@ interface SyncFeedback {
   text: string;
 }
 
+interface StoredPanelLayout {
+  version?: number;
+  isSidebarCollapsed?: boolean;
+  isPreviewCollapsed?: boolean;
+  sidebarWidth?: number;
+  previewRatio?: number;
+}
+
 function clampPanelWidth(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function readStoredPanelLayout(): StoredPanelLayout | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+
+    return JSON.parse(stored) as StoredPanelLayout;
+  } catch {
+    return null;
+  }
+}
+
+function clampPreviewRatio(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function getViewportBalancedPreviewRatio() {
+  return 0.5;
+}
+
+function getPreviewPaneWidth(
+  workspaceWidth: number,
+  sidebarWidth: number,
+  previewRatio: number
+) {
+  const availableWidth = Math.max(0, workspaceWidth - sidebarWidth - PANEL_HANDLE_WIDTH * 2);
+  const idealWidth = Math.round(availableWidth * previewRatio);
+
+  return clampPanelWidth(idealWidth, PREVIEW_MIN_WIDTH, availableWidth);
+}
+
+function isMobileWorkspaceViewport(width: number) {
+  return width > 0 && width <= MOBILE_WORKSPACE_THRESHOLD;
 }
 
 function isPrimaryShortcut(event: KeyboardEvent) {
@@ -90,9 +169,12 @@ function isTypingTarget(target: EventTarget | null) {
 }
 
 export function App() {
+  const [storedPanelLayout] = useState(readStoredPanelLayout);
   const menuStripRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const editorRef = useRef<TypstEditorHandle | null>(null);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
+  const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
   const compileTimerRef = useRef<number | null>(null);
@@ -113,11 +195,36 @@ export function App() {
     tone: "neutral",
     text: ""
   });
+  const [cursorSize, setCursorSize] = useState<CursorSize>("medium");
+  const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [isPreviewCollapsed, setIsPreviewCollapsed] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
-  const [previewWidth, setPreviewWidth] = useState(PREVIEW_DEFAULT_WIDTH);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isSidebarCollapsed
+      ? storedPanelLayout.isSidebarCollapsed
+      : false
+  );
+  const [isPreviewCollapsed, setIsPreviewCollapsed] = useState(
+    () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isPreviewCollapsed
+      ? storedPanelLayout.isPreviewCollapsed
+      : false
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      typeof storedPanelLayout.sidebarWidth === "number"
+        ? clampPanelWidth(storedPanelLayout.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+        : SIDEBAR_DEFAULT_WIDTH
+  );
+  const [previewRatio, setPreviewRatio] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      typeof storedPanelLayout.previewRatio === "number"
+        ? clampPreviewRatio(storedPanelLayout.previewRatio)
+        : getViewportBalancedPreviewRatio()
+  );
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>("editor");
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
     phase: "idle",
     mode: "worker",
@@ -203,6 +310,29 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const workspace = workspaceRef.current;
+    if (!workspace || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const updateWorkspaceWidth = () => {
+      const nextWidth = workspace.getBoundingClientRect().width;
+      setWorkspaceWidth(nextWidth);
+    };
+
+    updateWorkspaceWidth();
+
+    const observer = new ResizeObserver(updateWorkspaceWidth);
+    observer.observe(workspace);
+
+    return () => observer.disconnect();
+  }, []);
+
   const cancelPendingMenuClose = useCallback(() => {
     if (closeMenuTimerRef.current !== null) {
       window.clearTimeout(closeMenuTimerRef.current);
@@ -249,38 +379,38 @@ export function App() {
       return;
     }
 
-    try {
-      const stored = window.localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
-      if (!stored) {
-        return;
-      }
-
-      const layout = JSON.parse(stored) as {
-        isSidebarCollapsed?: boolean;
-        isPreviewCollapsed?: boolean;
-        sidebarWidth?: number;
-        previewWidth?: number;
-      };
-
-      if (typeof layout.isSidebarCollapsed === "boolean") {
-        setIsSidebarCollapsed(layout.isSidebarCollapsed);
-      }
-
-      if (typeof layout.isPreviewCollapsed === "boolean") {
-        setIsPreviewCollapsed(layout.isPreviewCollapsed);
-      }
-
-      if (typeof layout.sidebarWidth === "number") {
-        setSidebarWidth(clampPanelWidth(layout.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH));
-      }
-
-      if (typeof layout.previewWidth === "number") {
-        setPreviewWidth(Math.max(PREVIEW_MIN_WIDTH, layout.previewWidth));
-      }
-    } catch {
-      // Ignore malformed stored panel layout data.
+    const storedCursorSize = window.localStorage.getItem(CURSOR_SIZE_STORAGE_KEY);
+    if (
+      storedCursorSize === "small" ||
+      storedCursorSize === "medium" ||
+      storedCursorSize === "large"
+    ) {
+      setCursorSize(storedCursorSize);
     }
+
+    const storedPopup = window.localStorage.getItem(PREVIEW_POPUP_STORAGE_KEY);
+    setIsPreviewPopupOpen(storedPopup === "true");
   }, []);
+
+  useEffect(() => {
+    if (!isMobileWorkspaceViewport(workspaceWidth)) {
+      return;
+    }
+
+    if (workspaceMode === "sidebar") {
+      setMobileWorkspaceTab("files");
+      return;
+    }
+
+    if (workspaceMode === "preview") {
+      setMobileWorkspaceTab("preview");
+      return;
+    }
+
+    if (workspaceMode === "editor") {
+      setMobileWorkspaceTab("editor");
+    }
+  }, [workspaceMode, workspaceWidth]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -290,13 +420,14 @@ export function App() {
     window.localStorage.setItem(
       PANEL_LAYOUT_STORAGE_KEY,
       JSON.stringify({
+        version: PANEL_LAYOUT_VERSION,
         isSidebarCollapsed,
         isPreviewCollapsed,
         sidebarWidth,
-        previewWidth
+        previewRatio
       })
     );
-  }, [isPreviewCollapsed, isSidebarCollapsed, previewWidth, sidebarWidth]);
+  }, [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -421,6 +552,23 @@ export function App() {
 
     return () => window.clearTimeout(handle);
   }, [githubConfig, isHydrated]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(CURSOR_SIZE_STORAGE_KEY, cursorSize);
+    document.documentElement.style.setProperty("--editor-cursor-width", CURSOR_SIZE_VALUES[cursorSize]);
+  }, [cursorSize]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(PREVIEW_POPUP_STORAGE_KEY, String(isPreviewPopupOpen));
+  }, [isPreviewPopupOpen]);
 
   const runCompile = useCallback(async () => {
     if (compileInFlightRef.current || !isHydrated) {
@@ -614,6 +762,114 @@ export function App() {
     }, 0);
   };
 
+  const downloadFile = (name: string, content: string, type = "text/plain") => {
+    const blob = new Blob([content], { type });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+  const handleRenameProject = () => {
+    const nextName = window.prompt("Project name", snapshot.project.name);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameProject(currentSnapshot, nextName));
+  };
+
+  const handleRenameDocument = () => {
+    const nextName = window.prompt("File name", activeDocument.name);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameActiveDocument(currentSnapshot, nextName));
+  };
+
+  const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    const content = await file.text();
+    setSnapshot((currentSnapshot) =>
+      createDocumentFromFile(currentSnapshot, file.name, content)
+    );
+  };
+
+  const handleDownloadDocument = () => {
+    downloadFile(activeDocument.name, activeDocument.content, "text/plain");
+  };
+
+  const handleDownloadProject = () => {
+    downloadFile(
+      `${snapshot.project.name}.json`,
+      JSON.stringify(snapshot, null, 2),
+      "application/json"
+    );
+  };
+
+  const handleExportPdf = () => {
+    window.print();
+  };
+
+  const handleUndo = () => editorRef.current?.undo();
+  const handleRedo = () => editorRef.current?.redo();
+  const handleSearch = () => editorRef.current?.search();
+  const handleGoToLine = () => editorRef.current?.goToLine();
+  const handleSelectAll = () => editorRef.current?.selectAll();
+
+  const cycleCursorSize = () => {
+    setCursorSize((current) => {
+      const nextIndex = (CURSOR_SIZE_ORDER.indexOf(current) + 1) % CURSOR_SIZE_ORDER.length;
+      return CURSOR_SIZE_ORDER[nextIndex] ?? "medium";
+    });
+  };
+
+  const togglePreviewPopup = () => {
+    setIsPreviewPopupOpen((current) => !current);
+  };
+
+  const setPreviewZoomStep = (direction: -1 | 1) => {
+    setPreviewZoom((current) => nextZoomStep(current, direction));
+  };
+
+  const handleShowVersion = () => {
+    window.alert(`Typr version ${APP_VERSION}`);
+  };
+
+  const handleShowAbout = () => {
+    window.alert(
+      "Typr is a local-first Typst editor for writing, previewing, and syncing projects."
+    );
+  };
+
+  const handleShowTutorial = () => {
+    window.alert(
+      "Tutorial: open Files to switch documents, type in Source, use View for layout controls, and use GitHub settings when you want to sync."
+    );
+  };
+
+  const handleOpenTypstReference = () => {
+    window.open("https://typst.app/docs/", "_blank", "noopener,noreferrer");
+  };
+
+  const handleOpenGitHubHelp = () => {
+    setSettingsTab("github");
+    setIsSettingsOpen(true);
+  };
+
   const handleRemoveCustomTheme = (themeId: string) => {
     removeCustomTheme(themeId);
 
@@ -728,7 +984,7 @@ export function App() {
 
   function resetPanelWidths() {
     setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
-    setPreviewWidth(PREVIEW_DEFAULT_WIDTH);
+    setPreviewRatio(0.5);
   }
 
   function setFullscreenMode(mode: WorkspaceMode) {
@@ -766,18 +1022,28 @@ export function App() {
         return;
       }
 
-      if (typeof window !== "undefined" && window.matchMedia("(max-width: 1080px)").matches) {
-        return;
-      }
-
       const workspace = workspaceRef.current;
       if (!workspace) {
         return;
       }
 
+      if (isMobileWorkspaceViewport(workspace.getBoundingClientRect().width)) {
+        return;
+      }
+
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 1080px)").matches) {
+        return;
+      }
+
       event.preventDefault();
 
-      const startWidth = edge === "sidebar" ? sidebarWidth : previewWidth;
+      const workspaceWidth = workspace.getBoundingClientRect().width;
+      const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
+      const remainingWidth = Math.max(0, workspaceWidth - sidebarPaneWidth - PANEL_HANDLE_WIDTH * 2);
+      const startWidth =
+        edge === "sidebar"
+          ? sidebarWidth
+          : getPreviewPaneWidth(workspaceWidth, sidebarPaneWidth, previewRatio);
       panelResizeRef.current = {
         edge,
         startX: event.clientX,
@@ -791,30 +1057,32 @@ export function App() {
         }
 
         const delta = moveEvent.clientX - resizeState.startX;
-        const workspaceWidth = workspace.getBoundingClientRect().width;
         const nextWidth =
           edge === "sidebar"
             ? resizeState.startWidth + delta
             : resizeState.startWidth - delta;
-        const previewPaneWidth = isPreviewCollapsed ? PANEL_COLLAPSED_WIDTH : previewWidth;
-        const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
-        const totalHandleWidth = PANEL_HANDLE_WIDTH * 2;
-        const otherPaneWidth = edge === "sidebar" ? previewPaneWidth : sidebarPaneWidth;
-        const remainingWidth = workspaceWidth - totalHandleWidth - EDITOR_MIN_WIDTH - otherPaneWidth;
-        const minWidth = edge === "sidebar" ? SIDEBAR_MIN_WIDTH : PREVIEW_MIN_WIDTH;
-        const maxWidth =
-          edge === "sidebar"
-            ? Math.min(SIDEBAR_MAX_WIDTH, remainingWidth)
-            : remainingWidth;
-        const clampedWidth = clampPanelWidth(nextWidth, minWidth, Math.max(minWidth, maxWidth));
 
         if (edge === "sidebar") {
+          const maxWidth = Math.max(
+            SIDEBAR_MIN_WIDTH,
+            workspaceWidth - PANEL_HANDLE_WIDTH * 2 - PREVIEW_MIN_WIDTH
+          );
+          const clampedWidth = clampPanelWidth(
+            nextWidth,
+            SIDEBAR_MIN_WIDTH,
+            Math.min(SIDEBAR_MAX_WIDTH, maxWidth)
+          );
           setSidebarWidth(clampedWidth);
           if (isSidebarCollapsed) {
             setIsSidebarCollapsed(false);
           }
         } else {
-          setPreviewWidth(clampedWidth);
+          const clampedWidth = clampPanelWidth(
+            nextWidth,
+            PREVIEW_MIN_WIDTH,
+            Math.max(PREVIEW_MIN_WIDTH, remainingWidth)
+          );
+          setPreviewRatio(remainingWidth > 0 ? clampPreviewRatio(clampedWidth / remainingWidth) : previewRatio);
           if (isPreviewCollapsed) {
             setIsPreviewCollapsed(false);
           }
@@ -838,7 +1106,7 @@ export function App() {
       window.addEventListener("pointerup", stopResize);
       window.addEventListener("pointercancel", stopResize);
     },
-    [isPreviewCollapsed, isSidebarCollapsed, previewWidth, sidebarWidth, workspaceMode]
+    [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth, workspaceMode]
   );
 
   const canPushToGitHub = isOnline && hasRequiredConfig(githubConfig) && !isSyncing;
@@ -861,15 +1129,50 @@ export function App() {
   const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
   const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
   const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
-  const previewPaneWidth = isPreviewCollapsed ? PANEL_COLLAPSED_WIDTH : previewWidth;
-  const workspaceGridStyle =
-    workspaceMode === "split"
+  const effectiveWorkspaceWidth =
+    workspaceWidth > 0 ? workspaceWidth : typeof window !== "undefined" ? window.innerWidth : 0;
+  const isMobileWorkspace =
+    effectiveWorkspaceWidth > 0 && effectiveWorkspaceWidth <= MOBILE_WORKSPACE_THRESHOLD;
+  const previewPaneWidth = isPreviewCollapsed
+    ? PANEL_COLLAPSED_WIDTH
+    : getPreviewPaneWidth(effectiveWorkspaceWidth, sidebarPaneWidth, previewRatio);
+  const sourcePaneWidth =
+    workspaceMode === "split" && effectiveWorkspaceWidth > 0
+      ? Math.max(
+          0,
+          effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - PANEL_HANDLE_WIDTH * 2
+        )
+      : 0;
+  const workspaceGridStyle: CSSProperties =
+    isMobileWorkspace
       ? {
-          gridTemplateColumns: `${sidebarPaneWidth}px ${PANEL_HANDLE_WIDTH}px minmax(0, 1fr) ${PANEL_HANDLE_WIDTH}px ${previewPaneWidth}px`
+          display: "flex",
+          flexDirection: "column"
+        }
+      : workspaceMode === "split"
+      ? {
+          gridTemplateColumns: `${sidebarPaneWidth}px ${PANEL_HANDLE_WIDTH}px ${sourcePaneWidth}px ${PANEL_HANDLE_WIDTH}px ${previewPaneWidth}px`
         }
       : {
           gridTemplateColumns: "minmax(0, 1fr)"
         };
+  const sidebarVisibilityClass = isMobileWorkspace
+    ? mobileWorkspaceTab === "files"
+      ? "pane--mobile-active"
+      : "pane--mobile-hidden"
+    : "";
+  const editorVisibilityClass = isMobileWorkspace
+    ? mobileWorkspaceTab === "editor"
+      ? "pane--mobile-active"
+      : "pane--mobile-hidden"
+    : "";
+  const previewVisibilityClass = isMobileWorkspace
+    ? mobileWorkspaceTab === "preview"
+      ? "pane--mobile-active"
+      : "pane--mobile-hidden"
+    : "";
+  const sidebarPaneCollapsed = isSidebarCollapsed && !isMobileWorkspace;
+  const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace;
 
   return (
     <div className="app-shell">
@@ -901,8 +1204,12 @@ export function App() {
             >
               Settings
             </button>
-            <div className="menu-note">Local-first Typst editor for offline writing.</div>
-            <div className="menu-note">{storageLabel}</div>
+            <button className="menu-action" onClick={handleShowVersion} type="button">
+              Version {APP_VERSION}
+            </button>
+            <button className="menu-action" onClick={handleShowAbout} type="button">
+              About
+            </button>
           </MenuDropdown>
 
           <MenuDropdown
@@ -915,23 +1222,86 @@ export function App() {
             onOpenImmediately={() => openMenuImmediately("File")}
           >
             <button className="menu-action" onClick={handleNewDocument} type="button">
-              New file
+              New
             </button>
             <button
               className="menu-action"
-              disabled={!canPushToGitHub}
               onClick={() => {
-                void handlePushToGitHub();
+                handleRenameDocument();
                 setActiveMenu(null);
               }}
               type="button"
             >
-              {isSyncing ? "Pushing..." : "Push project"}
+              Rename file
             </button>
-            <div className="menu-note">
-              {snapshot.project.documents.length} file
-              {snapshot.project.documents.length === 1 ? "" : "s"} in this project
-            </div>
+            <button
+              className="menu-action"
+              onClick={() => {
+                handleRenameProject();
+                setActiveMenu(null);
+              }}
+              type="button"
+            >
+              Rename project
+            </button>
+            <button
+              className="menu-action"
+              onClick={() => documentUploadInputRef.current?.click()}
+              type="button"
+            >
+              Upload .typ
+            </button>
+            <button className="menu-action" onClick={handleDownloadDocument} type="button">
+              Download .typ
+            </button>
+            <button className="menu-action" onClick={handleDownloadProject} type="button">
+              Download project
+            </button>
+            <button className="menu-action" onClick={handleExportPdf} type="button">
+              Export PDF
+            </button>
+          </MenuDropdown>
+
+          <MenuDropdown
+            activeMenu={activeMenu}
+            onCloseImmediately={closeMenusImmediately}
+            label="Edit"
+            onClose={closeMenusWithDelay}
+            onNavigate={handleMenuNavigate}
+            onOpen={() => openMenuWithDelay("Edit")}
+            onOpenImmediately={() => openMenuImmediately("Edit")}
+          >
+            <button
+              className="menu-action"
+              onClick={handleUndo}
+              type="button"
+            >
+              Undo
+            </button>
+            <button
+              className="menu-action"
+              onClick={handleRedo}
+              type="button"
+            >
+              Redo
+            </button>
+            <button
+              className="menu-action"
+              onClick={handleSearch}
+              type="button"
+            >
+              Search
+            </button>
+            <button
+              className="menu-action"
+              onClick={handleGoToLine}
+              type="button"
+            >
+              Go to line
+            </button>
+            <button className="menu-action" onClick={handleSelectAll} type="button">
+              Select all
+            </button>
           </MenuDropdown>
 
           <MenuDropdown
@@ -943,59 +1313,30 @@ export function App() {
             onOpen={() => openMenuWithDelay("View")}
             onOpenImmediately={() => openMenuImmediately("View")}
           >
-            <button
-              className="menu-action"
-              onClick={() => setFullscreenMode("split")}
-              type="button"
-            >
-              {workspaceMode === "split" ? "✓ " : ""}Show all panes
-            </button>
-            <button
-              className="menu-action"
-              onClick={() => setFullscreenMode("sidebar")}
-              type="button"
-            >
-              {workspaceMode === "sidebar" ? "✓ " : ""}Only show files
-            </button>
-            <button
-              className="menu-action"
-              onClick={() => setFullscreenMode("editor")}
-              type="button"
-            >
-              {workspaceMode === "editor" ? "✓ " : ""}Only show editor
-            </button>
-            <button
-              className="menu-action"
-              onClick={() => setFullscreenMode("preview")}
-              type="button"
-            >
-              {workspaceMode === "preview" ? "✓ " : ""}Only show preview
-            </button>
-            <button className="menu-action" onClick={handleVimToggle} type="button">
-              Vim mode: {snapshot.preferences.vimMode ? "On" : "Off"}
-            </button>
-            <button
-              className="menu-action"
-              onClick={() => {
-                setSettingsTab("themes");
-                setIsSettingsOpen(true);
-                setActiveMenu(null);
-              }}
-              type="button"
-            >
-              Theme: {snapshot.preferences.theme === AUTO_THEME_ID ? `Auto · ${theme.name}` : theme.name}
-            </button>
             <button className="menu-action" onClick={() => handlePanelToggle("sidebar")} type="button">
-              Sidebar: {isSidebarCollapsed ? "Show" : "Hide"}
+              Files
             </button>
-            <button className="menu-action" onClick={() => handlePanelToggle("preview")} type="button">
-              Preview: {isPreviewCollapsed ? "Show" : "Hide"}
+            <button className="menu-action" onClick={() => setFullscreenMode("editor")} type="button">
+              Editor
             </button>
-            <button className="menu-action" onClick={resetPanelWidths} type="button">
-              Reset panel widths
+            <button className="menu-action" onClick={() => setFullscreenMode("preview")} type="button">
+              Preview
             </button>
-            <div className="menu-note">Current view: {workspaceModeLabel}</div>
-            <div className="menu-note">Shortcuts: Cmd/Ctrl+Alt+1 files, 2 editor, 3 preview, 4 split, B sidebar, P preview, 0 reset</div>
+            <button className="menu-action" onClick={handleSearch} type="button">
+              Search
+            </button>
+            <button className="menu-action" onClick={cycleCursorSize} type="button">
+              Cursor size: {CURSOR_SIZE_LABELS[cursorSize]}
+            </button>
+            <button className="menu-action" onClick={togglePreviewPopup} type="button">
+              {isPreviewPopupOpen ? "Hide preview in popup" : "Show preview in popup"}
+            </button>
+            <button className="menu-action" onClick={() => setPreviewZoomStep(-1)} type="button">
+              Zoom out
+            </button>
+            <button className="menu-action" onClick={() => setPreviewZoomStep(1)} type="button">
+              Zoom in
+            </button>
           </MenuDropdown>
 
           <MenuDropdown
@@ -1007,9 +1348,15 @@ export function App() {
             onOpen={() => openMenuWithDelay("Help")}
             onOpenImmediately={() => openMenuImmediately("Help")}
           >
-            <div className="menu-note">Offline preview works after the installed app caches its fonts once online.</div>
-            <div className="menu-note">Use GitHub sync when the device comes back online.</div>
-            <div className="menu-note">Active file: {activeDocument.name}</div>
+            <button className="menu-action" onClick={handleShowTutorial} type="button">
+              Tutorial
+            </button>
+            <button className="menu-action" onClick={handleOpenTypstReference} type="button">
+              Reference (typst)
+            </button>
+            <button className="menu-action" onClick={handleOpenGitHubHelp} type="button">
+              How to connect to Github
+            </button>
           </MenuDropdown>
         </nav>
 
@@ -1026,15 +1373,57 @@ export function App() {
       </header>
 
       <main
-        className={`workspace workspace--triple workspace--${workspaceMode}`}
+        className={`workspace workspace--triple workspace--${workspaceMode} ${
+          isMobileWorkspace ? "workspace--mobile" : ""
+        }`}
         ref={workspaceRef}
         style={workspaceGridStyle}
       >
+        {isMobileWorkspace ? (
+          <div className="workspace-mobile-switcher" role="tablist" aria-label="Workspace panes">
+            <button
+              aria-selected={mobileWorkspaceTab === "files"}
+              className={`workspace-mobile-tab ${
+                mobileWorkspaceTab === "files" ? "workspace-mobile-tab--active" : ""
+              }`}
+              onClick={() => setMobileWorkspaceTab("files")}
+              role="tab"
+              type="button"
+            >
+              Files
+            </button>
+            <button
+              aria-selected={mobileWorkspaceTab === "editor"}
+              className={`workspace-mobile-tab ${
+                mobileWorkspaceTab === "editor" ? "workspace-mobile-tab--active" : ""
+              }`}
+              onClick={() => setMobileWorkspaceTab("editor")}
+              role="tab"
+              type="button"
+            >
+              Source
+            </button>
+            <button
+              aria-selected={mobileWorkspaceTab === "preview"}
+              className={`workspace-mobile-tab ${
+                mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
+              }`}
+              onClick={() => setMobileWorkspaceTab("preview")}
+              role="tab"
+              type="button"
+            >
+              Preview
+            </button>
+          </div>
+        ) : null}
+
         <aside
-          className={`pane pane--sidebar ${isSidebarCollapsed ? "pane--collapsed" : ""}`}
+          className={`pane pane--sidebar ${
+            sidebarPaneCollapsed ? "pane--collapsed" : ""
+          } ${sidebarVisibilityClass}`}
           aria-label="Files and sync"
         >
-          {isSidebarCollapsed ? (
+          {sidebarPaneCollapsed ? (
             <button
               className="pane__collapsed-toggle"
               onClick={() => handlePanelToggle("sidebar")}
@@ -1119,14 +1508,19 @@ export function App() {
           )}
         </aside>
 
-        <button
-          aria-label="Resize sidebar"
-          className="workspace-handle workspace-handle--left"
-          onPointerDown={beginPanelResize("sidebar")}
-          type="button"
-        />
+        {isMobileWorkspace ? null : (
+          <button
+            aria-label="Resize sidebar"
+            className="workspace-handle workspace-handle--left"
+            onPointerDown={beginPanelResize("sidebar")}
+            type="button"
+          />
+        )}
 
-        <section className="pane pane--editor" aria-label="Typst source editor">
+        <section
+          className={`pane pane--editor ${editorVisibilityClass}`}
+          aria-label="Typst source editor"
+        >
           <div className="pane__header">
             <div className="pane__header-group">
               <h2>Source</h2>
@@ -1144,6 +1538,7 @@ export function App() {
             </div>
           </div>
           <TypstEditor
+            ref={editorRef}
             diagnostics={editorDiagnostics}
             highlightErrors={isErrorSettled}
             value={activeDocument.content}
@@ -1158,18 +1553,22 @@ export function App() {
           ) : null}
         </section>
 
-        <button
-          aria-label="Resize preview"
-          className="workspace-handle workspace-handle--right"
-          onPointerDown={beginPanelResize("preview")}
-          type="button"
-        />
+        {isMobileWorkspace ? null : (
+          <button
+            aria-label="Resize preview"
+            className="workspace-handle workspace-handle--right"
+            onPointerDown={beginPanelResize("preview")}
+            type="button"
+          />
+        )}
 
         <section
-          className={`pane pane--preview ${isPreviewCollapsed ? "pane--collapsed" : ""}`}
+          className={`pane pane--preview ${
+            previewPaneCollapsed ? "pane--collapsed" : ""
+          } ${previewVisibilityClass}`}
           aria-label="Typst preview"
         >
-          {isPreviewCollapsed ? (
+          {previewPaneCollapsed ? (
             <button
               className="pane__collapsed-toggle"
               onClick={() => handlePanelToggle("preview")}
@@ -1202,12 +1601,51 @@ export function App() {
                 isErrorSettled={isErrorSettled}
                 isCompiling={isCompiling}
                 lastSuccessfulResult={lastSuccessfulResult}
+                onZoomChange={setPreviewZoom}
                 result={compileResult}
+                zoom={previewZoom}
               />
             </>
           )}
         </section>
       </main>
+
+      {isPreviewPopupOpen ? (
+        <div
+          className="sheet-backdrop preview-popup-backdrop"
+          onClick={() => setIsPreviewPopupOpen(false)}
+          role="presentation"
+        >
+          <section
+            aria-label="Preview popup"
+            className="preview-popup"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="preview-popup__header">
+              <div>
+                <h2>Preview</h2>
+                <p className="settings-sheet__copy">Floating preview window.</p>
+              </div>
+              <button
+                className="pane__button"
+                onClick={() => setIsPreviewPopupOpen(false)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+            <PreviewPane
+              compilerStatus={compilerStatus}
+              isErrorSettled={isErrorSettled}
+              isCompiling={isCompiling}
+              lastSuccessfulResult={lastSuccessfulResult}
+              onZoomChange={setPreviewZoom}
+              result={compileResult}
+              zoom={previewZoom}
+            />
+          </section>
+        </div>
+      ) : null}
 
       {isSettingsOpen ? (
         <div
@@ -1489,6 +1927,14 @@ export function App() {
           </section>
         </div>
       ) : null}
+      <input
+        ref={documentUploadInputRef}
+        accept=".typ,text/plain"
+        className="visually-hidden"
+        onChange={handleUploadDocument}
+        tabIndex={-1}
+        type="file"
+      />
       <input
         ref={themeImportInputRef}
         accept=".json,application/json"
