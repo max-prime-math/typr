@@ -12,7 +12,10 @@ export default defineConfig(({ command }) => {
       VitePWA({
         registerType: "autoUpdate",
         injectRegister: false,
-        includeAssets: ["icons/icon-192.svg", "icons/icon-512.svg"]
+        includeAssets: ["icons/icon-192.svg", "icons/icon-512.svg"],
+        workbox: {
+          maximumFileSizeToCacheInBytes: 30 * 1024 * 1024
+        }
       })
     ],
     worker: {
