@@ -73,6 +73,31 @@ const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const APP_VERSION = packageJson.version;
 const CURSOR_SIZE_STORAGE_KEY = "typr.cursor-size";
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
+const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
+
+interface SourceSymbolItem {
+  label: string;
+  snippet: string;
+  glyph: string;
+}
+
+const SOURCE_SYMBOL_ITEMS: SourceSymbolItem[] = [
+  { label: "Arrow right", glyph: "→", snippet: "#sym.arrow.r" },
+  { label: "Arrow left", glyph: "←", snippet: "#sym.arrow.l" },
+  { label: "Arrow both", glyph: "↔", snippet: "#sym.arrow.l.r" },
+  { label: "Double arrow", glyph: "⇒", snippet: "#sym.arrow.r.double" },
+  { label: "Check", glyph: "✓", snippet: "#sym.ballot.check" },
+  { label: "Cross", glyph: "✕", snippet: "#sym.ballot.cross" },
+  { label: "Alpha", glyph: "α", snippet: "#sym.alpha" },
+  { label: "Beta", glyph: "β", snippet: "#sym.beta" },
+  { label: "Gamma", glyph: "γ", snippet: "#sym.gamma" },
+  { label: "Pi", glyph: "π", snippet: "#sym.pi" },
+  { label: "Infinity", glyph: "∞", snippet: "#sym.infinity" },
+  { label: "Plus-minus", glyph: "±", snippet: "#sym.plus.minus" },
+  { label: "Star", glyph: "★", snippet: "#sym.star.filled" },
+  { label: "Subset", glyph: "⊂", snippet: "#sym.subset" },
+  { label: "Superset", glyph: "⊃", snippet: "#sym.supset" }
+];
 
 type CursorSize = "small" | "medium" | "large";
 
@@ -199,6 +224,8 @@ export function App() {
   });
   const [cursorSize, setCursorSize] = useState<CursorSize>("medium");
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
+  const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
+  const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolItem | null>(null);
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
@@ -392,6 +419,9 @@ export function App() {
 
     const storedPopup = window.localStorage.getItem(PREVIEW_POPUP_STORAGE_KEY);
     setIsPreviewPopupOpen(storedPopup === "true");
+
+    const storedToolbar = window.localStorage.getItem(SOURCE_TOOLBAR_STORAGE_KEY);
+    setIsSourceToolbarVisible(storedToolbar !== "false");
   }, []);
 
   useEffect(() => {
@@ -572,6 +602,17 @@ export function App() {
     window.localStorage.setItem(PREVIEW_POPUP_STORAGE_KEY, String(isPreviewPopupOpen));
   }, [isPreviewPopupOpen]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      SOURCE_TOOLBAR_STORAGE_KEY,
+      String(isSourceToolbarVisible)
+    );
+  }, [isSourceToolbarVisible]);
+
   const runCompile = useCallback(async () => {
     if (compileInFlightRef.current || !isHydrated) {
       return;
@@ -690,6 +731,61 @@ export function App() {
 
   const handleDocumentChange = useCallback((content: string) => {
     setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
+  }, []);
+
+  const handleInsertEditorText = useCallback((text: string) => {
+    editorRef.current?.insertText(text);
+  }, []);
+
+  const handleInsertSymbol = useCallback((snippet: string) => {
+    editorRef.current?.insertSymbol(snippet);
+  }, []);
+
+  const handleWrapEditorSelection = useCallback(
+    (before: string, after?: string) => {
+      editorRef.current?.surroundSelection(before, after);
+    },
+    []
+  );
+
+  const handleToggleCurrentLines = useCallback((prefix: string, alternatePrefix?: string) => {
+    editorRef.current?.toggleCurrentLines(prefix, alternatePrefix);
+  }, []);
+
+  const handleBold = useCallback(() => {
+    handleWrapEditorSelection("*");
+  }, [handleWrapEditorSelection]);
+
+  const handleItalic = useCallback(() => {
+    handleWrapEditorSelection("_");
+  }, [handleWrapEditorSelection]);
+
+  const clearSourceSymbolPreview = useCallback(() => {
+    setHoveredSourceSymbol(null);
+  }, []);
+
+  const showSourceSymbolPreview = useCallback((symbol: SourceSymbolItem) => {
+    setHoveredSourceSymbol(symbol);
+  }, []);
+
+  const handleBulletList = useCallback(() => {
+    handleToggleCurrentLines("- ", "+ ");
+  }, [handleToggleCurrentLines]);
+
+  const handleNumberedList = useCallback(() => {
+    handleToggleCurrentLines("+ ", "- ");
+  }, [handleToggleCurrentLines]);
+
+  const handleMathMode = useCallback(() => {
+    editorRef.current?.toggleMathMode();
+  }, []);
+
+  const handleUnderline = useCallback(() => {
+    handleWrapEditorSelection("#underline[", "]");
+  }, [handleWrapEditorSelection]);
+
+  const handleCycleHeading = useCallback(() => {
+    editorRef.current?.cycleCurrentLinesHeading();
   }, []);
 
   const handlePreviewSourceJump = useCallback((sourceLocation: string) => {
@@ -1542,6 +1638,20 @@ export function App() {
               <span className="pane__meta">{storageLabel}</span>
               <button
                 className="pane__button pane__button--quiet"
+                onClick={() => setIsSourceToolbarVisible((current) => !current)}
+                type="button"
+                aria-pressed={isSourceToolbarVisible}
+                aria-label={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`toolbar-icon toolbar-icon--toggle ${
+                    isSourceToolbarVisible ? "toolbar-icon--toggle-open" : "toolbar-icon--toggle-closed"
+                  }`}
+                />
+              </button>
+              <button
+                className="pane__button pane__button--quiet"
                 onClick={() => handlePanelToggle("preview")}
                 type="button"
               >
@@ -1549,6 +1659,118 @@ export function App() {
               </button>
             </div>
           </div>
+          {isSourceToolbarVisible ? (
+            <div className="pane__toolbar pane__toolbar--source" aria-label="Source toolbar">
+              <div className="pane__toolbar-section">
+                <div className="pane__toolbar-group">
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleBold}
+                    type="button"
+                    aria-label="Bold"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--bold" />
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleItalic}
+                    type="button"
+                    aria-label="Italic"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--italic" />
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleUnderline}
+                    type="button"
+                    aria-label="Underline"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--underline" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="pane__toolbar-section">
+                <div className="pane__toolbar-group">
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleBulletList}
+                    type="button"
+                    aria-label="Bulleted list"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--bullet-list" />
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleNumberedList}
+                    type="button"
+                    aria-label="Numbered list"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--numbered-list" />
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleMathMode}
+                    type="button"
+                    aria-label="Math mode"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--math" />
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact pane__icon-button"
+                    onClick={handleCycleHeading}
+                    type="button"
+                    aria-label="Cycle heading level"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--heading" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="pane__toolbar-section">
+                <details className="source-symbol-menu">
+                  <summary
+                    className="pane__button pane__button--compact pane__icon-button"
+                    aria-label="Symbols"
+                  >
+                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--symbols" />
+                  </summary>
+                  <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
+                    <div className="source-symbol-menu__preview" aria-live="polite">
+                      <span className="source-symbol-menu__preview-label">Typst code</span>
+                      <code className="source-symbol-menu__preview-code">
+                        {hoveredSourceSymbol?.snippet ?? "Hover a symbol"}
+                      </code>
+                    </div>
+                    {SOURCE_SYMBOL_ITEMS.map((item) => (
+                      <button
+                        key={item.snippet}
+                        className="source-symbol-menu__item"
+                        onBlur={clearSourceSymbolPreview}
+                        onClick={(event) => {
+                          handleInsertSymbol(item.snippet);
+                          setHoveredSourceSymbol(null);
+                          const details = event.currentTarget.closest("details");
+                          if (details instanceof HTMLDetailsElement) {
+                            details.open = false;
+                          }
+                        }}
+                        onFocus={() => showSourceSymbolPreview(item)}
+                        onPointerEnter={() => showSourceSymbolPreview(item)}
+                        onPointerLeave={clearSourceSymbolPreview}
+                        type="button"
+                      >
+                        <span aria-hidden="true" className="source-symbol-menu__glyph">
+                          {item.glyph}
+                        </span>
+                        <span className="visually-hidden">{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            </div>
+          ) : null}
           <TypstEditor
             ref={editorRef}
             diagnostics={editorDiagnostics}
