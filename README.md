@@ -27,7 +27,6 @@ This scaffold is intentionally conservative:
 - TypeScript
 - CodeMirror 6
 - IndexedDB via `idb`
-- `vite-plugin-pwa`
 
 ## Project Structure
 

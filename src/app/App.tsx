@@ -5,17 +5,24 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ChangeEvent,
   type ReactNode
 } from "react";
 import {
   createDefaultSnapshot,
   createDocument,
+  createDocumentFromFile,
   getActiveDocument,
+  renameActiveDocument,
+  renameProject,
   setActiveDocument,
   updateActiveDocument,
   updateThemePreference,
   updateVimPreference,
-  type AppSnapshot
+  type AppSnapshot,
+  type ThemePreference
 } from "./appState";
 import {
   createTypstCompiler,
@@ -23,6 +30,7 @@ import {
   type CompileResult
 } from "../compiler/typstCompiler";
 import { TypstEditor } from "../editor/TypstEditor";
+import type { TypstEditorHandle } from "../editor/TypstEditor";
 import {
   createEmptyGitHubRemoteConfig,
   hasRequiredConfig,
@@ -30,6 +38,13 @@ import {
   type GitHubRemoteConfig
 } from "../github/githubSync";
 import { PreviewPane } from "../preview/PreviewPane";
+import { AUTO_THEME_ID, THEME_IMPORT_TEMPLATE } from "../theme/themes";
+import {
+  DEFAULT_ZOOM,
+  nextZoomStep,
+  type PreviewZoomState
+} from "../preview/PreviewPane";
+import packageJson from "../../package.json";
 import {
   loadGitHubConfig,
   loadSnapshot,
@@ -37,32 +52,179 @@ import {
   saveSnapshot
 } from "../storage/indexedDbStorage";
 import { useTheme } from "../theme/ThemeProvider";
+import type { ThemeDefinition } from "../theme/themes";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
+const PANEL_LAYOUT_STORAGE_KEY = "typr.panel-layout";
+const PANEL_LAYOUT_VERSION = 5;
+const MOBILE_WORKSPACE_THRESHOLD = 1080;
+const SIDEBAR_DEFAULT_WIDTH = 300;
+const SIDEBAR_MIN_WIDTH = 240;
+const SIDEBAR_MAX_WIDTH = 460;
+const PREVIEW_MIN_WIDTH = 320;
+const PANEL_COLLAPSED_WIDTH = 56;
+const PANEL_HANDLE_WIDTH = 8;
+const EDITOR_MIN_WIDTH = 420;
+const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
+const APP_VERSION = packageJson.version;
+const CURSOR_SIZE_STORAGE_KEY = "typr.cursor-size";
+const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 
-const MENU_ITEMS = ["typr", "File", "View", "Help"] as const;
+type CursorSize = "small" | "medium" | "large";
+
+const CURSOR_SIZE_VALUES: Record<CursorSize, string> = {
+  small: "1px",
+  medium: "2px",
+  large: "3px"
+};
+
+const CURSOR_SIZE_LABELS: Record<CursorSize, string> = {
+  small: "Small",
+  medium: "Medium",
+  large: "Large"
+};
+
+const CURSOR_SIZE_ORDER: CursorSize[] = ["small", "medium", "large"];
+
+const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
-type WorkspaceMode = "split" | "editor" | "preview";
+type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
+type MobileWorkspaceTab = "files" | "editor" | "preview";
+type SettingsTab = "github" | "themes";
 
 interface SyncFeedback {
   tone: "neutral" | "success" | "error";
   text: string;
 }
 
+interface StoredPanelLayout {
+  version?: number;
+  isSidebarCollapsed?: boolean;
+  isPreviewCollapsed?: boolean;
+  sidebarWidth?: number;
+  previewRatio?: number;
+}
+
+function clampPanelWidth(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function readStoredPanelLayout(): StoredPanelLayout | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+
+    return JSON.parse(stored) as StoredPanelLayout;
+  } catch {
+    return null;
+  }
+}
+
+function clampPreviewRatio(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function getViewportBalancedPreviewRatio() {
+  return 0.5;
+}
+
+function getPreviewPaneWidth(
+  workspaceWidth: number,
+  sidebarWidth: number,
+  previewRatio: number
+) {
+  const availableWidth = Math.max(0, workspaceWidth - sidebarWidth - PANEL_HANDLE_WIDTH * 2);
+  const idealWidth = Math.round(availableWidth * previewRatio);
+
+  return clampPanelWidth(idealWidth, PREVIEW_MIN_WIDTH, availableWidth);
+}
+
+function isMobileWorkspaceViewport(width: number) {
+  return width > 0 && width <= MOBILE_WORKSPACE_THRESHOLD;
+}
+
+function isPrimaryShortcut(event: KeyboardEvent) {
+  return event.metaKey || event.ctrlKey;
+}
+
+function isResizeShortcut(event: KeyboardEvent) {
+  return isPrimaryShortcut(event) && event.altKey && !event.shiftKey;
+}
+
+function isTypingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tag = target.tagName.toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+}
+
 export function App() {
+  const [storedPanelLayout] = useState(readStoredPanelLayout);
   const menuStripRef = useRef<HTMLElement | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const editorRef = useRef<TypstEditorHandle | null>(null);
+  const themeImportInputRef = useRef<HTMLInputElement | null>(null);
+  const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
   const compileTimerRef = useRef<number | null>(null);
+  const panelResizeCleanupRef = useRef<(() => void) | null>(null);
+  const panelResizeRef = useRef<{
+    edge: "sidebar" | "preview";
+    startX: number;
+    startWidth: number;
+  } | null>(null);
   const compileRequestRef = useRef(0);
   const pendingSourceRef = useRef("");
   const compileInFlightRef = useRef(false);
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
-  const [isSyncSettingsOpen, setIsSyncSettingsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("github");
+  const [themeImportFeedback, setThemeImportFeedback] = useState<SyncFeedback>({
+    tone: "neutral",
+    text: ""
+  });
+  const [cursorSize, setCursorSize] = useState<CursorSize>("medium");
+  const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isSidebarCollapsed
+      ? storedPanelLayout.isSidebarCollapsed
+      : false
+  );
+  const [isPreviewCollapsed, setIsPreviewCollapsed] = useState(
+    () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isPreviewCollapsed
+      ? storedPanelLayout.isPreviewCollapsed
+      : false
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      typeof storedPanelLayout.sidebarWidth === "number"
+        ? clampPanelWidth(storedPanelLayout.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+        : SIDEBAR_DEFAULT_WIDTH
+  );
+  const [previewRatio, setPreviewRatio] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      typeof storedPanelLayout.previewRatio === "number"
+        ? clampPreviewRatio(storedPanelLayout.previewRatio)
+        : getViewportBalancedPreviewRatio()
+  );
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>("editor");
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
     phase: "idle",
     mode: "worker",
@@ -97,9 +259,20 @@ export function App() {
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
-  const { theme, setTheme } = useTheme();
+  const {
+    theme,
+    builtinThemes,
+    customThemes,
+    setTheme,
+    importThemeFile,
+    removeCustomTheme
+  } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
+  const previewSource = useMemo(
+    () => createThemedPreviewSource(activeDocument.content, theme),
+    [activeDocument.content, theme]
+  );
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -120,6 +293,13 @@ export function App() {
 
   useEffect(() => {
     return () => {
+      panelResizeCleanupRef.current?.();
+      panelResizeCleanupRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
       if (openMenuTimerRef.current !== null) {
         window.clearTimeout(openMenuTimerRef.current);
       }
@@ -128,6 +308,29 @@ export function App() {
         window.clearTimeout(closeMenuTimerRef.current);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const workspace = workspaceRef.current;
+    if (!workspace || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const updateWorkspaceWidth = () => {
+      const nextWidth = workspace.getBoundingClientRect().width;
+      setWorkspaceWidth(nextWidth);
+    };
+
+    updateWorkspaceWidth();
+
+    const observer = new ResizeObserver(updateWorkspaceWidth);
+    observer.observe(workspace);
+
+    return () => observer.disconnect();
   }, []);
 
   const cancelPendingMenuClose = useCallback(() => {
@@ -176,6 +379,61 @@ export function App() {
       return;
     }
 
+    const storedCursorSize = window.localStorage.getItem(CURSOR_SIZE_STORAGE_KEY);
+    if (
+      storedCursorSize === "small" ||
+      storedCursorSize === "medium" ||
+      storedCursorSize === "large"
+    ) {
+      setCursorSize(storedCursorSize);
+    }
+
+    const storedPopup = window.localStorage.getItem(PREVIEW_POPUP_STORAGE_KEY);
+    setIsPreviewPopupOpen(storedPopup === "true");
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileWorkspaceViewport(workspaceWidth)) {
+      return;
+    }
+
+    if (workspaceMode === "sidebar") {
+      setMobileWorkspaceTab("files");
+      return;
+    }
+
+    if (workspaceMode === "preview") {
+      setMobileWorkspaceTab("preview");
+      return;
+    }
+
+    if (workspaceMode === "editor") {
+      setMobileWorkspaceTab("editor");
+    }
+  }, [workspaceMode, workspaceWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      PANEL_LAYOUT_STORAGE_KEY,
+      JSON.stringify({
+        version: PANEL_LAYOUT_VERSION,
+        isSidebarCollapsed,
+        isPreviewCollapsed,
+        sidebarWidth,
+        previewRatio
+      })
+    );
+  }, [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
     function handlePointerDown(event: MouseEvent) {
       if (!menuStripRef.current?.contains(event.target as Node)) {
         cancelPendingMenuClose();
@@ -189,7 +447,60 @@ export function App() {
         cancelPendingMenuClose();
         cancelPendingMenuOpen();
         setActiveMenu(null);
-        setIsSyncSettingsOpen(false);
+        setIsSettingsOpen(false);
+        setWorkspaceMode("split");
+        return;
+      }
+
+      if (isTypingTarget(event.target)) {
+        return;
+      }
+
+      if (!isResizeShortcut(event)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      if (key === "b") {
+        event.preventDefault();
+        handlePanelToggle("sidebar");
+        return;
+      }
+
+      if (key === "p") {
+        event.preventDefault();
+        handlePanelToggle("preview");
+        return;
+      }
+
+      if (key === "0") {
+        event.preventDefault();
+        resetPanelWidths();
+        return;
+      }
+
+      if (key === "1") {
+        event.preventDefault();
+        setFullscreenMode("sidebar");
+        return;
+      }
+
+      if (key === "2") {
+        event.preventDefault();
+        setFullscreenMode("editor");
+        return;
+      }
+
+      if (key === "3") {
+        event.preventDefault();
+        setFullscreenMode("preview");
+        return;
+      }
+
+      if (key === "4") {
+        event.preventDefault();
+        setFullscreenMode("split");
       }
     }
 
@@ -208,7 +519,7 @@ export function App() {
       window.removeEventListener("online", updateOnlineStatus);
       window.removeEventListener("offline", updateOnlineStatus);
     };
-  }, [cancelPendingMenuClose, cancelPendingMenuOpen]);
+  }, [cancelPendingMenuClose, cancelPendingMenuOpen, handlePanelToggle, resetPanelWidths, setFullscreenMode]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -241,6 +552,23 @@ export function App() {
 
     return () => window.clearTimeout(handle);
   }, [githubConfig, isHydrated]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(CURSOR_SIZE_STORAGE_KEY, cursorSize);
+    document.documentElement.style.setProperty("--editor-cursor-width", CURSOR_SIZE_VALUES[cursorSize]);
+  }, [cursorSize]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(PREVIEW_POPUP_STORAGE_KEY, String(isPreviewPopupOpen));
+  }, [isPreviewPopupOpen]);
 
   const runCompile = useCallback(async () => {
     if (compileInFlightRef.current || !isHydrated) {
@@ -338,9 +666,9 @@ export function App() {
       return;
     }
 
-    pendingSourceRef.current = activeDocument.content;
+    pendingSourceRef.current = previewSource;
     scheduleCompile();
-  }, [activeDocument.content, isHydrated, scheduleCompile]);
+  }, [isHydrated, previewSource, scheduleCompile]);
 
   useEffect(() => {
     if (!compileResult || compileResult.ok) {
@@ -370,8 +698,7 @@ export function App() {
     setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
   };
 
-  const handleThemeToggle = () => {
-    const nextTheme = theme === "light" ? "dark" : "light";
+  const setThemeMode = (nextTheme: ThemePreference) => {
     setTheme(nextTheme);
     setSnapshot((currentSnapshot) =>
       updateThemePreference(currentSnapshot, nextTheme)
@@ -394,6 +721,163 @@ export function App() {
     }));
   };
 
+  const handleThemeImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    const result = await importThemeFile(file);
+
+    if (!result.ok) {
+      setThemeImportFeedback({
+        tone: "error",
+        text: result.message
+      });
+      return;
+    }
+
+    setThemeMode(result.theme.id);
+    setThemeImportFeedback({
+      tone: "success",
+      text: `Imported ${result.theme.name}.`
+    });
+    setSettingsTab("themes");
+    setIsSettingsOpen(true);
+  };
+
+  const handleDownloadThemeTemplate = () => {
+    const blob = new Blob([JSON.stringify(THEME_IMPORT_TEMPLATE, null, 2)], {
+      type: "application/json"
+    });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = THEME_TEMPLATE_FILENAME;
+    anchor.click();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+  const downloadFile = (name: string, content: string, type = "text/plain") => {
+    const blob = new Blob([content], { type });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 0);
+  };
+
+  const handleRenameProject = () => {
+    const nextName = window.prompt("Project name", snapshot.project.name);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameProject(currentSnapshot, nextName));
+  };
+
+  const handleRenameDocument = () => {
+    const nextName = window.prompt("File name", activeDocument.name);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameActiveDocument(currentSnapshot, nextName));
+  };
+
+  const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    const content = await file.text();
+    setSnapshot((currentSnapshot) =>
+      createDocumentFromFile(currentSnapshot, file.name, content)
+    );
+  };
+
+  const handleDownloadDocument = () => {
+    downloadFile(activeDocument.name, activeDocument.content, "text/plain");
+  };
+
+  const handleDownloadProject = () => {
+    downloadFile(
+      `${snapshot.project.name}.json`,
+      JSON.stringify(snapshot, null, 2),
+      "application/json"
+    );
+  };
+
+  const handleExportPdf = () => {
+    window.print();
+  };
+
+  const handleUndo = () => editorRef.current?.undo();
+  const handleRedo = () => editorRef.current?.redo();
+  const handleSearch = () => editorRef.current?.search();
+  const handleGoToLine = () => editorRef.current?.goToLine();
+  const handleSelectAll = () => editorRef.current?.selectAll();
+
+  const cycleCursorSize = () => {
+    setCursorSize((current) => {
+      const nextIndex = (CURSOR_SIZE_ORDER.indexOf(current) + 1) % CURSOR_SIZE_ORDER.length;
+      return CURSOR_SIZE_ORDER[nextIndex] ?? "medium";
+    });
+  };
+
+  const togglePreviewPopup = () => {
+    setIsPreviewPopupOpen((current) => !current);
+  };
+
+  const setPreviewZoomStep = (direction: -1 | 1) => {
+    setPreviewZoom((current) => nextZoomStep(current, direction));
+  };
+
+  const handleShowVersion = () => {
+    window.alert(`Typr version ${APP_VERSION}`);
+  };
+
+  const handleShowAbout = () => {
+    window.alert(
+      "Typr is a local-first Typst editor for writing, previewing, and syncing projects."
+    );
+  };
+
+  const handleShowTutorial = () => {
+    window.alert(
+      "Tutorial: open Files to switch documents, type in Source, use View for layout controls, and use GitHub settings when you want to sync."
+    );
+  };
+
+  const handleOpenTypstReference = () => {
+    window.open("https://typst.app/docs/", "_blank", "noopener,noreferrer");
+  };
+
+  const handleOpenGitHubHelp = () => {
+    setSettingsTab("github");
+    setIsSettingsOpen(true);
+  };
+
+  const handleRemoveCustomTheme = (themeId: string) => {
+    removeCustomTheme(themeId);
+
+    if (theme.id === themeId) {
+      setThemeMode(AUTO_THEME_ID);
+    }
+  };
+
   const handlePushToGitHub = async () => {
     if (!isOnline) {
       setSyncFeedback({
@@ -408,7 +892,8 @@ export function App() {
         tone: "error",
         text: "Fill in owner, repo, branch, directory, and token first."
       });
-      setIsSyncSettingsOpen(true);
+      setSettingsTab("github");
+      setIsSettingsOpen(true);
       return;
     }
 
@@ -488,6 +973,142 @@ export function App() {
     [openMenuImmediately]
   );
 
+  function handlePanelToggle(panel: "sidebar" | "preview") {
+    if (panel === "sidebar") {
+      setIsSidebarCollapsed((current) => !current);
+      return;
+    }
+
+    setIsPreviewCollapsed((current) => !current);
+  }
+
+  function resetPanelWidths() {
+    setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    setPreviewRatio(0.5);
+  }
+
+  function setFullscreenMode(mode: WorkspaceMode) {
+    setWorkspaceMode(mode);
+  }
+
+  function describeWorkspaceMode(mode: WorkspaceMode) {
+    if (mode === "split") {
+      return "Split";
+    }
+
+    if (mode === "sidebar") {
+      return "Sidebar only";
+    }
+
+    if (mode === "editor") {
+      return "Editor only";
+    }
+
+    return "Preview only";
+  }
+
+  function createThemedPreviewSource(source: string, themeDefinition: ThemeDefinition) {
+    const previewTextFill = themeDefinition.palette.editorForeground;
+    return `#set text(fill: rgb("${previewTextFill}"))\n${source}`;
+  }
+
+  const beginPanelResize = useCallback(
+    (edge: "sidebar" | "preview") => (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      if (workspaceMode !== "split") {
+        return;
+      }
+
+      const workspace = workspaceRef.current;
+      if (!workspace) {
+        return;
+      }
+
+      if (isMobileWorkspaceViewport(workspace.getBoundingClientRect().width)) {
+        return;
+      }
+
+      if (typeof window !== "undefined" && window.matchMedia("(max-width: 1080px)").matches) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const workspaceWidth = workspace.getBoundingClientRect().width;
+      const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
+      const remainingWidth = Math.max(0, workspaceWidth - sidebarPaneWidth - PANEL_HANDLE_WIDTH * 2);
+      const startWidth =
+        edge === "sidebar"
+          ? sidebarWidth
+          : getPreviewPaneWidth(workspaceWidth, sidebarPaneWidth, previewRatio);
+      panelResizeRef.current = {
+        edge,
+        startX: event.clientX,
+        startWidth
+      };
+
+      const handleMove = (moveEvent: PointerEvent) => {
+        const resizeState = panelResizeRef.current;
+        if (!resizeState || resizeState.edge !== edge) {
+          return;
+        }
+
+        const delta = moveEvent.clientX - resizeState.startX;
+        const nextWidth =
+          edge === "sidebar"
+            ? resizeState.startWidth + delta
+            : resizeState.startWidth - delta;
+
+        if (edge === "sidebar") {
+          const maxWidth = Math.max(
+            SIDEBAR_MIN_WIDTH,
+            workspaceWidth - PANEL_HANDLE_WIDTH * 2 - PREVIEW_MIN_WIDTH
+          );
+          const clampedWidth = clampPanelWidth(
+            nextWidth,
+            SIDEBAR_MIN_WIDTH,
+            Math.min(SIDEBAR_MAX_WIDTH, maxWidth)
+          );
+          setSidebarWidth(clampedWidth);
+          if (isSidebarCollapsed) {
+            setIsSidebarCollapsed(false);
+          }
+        } else {
+          const clampedWidth = clampPanelWidth(
+            nextWidth,
+            PREVIEW_MIN_WIDTH,
+            Math.max(PREVIEW_MIN_WIDTH, remainingWidth)
+          );
+          setPreviewRatio(remainingWidth > 0 ? clampPreviewRatio(clampedWidth / remainingWidth) : previewRatio);
+          if (isPreviewCollapsed) {
+            setIsPreviewCollapsed(false);
+          }
+        }
+      };
+
+      const stopResize = () => {
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", stopResize);
+        window.removeEventListener("pointercancel", stopResize);
+        panelResizeRef.current = null;
+        panelResizeCleanupRef.current = null;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      panelResizeCleanupRef.current = stopResize;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", handleMove);
+      window.addEventListener("pointerup", stopResize);
+      window.addEventListener("pointercancel", stopResize);
+    },
+    [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth, workspaceMode]
+  );
+
   const canPushToGitHub = isOnline && hasRequiredConfig(githubConfig) && !isSyncing;
   const editorDiagnostics =
     compileResult === null
@@ -503,6 +1124,55 @@ export function App() {
         : storageStatus === "error"
           ? "Save failed"
           : "Local-first";
+  const workspaceModeLabel = describeWorkspaceMode(workspaceMode);
+  const allThemes = [...builtinThemes, ...customThemes];
+  const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
+  const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
+  const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
+  const effectiveWorkspaceWidth =
+    workspaceWidth > 0 ? workspaceWidth : typeof window !== "undefined" ? window.innerWidth : 0;
+  const isMobileWorkspace =
+    effectiveWorkspaceWidth > 0 && effectiveWorkspaceWidth <= MOBILE_WORKSPACE_THRESHOLD;
+  const previewPaneWidth = isPreviewCollapsed
+    ? PANEL_COLLAPSED_WIDTH
+    : getPreviewPaneWidth(effectiveWorkspaceWidth, sidebarPaneWidth, previewRatio);
+  const sourcePaneWidth =
+    workspaceMode === "split" && effectiveWorkspaceWidth > 0
+      ? Math.max(
+          0,
+          effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - PANEL_HANDLE_WIDTH * 2
+        )
+      : 0;
+  const workspaceGridStyle: CSSProperties =
+    isMobileWorkspace
+      ? {
+          display: "flex",
+          flexDirection: "column"
+        }
+      : workspaceMode === "split"
+      ? {
+          gridTemplateColumns: `${sidebarPaneWidth}px ${PANEL_HANDLE_WIDTH}px ${sourcePaneWidth}px ${PANEL_HANDLE_WIDTH}px ${previewPaneWidth}px`
+        }
+      : {
+          gridTemplateColumns: "minmax(0, 1fr)"
+        };
+  const sidebarVisibilityClass = isMobileWorkspace
+    ? mobileWorkspaceTab === "files"
+      ? "pane--mobile-active"
+      : "pane--mobile-hidden"
+    : "";
+  const editorVisibilityClass = isMobileWorkspace
+    ? mobileWorkspaceTab === "editor"
+      ? "pane--mobile-active"
+      : "pane--mobile-hidden"
+    : "";
+  const previewVisibilityClass = isMobileWorkspace
+    ? mobileWorkspaceTab === "preview"
+      ? "pane--mobile-active"
+      : "pane--mobile-hidden"
+    : "";
+  const sidebarPaneCollapsed = isSidebarCollapsed && !isMobileWorkspace;
+  const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace;
 
   return (
     <div className="app-shell">
@@ -517,24 +1187,29 @@ export function App() {
           <MenuDropdown
             activeMenu={activeMenu}
             onCloseImmediately={closeMenusImmediately}
-            label="typr"
+            label="Typr"
             onClose={closeMenusWithDelay}
             onNavigate={handleMenuNavigate}
-            onOpen={() => openMenuWithDelay("typr")}
-            onOpenImmediately={() => openMenuImmediately("typr")}
+            onOpen={() => openMenuWithDelay("Typr")}
+            onOpenImmediately={() => openMenuImmediately("Typr")}
           >
             <button
               className="menu-action"
               onClick={() => {
-                setIsSyncSettingsOpen(true);
+                setSettingsTab("github");
+                setIsSettingsOpen(true);
                 setActiveMenu(null);
               }}
               type="button"
             >
-              GitHub sync settings
+              Settings
             </button>
-            <div className="menu-note">Local-first Typst editor for offline writing.</div>
-            <div className="menu-note">{storageLabel}</div>
+            <button className="menu-action" onClick={handleShowVersion} type="button">
+              Version {APP_VERSION}
+            </button>
+            <button className="menu-action" onClick={handleShowAbout} type="button">
+              About
+            </button>
           </MenuDropdown>
 
           <MenuDropdown
@@ -547,23 +1222,86 @@ export function App() {
             onOpenImmediately={() => openMenuImmediately("File")}
           >
             <button className="menu-action" onClick={handleNewDocument} type="button">
-              New file
+              New
             </button>
             <button
               className="menu-action"
-              disabled={!canPushToGitHub}
               onClick={() => {
-                void handlePushToGitHub();
+                handleRenameDocument();
                 setActiveMenu(null);
               }}
               type="button"
             >
-              {isSyncing ? "Pushing..." : "Push project"}
+              Rename file
             </button>
-            <div className="menu-note">
-              {snapshot.project.documents.length} file
-              {snapshot.project.documents.length === 1 ? "" : "s"} in this project
-            </div>
+            <button
+              className="menu-action"
+              onClick={() => {
+                handleRenameProject();
+                setActiveMenu(null);
+              }}
+              type="button"
+            >
+              Rename project
+            </button>
+            <button
+              className="menu-action"
+              onClick={() => documentUploadInputRef.current?.click()}
+              type="button"
+            >
+              Upload .typ
+            </button>
+            <button className="menu-action" onClick={handleDownloadDocument} type="button">
+              Download .typ
+            </button>
+            <button className="menu-action" onClick={handleDownloadProject} type="button">
+              Download project
+            </button>
+            <button className="menu-action" onClick={handleExportPdf} type="button">
+              Export PDF
+            </button>
+          </MenuDropdown>
+
+          <MenuDropdown
+            activeMenu={activeMenu}
+            onCloseImmediately={closeMenusImmediately}
+            label="Edit"
+            onClose={closeMenusWithDelay}
+            onNavigate={handleMenuNavigate}
+            onOpen={() => openMenuWithDelay("Edit")}
+            onOpenImmediately={() => openMenuImmediately("Edit")}
+          >
+            <button
+              className="menu-action"
+              onClick={handleUndo}
+              type="button"
+            >
+              Undo
+            </button>
+            <button
+              className="menu-action"
+              onClick={handleRedo}
+              type="button"
+            >
+              Redo
+            </button>
+            <button
+              className="menu-action"
+              onClick={handleSearch}
+              type="button"
+            >
+              Search
+            </button>
+            <button
+              className="menu-action"
+              onClick={handleGoToLine}
+              type="button"
+            >
+              Go to line
+            </button>
+            <button className="menu-action" onClick={handleSelectAll} type="button">
+              Select all
+            </button>
           </MenuDropdown>
 
           <MenuDropdown
@@ -575,32 +1313,29 @@ export function App() {
             onOpen={() => openMenuWithDelay("View")}
             onOpenImmediately={() => openMenuImmediately("View")}
           >
-            <button
-              className="menu-action"
-              onClick={() => setWorkspaceMode("split")}
-              type="button"
-            >
-              {workspaceMode === "split" ? "✓ " : ""}Show all panes
+            <button className="menu-action" onClick={() => handlePanelToggle("sidebar")} type="button">
+              Files
             </button>
-            <button
-              className="menu-action"
-              onClick={() => setWorkspaceMode("editor")}
-              type="button"
-            >
-              {workspaceMode === "editor" ? "✓ " : ""}Only show editor
+            <button className="menu-action" onClick={() => setFullscreenMode("editor")} type="button">
+              Editor
             </button>
-            <button
-              className="menu-action"
-              onClick={() => setWorkspaceMode("preview")}
-              type="button"
-            >
-              {workspaceMode === "preview" ? "✓ " : ""}Only show preview
+            <button className="menu-action" onClick={() => setFullscreenMode("preview")} type="button">
+              Preview
             </button>
-            <button className="menu-action" onClick={handleVimToggle} type="button">
-              Vim mode: {snapshot.preferences.vimMode ? "On" : "Off"}
+            <button className="menu-action" onClick={handleSearch} type="button">
+              Search
             </button>
-            <button className="menu-action" onClick={handleThemeToggle} type="button">
-              Theme: {theme === "light" ? "Light" : "Dark"}
+            <button className="menu-action" onClick={cycleCursorSize} type="button">
+              Cursor size: {CURSOR_SIZE_LABELS[cursorSize]}
+            </button>
+            <button className="menu-action" onClick={togglePreviewPopup} type="button">
+              {isPreviewPopupOpen ? "Hide preview in popup" : "Show preview in popup"}
+            </button>
+            <button className="menu-action" onClick={() => setPreviewZoomStep(-1)} type="button">
+              Zoom out
+            </button>
+            <button className="menu-action" onClick={() => setPreviewZoomStep(1)} type="button">
+              Zoom in
             </button>
           </MenuDropdown>
 
@@ -613,9 +1348,15 @@ export function App() {
             onOpen={() => openMenuWithDelay("Help")}
             onOpenImmediately={() => openMenuImmediately("Help")}
           >
-            <div className="menu-note">Offline preview works after the installed app caches its fonts once online.</div>
-            <div className="menu-note">Use GitHub sync when the device comes back online.</div>
-            <div className="menu-note">Active file: {activeDocument.name}</div>
+            <button className="menu-action" onClick={handleShowTutorial} type="button">
+              Tutorial
+            </button>
+            <button className="menu-action" onClick={handleOpenTypstReference} type="button">
+              Reference (typst)
+            </button>
+            <button className="menu-action" onClick={handleOpenGitHubHelp} type="button">
+              How to connect to Github
+            </button>
           </MenuDropdown>
         </nav>
 
@@ -632,75 +1373,172 @@ export function App() {
       </header>
 
       <main
-        className={`workspace workspace--triple workspace--${workspaceMode}`}
+        className={`workspace workspace--triple workspace--${workspaceMode} ${
+          isMobileWorkspace ? "workspace--mobile" : ""
+        }`}
+        ref={workspaceRef}
+        style={workspaceGridStyle}
       >
-        <aside className="pane pane--sidebar" aria-label="Files and sync">
-          <div className="pane__header">
-            <h2>Files</h2>
-            <button className="pane__button" onClick={handleNewDocument} type="button">
-              New file
+        {isMobileWorkspace ? (
+          <div className="workspace-mobile-switcher" role="tablist" aria-label="Workspace panes">
+            <button
+              aria-selected={mobileWorkspaceTab === "files"}
+              className={`workspace-mobile-tab ${
+                mobileWorkspaceTab === "files" ? "workspace-mobile-tab--active" : ""
+              }`}
+              onClick={() => setMobileWorkspaceTab("files")}
+              role="tab"
+              type="button"
+            >
+              Files
+            </button>
+            <button
+              aria-selected={mobileWorkspaceTab === "editor"}
+              className={`workspace-mobile-tab ${
+                mobileWorkspaceTab === "editor" ? "workspace-mobile-tab--active" : ""
+              }`}
+              onClick={() => setMobileWorkspaceTab("editor")}
+              role="tab"
+              type="button"
+            >
+              Source
+            </button>
+            <button
+              aria-selected={mobileWorkspaceTab === "preview"}
+              className={`workspace-mobile-tab ${
+                mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
+              }`}
+              onClick={() => setMobileWorkspaceTab("preview")}
+              role="tab"
+              type="button"
+            >
+              Preview
             </button>
           </div>
+        ) : null}
 
-          <section className="sidebar-section">
-            <div className="file-list" role="list">
-              {snapshot.project.documents.map((document) => (
-                <button
-                  key={document.id}
-                  className={`file-row ${
-                    document.id === activeDocument.id ? "file-row--active" : ""
-                  }`}
-                  onClick={() => handleSelectDocument(document.id)}
-                  type="button"
-                >
-                  <span className="file-row__name">{document.name}</span>
-                  <span className="file-row__meta">
-                    {document.id === activeDocument.id ? "Open" : "Switch"}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </section>
+        <aside
+          className={`pane pane--sidebar ${
+            sidebarPaneCollapsed ? "pane--collapsed" : ""
+          } ${sidebarVisibilityClass}`}
+          aria-label="Files and sync"
+        >
+          {sidebarPaneCollapsed ? (
+            <button
+              className="pane__collapsed-toggle"
+              onClick={() => handlePanelToggle("sidebar")}
+              type="button"
+            >
+              Files
+            </button>
+          ) : (
+            <>
+              <div className="pane__header">
+                <h2>Files</h2>
+                <div className="pane__header-actions">
+                  <button
+                    className="pane__button"
+                    onClick={handleNewDocument}
+                    type="button"
+                  >
+                    New file
+                  </button>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    onClick={() => handlePanelToggle("sidebar")}
+                    type="button"
+                  >
+                    Hide
+                  </button>
+                </div>
+              </div>
 
-          <section className="sidebar-section sidebar-section--status">
-            <div className="sidebar-card">
-              <div className="sidebar-card__row">
-                <span>GitHub sync</span>
-                <span className="pane__meta">{isOnline ? "Ready" : "Offline"}</span>
-              </div>
-              <p className="sidebar-card__copy">{syncFeedback.text}</p>
-              <div className="sidebar-card__actions">
-                <button
-                  className="pane__button"
-                  onClick={() => setIsSyncSettingsOpen(true)}
-                  type="button"
-                >
-                  Settings
-                </button>
-                <button
-                  className="pane__button"
-                  disabled={!canPushToGitHub}
-                  onClick={() => {
-                    void handlePushToGitHub();
-                  }}
-                  type="button"
-                >
-                  {isSyncing ? "Pushing..." : "Push"}
-                </button>
-              </div>
-            </div>
-          </section>
+              <section className="sidebar-section">
+                <div className="file-list" role="list">
+                  {snapshot.project.documents.map((document) => (
+                    <button
+                      key={document.id}
+                      className={`file-row ${
+                        document.id === activeDocument.id ? "file-row--active" : ""
+                      }`}
+                      onClick={() => handleSelectDocument(document.id)}
+                      type="button"
+                    >
+                      <span className="file-row__name">{document.name}</span>
+                      <span className="file-row__meta">
+                        {document.id === activeDocument.id ? "Open" : "Switch"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="sidebar-section sidebar-section--status">
+                <div className="sidebar-card">
+                  <div className="sidebar-card__row">
+                    <span>GitHub sync</span>
+                    <span className="pane__meta">{isOnline ? "Ready" : "Offline"}</span>
+                  </div>
+                  <p className="sidebar-card__copy">{syncFeedback.text}</p>
+                  <div className="sidebar-card__actions">
+                    <button
+                      className="pane__button"
+                      onClick={() => {
+                        setSettingsTab("github");
+                        setIsSettingsOpen(true);
+                      }}
+                      type="button"
+                    >
+                      Settings
+                    </button>
+                    <button
+                      className="pane__button"
+                      disabled={!canPushToGitHub}
+                      onClick={() => {
+                        void handlePushToGitHub();
+                      }}
+                      type="button"
+                    >
+                      {isSyncing ? "Pushing..." : "Push"}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
         </aside>
 
-        <section className="pane pane--editor" aria-label="Typst source editor">
+        {isMobileWorkspace ? null : (
+          <button
+            aria-label="Resize sidebar"
+            className="workspace-handle workspace-handle--left"
+            onPointerDown={beginPanelResize("sidebar")}
+            type="button"
+          />
+        )}
+
+        <section
+          className={`pane pane--editor ${editorVisibilityClass}`}
+          aria-label="Typst source editor"
+        >
           <div className="pane__header">
             <div className="pane__header-group">
               <h2>Source</h2>
               <span className="pane__subtitle">{activeDocument.name}</span>
             </div>
-            <span className="pane__meta">{storageLabel}</span>
+            <div className="pane__header-actions">
+              <span className="pane__meta">{storageLabel}</span>
+              <button
+                className="pane__button pane__button--quiet"
+                onClick={() => handlePanelToggle("preview")}
+                type="button"
+              >
+                {isPreviewCollapsed ? "Show preview" : "Hide preview"}
+              </button>
+            </div>
           </div>
           <TypstEditor
+            ref={editorRef}
             diagnostics={editorDiagnostics}
             highlightErrors={isErrorSettled}
             value={activeDocument.content}
@@ -715,48 +1553,121 @@ export function App() {
           ) : null}
         </section>
 
-        <section className="pane pane--preview" aria-label="Typst preview">
-          <div className="pane__header">
-            <div className="pane__header-group">
-              <h2>Preview</h2>
-              <span className="pane__subtitle">
-                {compilerStatus.mode === "worker" ? "Worker render" : "Fallback render"}
-              </span>
-            </div>
-            <span className="pane__meta">{isCompiling ? compilerStatus.label : "Live"}</span>
-          </div>
-          <PreviewPane
-            compilerStatus={compilerStatus}
-            isErrorSettled={isErrorSettled}
-            isCompiling={isCompiling}
-            lastSuccessfulResult={lastSuccessfulResult}
-            result={compileResult}
+        {isMobileWorkspace ? null : (
+          <button
+            aria-label="Resize preview"
+            className="workspace-handle workspace-handle--right"
+            onPointerDown={beginPanelResize("preview")}
+            type="button"
           />
+        )}
+
+        <section
+          className={`pane pane--preview ${
+            previewPaneCollapsed ? "pane--collapsed" : ""
+          } ${previewVisibilityClass}`}
+          aria-label="Typst preview"
+        >
+          {previewPaneCollapsed ? (
+            <button
+              className="pane__collapsed-toggle"
+              onClick={() => handlePanelToggle("preview")}
+              type="button"
+            >
+              Preview
+            </button>
+          ) : (
+            <>
+              <div className="pane__header">
+                <div className="pane__header-group">
+                  <h2>Preview</h2>
+                  <span className="pane__subtitle">
+                    {compilerStatus.mode === "worker" ? "Worker render" : "Fallback render"}
+                  </span>
+                </div>
+                <div className="pane__header-actions">
+                  <span className="pane__meta">{isCompiling ? compilerStatus.label : "Live"}</span>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    onClick={() => handlePanelToggle("preview")}
+                    type="button"
+                  >
+                    Hide
+                  </button>
+                </div>
+              </div>
+              <PreviewPane
+                compilerStatus={compilerStatus}
+                isErrorSettled={isErrorSettled}
+                isCompiling={isCompiling}
+                lastSuccessfulResult={lastSuccessfulResult}
+                onZoomChange={setPreviewZoom}
+                result={compileResult}
+                zoom={previewZoom}
+              />
+            </>
+          )}
         </section>
       </main>
 
-      {isSyncSettingsOpen ? (
+      {isPreviewPopupOpen ? (
         <div
-          className="sheet-backdrop"
-          onClick={() => setIsSyncSettingsOpen(false)}
+          className="sheet-backdrop preview-popup-backdrop"
+          onClick={() => setIsPreviewPopupOpen(false)}
           role="presentation"
         >
           <section
-            aria-label="GitHub sync settings"
+            aria-label="Preview popup"
+            className="preview-popup"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="preview-popup__header">
+              <div>
+                <h2>Preview</h2>
+                <p className="settings-sheet__copy">Floating preview window.</p>
+              </div>
+              <button
+                className="pane__button"
+                onClick={() => setIsPreviewPopupOpen(false)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+            <PreviewPane
+              compilerStatus={compilerStatus}
+              isErrorSettled={isErrorSettled}
+              isCompiling={isCompiling}
+              lastSuccessfulResult={lastSuccessfulResult}
+              onZoomChange={setPreviewZoom}
+              result={compileResult}
+              zoom={previewZoom}
+            />
+          </section>
+        </div>
+      ) : null}
+
+      {isSettingsOpen ? (
+        <div
+          className="sheet-backdrop"
+          onClick={() => setIsSettingsOpen(false)}
+          role="presentation"
+        >
+          <section
+            aria-label="Typr settings"
             className="settings-sheet"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="settings-sheet__header">
               <div>
-                <h2>GitHub Sync</h2>
+                <h2>Typr Settings</h2>
                 <p className="settings-sheet__copy">
-                  Keep the project local-first, then push to GitHub when the device is
-                  back online.
+                  Configure sync and themes from one place.
                 </p>
               </div>
               <button
                 className="pane__button"
-                onClick={() => setIsSyncSettingsOpen(false)}
+                onClick={() => setIsSettingsOpen(false)}
                 type="button"
               >
                 Close
@@ -764,87 +1675,241 @@ export function App() {
             </div>
 
             <div className="settings-sheet__body">
-              <div className="sync-grid">
-                <label className="sync-field">
-                  <span>Owner</span>
-                  <input
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    onChange={(event) =>
-                      handleGitHubConfigChange("owner", event.target.value)
-                    }
-                    placeholder="max-prime-math"
-                    type="text"
-                    value={githubConfig.owner}
-                  />
-                </label>
-                <label className="sync-field">
-                  <span>Repo</span>
-                  <input
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    onChange={(event) =>
-                      handleGitHubConfigChange("repo", event.target.value)
-                    }
-                    placeholder="typr"
-                    type="text"
-                    value={githubConfig.repo}
-                  />
-                </label>
-                <label className="sync-field">
-                  <span>Branch</span>
-                  <input
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    onChange={(event) =>
-                      handleGitHubConfigChange("branch", event.target.value)
-                    }
-                    placeholder="main"
-                    type="text"
-                    value={githubConfig.branch}
-                  />
-                </label>
-                <label className="sync-field">
-                  <span>Directory</span>
-                  <input
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    onChange={(event) =>
-                      handleGitHubConfigChange("directory", event.target.value)
-                    }
-                    placeholder="docs"
-                    type="text"
-                    value={githubConfig.directory}
-                  />
-                </label>
+              <div className="settings-tabs" role="tablist" aria-label="Settings tabs">
+                <button
+                  aria-selected={settingsTab === "github"}
+                  className={`settings-tab ${settingsTab === "github" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("github")}
+                  role="tab"
+                  type="button"
+                >
+                  GitHub
+                </button>
+                <button
+                  aria-selected={settingsTab === "themes"}
+                  className={`settings-tab ${settingsTab === "themes" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("themes")}
+                  role="tab"
+                  type="button"
+                >
+                  Themes
+                </button>
               </div>
 
-              <label className="sync-field">
-                <span>Token</span>
-                <input
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  onChange={(event) => handleGitHubConfigChange("token", event.target.value)}
-                  placeholder="github_pat_..."
-                  type="password"
-                  value={githubConfig.token}
-                />
-              </label>
+              {settingsTab === "github" ? (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="sync-grid">
+                    <label className="sync-field">
+                      <span>Owner</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                          handleGitHubConfigChange("owner", event.target.value)
+                        }
+                        placeholder="max-prime-math"
+                        type="text"
+                        value={githubConfig.owner}
+                      />
+                    </label>
+                    <label className="sync-field">
+                      <span>Repo</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                          handleGitHubConfigChange("repo", event.target.value)
+                        }
+                        placeholder="typr"
+                        type="text"
+                        value={githubConfig.repo}
+                      />
+                    </label>
+                    <label className="sync-field">
+                      <span>Branch</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                          handleGitHubConfigChange("branch", event.target.value)
+                        }
+                        placeholder="main"
+                        type="text"
+                        value={githubConfig.branch}
+                      />
+                    </label>
+                    <label className="sync-field">
+                      <span>Directory</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                          handleGitHubConfigChange("directory", event.target.value)
+                        }
+                        placeholder="docs"
+                        type="text"
+                        value={githubConfig.directory}
+                      />
+                    </label>
+                  </div>
 
-              <div
-                className={`sync-feedback ${
-                  syncFeedback.tone === "success"
-                    ? "sync-feedback--success"
-                    : syncFeedback.tone === "error"
-                      ? "sync-feedback--error"
-                      : ""
-                }`}
-              >
-                <span>{syncFeedback.text}</span>
-                <span className="sync-feedback__meta">
-                  {isOnline ? "Network available" : "Network unavailable"} · {storageLabel}
-                </span>
-              </div>
+                  <label className="sync-field">
+                    <span>Token</span>
+                    <input
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      onChange={(event) => handleGitHubConfigChange("token", event.target.value)}
+                      placeholder="github_pat_..."
+                      type="password"
+                      value={githubConfig.token}
+                    />
+                  </label>
+
+                  <div
+                    className={`sync-feedback ${
+                      syncFeedback.tone === "success"
+                        ? "sync-feedback--success"
+                        : syncFeedback.tone === "error"
+                          ? "sync-feedback--error"
+                          : ""
+                    }`}
+                  >
+                    <span>{syncFeedback.text}</span>
+                    <span className="sync-feedback__meta">
+                      {isOnline ? "Network available" : "Network unavailable"} · {storageLabel}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Theme</h3>
+                      <span className="pane__meta">
+                        {snapshot.preferences.theme === AUTO_THEME_ID ? "Auto" : "Manual"} ·{" "}
+                        {theme.name}
+                      </span>
+                    </div>
+
+                    <div className="theme-auto-row">
+                      <button
+                        className={`pane__button theme-auto-button ${
+                          snapshot.preferences.theme === AUTO_THEME_ID ? "theme-auto-button--active" : ""
+                        }`}
+                        onClick={() => setThemeMode(AUTO_THEME_ID)}
+                        type="button"
+                      >
+                        Follow system default
+                      </button>
+                      <span className="theme-auto-row__copy">
+                        Uses a random theme from your system light or dark mode and keeps it stable.
+                      </span>
+                    </div>
+
+                    <div className="theme-columns">
+                      <section className="theme-column">
+                        <div className="theme-column__header">
+                          <h4>Light</h4>
+                          <span className="pane__meta">{lightThemes.length}</span>
+                        </div>
+                        <div className="theme-column__list">
+                          {lightThemes.map((themeDefinition) => (
+                            <ThemeCard
+                              key={themeDefinition.id}
+                              active={themeDefinition.id === theme.id}
+                              themeDefinition={themeDefinition}
+                              onClick={() => setThemeMode(themeDefinition.id)}
+                            />
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="theme-column">
+                        <div className="theme-column__header">
+                          <h4>Dark</h4>
+                          <span className="pane__meta">{darkThemes.length}</span>
+                        </div>
+                        <div className="theme-column__list">
+                          {darkThemes.map((themeDefinition) => (
+                            <ThemeCard
+                              key={themeDefinition.id}
+                              active={themeDefinition.id === theme.id}
+                              themeDefinition={themeDefinition}
+                              onClick={() => setThemeMode(themeDefinition.id)}
+                            />
+                          ))}
+                        </div>
+                      </section>
+                    </div>
+
+                    {customThemes.length > 0 ? (
+                      <section className="settings-section settings-section--nested">
+                        <div className="settings-section__header">
+                          <h3>Imported themes</h3>
+                          <span className="pane__meta">{customThemes.length}</span>
+                        </div>
+                        <div className="theme-column__list">
+                          {customThemes.map((themeDefinition) => (
+                            <div className="theme-card-shell" key={themeDefinition.id}>
+                              <ThemeCard
+                                active={themeDefinition.id === theme.id}
+                                themeDefinition={themeDefinition}
+                                onClick={() => setThemeMode(themeDefinition.id)}
+                              />
+                              <button
+                                className="theme-card__remove"
+                                onClick={() => handleRemoveCustomTheme(themeDefinition.id)}
+                                type="button"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+
+                    <section className="theme-import-card">
+                      <div className="theme-import-card__copy">
+                        <h4>Import a theme</h4>
+                        <p>
+                          Upload a JSON file with <code>name</code>, <code>mode</code>, and a full
+                          <code>colors</code> palette.
+                        </p>
+                      </div>
+                      <div className="theme-import-card__actions">
+                        <button
+                          className="pane__button"
+                          onClick={() => themeImportInputRef.current?.click()}
+                          type="button"
+                        >
+                          Import JSON
+                        </button>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          onClick={handleDownloadThemeTemplate}
+                          type="button"
+                        >
+                          Download template
+                        </button>
+                      </div>
+                      {themeImportFeedback.text ? (
+                        <div
+                          className={`sync-feedback theme-import-card__feedback ${
+                            themeImportFeedback.tone === "success"
+                              ? "sync-feedback--success"
+                              : themeImportFeedback.tone === "error"
+                                ? "sync-feedback--error"
+                                : ""
+                          }`}
+                        >
+                          <span>{themeImportFeedback.text}</span>
+                        </div>
+                      ) : null}
+                    </section>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="settings-sheet__footer">
@@ -862,7 +1927,60 @@ export function App() {
           </section>
         </div>
       ) : null}
+      <input
+        ref={documentUploadInputRef}
+        accept=".typ,text/plain"
+        className="visually-hidden"
+        onChange={handleUploadDocument}
+        tabIndex={-1}
+        type="file"
+      />
+      <input
+        ref={themeImportInputRef}
+        accept=".json,application/json"
+        className="visually-hidden"
+        onChange={handleThemeImport}
+        tabIndex={-1}
+        type="file"
+      />
     </div>
+  );
+}
+
+function ThemeCard({
+  active,
+  themeDefinition,
+  onClick
+}: {
+  active: boolean;
+  themeDefinition: ThemeDefinition;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={`theme-card ${active ? "theme-card--active" : ""}`}
+      onClick={onClick}
+      type="button"
+      style={
+        {
+          "--theme-card-background": themeDefinition.palette.surfaceStrong,
+          "--theme-card-background-wash": themeDefinition.palette.backgroundWash,
+          "--theme-card-accent": themeDefinition.palette.accent,
+          "--theme-card-text": themeDefinition.palette.editorForeground,
+          "--theme-card-border": themeDefinition.palette.border,
+          "--theme-card-muted": themeDefinition.palette.textMuted
+        } as CSSProperties
+      }
+    >
+      <span className="theme-card__swatches" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+        <i />
+      </span>
+      <strong>{themeDefinition.name}</strong>
+      <span>{themeDefinition.description}</span>
+    </button>
   );
 }
 

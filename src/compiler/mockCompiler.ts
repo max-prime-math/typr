@@ -7,6 +7,10 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
+function stripPreviewThemePrelude(source: string): string {
+  return source.replace(/^#set text\(fill: rgb\(".*?"\)\)\n/, "");
+}
+
 export function createMockCompiler(): TypstCompiler {
   return {
     async compileDocument(source: string): Promise<CompileResult> {
@@ -24,7 +28,7 @@ export function createMockCompiler(): TypstCompiler {
         };
       }
 
-      const escapedSource = escapeHtml(source);
+      const escapedSource = escapeHtml(stripPreviewThemePrelude(source));
 
       return {
         ok: true,
