@@ -9,6 +9,7 @@ interface PreviewPaneProps {
   isErrorSettled: boolean;
   isCompiling: boolean;
   compilerStatus: CompilerStatus;
+  showToolbar?: boolean;
   onSourceJump?: (sourceLocation: string) => void;
   zoom?: PreviewZoomState;
   onZoomChange?: (zoom: PreviewZoomState) => void;
@@ -33,11 +34,11 @@ export function PreviewPane({
   isErrorSettled,
   isCompiling,
   compilerStatus,
+  showToolbar = true,
   onSourceJump,
   zoom,
   onZoomChange
 }: PreviewPaneProps) {
-  const [showDebug, setShowDebug] = useState(false);
   const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const currentZoom = zoom ?? internalZoom;
   const setZoom = onZoomChange ?? setInternalZoom;
@@ -62,22 +63,14 @@ export function PreviewPane({
       <div className="preview-layout">
         {fallbackResult ? (
           <div className="preview-surface">
-            <div className="preview-toolbar">
-              <div className="preview-toolbar__group">
-                <div className="preview-engine">Engine: {fallbackResult.engine}</div>
+            {showToolbar ? (
+              <div className="preview-toolbar">
                 <PreviewZoomControls
                   onZoomChange={setZoom}
                   zoom={currentZoom}
                 />
               </div>
-              <button
-                className="preview-debug-toggle"
-                onClick={() => setShowDebug((current) => !current)}
-                type="button"
-              >
-                {showDebug ? "Hide debug" : "Show debug"}
-              </button>
-            </div>
+            ) : null}
             {shouldUseChromiumCanvasPreview(fallbackResult) ? (
               <ChromiumCanvasPreview
                 artifactData={fallbackResult.output.artifactData!}
@@ -93,9 +86,6 @@ export function PreviewPane({
                 zoom={currentZoom}
               />
             )}
-            {showDebug ? (
-              <PreviewDebugPanel markup={fallbackResult.output.content} />
-            ) : null}
           </div>
         ) : (
           <div className="preview-state">
@@ -114,22 +104,14 @@ export function PreviewPane({
   return (
     <div className="preview-layout">
       <div className="preview-surface">
-        <div className="preview-toolbar">
-          <div className="preview-toolbar__group">
-            <div className="preview-engine">Engine: {result.engine}</div>
+        {showToolbar ? (
+          <div className="preview-toolbar">
             <PreviewZoomControls
               onZoomChange={setZoom}
               zoom={currentZoom}
             />
           </div>
-          <button
-            className="preview-debug-toggle"
-            onClick={() => setShowDebug((current) => !current)}
-            type="button"
-          >
-            {showDebug ? "Hide debug" : "Show debug"}
-          </button>
-        </div>
+        ) : null}
         {shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} />
         ) : (
@@ -141,15 +123,12 @@ export function PreviewPane({
             zoom={currentZoom}
           />
         )}
-        {showDebug ? (
-          <PreviewDebugPanel markup={result.output.content} />
-        ) : null}
       </div>
     </div>
   );
 }
 
-function PreviewZoomControls({
+export function PreviewZoomControls({
   zoom,
   onZoomChange
 }: {
@@ -561,7 +540,7 @@ function parseNumericAttribute(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function PreviewDebugPanel({ markup }: { markup: string }) {
+export function PreviewDebugPanel({ markup }: { markup: string }) {
   const debugInfo = useMemo(() => analyzePreviewMarkup(markup), [markup]);
 
   return (

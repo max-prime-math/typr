@@ -43,7 +43,7 @@ import {
   pushProjectToGitHub,
   type GitHubRemoteConfig
 } from "../github/githubSync";
-import { PreviewPane } from "../preview/PreviewPane";
+import { PreviewPane, PreviewDebugPanel } from "../preview/PreviewPane";
 import { AUTO_THEME_ID, THEME_IMPORT_TEMPLATE } from "../theme/themes";
 import {
   DEFAULT_ZOOM,
@@ -68,6 +68,7 @@ import {
   SNIPPET_IMPORT_TEMPLATE,
   type TypstSnippet
 } from "../snippets/snippets";
+import { PreviewZoomControls } from "../preview/PreviewPane";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
@@ -344,6 +345,7 @@ export function App() {
     text: ""
   });
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
+  const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
@@ -448,6 +450,9 @@ export function App() {
         !currentSnapshot.preferences.cursorSmooth
       )
     );
+  }, []);
+  const togglePreviewDebug = useCallback(() => {
+    setIsPreviewDebugVisible((current) => !current);
   }, []);
   const {
     theme,
@@ -1905,13 +1910,21 @@ export function App() {
 
         <div className="menubar__cluster menubar__cluster--right">
           <span
-            className={`status-pill ${
+            aria-label={isOnline ? "Online" : "Offline"}
+            className={`status-pill status-pill--icon ${
               isOnline ? "status-pill--online" : "status-pill--offline"
             }`}
+            title={isOnline ? "Online" : "Offline"}
           >
-            {isOnline ? "Online" : "Offline"}
+            <span
+              aria-hidden="true"
+              className={`status-pill__icon ${
+                isOnline
+                  ? "status-pill__icon--online"
+                  : "status-pill__icon--offline"
+              }`}
+            />
           </span>
-          <span className="file-pill">{activeDocument.name}</span>
         </div>
       </header>
 
@@ -1998,7 +2011,11 @@ export function App() {
               <div className="pane__header">
                 <div className="pane__header-group">
                   <h2>{sidebarToolTitle}</h2>
-                  <span className="pane__subtitle">{getSidebarToolSubtitle(activeSidebarTool)}</span>
+                  {getSidebarToolSubtitle(activeSidebarTool) ? (
+                    <span className="pane__subtitle">
+                      {getSidebarToolSubtitle(activeSidebarTool)}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="pane__header-actions">
                   {activeSidebarTool === "files" ? (
@@ -2051,7 +2068,6 @@ export function App() {
                   <div className="sidebar-search-panel">
                     <div className="sidebar-search-panel__row">
                       <label className="sync-field sidebar-search-panel__field">
-                        <span>Find</span>
                         <input
                           ref={searchInputRef}
                           onChange={(event) => updateSearchQuery({ search: event.target.value })}
@@ -2070,30 +2086,33 @@ export function App() {
                           value={searchQuery.search}
                         />
                       </label>
+                    </div>
 
-                      <div className="sidebar-search-panel__actions">
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={() => editorRef.current?.findPrevious()}
-                          type="button"
-                        >
-                          Previous
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={() => editorRef.current?.findNext()}
-                          type="button"
-                        >
-                          Next
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={() => editorRef.current?.selectMatches()}
-                          type="button"
-                        >
-                          All
-                        </button>
-                      </div>
+                    <div className="sidebar-search-panel__actions sidebar-search-panel__actions--pair">
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => editorRef.current?.findPrevious()}
+                        type="button"
+                      >
+                        Previous
+                      </button>
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => editorRef.current?.findNext()}
+                        type="button"
+                      >
+                        Next
+                      </button>
+                    </div>
+
+                    <div className="sidebar-search-panel__actions sidebar-search-panel__actions--full">
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => editorRef.current?.selectMatches()}
+                        type="button"
+                      >
+                        All
+                      </button>
                     </div>
 
                     <div className="sidebar-search-panel__toggles">
@@ -2129,7 +2148,6 @@ export function App() {
 
                     <div className="sidebar-search-panel__row">
                       <label className="sync-field sidebar-search-panel__field">
-                        <span>Replace</span>
                         <input
                           onChange={(event) => updateSearchQuery({ replace: event.target.value })}
                           onKeyDown={(event) => {
@@ -2143,23 +2161,23 @@ export function App() {
                           value={searchQuery.replace}
                         />
                       </label>
+                    </div>
 
-                      <div className="sidebar-search-panel__actions">
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={() => editorRef.current?.replaceNext()}
-                          type="button"
-                        >
-                          Replace
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={() => editorRef.current?.replaceAll()}
-                          type="button"
-                        >
-                          Replace all
-                        </button>
-                      </div>
+                    <div className="sidebar-search-panel__actions sidebar-search-panel__actions--pair">
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => editorRef.current?.replaceNext()}
+                        type="button"
+                      >
+                        Replace
+                      </button>
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => editorRef.current?.replaceAll()}
+                        type="button"
+                      >
+                        Replace all
+                      </button>
                     </div>
                   </div>
                 </section>
@@ -2235,6 +2253,39 @@ export function App() {
               {activeSidebarTool === "debug" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
                   <div className="sync-stack">
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Preview debug</span>
+                        <span className="pane__meta">
+                          {isPreviewDebugVisible ? "Visible" : "Hidden"}
+                        </span>
+                      </div>
+                      <p className="sidebar-card__copy">
+                        Show the debug panel beneath the preview when you need it.
+                      </p>
+                      <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={togglePreviewDebug}
+                          type="button"
+                        >
+                          {isPreviewDebugVisible ? "Hide debug" : "Show debug"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isPreviewDebugVisible ? (
+                      <div className="sidebar-preview-debug">
+                        <PreviewDebugPanel
+                          markup={
+                            compileResult?.ok
+                              ? compileResult.output.content
+                              : lastSuccessfulResult?.output.content ?? ""
+                          }
+                        />
+                      </div>
+                    ) : null}
+
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
                         <span>Compiler</span>
@@ -2759,12 +2810,18 @@ export function App() {
             </button>
           ) : (
             <>
-              <div className="pane__header">
+              <div className="pane__header pane__header--preview">
                 <div className="pane__header-group">
                   <h2>Preview</h2>
                   <span className="pane__subtitle">
                     {compilerStatus.mode === "worker" ? "Worker render" : "Fallback render"}
                   </span>
+                </div>
+                <div className="pane__header-center">
+                  <PreviewZoomControls
+                    onZoomChange={setPreviewZoom}
+                    zoom={previewZoom}
+                  />
                 </div>
                 <div className="pane__header-actions">
                   <span className="pane__meta">{isCompiling ? compilerStatus.label : "Live"}</span>
@@ -2782,6 +2839,7 @@ export function App() {
                 isErrorSettled={isErrorSettled}
                 isCompiling={isCompiling}
                 lastSuccessfulResult={lastSuccessfulResult}
+                showToolbar={false}
                 onZoomChange={setPreviewZoom}
                 result={compileResult}
                 zoom={previewZoom}
@@ -2822,6 +2880,7 @@ export function App() {
               isErrorSettled={isErrorSettled}
               isCompiling={isCompiling}
               lastSuccessfulResult={lastSuccessfulResult}
+              showToolbar={true}
               onZoomChange={setPreviewZoom}
               result={compileResult}
               zoom={previewZoom}
@@ -3654,7 +3713,7 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
     case "files":
       return "Project documents";
     case "search":
-      return "Find across files";
+      return "";
     case "outline":
       return "Document structure";
     case "sync":
