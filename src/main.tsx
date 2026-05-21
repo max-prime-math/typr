@@ -10,12 +10,14 @@ import { primeTypstCompiler } from "./compiler/typstCompiler";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import "./styles/global.css";
 
-registerSW({
-  immediate: true,
-  onOfflineReady() {
-    console.info("typr is ready for offline use.");
-  }
-});
+if (import.meta.env.PROD) {
+  registerSW({
+    immediate: true,
+    onOfflineReady() {
+      console.info("typr is ready for offline use.");
+    }
+  });
+}
 
 primeTypstCompiler();
 void warmTypstOfflineAssets();

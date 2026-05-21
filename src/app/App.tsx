@@ -114,6 +114,14 @@ const SOURCE_SYMBOL_ITEMS: SourceSymbolItem[] = [
   { label: "Superset", glyph: "⊃", template: "#sym.supset" }
 ];
 
+const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
+  { id: "files", label: "Files" },
+  { id: "search", label: "Search" },
+  { id: "outline", label: "Outline" },
+  { id: "sync", label: "Sync" },
+  { id: "debug", label: "Debug" }
+];
+
 interface SourceSymbolTooltipState {
   item: SourceSymbolItem;
   x: number;
@@ -124,6 +132,7 @@ const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
+type SidebarTool = "files" | "search" | "outline" | "sync" | "debug";
 type SettingsTab = "github" | "themes" | "snippets";
 
 interface SyncFeedback {
@@ -137,6 +146,20 @@ interface StoredPanelLayout {
   isPreviewCollapsed?: boolean;
   sidebarWidth?: number;
   previewRatio?: number;
+}
+
+interface SidebarSearchResult {
+  documentId: string;
+  documentName: string;
+  lineNumber: number;
+  lineText: string;
+  matchColumn: number;
+}
+
+interface OutlineEntry {
+  level: number;
+  lineNumber: number;
+  title: string;
 }
 
 function clampPanelWidth(value: number, min: number, max: number) {
@@ -171,9 +194,10 @@ function getViewportBalancedPreviewRatio() {
 function getPreviewPaneWidth(
   workspaceWidth: number,
   sidebarWidth: number,
+  handleWidthTotal: number,
   previewRatio: number
 ) {
-  const availableWidth = Math.max(0, workspaceWidth - sidebarWidth - PANEL_HANDLE_WIDTH * 2);
+  const availableWidth = Math.max(0, workspaceWidth - sidebarWidth - handleWidthTotal);
   const idealWidth = Math.round(availableWidth * previewRatio);
 
   return clampPanelWidth(idealWidth, PREVIEW_MIN_WIDTH, availableWidth);
@@ -239,6 +263,8 @@ export function App() {
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("github");
+  const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>("files");
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
   const [themeImportFeedback, setThemeImportFeedback] = useState<SyncFeedback>({
     tone: "neutral",
     text: ""
@@ -954,6 +980,13 @@ export function App() {
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
   };
 
+  const handleSidebarSearchQueryChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setSidebarSearchQuery(event.target.value);
+    },
+    []
+  );
+
   const handleNewDocument = () => {
     setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
   };
@@ -1382,12 +1415,14 @@ export function App() {
       event.preventDefault();
 
       const workspaceWidth = workspace.getBoundingClientRect().width;
-      const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
-      const remainingWidth = Math.max(0, workspaceWidth - sidebarPaneWidth - PANEL_HANDLE_WIDTH * 2);
+      const sidebarPaneWidth = isSidebarCollapsed ? 0 : sidebarWidth;
+      const handleWidthTotal =
+        (isSidebarCollapsed ? 0 : PANEL_HANDLE_WIDTH) + PANEL_HANDLE_WIDTH;
+      const remainingWidth = Math.max(0, workspaceWidth - sidebarPaneWidth - handleWidthTotal);
       const startWidth =
         edge === "sidebar"
           ? sidebarWidth
-          : getPreviewPaneWidth(workspaceWidth, sidebarPaneWidth, previewRatio);
+          : getPreviewPaneWidth(workspaceWidth, sidebarPaneWidth, handleWidthTotal, previewRatio);
       panelResizeRef.current = {
         edge,
         startX: event.clientX,
@@ -1421,11 +1456,7 @@ export function App() {
             setIsSidebarCollapsed(false);
           }
         } else {
-          const clampedWidth = clampPanelWidth(
-            nextWidth,
-            PREVIEW_MIN_WIDTH,
-            Math.max(PREVIEW_MIN_WIDTH, remainingWidth)
-          );
+          const clampedWidth = clampPanelWidth(nextWidth, PREVIEW_MIN_WIDTH, Math.max(PREVIEW_MIN_WIDTH, remainingWidth));
           setPreviewRatio(remainingWidth > 0 ? clampPreviewRatio(clampedWidth / remainingWidth) : previewRatio);
           if (isPreviewCollapsed) {
             setIsPreviewCollapsed(false);
@@ -1474,21 +1505,33 @@ export function App() {
     () => mergeSnippets([...DEFAULT_TYPST_SNIPPETS, ...customSnippets]),
     [customSnippets]
   );
+  const sidebarSearchResults = useMemo(
+    () => collectProjectSearchResults(snapshot, sidebarSearchQuery),
+    [sidebarSearchQuery, snapshot]
+  );
+  const outlineEntries = useMemo(
+    () => collectOutlineEntries(activeDocument.content),
+    [activeDocument.content]
+  );
   const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
   const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
-  const sidebarPaneWidth = isSidebarCollapsed ? PANEL_COLLAPSED_WIDTH : sidebarWidth;
   const effectiveWorkspaceWidth =
     workspaceWidth > 0 ? workspaceWidth : typeof window !== "undefined" ? window.innerWidth : 0;
   const isMobileWorkspace =
     effectiveWorkspaceWidth > 0 && effectiveWorkspaceWidth <= MOBILE_WORKSPACE_THRESHOLD;
+  const showDesktopSidebar = !isMobileWorkspace && !isSidebarCollapsed;
+  const sidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
+  const previewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
+  const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
+  const handleWidthTotal = sidebarHandleWidth + previewHandleWidth;
   const previewPaneWidth = isPreviewCollapsed
     ? PANEL_COLLAPSED_WIDTH
-    : getPreviewPaneWidth(effectiveWorkspaceWidth, sidebarPaneWidth, previewRatio);
+    : getPreviewPaneWidth(effectiveWorkspaceWidth, sidebarPaneWidth, handleWidthTotal, previewRatio);
   const sourcePaneWidth =
     workspaceMode === "split" && effectiveWorkspaceWidth > 0
       ? Math.max(
           0,
-          effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - PANEL_HANDLE_WIDTH * 2
+          effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - handleWidthTotal
         )
       : 0;
   const workspaceGridStyle: CSSProperties =
@@ -1499,7 +1542,9 @@ export function App() {
         }
       : workspaceMode === "split"
       ? {
-          gridTemplateColumns: `${sidebarPaneWidth}px ${PANEL_HANDLE_WIDTH}px ${sourcePaneWidth}px ${PANEL_HANDLE_WIDTH}px ${previewPaneWidth}px`
+          gridTemplateColumns: showDesktopSidebar
+            ? `${sidebarPaneWidth}px ${sidebarHandleWidth}px ${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
+            : `${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
         }
       : {
           gridTemplateColumns: "minmax(0, 1fr)"
@@ -1519,8 +1564,42 @@ export function App() {
       ? "pane--mobile-active"
       : "pane--mobile-hidden"
     : "";
-  const sidebarPaneCollapsed = isSidebarCollapsed && !isMobileWorkspace;
+  const sidebarPaneCollapsed = !isMobileWorkspace && !showDesktopSidebar;
   const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace;
+  const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
+  const handleOpenSidebarTool = useCallback(
+    (tool: SidebarTool) => {
+      if (!isMobileWorkspace && activeSidebarTool === tool && !isSidebarCollapsed) {
+        setIsSidebarCollapsed(true);
+      } else {
+        setActiveSidebarTool(tool);
+        setIsSidebarCollapsed(false);
+      }
+
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("files");
+      } else if (workspaceMode === "editor" || workspaceMode === "preview") {
+        setWorkspaceMode("split");
+      }
+    },
+    [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]
+  );
+  const focusDocumentLocation = useCallback(
+    (documentId: string, line: number, column = 1) => {
+      setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
+      setWorkspaceMode("split");
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("editor");
+      }
+
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          editorRef.current?.focusRange({ line, column });
+        });
+      });
+    },
+    [isMobileWorkspace]
+  );
 
   return (
     <div className="app-shell">
@@ -1661,18 +1740,18 @@ export function App() {
             onOpen={() => openMenuWithDelay("View")}
             onOpenImmediately={() => openMenuImmediately("View")}
           >
-            <button className="menu-action" onClick={() => handlePanelToggle("sidebar")} type="button">
-              Files
-            </button>
+              <button className="menu-action" onClick={() => handleOpenSidebarTool("files")} type="button">
+                Files
+              </button>
             <button className="menu-action" onClick={() => setFullscreenMode("editor")} type="button">
               Editor
             </button>
             <button className="menu-action" onClick={() => setFullscreenMode("preview")} type="button">
               Preview
             </button>
-            <button className="menu-action" onClick={handleSearch} type="button">
-              Search
-            </button>
+              <button className="menu-action" onClick={() => handleOpenSidebarTool("search")} type="button">
+                Search
+              </button>
             <button className="menu-action" onClick={togglePreviewPopup} type="button">
               {isPreviewPopupOpen ? "Hide preview in popup" : "Show preview in popup"}
             </button>
@@ -1716,6 +1795,35 @@ export function App() {
           <span className="file-pill">{activeDocument.name}</span>
         </div>
       </header>
+
+      <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""}`}>
+      {isMobileWorkspace ? null : (
+        <aside className="activity-bar" aria-label="Sidebar tools">
+          {SIDEBAR_TOOLS.map((tool) => (
+            <button
+              key={tool.id}
+              aria-label={tool.label}
+              aria-pressed={activeSidebarTool === tool.id && !sidebarPaneCollapsed}
+              className={`activity-bar__button ${
+                activeSidebarTool === tool.id && !sidebarPaneCollapsed
+                  ? "activity-bar__button--active"
+                  : ""
+              }`}
+              onClick={() => handleOpenSidebarTool(tool.id)}
+              title={tool.label}
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className={`activity-icon activity-icon--${tool.id}`}
+              />
+              <span className="visually-hidden">{tool.label}</span>
+            </button>
+          ))}
+        </aside>
+      )}
+
+      <div className="workspace-main">
 
       <main
         className={`workspace workspace--triple workspace--${workspaceMode} ${
@@ -1762,80 +1870,31 @@ export function App() {
           </div>
         ) : null}
 
-        <aside
-          className={`pane pane--sidebar ${
-            sidebarPaneCollapsed ? "pane--collapsed" : ""
-          } ${sidebarVisibilityClass}`}
-          aria-label="Files and sync"
-        >
-          {sidebarPaneCollapsed ? (
-            <button
-              className="pane__collapsed-toggle"
-              onClick={() => handlePanelToggle("sidebar")}
-              type="button"
-            >
-              Files
-            </button>
-          ) : (
+        {showDesktopSidebar || isMobileWorkspace ? (
+          <aside
+            className={`pane pane--sidebar ${sidebarVisibilityClass}`}
+            aria-label="Files and sync"
+          >
             <>
               <div className="pane__header">
-                <h2>Files</h2>
+                <div className="pane__header-group">
+                  <h2>{sidebarToolTitle}</h2>
+                  <span className="pane__subtitle">{getSidebarToolSubtitle(activeSidebarTool)}</span>
+                </div>
                 <div className="pane__header-actions">
-                  <button
-                    className="pane__button"
-                    onClick={handleNewDocument}
-                    type="button"
-                  >
-                    New file
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    onClick={() => handlePanelToggle("sidebar")}
-                    type="button"
-                  >
-                    Hide
-                  </button>
-                </div>
-              </div>
-
-              <section className="sidebar-section">
-                <div className="file-list" role="list">
-                  {snapshot.project.documents.map((document) => (
-                    <button
-                      key={document.id}
-                      className={`file-row ${
-                        document.id === activeDocument.id ? "file-row--active" : ""
-                      }`}
-                      onClick={() => handleSelectDocument(document.id)}
-                      type="button"
-                    >
-                      <span className="file-row__name">{document.name}</span>
-                      <span className="file-row__meta">
-                        {document.id === activeDocument.id ? "Open" : "Switch"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-
-              <section className="sidebar-section sidebar-section--status">
-                <div className="sidebar-card">
-                  <div className="sidebar-card__row">
-                    <span>GitHub sync</span>
-                    <span className="pane__meta">{isOnline ? "Ready" : "Offline"}</span>
-                  </div>
-                  <p className="sidebar-card__copy">{syncFeedback.text}</p>
-                  <div className="sidebar-card__actions">
+                  {activeSidebarTool === "files" ? (
                     <button
                       className="pane__button"
-                      onClick={() => {
-                        setSettingsTab("github");
-                        setIsSettingsOpen(true);
-                      }}
+                      onClick={handleNewDocument}
                       type="button"
                     >
-                      Settings
+                      New file
                     </button>
+                  ) : activeSidebarTool === "search" ? (
+                    <button className="pane__button" onClick={handleSearch} type="button">
+                      Search editor
+                    </button>
+                  ) : activeSidebarTool === "sync" ? (
                     <button
                       className="pane__button"
                       disabled={!canPushToGitHub}
@@ -1846,21 +1905,193 @@ export function App() {
                     >
                       {isSyncing ? "Pushing..." : "Push"}
                     </button>
-                  </div>
+                  ) : null}
                 </div>
-              </section>
-            </>
-          )}
-        </aside>
+              </div>
 
-        {isMobileWorkspace ? null : (
+              {activeSidebarTool === "files" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  <div className="file-list" role="list">
+                    {snapshot.project.documents.map((document) => (
+                      <button
+                        key={document.id}
+                        className={`file-row ${
+                          document.id === activeDocument.id ? "file-row--active" : ""
+                        }`}
+                        onClick={() => handleSelectDocument(document.id)}
+                        type="button"
+                      >
+                        <span className="file-row__name">{document.name}</span>
+                        <span className="file-row__meta">
+                          {document.id === activeDocument.id ? "Open" : "Switch"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "search" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  <div className="sidebar-search">
+                    <label className="sync-field">
+                      <span>Find in project</span>
+                      <input
+                        onChange={handleSidebarSearchQueryChange}
+                        placeholder="Search across .typ files"
+                        type="text"
+                        value={sidebarSearchQuery}
+                      />
+                    </label>
+                    {sidebarSearchQuery.trim() ? (
+                      sidebarSearchResults.length > 0 ? (
+                        <div className="sidebar-result-list" role="list">
+                          {sidebarSearchResults.map((result) => (
+                            <button
+                              key={`${result.documentId}:${result.lineNumber}:${result.matchColumn}`}
+                              className="sidebar-result"
+                              onClick={() =>
+                                focusDocumentLocation(
+                                  result.documentId,
+                                  result.lineNumber,
+                                  result.matchColumn
+                                )
+                              }
+                              type="button"
+                            >
+                              <div className="sidebar-result__top">
+                                <strong>{result.documentName}</strong>
+                                <span>{`Line ${result.lineNumber}`}</span>
+                              </div>
+                              <code>{result.lineText}</code>
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">No matches found.</div>
+                      )
+                    ) : (
+                      <div className="snippet-empty">
+                        Search across your open project files and jump directly to matches.
+                      </div>
+                    )}
+                  </div>
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "outline" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  {outlineEntries.length > 0 ? (
+                    <div className="outline-list" role="list">
+                      {outlineEntries.map((entry) => (
+                        <button
+                          key={`${entry.lineNumber}:${entry.title}`}
+                          className="outline-row"
+                          onClick={() =>
+                            focusDocumentLocation(activeDocument.id, entry.lineNumber, 1)
+                          }
+                          style={
+                            {
+                              "--outline-level": entry.level
+                            } as CSSProperties
+                          }
+                          type="button"
+                        >
+                          <span className="outline-row__title">{entry.title}</span>
+                          <span className="outline-row__meta">{`H${entry.level}`}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="snippet-empty">
+                      Add Typst headings like <code>= Section</code> to build an outline.
+                    </div>
+                  )}
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "sync" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  <div className="sync-stack">
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>GitHub sync</span>
+                        <span className="pane__meta">{isOnline ? "Ready" : "Offline"}</span>
+                      </div>
+                      <p className="sidebar-card__copy">{syncFeedback.text}</p>
+                      <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button"
+                          onClick={() => {
+                            setSettingsTab("github");
+                            setIsSettingsOpen(true);
+                          }}
+                          type="button"
+                        >
+                          Settings
+                        </button>
+                        <button
+                          className="pane__button"
+                          disabled={!canPushToGitHub}
+                          onClick={() => {
+                            void handlePushToGitHub();
+                          }}
+                          type="button"
+                        >
+                          {isSyncing ? "Pushing..." : "Push"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "debug" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  <div className="sync-stack">
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Compiler</span>
+                        <span className="pane__meta">{compilerStatus.label}</span>
+                      </div>
+                      <p className="sidebar-card__copy">
+                        {compilerStatus.detail ?? "Live preview pipeline is active."}
+                      </p>
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Diagnostics</span>
+                        <span className="pane__meta">{editorDiagnostics.length}</span>
+                      </div>
+                      {editorDiagnostics.length > 0 ? (
+                        <div className="sidebar-diagnostics" role="list">
+                          {editorDiagnostics.map((diagnostic, index) => (
+                            <div className="sidebar-diagnostic" key={`${diagnostic.message}:${index}`}>
+                              <strong>{diagnostic.severity}</strong>
+                              <span>{diagnostic.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="sidebar-card__copy">No compiler diagnostics right now.</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              ) : null}
+            </>
+          </aside>
+        ) : null}
+
+        {showDesktopSidebar ? (
           <button
             aria-label="Resize sidebar"
             className="workspace-handle workspace-handle--left"
             onPointerDown={beginPanelResize("sidebar")}
             type="button"
           />
-        )}
+        ) : null}
 
         <section
           className={`pane pane--editor ${editorVisibilityClass}`}
@@ -2117,6 +2348,8 @@ export function App() {
           )}
         </section>
       </main>
+      </div>
+      </div>
 
       {isPreviewPopupOpen ? (
         <div
@@ -2957,6 +3190,96 @@ function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
     result.errors.length > 1 ? ` (+${result.errors.length - 1} more)` : "";
 
   return `Compile error: ${prefix}${firstError.message}${suffix}`;
+}
+
+function getSidebarToolTitle(tool: SidebarTool): string {
+  switch (tool) {
+    case "files":
+      return "Files";
+    case "search":
+      return "Search";
+    case "outline":
+      return "Outline";
+    case "sync":
+      return "Sync";
+    case "debug":
+      return "Debug";
+  }
+}
+
+function getSidebarToolSubtitle(tool: SidebarTool): string {
+  switch (tool) {
+    case "files":
+      return "Project documents";
+    case "search":
+      return "Find across files";
+    case "outline":
+      return "Document structure";
+    case "sync":
+      return "GitHub publishing";
+    case "debug":
+      return "Compiler and diagnostics";
+  }
+}
+
+function collectProjectSearchResults(
+  snapshot: AppSnapshot,
+  query: string
+): SidebarSearchResult[] {
+  const trimmedQuery = query.trim().toLowerCase();
+
+  if (!trimmedQuery) {
+    return [];
+  }
+
+  const results: SidebarSearchResult[] = [];
+
+  for (const document of snapshot.project.documents) {
+    const lines = document.content.split("\n");
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const lineText = lines[index];
+      const matchColumn = lineText.toLowerCase().indexOf(trimmedQuery);
+
+      if (matchColumn === -1) {
+        continue;
+      }
+
+      results.push({
+        documentId: document.id,
+        documentName: document.name,
+        lineNumber: index + 1,
+        lineText: lineText.trim() || "(blank line)",
+        matchColumn: matchColumn + 1
+      });
+
+      if (results.length >= 80) {
+        return results;
+      }
+    }
+  }
+
+  return results;
+}
+
+function collectOutlineEntries(content: string): OutlineEntry[] {
+  return content
+    .split("\n")
+    .flatMap((lineText, index) => {
+      const match = lineText.match(/^(=+)\s+(.*)$/);
+
+      if (!match) {
+        return [];
+      }
+
+      return [
+        {
+          level: match[1].length,
+          lineNumber: index + 1,
+          title: match[2].trim()
+        } satisfies OutlineEntry
+      ];
+    });
 }
 
 function formatDiagnosticRange(diagnostic: {
