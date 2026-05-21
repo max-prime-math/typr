@@ -5,12 +5,13 @@ import {
   useMemo,
   useRef
 } from "react";
+import type { MutableRefObject } from "react";
 import { snippet } from "@codemirror/autocomplete";
 import type { CompletionSource } from "@codemirror/autocomplete";
 import { undo, redo } from "@codemirror/commands";
 import { openSearchPanel, gotoLine } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
 import type { ThemeDefinition } from "../theme/themes";
@@ -25,6 +26,8 @@ import {
 interface TypstEditorProps {
   value: string;
   vimMode: boolean;
+  cursorSmooth: boolean;
+  cursorSmear: number;
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
@@ -33,6 +36,7 @@ interface TypstEditorProps {
 }
 
 export interface TypstEditorHandle {
+  focus(): void;
   focusRange(range: {
     line: number;
     column: number;
@@ -55,6 +59,8 @@ export interface TypstEditorHandle {
 export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor({
   value,
   vimMode,
+  cursorSmooth,
+  cursorSmear,
   theme,
   diagnostics,
   highlightErrors,
@@ -63,6 +69,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const currentValueRef = useRef(value);
   const latestOnChangeRef = useRef(onChange);
   const snippetsRef = useRef(snippets);
   const snippetCompletionSource = useMemo<CompletionSource>(
@@ -81,6 +88,9 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   useImperativeHandle(
     ref,
     () => ({
+      focus() {
+        viewRef.current?.focus();
+      },
       focusRange(range) {
         const view = viewRef.current;
 
@@ -217,8 +227,11 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
     const view = new EditorView({
       state: createEditorState(value, {
-        onChange: (nextValue) => latestOnChangeRef.current(nextValue),
+        onChange: (update) =>
+          latestOnChangeRef.current(applyEditorChanges(currentValueRef, update)),
         vimMode,
+        cursorSmooth,
+        cursorSmear,
         theme,
         diagnostics,
         highlightErrors,
@@ -233,7 +246,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
       view.destroy();
       viewRef.current = null;
     };
-  }, [theme, vimMode, snippetCompletionSource]);
+  }, [cursorSmear, cursorSmooth, theme, vimMode, snippetCompletionSource]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -242,16 +255,16 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
       return;
     }
 
-    const currentValue = view.state.doc.toString();
-
-    if (value === currentValue) {
+    if (value === currentValueRef.current) {
       return;
     }
 
+    const currentLength = view.state.doc.length;
+    currentValueRef.current = value;
     view.dispatch({
       changes: {
         from: 0,
-        to: currentValue.length,
+        to: currentLength,
         insert: value
       }
     });
@@ -273,6 +286,26 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
   return <div className="editor-root" ref={containerRef} />;
 });
+
+function applyEditorChanges(
+  currentValueRef: MutableRefObject<string>,
+  update: ViewUpdate
+): string {
+  const previousValue = currentValueRef.current;
+  let nextValue = "";
+  let previousOffset = 0;
+
+  update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    nextValue += previousValue.slice(previousOffset, fromA);
+    nextValue += inserted.toString();
+    previousOffset = toA;
+  });
+
+  nextValue += previousValue.slice(previousOffset);
+  currentValueRef.current = nextValue;
+
+  return nextValue;
+}
 
 function insertTextIntoView(view: EditorView, text: string): void {
   const selection = view.state.selection.main;

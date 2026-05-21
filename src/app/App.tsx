@@ -15,10 +15,13 @@ import {
   createDocument,
   createDocumentFromFile,
   getActiveDocument,
+  normalizeSnapshot,
   renameActiveDocument,
   renameProject,
   setActiveDocument,
   updateActiveDocument,
+  updateCursorSmearPreference,
+  updateCursorSmoothPreference,
   updateThemePreference,
   updateVimPreference,
   type AppSnapshot,
@@ -213,6 +216,7 @@ export function App() {
   const menuStripRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
+  const shouldFocusEditorAfterVimToggleRef = useRef(false);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
   const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
   const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -227,6 +231,9 @@ export function App() {
   } | null>(null);
   const compileRequestRef = useRef(0);
   const pendingSourceRef = useRef("");
+  const previewSourceDraftRef = useRef("");
+  const themeRef = useRef<ThemeDefinition | null>(null);
+  const compileResultRef = useRef<CompileResult | null>(null);
   const compileInFlightRef = useRef(false);
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
@@ -315,8 +322,31 @@ export function App() {
     typeof navigator === "undefined" ? true : navigator.onLine
   );
   const handleVimToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) => {
+      const nextVimMode = !currentSnapshot.preferences.vimMode;
+      shouldFocusEditorAfterVimToggleRef.current = nextVimMode;
+      return updateVimPreference(currentSnapshot, nextVimMode);
+    });
+  }, []);
+
+  const handleCursorSmearChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setSnapshot((currentSnapshot) =>
+        updateCursorSmearPreference(
+          currentSnapshot,
+          Number(event.target.value)
+        )
+      );
+    },
+    []
+  );
+
+  const handleCursorSmoothToggle = useCallback(() => {
     setSnapshot((currentSnapshot) =>
-      updateVimPreference(currentSnapshot, !currentSnapshot.preferences.vimMode)
+      updateCursorSmoothPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.cursorSmooth
+      )
     );
   }, []);
   const {
@@ -329,10 +359,14 @@ export function App() {
   } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
-  const previewSource = useMemo(
-    () => createThemedPreviewSource(activeDocument.content, theme),
-    [activeDocument.content, theme]
-  );
+
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+
+  useEffect(() => {
+    compileResultRef.current = compileResult;
+  }, [compileResult]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -430,7 +464,9 @@ export function App() {
         return;
       }
 
-      const nextSnapshot = storedSnapshot ?? createDefaultSnapshot();
+      const nextSnapshot = storedSnapshot
+        ? normalizeSnapshot(storedSnapshot)
+        : createDefaultSnapshot();
       setSnapshot(nextSnapshot);
       setTheme(nextSnapshot.preferences.theme);
       setGitHubConfig(storedGitHubConfig ?? createEmptyGitHubRemoteConfig());
@@ -695,8 +731,9 @@ export function App() {
         typeof performance === "undefined"
           ? 0
           : performance.now() - compileStartedAt;
-      const nextResult = shouldReuseCompileResult(compileResult, result)
-        ? compileResult
+      const currentCompileResult = compileResultRef.current;
+      const nextResult = shouldReuseCompileResult(currentCompileResult, result)
+        ? currentCompileResult
         : result;
 
       if (nextResult === result) {
@@ -744,7 +781,7 @@ export function App() {
         setIsCompiling(false);
       }
     }
-  }, [compileResult, compiler, isHydrated]);
+  }, [compiler, isHydrated]);
 
   const scheduleCompile = useCallback(() => {
     if (compileTimerRef.current !== null) {
@@ -759,6 +796,10 @@ export function App() {
 
     compileTimerRef.current = window.setTimeout(() => {
       compileTimerRef.current = null;
+      pendingSourceRef.current = createThemedPreviewSource(
+        previewSourceDraftRef.current,
+        themeRef.current ?? theme
+      );
       void runCompile();
     }, COMPILE_DEBOUNCE_MS);
   }, [runCompile]);
@@ -768,9 +809,22 @@ export function App() {
       return;
     }
 
-    pendingSourceRef.current = previewSource;
+    previewSourceDraftRef.current = activeDocument.content;
     scheduleCompile();
-  }, [isHydrated, previewSource, scheduleCompile]);
+  }, [activeDocument.content, isHydrated, scheduleCompile, theme]);
+
+  useEffect(() => {
+    if (!snapshot.preferences.vimMode || !shouldFocusEditorAfterVimToggleRef.current) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      shouldFocusEditorAfterVimToggleRef.current = false;
+      editorRef.current?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [snapshot.preferences.vimMode]);
 
   useEffect(() => {
     if (!compileResult || compileResult.ok) {
@@ -1976,6 +2030,8 @@ export function App() {
             snippets={allSnippets}
             value={activeDocument.content}
             vimMode={snapshot.preferences.vimMode}
+            cursorSmooth={snapshot.preferences.cursorSmooth}
+            cursorSmear={snapshot.preferences.cursorSmear}
             theme={theme}
             onChange={handleDocumentChange}
           />
@@ -2265,6 +2321,41 @@ export function App() {
                       <span className="theme-auto-row__copy">
                         Uses a random theme from your system light or dark mode and keeps it stable.
                       </span>
+                    </div>
+
+                    <div className="settings-toggle-stack">
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Smooth cursor</strong>
+                          <small>Animate the source cursor as it moves through text.</small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.cursorSmooth}
+                          onChange={handleCursorSmoothToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      {snapshot.preferences.cursorSmooth ? (
+                        <label className="settings-slider settings-slider--nested">
+                          <span>
+                            <strong>Smear cursor</strong>
+                            <small>
+                              Control how much trail the smooth cursor leaves behind.
+                            </small>
+                          </span>
+                          <div className="settings-slider__control">
+                            <input
+                              max="100"
+                              min="0"
+                              onChange={handleCursorSmearChange}
+                              type="range"
+                              value={snapshot.preferences.cursorSmear}
+                            />
+                            <output>{snapshot.preferences.cursorSmear}%</output>
+                          </div>
+                        </label>
+                      ) : null}
                     </div>
 
                     <div className="theme-columns">

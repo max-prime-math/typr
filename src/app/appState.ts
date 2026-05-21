@@ -21,6 +21,8 @@ export interface TypstProject {
 export interface AppPreferences {
   theme: ThemePreference;
   vimMode: boolean;
+  cursorSmooth: boolean;
+  cursorSmear: number;
 }
 
 export interface AppSnapshot {
@@ -47,6 +49,8 @@ A local-first, browser-based Typst editor for iPad and desktop.
 Start writing your document here.
 `;
 
+const DEFAULT_CURSOR_SMEAR = 25;
+
 function createId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
 }
@@ -72,9 +76,34 @@ export function createDefaultSnapshot(): AppSnapshot {
     },
     preferences: {
       theme: AUTO_THEME_ID,
-      vimMode: false
+      vimMode: false,
+      cursorSmooth: true,
+      cursorSmear: DEFAULT_CURSOR_SMEAR
     }
   };
+}
+
+export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
+  const storedCursorSmear = snapshot.preferences.cursorSmear;
+
+  return {
+    ...snapshot,
+    preferences: {
+      theme: snapshot.preferences.theme ?? AUTO_THEME_ID,
+      vimMode: snapshot.preferences.vimMode ?? false,
+      cursorSmooth: snapshot.preferences.cursorSmooth ?? true,
+      cursorSmear:
+        typeof storedCursorSmear === "number"
+          ? clampCursorSmear(storedCursorSmear)
+          : storedCursorSmear === false
+            ? 0
+            : DEFAULT_CURSOR_SMEAR
+    }
+  };
+}
+
+function clampCursorSmear(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 export function getActiveDocument(project: TypstProject): TypstDocumentFile {
@@ -269,6 +298,32 @@ export function updateVimPreference(
     preferences: {
       ...snapshot.preferences,
       vimMode
+    }
+  };
+}
+
+export function updateCursorSmearPreference(
+  snapshot: AppSnapshot,
+  cursorSmear: number
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      cursorSmear: clampCursorSmear(cursorSmear)
+    }
+  };
+}
+
+export function updateCursorSmoothPreference(
+  snapshot: AppSnapshot,
+  cursorSmooth: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      cursorSmooth
     }
   };
 }
