@@ -4,10 +4,13 @@ import {
   loadFonts,
   type TypstRenderer
 } from "@myriaddreamin/typst.ts";
-import type { TypstCompiler } from "@myriaddreamin/typst.ts/compiler";
+import {
+  CompileFormatEnum,
+  type TypstCompiler
+} from "@myriaddreamin/typst.ts/compiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
-import { CORE_FONT_URLS } from "./typstAssets";
+import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 
 let compilerPromise: Promise<TypstCompiler> | null = null;
 let rendererPromise: Promise<TypstRenderer> | null = null;
@@ -34,4 +37,36 @@ export async function getTypstRenderer(): Promise<TypstRenderer> {
   }
 
   return rendererPromise;
+}
+
+export async function exportTypstPdf(source: string): Promise<Uint8Array> {
+  const compiler = await getTypstCompiler();
+  await compiler.reset();
+  compiler.addSource(MAIN_FILE_PATH, source);
+
+  const result = await compiler.compile({
+    mainFilePath: MAIN_FILE_PATH,
+    format: CompileFormatEnum.pdf,
+    diagnostics: "full"
+  });
+
+  if (!result.result) {
+    const summary = summarizeDiagnostics(result.diagnostics);
+    throw new Error(summary ?? "Typst PDF export failed.");
+  }
+
+  return result.result;
+}
+
+function summarizeDiagnostics(
+  diagnostics: Array<{ message?: string }> | undefined
+): string | null {
+  if (!diagnostics || diagnostics.length === 0) {
+    return null;
+  }
+
+  return diagnostics
+    .map((diagnostic) => diagnostic.message?.trim())
+    .filter((message): message is string => Boolean(message))
+    .join("\n");
 }

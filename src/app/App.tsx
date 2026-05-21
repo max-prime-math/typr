@@ -32,6 +32,7 @@ import {
   type CompilerStatus,
   type CompileResult
 } from "../compiler/typstCompiler";
+import { exportTypstPdf } from "../compiler/typstRuntime";
 import {
   TypstEditor,
   type TypstEditorHandle,
@@ -413,6 +414,7 @@ export function App() {
   const [isErrorSettled, setIsErrorSettled] = useState(false);
   const [isCompiling, setIsCompiling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [storageStatus, setStorageStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle"
   );
@@ -1234,8 +1236,7 @@ export function App() {
     }, 0);
   };
 
-  const downloadFile = (name: string, content: string, type = "text/plain") => {
-    const blob = new Blob([content], { type });
+  const downloadBlob = (name: string, blob: Blob) => {
     const url = window.URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1244,6 +1245,10 @@ export function App() {
     window.setTimeout(() => {
       window.URL.revokeObjectURL(url);
     }, 0);
+  };
+
+  const downloadFile = (name: string, content: string, type = "text/plain") => {
+    downloadBlob(name, new Blob([content], { type }));
   };
 
   const handleRenameProject = () => {
@@ -1292,9 +1297,34 @@ export function App() {
     );
   };
 
-  const handleExportPdf = () => {
-    window.print();
-  };
+  const handleExportPdf = useCallback(async () => {
+    if (isExportingPdf) {
+      return;
+    }
+
+    setIsExportingPdf(true);
+
+    try {
+      const pdfBytes = await exportTypstPdf(activeDocument.content);
+      const baseName = activeDocument.name.replace(/\.typ$/i, "");
+      const pdfName = `${baseName || activeDocument.name}.pdf`;
+      const pdfBuffer = Uint8Array.from(pdfBytes).buffer;
+      downloadBlob(
+        pdfName,
+        new Blob([pdfBuffer], {
+          type: "application/pdf"
+        })
+      );
+    } catch (error) {
+      window.alert(
+        error instanceof Error
+          ? `Unable to export PDF: ${error.message}`
+          : "Unable to export PDF."
+      );
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }, [activeDocument.content, activeDocument.name, isExportingPdf]);
 
   const handleUndo = () => editorRef.current?.undo();
   const handleRedo = () => editorRef.current?.redo();
@@ -1808,8 +1838,13 @@ export function App() {
             <button className="menu-action" onClick={handleDownloadProject} type="button">
               Download project
             </button>
-            <button className="menu-action" onClick={handleExportPdf} type="button">
-              Export PDF
+            <button
+              className="menu-action"
+              disabled={isExportingPdf}
+              onClick={handleExportPdf}
+              type="button"
+            >
+              {isExportingPdf ? "Exporting PDF..." : "Export PDF"}
             </button>
           </MenuDropdown>
 
