@@ -36,6 +36,11 @@ export interface CompileOutput {
   artifactData?: Uint8Array;
 }
 
+export interface CompileAssetFile {
+  path: string;
+  content: Uint8Array;
+}
+
 export interface CompileSuccess {
   ok: true;
   engine: CompilerEngine;
@@ -56,6 +61,6 @@ export interface TypstCompilerOptions {
 }
 
 export interface TypstCompiler {
-  compileDocument(source: string): Promise<CompileResult>;
+  compileDocument(source: string, assets?: CompileAssetFile[]): Promise<CompileResult>;
   dispose(): void;
 }

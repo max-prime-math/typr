@@ -11,6 +11,7 @@ const SNAPSHOT_KEY = "snapshot";
 const GITHUB_CONFIG_KEY = "github-config";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
+const DESMOS_API_KEY_KEY = "desmos-api-key";
 
 async function getDatabase() {
   return openDB(DATABASE_NAME, DATABASE_VERSION, {
@@ -60,4 +61,14 @@ export async function loadCustomSnippets(): Promise<TypstSnippet[] | null> {
 export async function saveCustomSnippets(snippets: TypstSnippet[]): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, snippets, CUSTOM_SNIPPETS_KEY);
+}
+
+export async function loadDesmosApiKey(): Promise<string | null> {
+  const database = await getDatabase();
+  return (await database.get(STORE_NAME, DESMOS_API_KEY_KEY)) ?? null;
+}
+
+export async function saveDesmosApiKey(apiKey: string): Promise<void> {
+  const database = await getDatabase();
+  await database.put(STORE_NAME, apiKey, DESMOS_API_KEY_KEY);
 }

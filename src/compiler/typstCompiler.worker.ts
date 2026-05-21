@@ -5,11 +5,13 @@ import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url"
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 import { normalizeTypstDiagnostic } from "./diagnostics";
+import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import type {
   CompilerWorkerRequest,
   CompilerWorkerResponse
 } from "./protocol";
 import type {
+  CompileAssetFile,
   CompilerStatus,
   CompileDiagnostic,
   CompileFailure,
@@ -34,8 +36,11 @@ interface TypstSnippetModule {
 
 interface TypstCompilerDriver {
   addSource(path: string, source: string): void;
+  mapShadow(path: string, content: Uint8Array): void;
+  resetShadow(): void;
   compile(options: {
     mainFilePath: string;
+    root?: string;
     diagnostics: "full";
   }): Promise<{
     hasError?: boolean;
@@ -127,7 +132,8 @@ async function warmCompiler(requestId: number): Promise<void> {
 
 async function compileWithTypst(
   requestId: number,
-  source: string
+  source: string,
+  assets: CompileAssetFile[] = []
 ): Promise<CompileResult> {
   await withTimeout(
     warmCompiler(requestId),
@@ -136,7 +142,7 @@ async function compileWithTypst(
   );
 
   if (bootstrapFailed) {
-    return compileWithMock(source);
+    return compileWithMock(source, assets);
   }
 
   try {
@@ -144,7 +150,11 @@ async function compileWithTypst(
       (async () => {
         const module = await loadTypstModule();
         const compiler = await getCompilerDriver();
+        compiler.resetShadow();
         compiler.addSource(MAIN_FILE_PATH, source);
+        for (const asset of assets) {
+          compiler.mapShadow(asset.path, asset.content);
+        }
 
         if (!fontsPrimed) {
           emitStatus(requestId, {
@@ -162,6 +172,7 @@ async function compileWithTypst(
         });
         const compileOutput = await compiler.compile({
           mainFilePath: MAIN_FILE_PATH,
+          root: DIAGRAM_COMPILER_ROOT,
           diagnostics: "full"
         });
         fontsPrimed = true;
@@ -245,8 +256,11 @@ async function compileWithTypst(
   }
 }
 
-async function compileWithMock(source: string): Promise<CompileResult> {
-  const result = await createMockCompiler().compileDocument(source);
+async function compileWithMock(
+  source: string,
+  assets: CompileAssetFile[] = []
+): Promise<CompileResult> {
+  const result = await createMockCompiler().compileDocument(source, assets);
 
   if (fallbackWarning && result.ok) {
     return {
@@ -336,7 +350,7 @@ self.addEventListener("message", (event: MessageEvent<CompilerWorkerRequest>) =>
   }
 
   if (request.type === "compile") {
-    void compileWithTypst(request.id, request.source)
+    void compileWithTypst(request.id, request.source, request.assets ?? [])
       .then((result) => {
         postMessageToMain({
           id: request.id,

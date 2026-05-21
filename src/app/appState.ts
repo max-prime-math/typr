@@ -1,6 +1,23 @@
 import { AUTO_THEME_ID } from "../theme/themes";
+import { DEFAULT_DIAGRAM_FILE_NAME, normalizeDiagramFileName } from "../diagram/diagramFiles";
+import {
+  DEFAULT_GRAPH_FILE_NAME,
+  normalizeGraphFileName,
+  normalizeGraphFileNameForContentType
+} from "../graph/graphFiles";
 
 export type ThemePreference = string;
+export type GraphProvider = "desmos" | "plotly" | "gnuplot";
+export type GraphContentType = "png" | "svg";
+
+export interface GraphStyle {
+  width: number;
+  height: number;
+  strokeWidth: number;
+  xAxisLabel: string;
+  yAxisLabel: string;
+  axisArrows: boolean;
+}
 
 export interface TypstDocumentFile {
   id: string;
@@ -9,6 +26,92 @@ export interface TypstDocumentFile {
   updatedAt: string;
 }
 
+export interface DiagramPoint {
+  x: number;
+  y: number;
+  pressure: number;
+}
+
+export interface DiagramStroke {
+  id: string;
+  color: string;
+  width: number;
+  points: DiagramPoint[];
+  updatedAt: string;
+}
+
+export interface DiagramRect {
+  kind: "rect";
+  id: string;
+  strokeColor: string;
+  strokeWidth: number;
+  fillColor: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  updatedAt: string;
+}
+
+export interface DiagramEllipse {
+  kind: "ellipse";
+  id: string;
+  strokeColor: string;
+  strokeWidth: number;
+  fillColor: string;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  updatedAt: string;
+}
+
+export interface DiagramLine {
+  kind: "line";
+  id: string;
+  strokeColor: string;
+  strokeWidth: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  updatedAt: string;
+}
+
+export type DiagramShape = DiagramRect | DiagramEllipse | DiagramLine;
+
+export interface DiagramAsset {
+  id: string;
+  name: string;
+  updatedAt: string;
+  strokes: DiagramStroke[];
+  shapes: DiagramShape[];
+}
+
+export interface GraphAsset {
+  id: string;
+  name: string;
+  provider: GraphProvider;
+  updatedAt: string;
+  source: string;
+  style: GraphStyle;
+  state: string;
+  expressions: string;
+  viewport: GraphViewport | null;
+  renderMode: GraphRenderMode;
+  contentType: GraphContentType;
+  content: Uint8Array;
+}
+
+export interface GraphViewport {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export type GraphRenderMode = "auto" | "png" | "typst";
+
 export interface TypstProject {
   id: string;
   name: string;
@@ -16,6 +119,10 @@ export interface TypstProject {
   activeDocumentId: string;
   createdAt: string;
   updatedAt: string;
+  diagram: DiagramAsset;
+  figures: DiagramAsset[];
+  graph: GraphAsset;
+  graphs: GraphAsset[];
 }
 
 export interface AppPreferences {
@@ -23,10 +130,11 @@ export interface AppPreferences {
   vimMode: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  graphProvider: GraphProvider;
 }
 
 export interface AppSnapshot {
-  version: 1;
+  version: 7;
   project: TypstProject;
   preferences: AppPreferences;
 }
@@ -50,9 +158,68 @@ Start writing your document here.
 `;
 
 const DEFAULT_CURSOR_SMEAR = 25;
-
 function createId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+export function getDefaultGraphSource(provider: GraphProvider): string {
+  if (provider === "plotly") {
+    return `y = x^2
+domain: -10..10
+samples: 200`;
+  }
+
+  if (provider === "gnuplot") {
+    return `set samples 400
+set grid
+set key left top
+plot [-10:10] x**2 title "y = x^2" with lines lc rgb "#000000"`;
+  }
+
+  return "";
+}
+
+export function createDefaultGraphStyle(): GraphStyle {
+  return {
+    width: 720,
+    height: 480,
+    strokeWidth: 2.5,
+    xAxisLabel: "x",
+    yAxisLabel: "y",
+    axisArrows: true
+  };
+}
+
+export function createDefaultDiagram(): DiagramAsset {
+  const now = new Date().toISOString();
+
+  return {
+    id: createId("diagram"),
+    name: DEFAULT_DIAGRAM_FILE_NAME,
+    updatedAt: now,
+    strokes: [],
+    shapes: []
+  };
+}
+
+export function createDefaultGraph(provider: GraphProvider = "desmos"): GraphAsset {
+  const now = new Date().toISOString();
+  const isSvgProvider = provider !== "desmos";
+
+  return {
+    id: createId("graph"),
+    name: isSvgProvider ? DEFAULT_GRAPH_FILE_NAME.replace(/\.png$/i, ".svg") : DEFAULT_GRAPH_FILE_NAME,
+    provider,
+    updatedAt: now,
+    source: isSvgProvider ? getDefaultGraphSource(provider) : "",
+    style: createDefaultGraphStyle(),
+    state: "",
+    expressions: "[]",
+    viewport: null,
+    renderMode: "auto",
+    contentType: isSvgProvider ? "svg" : "png",
+    content: new Uint8Array()
+  };
 }
 
 export function createDefaultSnapshot(): AppSnapshot {
@@ -65,29 +232,61 @@ export function createDefaultSnapshot(): AppSnapshot {
   };
 
   return {
-    version: 1,
+    version: 7,
     project: {
       id: createId("project"),
       name: "typr Project",
       documents: [document],
       activeDocumentId: document.id,
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      diagram: createDefaultDiagram(),
+      figures: [],
+      graph: createDefaultGraph(),
+      graphs: []
     },
     preferences: {
       theme: AUTO_THEME_ID,
       vimMode: false,
       cursorSmooth: true,
-      cursorSmear: DEFAULT_CURSOR_SMEAR
+      cursorSmear: DEFAULT_CURSOR_SMEAR,
+      graphProvider: "desmos"
     }
   };
 }
 
 export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
   const storedCursorSmear = snapshot.preferences.cursorSmear;
+  const storedGraphProvider = snapshot.preferences.graphProvider;
+  const diagram = snapshot.project.diagram ?? createDefaultDiagram();
+  const figures = Array.isArray(snapshot.project.figures) ? snapshot.project.figures : [];
+  const graph = snapshot.project.graph ?? createDefaultGraph();
+  const graphs = Array.isArray(snapshot.project.graphs) ? snapshot.project.graphs : [];
+  const now = new Date().toISOString();
+  const normalizedDiagramName = normalizeDiagramFileName(
+    diagram.name ?? DEFAULT_DIAGRAM_FILE_NAME
+  );
+  const normalizedGraphName = normalizeGraphFileName(graph.name ?? DEFAULT_GRAPH_FILE_NAME);
+  const currentDiagram = {
+    ...diagram,
+    id: diagram.id ?? createDefaultDiagram().id,
+    name: normalizedDiagramName,
+    updatedAt: diagram.updatedAt ?? now,
+    strokes: Array.isArray(diagram.strokes)
+      ? diagram.strokes.map(normalizeDiagramStroke)
+      : [],
+    shapes: Array.isArray((diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes)
+      ? (diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes.map(normalizeDiagramShape)
+      : []
+  };
+  const currentGraph = normalizeGraphAsset({
+    ...graph,
+    name: normalizedGraphName
+  });
 
   return {
     ...snapshot,
+    version: 7,
     preferences: {
       theme: snapshot.preferences.theme ?? AUTO_THEME_ID,
       vimMode: snapshot.preferences.vimMode ?? false,
@@ -97,8 +296,187 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
           ? clampCursorSmear(storedCursorSmear)
           : storedCursorSmear === false
             ? 0
-            : DEFAULT_CURSOR_SMEAR
+            : DEFAULT_CURSOR_SMEAR,
+      graphProvider: normalizeGraphProvider(storedGraphProvider)
+    },
+    project: {
+      ...snapshot.project,
+      documents: snapshot.project.documents,
+      updatedAt: snapshot.project.updatedAt,
+      diagram: currentDiagram,
+      figures: figures.map(normalizeDiagramAsset),
+      graph: currentGraph,
+      graphs: graphs.map(normalizeGraphAsset)
     }
+  };
+}
+
+function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
+  const normalizedName = normalizeDiagramFileName(diagram.name ?? DEFAULT_DIAGRAM_FILE_NAME);
+
+  return {
+    ...diagram,
+    id: diagram.id ?? createDefaultDiagram().id,
+    name: normalizedName,
+    updatedAt: diagram.updatedAt ?? new Date().toISOString(),
+    strokes: Array.isArray(diagram.strokes)
+      ? diagram.strokes.map(normalizeDiagramStroke)
+      : [],
+    shapes: Array.isArray((diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes)
+      ? (diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes.map(normalizeDiagramShape)
+      : []
+  };
+}
+
+function normalizeGraphAsset(graph: GraphAsset): GraphAsset {
+  const normalizedProvider = normalizeGraphProvider(
+    (graph as GraphAsset & { provider?: GraphProvider }).provider
+  );
+  const normalizedViewport = normalizeGraphViewport(
+    (graph as GraphAsset & { viewport?: GraphViewport | null }).viewport ?? null
+  );
+  const normalizedRenderMode = normalizeGraphRenderMode(
+    (graph as GraphAsset & { renderMode?: GraphRenderMode }).renderMode
+  );
+  const normalizedContentType = normalizeGraphContentType(
+    (graph as GraphAsset & { contentType?: GraphContentType }).contentType,
+    normalizedProvider
+  );
+  const normalizedName = normalizeGraphFileNameForContentType(
+    graph.name ?? DEFAULT_GRAPH_FILE_NAME,
+    normalizedContentType
+  );
+
+  return {
+    ...graph,
+    id: graph.id ?? createId("graph"),
+    name: normalizedName,
+    provider: normalizedProvider,
+    updatedAt: graph.updatedAt ?? new Date().toISOString(),
+    source: typeof (graph as GraphAsset & { source?: string }).source === "string"
+      ? (graph as GraphAsset & { source?: string }).source
+      : "",
+    style: normalizeGraphStyle((graph as GraphAsset & { style?: Partial<GraphStyle> }).style),
+    state: typeof graph.state === "string" ? graph.state : "",
+    expressions: typeof graph.expressions === "string" ? graph.expressions : "[]",
+    viewport: normalizedViewport,
+    renderMode: normalizedRenderMode,
+    contentType: normalizedContentType,
+    content: graph.content instanceof Uint8Array ? graph.content : new Uint8Array()
+  };
+}
+
+function normalizeGraphProvider(value: GraphProvider | undefined): GraphProvider {
+  return value === "plotly" || value === "gnuplot" ? value : "desmos";
+}
+
+function normalizeGraphContentType(
+  value: GraphContentType | undefined,
+  provider: GraphProvider
+): GraphContentType {
+  if (value === "png" || value === "svg") {
+    return value;
+  }
+
+  return provider === "desmos" ? "png" : "svg";
+}
+
+function normalizeGraphStyle(style: Partial<GraphStyle> | undefined): GraphStyle {
+  const defaultStyle = createDefaultGraphStyle();
+  return {
+    width: typeof style?.width === "number" && style.width > 0 ? style.width : defaultStyle.width,
+    height:
+      typeof style?.height === "number" && style.height > 0 ? style.height : defaultStyle.height,
+    strokeWidth:
+      typeof style?.strokeWidth === "number" && style.strokeWidth > 0
+        ? style.strokeWidth
+        : defaultStyle.strokeWidth,
+    xAxisLabel: typeof style?.xAxisLabel === "string" ? style.xAxisLabel : defaultStyle.xAxisLabel,
+    yAxisLabel: typeof style?.yAxisLabel === "string" ? style.yAxisLabel : defaultStyle.yAxisLabel,
+    axisArrows: typeof style?.axisArrows === "boolean" ? style.axisArrows : defaultStyle.axisArrows
+  };
+}
+
+function normalizeGraphViewport(viewport: GraphViewport | null | undefined): GraphViewport | null {
+  if (!viewport) {
+    return null;
+  }
+
+  if (
+    typeof viewport.left !== "number" ||
+    typeof viewport.right !== "number" ||
+    typeof viewport.top !== "number" ||
+    typeof viewport.bottom !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    left: viewport.left,
+    right: viewport.right,
+    top: viewport.top,
+    bottom: viewport.bottom
+  };
+}
+
+function normalizeGraphRenderMode(value: GraphRenderMode | undefined): GraphRenderMode {
+  return value === "png" || value === "typst" ? value : "auto";
+}
+
+function normalizeDiagramStroke(stroke: DiagramStroke): DiagramStroke {
+  return {
+    ...stroke,
+    id: stroke.id ?? createId("stroke"),
+    color: stroke.color ?? "#000000",
+    width: typeof stroke.width === "number" ? stroke.width : 4.5,
+    points: Array.isArray(stroke.points) ? stroke.points : [],
+    updatedAt: stroke.updatedAt ?? new Date().toISOString()
+  };
+}
+
+function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
+  const updatedAt = shape.updatedAt ?? new Date().toISOString();
+
+  if (shape.kind === "rect") {
+    return {
+      ...shape,
+      id: shape.id ?? createId("shape"),
+      strokeColor: shape.strokeColor ?? "#000000",
+      strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      fillColor: shape.fillColor ?? "transparent",
+      x: typeof shape.x === "number" ? shape.x : 0,
+      y: typeof shape.y === "number" ? shape.y : 0,
+      width: typeof shape.width === "number" ? shape.width : 0,
+      height: typeof shape.height === "number" ? shape.height : 0,
+      updatedAt
+    };
+  }
+
+  if (shape.kind === "ellipse") {
+    return {
+      ...shape,
+      id: shape.id ?? createId("shape"),
+      strokeColor: shape.strokeColor ?? "#000000",
+      strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      fillColor: shape.fillColor ?? "transparent",
+      cx: typeof shape.cx === "number" ? shape.cx : 0,
+      cy: typeof shape.cy === "number" ? shape.cy : 0,
+      rx: typeof shape.rx === "number" ? shape.rx : 0,
+      ry: typeof shape.ry === "number" ? shape.ry : 0,
+      updatedAt
+    };
+  }
+
+  return {
+    ...shape,
+    id: shape.id ?? createId("shape"),
+    strokeColor: shape.strokeColor ?? "#000000",
+    strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+    x1: typeof shape.x1 === "number" ? shape.x1 : 0,
+    y1: typeof shape.y1 === "number" ? shape.y1 : 0,
+    x2: typeof shape.x2 === "number" ? shape.x2 : 0,
+    y2: typeof shape.y2 === "number" ? shape.y2 : 0,
+    updatedAt
   };
 }
 
@@ -260,6 +638,194 @@ export function renameActiveDocument(
   };
 }
 
+export function updateDiagram(
+  snapshot: AppSnapshot,
+  update: (diagram: DiagramAsset) => DiagramAsset
+): AppSnapshot {
+  const now = new Date().toISOString();
+  const nextDiagram = update(snapshot.project.diagram ?? createDefaultDiagram());
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: {
+        ...nextDiagram,
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+export function updateGraph(
+  snapshot: AppSnapshot,
+  update: (graph: GraphAsset) => GraphAsset
+): AppSnapshot {
+  const now = new Date().toISOString();
+  const nextGraph = update(snapshot.project.graph ?? createDefaultGraph());
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      graph: {
+        ...nextGraph,
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+export function removeLatestDiagramItem(snapshot: AppSnapshot): AppSnapshot {
+  const now = new Date().toISOString();
+  const diagram = snapshot.project.diagram ?? createDefaultDiagram();
+  const latestStroke = diagram.strokes[diagram.strokes.length - 1];
+  const latestShape = diagram.shapes[diagram.shapes.length - 1];
+  const latestStrokeTime = latestStroke?.updatedAt ? Date.parse(latestStroke.updatedAt) : -1;
+  const latestShapeTime = latestShape?.updatedAt ? Date.parse(latestShape.updatedAt) : -1;
+
+  if (latestStrokeTime < 0 && latestShapeTime < 0) {
+    return snapshot;
+  }
+
+  if (latestStrokeTime >= latestShapeTime) {
+    return {
+      ...snapshot,
+      project: {
+        ...snapshot.project,
+        diagram: {
+          ...diagram,
+          strokes: diagram.strokes.slice(0, -1),
+          updatedAt: now
+        },
+        updatedAt: now
+      }
+    };
+  }
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: {
+        ...diagram,
+        shapes: diagram.shapes.slice(0, -1),
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+export function saveCurrentDiagram(snapshot: AppSnapshot): AppSnapshot {
+  const now = new Date().toISOString();
+  const diagram = normalizeDiagramAsset(snapshot.project.diagram ?? createDefaultDiagram());
+  const figures = snapshot.project.figures ?? [];
+  const existingIndex = figures.findIndex((figure) => figure.id === diagram.id);
+  const nextFigures =
+    existingIndex >= 0
+      ? figures.map((figure, index) => (index === existingIndex ? diagram : figure))
+      : [...figures, diagram];
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: {
+        ...diagram,
+        updatedAt: now
+      },
+      figures: nextFigures,
+      updatedAt: now
+    }
+  };
+}
+
+export function saveCurrentGraph(snapshot: AppSnapshot): AppSnapshot {
+  const now = new Date().toISOString();
+  const graph = normalizeGraphAsset(snapshot.project.graph ?? createDefaultGraph());
+  const graphs = snapshot.project.graphs ?? [];
+  const existingIndex = graphs.findIndex((figure) => figure.id === graph.id);
+  const nextGraphs =
+    existingIndex >= 0
+      ? graphs.map((figure, index) => (index === existingIndex ? graph : figure))
+      : [...graphs, graph];
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      graph: {
+        ...graph,
+        updatedAt: now
+      },
+      graphs: nextGraphs,
+      updatedAt: now
+    }
+  };
+}
+
+export function createNextDiagramSnapshot(snapshot: AppSnapshot): AppSnapshot {
+  const now = new Date().toISOString();
+  const savedSnapshot = saveCurrentDiagram(snapshot);
+  const currentDiagram = savedSnapshot.project.diagram;
+  const nextName = createNextDiagramName(currentDiagram.name);
+
+  return {
+    ...savedSnapshot,
+    project: {
+      ...savedSnapshot.project,
+      diagram: {
+        ...createDefaultDiagram(),
+        name: nextName,
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+export function createNextGraphSnapshot(
+  snapshot: AppSnapshot,
+  provider: GraphProvider = snapshot.preferences.graphProvider
+): AppSnapshot {
+  const now = new Date().toISOString();
+  const savedSnapshot = saveCurrentGraph(snapshot);
+  const currentGraph = savedSnapshot.project.graph;
+  const nextName = createNextGraphName(currentGraph.name, provider);
+
+  return {
+    ...savedSnapshot,
+    project: {
+      ...savedSnapshot.project,
+      graph: {
+        ...createDefaultGraph(provider),
+        name: nextName,
+        renderMode: currentGraph.renderMode,
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+function createNextDiagramName(currentName: string): string {
+  const baseName = normalizeDiagramFileName(currentName).replace(/\.svg$/i, "");
+  const match = /^diagram(?:\s+(\d+))?$/i.exec(baseName);
+  const nextIndex = match ? Number(match[1] ?? "1") + 1 : 1;
+  return `diagram ${nextIndex}.svg`;
+}
+
+function createNextGraphName(currentName: string, provider: GraphProvider): string {
+  const baseName = normalizeGraphFileName(currentName, provider).replace(/\.(png|svg)$/i, "");
+  const match = /^graph(?:\s+(\d+))?$/i.exec(baseName);
+  const nextIndex = match ? Number(match[1] ?? "1") + 1 : 1;
+  const extension = provider === "desmos" ? "png" : "svg";
+  return `graph ${nextIndex}.${extension}`;
+}
+
 function createUniqueDocumentName(
   documents: TypstDocumentFile[],
   requestedName?: string
@@ -324,6 +890,19 @@ export function updateCursorSmoothPreference(
     preferences: {
       ...snapshot.preferences,
       cursorSmooth
+    }
+  };
+}
+
+export function updateGraphProviderPreference(
+  snapshot: AppSnapshot,
+  graphProvider: GraphProvider
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      graphProvider: normalizeGraphProvider(graphProvider)
     }
   };
 }

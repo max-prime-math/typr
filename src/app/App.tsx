@@ -14,11 +14,27 @@ import {
   createDefaultSnapshot,
   createDocument,
   createDocumentFromFile,
+  createDefaultDiagram,
+  createDefaultGraph,
+  createNextGraphSnapshot,
+  type GraphProvider,
+  type DiagramAsset,
+  type DiagramShape,
+  type DiagramStroke,
+  type GraphAsset,
   getActiveDocument,
   normalizeSnapshot,
   renameActiveDocument,
   renameProject,
   setActiveDocument,
+  saveCurrentDiagram,
+  saveCurrentGraph,
+  createNextDiagramSnapshot,
+  removeLatestDiagramItem,
+  getDefaultGraphSource,
+  updateGraphProviderPreference,
+  updateGraph,
+  updateDiagram,
   updateActiveDocument,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
@@ -32,6 +48,7 @@ import {
   type CompilerStatus,
   type CompileResult
 } from "../compiler/typstCompiler";
+import type { CompileAssetFile } from "../compiler/types";
 import { exportTypstPdf } from "../compiler/typstRuntime";
 import {
   TypstEditor,
@@ -45,6 +62,30 @@ import {
   type GitHubRemoteConfig
 } from "../github/githubSync";
 import { PreviewPane, PreviewDebugPanel } from "../preview/PreviewPane";
+import {
+  DiagramEditor,
+  DiagramEditorErrorBoundary,
+  serializeDiagramSvg
+} from "../diagram/DiagramEditor";
+import {
+  GraphEditor,
+  GraphEditorErrorBoundary
+} from "../graph/GraphEditor";
+import {
+  buildGraphDownloadBlob,
+  buildGraphDownloadFilename,
+  buildGraphInsertResult
+} from "../graph/graphExport";
+import {
+  getDiagramCompilerPath,
+  getDiagramFilePath,
+  normalizeDiagramFileName
+} from "../diagram/diagramFiles";
+import {
+  getGraphCompilerPath,
+  getGraphFilePath,
+  normalizeGraphFileNameForContentType
+} from "../graph/graphFiles";
 import { AUTO_THEME_ID, THEME_IMPORT_TEMPLATE } from "../theme/themes";
 import {
   DEFAULT_ZOOM,
@@ -54,9 +95,11 @@ import {
 import packageJson from "../../package.json";
 import {
   loadGitHubConfig,
+  loadDesmosApiKey,
   loadSnapshot,
   loadCustomSnippets,
   saveGitHubConfig,
+  saveDesmosApiKey,
   saveSnapshot,
   saveCustomSnippets
 } from "../storage/indexedDbStorage";
@@ -121,6 +164,8 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "files", label: "Files" },
   { id: "search", label: "Search" },
   { id: "outline", label: "Outline" },
+  { id: "diagram", label: "Diagram" },
+  { id: "graph", label: "Graph" },
   { id: "sync", label: "Sync" },
   { id: "debug", label: "Debug" }
 ];
@@ -135,8 +180,8 @@ const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
-type SidebarTool = "files" | "search" | "outline" | "sync" | "debug";
-type SettingsTab = "github" | "themes" | "snippets";
+type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
+type SettingsTab = "github" | "themes" | "snippets" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
 type TableGutter = "none" | "small" | "medium";
@@ -287,6 +332,38 @@ function clampTooltipPosition(x: number, y: number) {
   };
 }
 
+function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
+  const assets = new Map<string, CompileAssetFile>();
+
+  for (const diagram of diagrams) {
+    const path = getDiagramCompilerPath(diagram.name);
+    assets.set(path, {
+      path,
+      content: new TextEncoder().encode(serializeDiagramSvg(diagram))
+    });
+  }
+
+  return [...assets.values()];
+}
+
+function buildGraphShadowFiles(graphs: GraphAsset[]): CompileAssetFile[] {
+  const assets = new Map<string, CompileAssetFile>();
+
+  for (const graph of graphs) {
+    const path = getGraphCompilerPath(graph.name);
+    if (graph.content.length === 0) {
+      continue;
+    }
+
+    assets.set(path, {
+      path,
+      content: graph.content
+    });
+  }
+
+  return [...assets.values()];
+}
+
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
   const menuStripRef = useRef<HTMLElement | null>(null);
@@ -309,6 +386,10 @@ export function App() {
   const compileRequestRef = useRef(0);
   const pendingSourceRef = useRef("");
   const previewSourceDraftRef = useRef("");
+  const diagramAssetsRevisionRef = useRef("");
+  const diagramAssetsRef = useRef<CompileAssetFile[]>([]);
+  const graphAssetsRevisionRef = useRef("");
+  const graphAssetsRef = useRef<CompileAssetFile[]>([]);
   const themeRef = useRef<ThemeDefinition | null>(null);
   const compileResultRef = useRef<CompileResult | null>(null);
   const compileInFlightRef = useRef(false);
@@ -346,8 +427,12 @@ export function App() {
     text: ""
   });
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
+  const [isDiagramExpanded, setIsDiagramExpanded] = useState(false);
+  const [isGraphExpanded, setIsGraphExpanded] = useState(false);
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
+  const [isPaperView, setIsPaperView] = useState(false);
+  const [diagramInkColor, setDiagramInkColor] = useState("#000000");
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
   );
@@ -406,6 +491,7 @@ export function App() {
   const [githubConfig, setGitHubConfig] = useState<GitHubRemoteConfig>(
     createEmptyGitHubRemoteConfig
   );
+  const [desmosApiKey, setDesmosApiKey] = useState("");
   const [isHydrated, setIsHydrated] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
@@ -456,6 +542,21 @@ export function App() {
   const togglePreviewDebug = useCallback(() => {
     setIsPreviewDebugVisible((current) => !current);
   }, []);
+  const togglePaperView = useCallback(() => {
+    setIsPaperView((current) => !current);
+  }, []);
+  const openDiagramExpanded = useCallback(() => {
+    setIsDiagramExpanded(true);
+  }, []);
+  const closeDiagramExpanded = useCallback(() => {
+    setIsDiagramExpanded(false);
+  }, []);
+  const openGraphExpanded = useCallback(() => {
+    setIsGraphExpanded(true);
+  }, []);
+  const closeGraphExpanded = useCallback(() => {
+    setIsGraphExpanded(false);
+  }, []);
   const {
     theme,
     builtinThemes,
@@ -466,6 +567,56 @@ export function App() {
   } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
+  const diagram = useMemo(
+    () => snapshot.project.diagram ?? createDefaultDiagram(),
+    [snapshot.project.diagram]
+  );
+  const graph = useMemo(
+    () => snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider),
+    [snapshot.preferences.graphProvider, snapshot.project.graph]
+  );
+
+  useEffect(() => {
+    const normalizedName = normalizeGraphFileNameForContentType(graph.name, graph.contentType);
+
+    if (normalizedName === graph.name) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) =>
+      updateGraph(currentSnapshot, (currentGraph) => ({
+        ...currentGraph,
+        name: normalizedName
+      }))
+    );
+  }, [graph.contentType, graph.name]);
+  const savedFigures = useMemo(
+    () => snapshot.project.figures ?? [],
+    [snapshot.project.figures]
+  );
+  const savedGraphs = useMemo(
+    () => snapshot.project.graphs ?? [],
+    [snapshot.project.graphs]
+  );
+  const diagramShadowAssets = useMemo(
+    () => buildDiagramShadowFiles([...savedFigures, diagram]),
+    [diagram, savedFigures]
+  );
+  const graphShadowAssets = useMemo(
+    () => buildGraphShadowFiles([...savedGraphs, graph]),
+    [graph, savedGraphs]
+  );
+  const diagramAssetsRevision = useMemo(
+    () =>
+      [diagram, ...savedFigures]
+        .map((asset) => `${asset.id}:${asset.updatedAt}`)
+        .join("|"),
+    [diagram, savedFigures]
+  );
+  const graphAssetsRevision = useMemo(
+    () => [graph, ...savedGraphs].map((asset) => `${asset.id}:${asset.updatedAt}`).join("|"),
+    [graph, savedGraphs]
+  );
 
   useEffect(() => {
     themeRef.current = theme;
@@ -474,6 +625,16 @@ export function App() {
   useEffect(() => {
     compileResultRef.current = compileResult;
   }, [compileResult]);
+
+  useEffect(() => {
+    diagramAssetsRef.current = diagramShadowAssets;
+    diagramAssetsRevisionRef.current = diagramAssetsRevision;
+  }, [diagramAssetsRevision, diagramShadowAssets]);
+
+  useEffect(() => {
+    graphAssetsRef.current = graphShadowAssets;
+    graphAssetsRevisionRef.current = graphAssetsRevision;
+  }, [graphAssetsRevision, graphShadowAssets]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -565,7 +726,10 @@ export function App() {
         loadSnapshot(),
         loadGitHubConfig()
       ]);
-      const storedSnippets = await loadCustomSnippets();
+      const [storedSnippets, storedDesmosApiKey] = await Promise.all([
+        loadCustomSnippets(),
+        loadDesmosApiKey()
+      ]);
 
       if (cancelled) {
         return;
@@ -578,6 +742,7 @@ export function App() {
       setTheme(nextSnapshot.preferences.theme);
       setGitHubConfig(storedGitHubConfig ?? createEmptyGitHubRemoteConfig());
       setCustomSnippets(storedSnippets ?? []);
+      setDesmosApiKey(storedDesmosApiKey ?? "");
       setIsHydrated(true);
     }
 
@@ -656,6 +821,8 @@ export function App() {
         cancelPendingMenuOpen();
         setActiveMenu(null);
         setIsSettingsOpen(false);
+        setIsDiagramExpanded(false);
+        setIsGraphExpanded(false);
         setWorkspaceMode("split");
         return;
       }
@@ -785,6 +952,18 @@ export function App() {
     }
 
     const handle = window.setTimeout(() => {
+      void saveDesmosApiKey(desmosApiKey).catch(() => {});
+    }, SAVE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(handle);
+  }, [desmosApiKey, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    const handle = window.setTimeout(() => {
       void saveCustomSnippets(customSnippets).catch(() => {
         setSnippetImportFeedback({
           tone: "error",
@@ -821,6 +1000,10 @@ export function App() {
     }
 
     const source = pendingSourceRef.current;
+    const diagramRevision = diagramAssetsRevisionRef.current;
+    const diagramAssets = diagramAssetsRef.current;
+    const graphRevision = graphAssetsRevisionRef.current;
+    const graphAssets = graphAssetsRef.current;
     const requestId = compileRequestRef.current + 1;
     compileRequestRef.current = requestId;
     compileInFlightRef.current = true;
@@ -828,7 +1011,7 @@ export function App() {
       typeof performance === "undefined" ? 0 : performance.now();
 
     try {
-      const result = await compiler.compileDocument(source);
+      const result = await compiler.compileDocument(source, [...diagramAssets, ...graphAssets]);
 
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
         return;
@@ -882,7 +1065,11 @@ export function App() {
         return;
       }
 
-      if (pendingSourceRef.current !== source) {
+      if (
+        pendingSourceRef.current !== source ||
+        diagramAssetsRevisionRef.current !== diagramRevision ||
+        graphAssetsRevisionRef.current !== graphRevision
+      ) {
         void runCompile();
       } else {
         setIsCompiling(false);
@@ -905,11 +1092,12 @@ export function App() {
       compileTimerRef.current = null;
       pendingSourceRef.current = createThemedPreviewSource(
         previewSourceDraftRef.current,
-        themeRef.current ?? theme
+        themeRef.current ?? theme,
+        isPaperView
       );
       void runCompile();
     }, COMPILE_DEBOUNCE_MS);
-  }, [runCompile]);
+  }, [isPaperView, runCompile]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -918,7 +1106,15 @@ export function App() {
 
     previewSourceDraftRef.current = activeDocument.content;
     scheduleCompile();
-  }, [activeDocument.content, isHydrated, scheduleCompile, theme]);
+  }, [
+    activeDocument.content,
+    diagramAssetsRevision,
+    graphAssetsRevision,
+    isHydrated,
+    isPaperView,
+    scheduleCompile,
+    theme
+  ]);
 
   useEffect(() => {
     if (!snapshot.preferences.vimMode || !shouldFocusEditorAfterVimToggleRef.current) {
@@ -1297,6 +1493,248 @@ export function App() {
     );
   };
 
+  const handleAddDiagramStroke = useCallback(
+    (stroke: DiagramStroke) => {
+      setSnapshot((currentSnapshot) =>
+        updateDiagram(currentSnapshot, (diagramAsset) => ({
+          ...diagramAsset,
+          strokes: [...diagramAsset.strokes, stroke]
+        }))
+      );
+    },
+    []
+  );
+
+  const handleAddDiagramShape = useCallback((shape: DiagramShape) => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagram(currentSnapshot, (diagramAsset) => ({
+        ...diagramAsset,
+        shapes: [...diagramAsset.shapes, shape]
+      }))
+    );
+  }, []);
+
+  const handleUndoDiagramStroke = useCallback(() => {
+    setSnapshot((currentSnapshot) => removeLatestDiagramItem(currentSnapshot));
+  }, []);
+
+  const handleClearDiagram = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagram(currentSnapshot, (diagramAsset) => ({
+        ...diagramAsset,
+        strokes: [],
+        shapes: []
+      }))
+    );
+  }, []);
+
+  const handleRenameDiagram = useCallback((nextName: string) => {
+    const normalizedName = normalizeDiagramFileName(nextName);
+
+    setSnapshot((currentSnapshot) => {
+      const currentDiagram = currentSnapshot.project.diagram ?? createDefaultDiagram();
+
+      if (currentDiagram.name === normalizedName) {
+        return currentSnapshot;
+      }
+
+      const renamedDiagram = {
+        ...currentDiagram,
+        name: normalizedName
+      };
+
+      const now = new Date().toISOString();
+      const nextFigures = (currentSnapshot.project.figures ?? []).map((figure) =>
+        figure.id === currentDiagram.id ? renamedDiagram : figure
+      );
+
+      return {
+        ...currentSnapshot,
+        project: {
+          ...currentSnapshot.project,
+          diagram: {
+            ...renamedDiagram,
+            updatedAt: now
+          },
+          figures: nextFigures,
+          updatedAt: now
+        }
+      };
+    });
+  }, []);
+
+  const handleNewDiagram = useCallback(() => {
+    setSnapshot((currentSnapshot) => createNextDiagramSnapshot(currentSnapshot));
+  }, []);
+
+  const handleSaveDiagram = useCallback(() => {
+    setSnapshot((currentSnapshot) => saveCurrentDiagram(currentSnapshot));
+  }, []);
+
+  const handleSaveGraph = useCallback((nextGraph: GraphAsset) => {
+    setSnapshot((currentSnapshot) => saveCurrentGraph(updateGraph(currentSnapshot, () => nextGraph)));
+  }, []);
+
+  const handleNewGraph = useCallback((nextGraph: GraphAsset) => {
+    setSnapshot((currentSnapshot) =>
+      createNextGraphSnapshot(
+        updateGraph(currentSnapshot, () => nextGraph),
+        currentSnapshot.preferences.graphProvider
+      )
+    );
+  }, []);
+
+  const handleOpenGraphFigure = useCallback((figureId: string) => {
+    setSnapshot((currentSnapshot) => {
+      const figure = currentSnapshot.project.graphs?.find((entry) => entry.id === figureId);
+
+      if (!figure) {
+        return currentSnapshot;
+      }
+
+      const savedSnapshot = saveCurrentGraph(currentSnapshot);
+
+      return {
+        ...savedSnapshot,
+        project: {
+          ...savedSnapshot.project,
+          graph: {
+            ...figure,
+            content: new Uint8Array(figure.content)
+          },
+          updatedAt: new Date().toISOString()
+        }
+      };
+    });
+    setActiveSidebarTool("graph");
+  }, []);
+
+  const handleRenameGraph = useCallback((nextName: string) => {
+    setSnapshot((currentSnapshot) => {
+      const currentGraph = currentSnapshot.project.graph ?? createDefaultGraph();
+      const normalizedName = normalizeGraphFileNameForContentType(
+        nextName,
+        currentGraph.contentType
+      );
+
+      if (currentGraph.name === normalizedName) {
+        return currentSnapshot;
+      }
+
+      const renamedGraph = {
+        ...currentGraph,
+        name: normalizedName
+      };
+
+      const now = new Date().toISOString();
+      const nextGraphs = (currentSnapshot.project.graphs ?? []).map((graphEntry) =>
+        graphEntry.id === currentGraph.id ? renamedGraph : graphEntry
+      );
+
+      return {
+        ...currentSnapshot,
+        project: {
+          ...currentSnapshot.project,
+          graph: {
+            ...renamedGraph,
+            updatedAt: now
+          },
+          graphs: nextGraphs,
+          updatedAt: now
+        }
+      };
+    });
+  }, []);
+
+  const handleDownloadGraph = useCallback((graphAsset: GraphAsset) => {
+    downloadBlob(buildGraphDownloadFilename(graphAsset), buildGraphDownloadBlob(graphAsset));
+  }, []);
+
+  const handleInsertGraphIntoDocument = useCallback((graphAsset: GraphAsset) => {
+    setSnapshot((currentSnapshot) => {
+      return saveCurrentGraph(updateGraph(currentSnapshot, () => graphAsset));
+    });
+    const insertResult = buildGraphInsertResult(graphAsset);
+
+    if (!insertResult.supported) {
+      window.alert("Save the graph before inserting it into the document.");
+      return;
+    }
+
+    editorRef.current?.insertTextAndSelect(`\n${insertResult.text}\n`);
+  }, []);
+
+  const handleGraphRenderModeChange = useCallback((mode: GraphAsset["renderMode"]) => {
+    setSnapshot((currentSnapshot) =>
+      updateGraph(currentSnapshot, (graphAsset) => ({
+        ...graphAsset,
+        renderMode: mode
+      }))
+    );
+  }, []);
+
+  const handleGraphProviderChange = useCallback((provider: GraphProvider) => {
+    setSnapshot((currentSnapshot) => {
+      const updated = updateGraphProviderPreference(currentSnapshot, provider);
+      const currentGraph = updated.project.graph ?? createDefaultGraph(provider);
+      const defaultGraph = createDefaultGraph(provider);
+      const nextGraph = {
+        ...defaultGraph,
+        id: currentGraph.id,
+        name: normalizeGraphFileNameForContentType(currentGraph.name, defaultGraph.contentType),
+        source: getDefaultGraphSource(provider),
+        updatedAt: new Date().toISOString()
+      };
+
+      return updateGraph(updated, () => nextGraph);
+    });
+  }, []);
+
+  const handleOpenDiagramFigure = useCallback((figureId: string) => {
+    setSnapshot((currentSnapshot) => {
+      const figure = currentSnapshot.project.figures?.find((entry) => entry.id === figureId);
+
+      if (!figure) {
+        return currentSnapshot;
+      }
+
+      const savedSnapshot = saveCurrentDiagram(currentSnapshot);
+
+      return {
+        ...savedSnapshot,
+        project: {
+          ...savedSnapshot.project,
+          diagram: {
+            ...figure,
+            strokes: figure.strokes.map((stroke) => ({
+              ...stroke,
+              points: stroke.points.map((point) => ({ ...point }))
+            }))
+          },
+          updatedAt: new Date().toISOString()
+        }
+      };
+    });
+    setActiveSidebarTool("diagram");
+  }, []);
+
+  const handleDownloadDiagramSvg = useCallback((svgMarkup: string) => {
+    const baseName = diagram.name.replace(/\.svg$/i, "");
+    const svgName = `${baseName || diagram.name}.svg`;
+    downloadBlob(
+      svgName,
+      new Blob([svgMarkup], {
+        type: "image/svg+xml"
+      })
+    );
+  }, [diagram]);
+
+  const handleInsertDiagramIntoDocument = useCallback(() => {
+    editorRef.current?.insertTextAndSelect(
+      `\n#figure(image("${getDiagramFilePath(diagram.name)}"))\n`
+    );
+  }, [diagram.name]);
+
   const handleExportPdf = useCallback(async () => {
     if (isExportingPdf) {
       return;
@@ -1305,7 +1743,10 @@ export function App() {
     setIsExportingPdf(true);
 
     try {
-      const pdfBytes = await exportTypstPdf(activeDocument.content);
+      const pdfBytes = await exportTypstPdf(activeDocument.content, [
+        ...diagramShadowAssets,
+        ...graphShadowAssets
+      ]);
       const baseName = activeDocument.name.replace(/\.typ$/i, "");
       const pdfName = `${baseName || activeDocument.name}.pdf`;
       const pdfBuffer = Uint8Array.from(pdfBytes).buffer;
@@ -1324,7 +1765,13 @@ export function App() {
     } finally {
       setIsExportingPdf(false);
     }
-  }, [activeDocument.content, activeDocument.name, isExportingPdf]);
+  }, [
+    activeDocument.content,
+    activeDocument.name,
+    diagramShadowAssets,
+    graphShadowAssets,
+    isExportingPdf
+  ]);
 
   const handleUndo = () => editorRef.current?.undo();
   const handleRedo = () => editorRef.current?.redo();
@@ -1534,8 +1981,12 @@ export function App() {
     return "Preview only";
   }
 
-  function createThemedPreviewSource(source: string, themeDefinition: ThemeDefinition) {
-    const previewTextFill = themeDefinition.palette.editorForeground;
+  function createThemedPreviewSource(
+    source: string,
+    themeDefinition: ThemeDefinition,
+    paperView: boolean
+  ) {
+    const previewTextFill = paperView ? "#000000" : themeDefinition.palette.editorForeground;
     return `#set text(fill: rgb("${previewTextFill}"))\n${source}`;
   }
 
@@ -1902,6 +2353,12 @@ export function App() {
               <button className="menu-action" onClick={() => handleOpenSidebarTool("files")} type="button">
                 Files
               </button>
+            <button className="menu-action" onClick={() => handleOpenSidebarTool("diagram")} type="button">
+              Diagram
+            </button>
+            <button className="menu-action" onClick={() => handleOpenSidebarTool("graph")} type="button">
+              Graph
+            </button>
             <button className="menu-action" onClick={() => setFullscreenMode("editor")} type="button">
               Editor
             </button>
@@ -2078,6 +2535,9 @@ export function App() {
 
               {activeSidebarTool === "files" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
+                  <div className="sidebar-section__header">
+                    <h3>Documents</h3>
+                  </div>
                   <div className="file-list" role="list">
                     {snapshot.project.documents.map((document) => (
                       <button
@@ -2094,6 +2554,80 @@ export function App() {
                         </span>
                       </button>
                     ))}
+                  </div>
+
+                  <div className="sidebar-section__header">
+                    <h3>Current figure</h3>
+                  </div>
+                  <div className="file-list" role="list">
+                    <button className="file-row file-row--active" type="button">
+                      <span className="file-row__name">{getDiagramFilePath(diagram.name)}</span>
+                      <span className="file-row__meta">
+                        {savedFigures.some((figure) => figure.id === diagram.id)
+                          ? "Saved"
+                          : "Draft"}
+                      </span>
+                    </button>
+                  </div>
+
+                  <div className="sidebar-section__header">
+                    <h3>Figures</h3>
+                  </div>
+                  <div className="file-list" role="list">
+                    {savedFigures.length > 0 ? (
+                      savedFigures.map((figure) => (
+                        <button
+                          key={figure.id}
+                          className="file-row"
+                          onClick={() => handleOpenDiagramFigure(figure.id)}
+                          type="button"
+                        >
+                          <span className="file-row__name">
+                            {getDiagramFilePath(figure.name)}
+                          </span>
+                          <span className="file-row__meta">Open</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="snippet-empty">Saved figures will appear here.</div>
+                    )}
+                  </div>
+
+                  <div className="sidebar-section__header">
+                    <h3>Current graph</h3>
+                  </div>
+                  <div className="file-list" role="list">
+                    <button className="file-row file-row--active" type="button">
+                      <span className="file-row__name">{getGraphFilePath(graph.name)}</span>
+                      <span className="file-row__meta">
+                        {savedGraphs.some((figure) => figure.id === graph.id)
+                          ? "Saved"
+                          : "Draft"}
+                      </span>
+                    </button>
+                  </div>
+
+                  <div className="sidebar-section__header">
+                    <h3>Graphs</h3>
+                  </div>
+                  <div className="file-list" role="list">
+                    {savedGraphs.length > 0 ? (
+                      savedGraphs.map((graphFigure) => (
+                        <button
+                          key={graphFigure.id}
+                          className="file-row"
+                          onClick={() => handleOpenGraphFigure(graphFigure.id)}
+                          type="button"
+                        >
+                          <span className="file-row__name">
+                            {getGraphFilePath(graphFigure.name)}
+                          </span>
+                          <span className="file-row__meta">Open</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="snippet-empty">Saved graphs will appear here.</div>
+                    )}
                   </div>
                 </section>
               ) : null}
@@ -2246,6 +2780,49 @@ export function App() {
                       Add Typst headings like <code>= Section</code> to build an outline.
                     </div>
                   )}
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "diagram" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  <DiagramEditorErrorBoundary>
+                    <DiagramEditor
+                      diagram={diagram}
+                      inkColor={diagramInkColor}
+                      onAddStroke={handleAddDiagramStroke}
+                      onAddShape={handleAddDiagramShape}
+                      onClear={handleClearDiagram}
+                      onNew={handleNewDiagram}
+                      onSave={handleSaveDiagram}
+                      onInsertIntoDocument={handleInsertDiagramIntoDocument}
+                      onRename={handleRenameDiagram}
+                      onDownloadSvg={handleDownloadDiagramSvg}
+                      onUndo={handleUndoDiagramStroke}
+                      onInkColorChange={setDiagramInkColor}
+                      onExpand={openDiagramExpanded}
+                      paperView={isPaperView}
+                    />
+                  </DiagramEditorErrorBoundary>
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "graph" ? (
+                <section className="sidebar-section sidebar-section--scrollable">
+                  <GraphEditorErrorBoundary>
+                    <GraphEditor
+                      apiKey={desmosApiKey}
+                      graph={graph}
+                      isExpanded={false}
+                      onExpand={openGraphExpanded}
+                      onInsertIntoDocument={handleInsertGraphIntoDocument}
+                      onDownloadGraph={handleDownloadGraph}
+                      onNew={handleNewGraph}
+                      onRename={handleRenameGraph}
+                      onSave={handleSaveGraph}
+                      onRenderModeChange={handleGraphRenderModeChange}
+                      paperView={isPaperView}
+                    />
+                  </GraphEditorErrorBoundary>
                 </section>
               ) : null}
 
@@ -2861,6 +3438,14 @@ export function App() {
                 <div className="pane__header-actions">
                   <span className="pane__meta">{isCompiling ? compilerStatus.label : "Live"}</span>
                   <button
+                    aria-pressed={isPaperView}
+                    className="pane__button pane__button--quiet"
+                    onClick={togglePaperView}
+                    type="button"
+                  >
+                    Paper
+                  </button>
+                  <button
                     className="pane__button pane__button--quiet"
                     onClick={() => handlePanelToggle("preview")}
                     type="button"
@@ -2874,6 +3459,7 @@ export function App() {
                 isErrorSettled={isErrorSettled}
                 isCompiling={isCompiling}
                 lastSuccessfulResult={lastSuccessfulResult}
+                paperView={isPaperView}
                 showToolbar={false}
                 onZoomChange={setPreviewZoom}
                 result={compileResult}
@@ -2915,11 +3501,94 @@ export function App() {
               isErrorSettled={isErrorSettled}
               isCompiling={isCompiling}
               lastSuccessfulResult={lastSuccessfulResult}
+              paperView={isPaperView}
               showToolbar={true}
               onZoomChange={setPreviewZoom}
               result={compileResult}
               zoom={previewZoom}
             />
+          </section>
+        </div>
+      ) : null}
+
+      {isDiagramExpanded ? (
+        <div
+          className="sheet-backdrop diagram-popup-backdrop"
+          onClick={closeDiagramExpanded}
+          role="presentation"
+        >
+          <section
+            aria-label="Expanded diagram editor"
+            className="diagram-popup"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="diagram-popup__header">
+              <div>
+                <h2>Diagram</h2>
+              </div>
+              <button className="pane__button" onClick={closeDiagramExpanded} type="button">
+                Close
+              </button>
+            </div>
+            <div className="diagram-popup__body">
+              <DiagramEditorErrorBoundary>
+                <DiagramEditor
+                  diagram={diagram}
+                  inkColor={diagramInkColor}
+                  isExpanded
+                  onAddStroke={handleAddDiagramStroke}
+                  onAddShape={handleAddDiagramShape}
+                  onClear={handleClearDiagram}
+                  onNew={handleNewDiagram}
+                  onSave={handleSaveDiagram}
+                  onInsertIntoDocument={handleInsertDiagramIntoDocument}
+                  onRename={handleRenameDiagram}
+                  onDownloadSvg={handleDownloadDiagramSvg}
+                  onUndo={handleUndoDiagramStroke}
+                  onInkColorChange={setDiagramInkColor}
+                  paperView={isPaperView}
+                />
+              </DiagramEditorErrorBoundary>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {isGraphExpanded ? (
+        <div
+          className="sheet-backdrop diagram-popup-backdrop"
+          onClick={closeGraphExpanded}
+          role="presentation"
+        >
+          <section
+            aria-label="Expanded graph editor"
+            className="diagram-popup graph-popup"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="diagram-popup__header">
+              <div>
+                <h2>Graph</h2>
+              </div>
+              <button className="pane__button" onClick={closeGraphExpanded} type="button">
+                Close
+              </button>
+            </div>
+            <div className="diagram-popup__body">
+              <GraphEditorErrorBoundary>
+                <GraphEditor
+                  apiKey={desmosApiKey}
+                  graph={graph}
+                  isExpanded
+                  onDownloadGraph={handleDownloadGraph}
+                  onInsertIntoDocument={handleInsertGraphIntoDocument}
+                  onNew={handleNewGraph}
+                  onRename={handleRenameGraph}
+                  onSave={handleSaveGraph}
+                  onRenderModeChange={handleGraphRenderModeChange}
+                  paperView={isPaperView}
+                />
+              </GraphEditorErrorBoundary>
+            </div>
           </section>
         </div>
       ) : null}
@@ -2939,7 +3608,7 @@ export function App() {
               <div>
                 <h2>Typr Settings</h2>
                 <p className="settings-sheet__copy">
-                  Configure sync, themes, and snippets from one place.
+                  Configure sync, themes, snippets, and graph tools from one place.
                 </p>
               </div>
               <button
@@ -2979,6 +3648,15 @@ export function App() {
                   type="button"
                 >
                   Snippets
+                </button>
+                <button
+                  aria-selected={settingsTab === "graphs"}
+                  className={`settings-tab ${settingsTab === "graphs" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("graphs")}
+                  role="tab"
+                  type="button"
+                >
+                  Graphs
                 </button>
               </div>
 
@@ -3230,7 +3908,7 @@ export function App() {
                     </section>
                   </div>
                 </div>
-              ) : (
+              ) : settingsTab === "snippets" ? (
                 <div className="settings-panel" role="tabpanel">
                   <div className="settings-section">
                     <div className="settings-section__header">
@@ -3359,6 +4037,66 @@ export function App() {
                         </div>
                       ) : null}
                     </section>
+                  </div>
+                </div>
+              ) : (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Graph default</h3>
+                      <span className="pane__meta">
+                        {snapshot.preferences.graphProvider === "desmos"
+                          ? "Desmos"
+                          : snapshot.preferences.graphProvider === "plotly"
+                            ? "Plotly"
+                            : "gnuplot"}
+                      </span>
+                    </div>
+                    <label className="sync-field">
+                      <span>New graph provider</span>
+                      <select
+                        value={snapshot.preferences.graphProvider}
+                        onChange={(event) =>
+                          handleGraphProviderChange(event.target.value as GraphProvider)
+                        }
+                      >
+                        <option value="desmos">Desmos</option>
+                        <option value="plotly">Plotly</option>
+                        <option value="gnuplot">gnuplot</option>
+                      </select>
+                    </label>
+                    <div className="sidebar-card">
+                      <p className="sidebar-card__copy">
+                        New graphs will start in the selected provider. Existing graphs keep the
+                        provider they were created with.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Desmos</h3>
+                      <span className="pane__meta">
+                        {desmosApiKey.trim() ? "Configured" : "Required"}
+                      </span>
+                    </div>
+                    <label className="sync-field">
+                      <span>API key</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) => setDesmosApiKey(event.target.value)}
+                        placeholder="desmos_api_key..."
+                        type="password"
+                        value={desmosApiKey}
+                      />
+                    </label>
+                    <div className="sidebar-card">
+                      <p className="sidebar-card__copy">
+                        The key is stored locally so the graph editor can load Desmos and render
+                        graph exports.
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}
@@ -3736,6 +4474,10 @@ function getSidebarToolTitle(tool: SidebarTool): string {
       return "Search";
     case "outline":
       return "Outline";
+    case "diagram":
+      return "Diagram";
+    case "graph":
+      return "Graph";
     case "sync":
       return "Sync";
     case "debug":
@@ -3751,6 +4493,10 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
       return "";
     case "outline":
       return "Document structure";
+    case "diagram":
+      return "Freehand SVG sketch";
+    case "graph":
+      return "Desmos graph editor";
     case "sync":
       return "GitHub publishing";
     case "debug":

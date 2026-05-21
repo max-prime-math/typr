@@ -1,5 +1,6 @@
 import type { CompileResult } from "./types";
 import type { CompilerStatus } from "./types";
+import type { CompileAssetFile } from "./types";
 
 export interface CompilerWarmupRequest {
   id: number;
@@ -10,6 +11,7 @@ export interface CompilerCompileRequest {
   id: number;
   type: "compile";
   source: string;
+  assets?: CompileAssetFile[];
 }
 
 export type CompilerWorkerRequest =

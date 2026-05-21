@@ -2,8 +2,10 @@ import { createMockCompiler } from "./mockCompiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
+import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import { normalizeTypstDiagnostic } from "./diagnostics";
 import type {
+  CompileAssetFile,
   CompilerStatus,
   CompileDiagnostic,
   CompileFailure,
@@ -28,8 +30,11 @@ interface TypstSnippetModule {
 
 interface TypstCompilerDriver {
   addSource(path: string, source: string): void;
+  mapShadow(path: string, content: Uint8Array): void;
+  resetShadow(): void;
   compile(options: {
     mainFilePath: string;
+    root?: string;
     diagnostics: "full";
   }): Promise<{
     hasError?: boolean;
@@ -117,8 +122,11 @@ export function createMainThreadTypstCompiler(
     }
   }
 
-  async function compileWithMock(source: string): Promise<CompileResult> {
-    const result = await createMockCompiler().compileDocument(source);
+  async function compileWithMock(
+    source: string,
+    assets: CompileAssetFile[] = []
+  ): Promise<CompileResult> {
+    const result = await createMockCompiler().compileDocument(source, assets);
 
     if (fallbackWarning && result.ok) {
       return {
@@ -139,7 +147,10 @@ export function createMainThreadTypstCompiler(
   }
 
   return {
-    async compileDocument(source: string): Promise<CompileResult> {
+    async compileDocument(
+      source: string,
+      assets: CompileAssetFile[] = []
+    ): Promise<CompileResult> {
       await withTimeout(
         warmCompiler(),
         COMPILER_TIMEOUT_MS,
@@ -147,7 +158,7 @@ export function createMainThreadTypstCompiler(
       );
 
       if (bootstrapFailed) {
-        return compileWithMock(source);
+        return compileWithMock(source, assets);
       }
 
       try {
@@ -155,7 +166,11 @@ export function createMainThreadTypstCompiler(
           (async () => {
             const module = await loadTypstModule();
             const compiler = await getCompilerDriver();
+            compiler.resetShadow();
             compiler.addSource(MAIN_FILE_PATH, source);
+            for (const asset of assets) {
+              compiler.mapShadow(asset.path, asset.content);
+            }
 
             if (!fontsPrimed) {
               emitStatus({
@@ -172,6 +187,7 @@ export function createMainThreadTypstCompiler(
             });
             const compileOutput = await compiler.compile({
               mainFilePath: MAIN_FILE_PATH,
+              root: DIAGRAM_COMPILER_ROOT,
               diagnostics: "full"
             });
             fontsPrimed = true;

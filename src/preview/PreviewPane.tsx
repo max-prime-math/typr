@@ -9,6 +9,7 @@ interface PreviewPaneProps {
   isErrorSettled: boolean;
   isCompiling: boolean;
   compilerStatus: CompilerStatus;
+  paperView?: boolean;
   showToolbar?: boolean;
   onSourceJump?: (sourceLocation: string) => void;
   zoom?: PreviewZoomState;
@@ -34,6 +35,7 @@ export function PreviewPane({
   isErrorSettled,
   isCompiling,
   compilerStatus,
+  paperView = false,
   showToolbar = true,
   onSourceJump,
   zoom,
@@ -45,7 +47,7 @@ export function PreviewPane({
 
   if (result === null) {
     return (
-      <div className="preview-state">
+      <div className={`preview-state ${paperView ? "preview-state--paper" : ""}`}>
         <div className="preview-status">
           <p>{isCompiling ? compilerStatus.label : "Preparing preview..."}</p>
           {compilerStatus.detail ? (
@@ -60,9 +62,9 @@ export function PreviewPane({
     const fallbackResult = lastSuccessfulResult;
 
     return (
-      <div className="preview-layout">
+      <div className={`preview-layout ${paperView ? "preview-layout--paper" : ""}`}>
         {fallbackResult ? (
-          <div className="preview-surface">
+          <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
             {showToolbar ? (
               <div className="preview-toolbar">
                 <PreviewZoomControls
@@ -75,12 +77,14 @@ export function PreviewPane({
               <ChromiumCanvasPreview
                 artifactData={fallbackResult.output.artifactData!}
                 isFaulted={isErrorSettled}
+                paperView={paperView}
               />
             ) : (
               <PreviewDocument
                 artifactData={fallbackResult.output.artifactData}
                 isCompiling={isCompiling}
                 isFaulted={isErrorSettled}
+                paperView={paperView}
                 markup={fallbackResult.output.content}
                 onSourceJump={onSourceJump}
                 zoom={currentZoom}
@@ -102,8 +106,8 @@ export function PreviewPane({
   }
 
   return (
-    <div className="preview-layout">
-      <div className="preview-surface">
+    <div className={`preview-layout ${paperView ? "preview-layout--paper" : ""}`}>
+      <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
         {showToolbar ? (
           <div className="preview-toolbar">
             <PreviewZoomControls
@@ -113,11 +117,12 @@ export function PreviewPane({
           </div>
         ) : null}
         {shouldUseChromiumCanvasPreview(result) ? (
-          <ChromiumCanvasPreview artifactData={result.output.artifactData!} />
+          <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
         ) : (
           <PreviewDocument
             artifactData={result.output.artifactData}
             isCompiling={isCompiling}
+            paperView={paperView}
             markup={result.output.content}
             onSourceJump={onSourceJump}
             zoom={currentZoom}
@@ -178,6 +183,7 @@ export function PreviewZoomControls({
 function PreviewDocument({
   artifactData,
   isCompiling = false,
+  paperView = false,
   markup,
   isFaulted = false,
   onSourceJump,
@@ -185,6 +191,7 @@ function PreviewDocument({
 }: {
   artifactData?: Uint8Array;
   isCompiling?: boolean;
+  paperView?: boolean;
   markup: string;
   isFaulted?: boolean;
   onSourceJump?: (sourceLocation: string) => void;
@@ -192,7 +199,10 @@ function PreviewDocument({
 }) {
   const blobStartedAt =
     typeof performance === "undefined" ? 0 : performance.now();
-  const normalizedMarkup = useMemo(() => normalizePreviewSvg(markup), [markup]);
+  const normalizedMarkup = useMemo(
+    () => normalizePreviewSvg(markup, paperView),
+    [markup, paperView]
+  );
   const displayMarkup = normalizedMarkup;
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
@@ -270,6 +280,7 @@ function PreviewDocument({
             isCompiling={isCompiling}
             onSourceJump={onSourceJump}
             overlayWidth={contentWidth}
+            paperView={paperView}
           />
         ) : null}
       </div>
@@ -281,12 +292,14 @@ function PreviewSourceMappingOverlay({
   artifactData,
   isCompiling,
   onSourceJump,
-  overlayWidth
+  overlayWidth,
+  paperView
 }: {
   artifactData: Uint8Array;
   isCompiling: boolean;
   onSourceJump: (sourceLocation: string) => void;
   overlayWidth: number;
+  paperView: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -300,7 +313,7 @@ function PreviewSourceMappingOverlay({
     let cancelled = false;
     let disposeOverlay = () => {};
     const handle = window.setTimeout(() => {
-      void renderSourceMappingOverlay(container, artifactData)
+      void renderSourceMappingOverlay(container, artifactData, paperView)
         .then((overlay) => {
           if (cancelled) {
             overlay.dispose();
@@ -328,7 +341,7 @@ function PreviewSourceMappingOverlay({
       container.ondblclick = null;
       disposeOverlay();
     };
-  }, [artifactData, isCompiling, onSourceJump, overlayWidth]);
+  }, [artifactData, isCompiling, onSourceJump, overlayWidth, paperView]);
 
   return (
     <div
@@ -341,9 +354,11 @@ function PreviewSourceMappingOverlay({
 
 function ChromiumCanvasPreview({
   artifactData,
+  paperView = false,
   isFaulted = false
 }: {
   artifactData: Uint8Array;
+  paperView?: boolean;
   isFaulted?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -361,7 +376,7 @@ function ChromiumCanvasPreview({
       typeof performance === "undefined" ? 0 : performance.now();
     setRenderError(null);
 
-    void renderTypstArtifactToCanvas(container, artifactData)
+    void renderTypstArtifactToCanvas(container, artifactData, paperView)
       .then(() => {
         if (!cancelled) {
           logPreviewTiming("canvas", renderStartedAt);
@@ -379,7 +394,7 @@ function ChromiumCanvasPreview({
       cancelled = true;
       container.innerHTML = "";
     };
-  }, [artifactData, containerRef]);
+  }, [artifactData, containerRef, paperView]);
 
   if (renderError) {
     return (
@@ -636,7 +651,7 @@ function logPreviewTiming(mode: "svg" | "canvas", startedAt: number): void {
   );
 }
 
-function normalizePreviewSvg(markup: string): string {
+function normalizePreviewSvg(markup: string, paperView: boolean): string {
   if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
     return markup;
   }
@@ -648,6 +663,26 @@ function normalizePreviewSvg(markup: string): string {
 
     if (!svg || svg.nodeName.toLowerCase() !== "svg") {
       return markup;
+    }
+
+    if (paperView) {
+      const existingBackground = svg.querySelector(":scope > rect[data-preview-background]");
+
+      if (existingBackground) {
+        existingBackground.setAttribute("fill", "#fffef9");
+      } else {
+        const background = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        background.setAttribute("data-preview-background", "true");
+        background.setAttribute("x", "0");
+        background.setAttribute("y", "0");
+        background.setAttribute("width", "100%");
+        background.setAttribute("height", "100%");
+        background.setAttribute("fill", "#fffef9");
+        svg.insertBefore(background, svg.firstChild);
+      }
+    } else {
+      const existingBackground = svg.querySelector(":scope > rect[data-preview-background]");
+      existingBackground?.remove();
     }
 
     const glyphDefs = new Map<string, SVGElement>();

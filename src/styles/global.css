@@ -220,6 +220,16 @@ button {
   -webkit-mask-image: url("/icons/sidebar/debug.svg");
 }
 
+.activity-icon--diagram {
+  mask-image: url("/icons/sidebar/diagram.svg");
+  -webkit-mask-image: url("/icons/sidebar/diagram.svg");
+}
+
+.activity-icon--graph {
+  mask-image: url("/icons/sidebar/graph.svg");
+  -webkit-mask-image: url("/icons/sidebar/graph.svg");
+}
+
 .menubar__cluster {
   display: flex;
   align-items: center;
@@ -324,6 +334,12 @@ button {
 .menu-action:active,
 .pane__button:active {
   transform: translateY(1px);
+}
+
+.pane__button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--surface-strong) 76%, var(--accent-soft));
+  color: var(--accent-strong);
 }
 
 .control-button--wide {
@@ -1381,6 +1397,421 @@ button {
   line-height: 1.45;
 }
 
+.diagram-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+}
+
+.diagram-editor--paper {
+  color: #2b2721;
+}
+
+.diagram-editor--error {
+  justify-content: flex-start;
+}
+
+.diagram-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.diagram-editor__header-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: stretch;
+  gap: 0.5rem;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.diagram-editor__name-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.diagram-editor__name-field input {
+  font-weight: 600;
+}
+
+.diagram-editor__new-button {
+  align-self: stretch;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.diagram-editor__expand-button {
+  align-self: stretch;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.diagram-editor__header strong {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.diagram-editor__header p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.4;
+  font-size: 0.86rem;
+}
+
+.diagram-editor__palette {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.diagram-editor__toolrow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.diagram-editor__tool {
+  min-width: 4.2rem;
+}
+
+.diagram-editor__color-swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.diagram-editor__color-swatch:hover,
+.diagram-editor__color-swatch:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  outline: none;
+}
+
+.diagram-editor__color-swatch[aria-pressed="true"],
+.diagram-editor__color-swatch--active {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.diagram-editor__color-swatch-fill {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+}
+
+.diagram-editor__color-swatch--hue {
+  overflow: hidden;
+}
+
+.diagram-editor__color-swatch--hue input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.diagram-editor__color-swatch-fill--hue {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    conic-gradient(
+      #ff0000,
+      #ff7f00,
+      #ffff00,
+      #00ff00,
+      #00ffff,
+      #0000ff,
+      #8b00ff,
+      #ff0000
+    );
+}
+
+.diagram-editor__surface {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-strong) 90%, var(--accent-soft)), var(--surface-strong)),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 23px,
+      color-mix(in srgb, var(--border) 42%, transparent) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 23px,
+      color-mix(in srgb, var(--border) 42%, transparent) 24px
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.diagram-editor__surface--paper {
+  border-color: rgba(123, 104, 72, 0.14);
+  background:
+    linear-gradient(180deg, #fefbf5, #fffef9),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 23px,
+      rgba(123, 104, 72, 0.08) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 23px,
+      rgba(123, 104, 72, 0.08) 24px
+    );
+}
+
+.diagram-editor__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  max-height: min(44vh, 24rem);
+  color: var(--text);
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.diagram-editor--expanded .diagram-editor__surface {
+  flex: 1 1 auto;
+  width: 100%;
+  align-self: stretch;
+}
+
+.diagram-editor--expanded .diagram-editor__svg {
+  max-height: min(72vh, 52rem);
+}
+
+.diagram-editor--paper .diagram-editor__svg {
+  color: #3a3128;
+}
+
+.diagram-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.diagram-editor__actions .pane__button {
+  flex: 1 1 7rem;
+  justify-content: center;
+  min-width: 0;
+}
+
+.graph-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+}
+
+.graph-editor--paper {
+  color: #2b2721;
+}
+
+.graph-editor--error {
+  justify-content: flex-start;
+}
+
+.graph-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.graph-editor__header-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: stretch;
+  gap: 0.5rem;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.graph-editor__header-meta {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.graph-editor__mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-start;
+}
+
+.graph-editor__mode-button {
+  min-width: 4rem;
+}
+
+.graph-editor__name-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.graph-editor__name-field input {
+  font-weight: 600;
+}
+
+.graph-editor__new-button,
+.graph-editor__expand-button {
+  align-self: stretch;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.graph-editor__source {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.graph-editor__source-input {
+  min-height: 9rem;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.graph-editor__style,
+.graph-editor__helper {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.graph-editor__style-grid,
+.graph-editor__helper-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.graph-editor__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  align-self: end;
+  min-height: 2.5rem;
+  padding: 0 0.15rem;
+  color: var(--text-muted);
+}
+
+.graph-editor__toggle input {
+  margin: 0;
+}
+
+.graph-editor__surface-wrapper {
+  min-height: 0;
+}
+
+.graph-editor__surface {
+  position: relative;
+  min-height: 24rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-strong) 90%, var(--accent-soft)), var(--surface-strong)),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 23px,
+      color-mix(in srgb, var(--border) 42%, transparent) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 23px,
+      color-mix(in srgb, var(--border) 42%, transparent) 24px
+    );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.graph-editor__surface--paper {
+  border-color: rgba(123, 104, 72, 0.14);
+  background:
+    linear-gradient(180deg, #fefbf5, #fffef9),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 23px,
+      rgba(123, 104, 72, 0.08) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 23px,
+      rgba(123, 104, 72, 0.08) 24px
+    );
+}
+
+.graph-editor__calculator {
+  position: absolute;
+  inset: 0;
+}
+
+.graph-editor__plotly,
+.graph-editor__gnuplot {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.graph-editor__overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--surface) 68%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.graph-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.graph-editor__actions .pane__button {
+  flex: 1 1 7rem;
+  justify-content: center;
+  min-width: 0;
+}
+
+.graph-editor__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .file-row {
   display: flex;
   align-items: center;
@@ -1571,6 +2002,53 @@ button {
 
 .preview-popup-backdrop {
   padding: 2.5rem 1.25rem 3.5rem;
+}
+
+.diagram-popup {
+  width: min(94vw, 1240px);
+  max-height: calc(100dvh - 4.5rem);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.diagram-popup__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.diagram-popup__header h2 {
+  margin: 0;
+}
+
+.diagram-popup__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.9rem 1rem 1rem;
+}
+
+.diagram-popup .diagram-editor {
+  min-height: 100%;
+}
+
+.diagram-popup .diagram-editor__surface {
+  width: 100%;
+}
+
+.diagram-popup .diagram-editor__svg {
+  max-height: min(72vh, 52rem);
+}
+
+.diagram-popup-backdrop {
+  padding: 1.75rem 1rem 2.5rem;
 }
 
 .settings-sheet__body {
@@ -2139,7 +2617,6 @@ button {
   gap: 0.9rem;
 }
 
-
 .preview-toolbar {
   display: flex;
   align-items: center;
@@ -2194,6 +2671,21 @@ button {
     background 280ms ease,
     border-color 280ms ease,
     box-shadow 280ms ease;
+}
+
+.preview-layout--paper .preview-document,
+.preview-layout--paper .preview-document--canvas {
+  border-color: rgba(123, 104, 72, 0.14);
+  background: #fffef9;
+}
+
+.preview-layout--paper .preview-document::after {
+  background: transparent;
+}
+
+.preview-layout--paper .preview-zoom-button,
+.preview-layout--paper .preview-zoom-select {
+  background: #fffef9;
 }
 
 .preview-document--faulted {

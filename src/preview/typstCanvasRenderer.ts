@@ -23,7 +23,8 @@ let rendererPromise:
 
 export async function renderTypstArtifactToCanvas(
   container: HTMLElement,
-  artifactContent: Uint8Array
+  artifactContent: Uint8Array,
+  paperView = false
 ): Promise<void> {
   const renderer = await getRenderer();
   container.innerHTML = "";
@@ -32,7 +33,7 @@ export async function renderTypstArtifactToCanvas(
     artifactContent,
     format: "vector",
     pixelPerPt: getPreviewPixelPerPt(),
-    backgroundColor: "#ffffff",
+    backgroundColor: paperView ? "#fffef9" : "#ffffff",
     dataSelection: {
       body: true,
       semantics: false

@@ -63,6 +63,7 @@ export interface TypstEditorHandle {
     endColumn?: number;
   }): void;
   insertText(text: string): void;
+  insertTextAndSelect(text: string): void;
   insertTemplate(template: string): void;
   insertMathTemplate(template: string): void;
   insertSymbol(snippet: string): void;
@@ -154,6 +155,16 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         }
 
         insertTextIntoView(view, text);
+        view.focus();
+      },
+      insertTextAndSelect(text) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        insertTextIntoView(view, text, true);
         view.focus();
       },
       insertTemplate(template) {
@@ -436,7 +447,11 @@ function applyEditorChanges(
   return nextValue;
 }
 
-function insertTextIntoView(view: EditorView, text: string): void {
+function insertTextIntoView(
+  view: EditorView,
+  text: string,
+  selectInsertedText = false
+): void {
   const selection = view.state.selection.main;
 
   view.dispatch({
@@ -445,7 +460,9 @@ function insertTextIntoView(view: EditorView, text: string): void {
       to: selection.to,
       insert: text
     },
-    selection: EditorSelection.cursor(selection.from + text.length),
+    selection: selectInsertedText
+      ? EditorSelection.range(selection.from, selection.from + text.length)
+      : EditorSelection.cursor(selection.from + text.length),
     scrollIntoView: true
   });
 }

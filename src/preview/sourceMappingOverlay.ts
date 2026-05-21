@@ -28,7 +28,8 @@ let rendererPromise: Promise<TypstRendererDriver> | null = null;
 
 export async function renderSourceMappingOverlay(
   container: HTMLElement,
-  artifactContent: Uint8Array
+  artifactContent: Uint8Array,
+  paperView = false
 ): Promise<SourceMappingOverlayHandle> {
   const renderer = await getRenderer();
   const session = await renderer.createModule(artifactContent);
@@ -39,7 +40,7 @@ export async function renderSourceMappingOverlay(
       container,
       renderSession: session,
       pixelPerPt: getOverlayPixelPerPt(),
-      backgroundColor: "#ffffff",
+      backgroundColor: paperView ? "#fffef9" : "#ffffff",
       dataSelection: {
         body: false,
         semantics: true

@@ -4,6 +4,7 @@ import type {
 } from "./protocol";
 import { createMainThreadTypstCompiler } from "./typstCompilerMainThread";
 import type {
+  CompileAssetFile,
   CompilerStatus,
   CompileResult,
   TypstCompiler,
@@ -29,8 +30,8 @@ export function createTypstCompiler(options: TypstCompilerOptions = {}): TypstCo
   const compiler = getSharedCompilerInstance();
 
   return {
-    compileDocument(source: string): Promise<CompileResult> {
-      return compiler.compileDocument(source);
+    compileDocument(source: string, assets?: CompileAssetFile[]): Promise<CompileResult> {
+      return compiler.compileDocument(source, assets);
     },
     dispose(): void {
       if (options.onStatusChange) {
@@ -95,15 +96,16 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     });
   }
 
-  compileDocument(source: string): Promise<CompileResult> {
+  compileDocument(source: string, assets: CompileAssetFile[] = []): Promise<CompileResult> {
     if (!this.workerAvailable) {
-      return this.fallbackCompiler.compileDocument(source);
+      return this.fallbackCompiler.compileDocument(source, assets);
     }
 
     return this.sendRequest({
       id: this.createRequestId(),
       type: "compile",
-      source
+      source,
+      assets
     })
       .then((result) => result as CompileResult)
       .catch(() => {
@@ -114,7 +116,7 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
           label: "Using main-thread fallback",
           detail: "Worker timed out or failed"
         });
-        return this.fallbackCompiler.compileDocument(source);
+        return this.fallbackCompiler.compileDocument(source, assets);
       });
   }
 

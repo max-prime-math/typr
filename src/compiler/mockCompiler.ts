@@ -1,4 +1,4 @@
-import type { CompileResult, TypstCompiler } from "./types";
+import type { CompileAssetFile, CompileResult, TypstCompiler } from "./types";
 
 function escapeHtml(value: string): string {
   return value
@@ -13,7 +13,10 @@ function stripPreviewThemePrelude(source: string): string {
 
 export function createMockCompiler(): TypstCompiler {
   return {
-    async compileDocument(source: string): Promise<CompileResult> {
+    async compileDocument(
+      source: string,
+      _assets: CompileAssetFile[] = []
+    ): Promise<CompileResult> {
       if (source.includes("typr: error")) {
         return {
           ok: false,
