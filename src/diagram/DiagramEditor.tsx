@@ -255,8 +255,8 @@ export function DiagramEditor({
       <div className="diagram-editor__header">
         <div className="diagram-editor__header-main">
           <label className="sync-field diagram-editor__name-field">
-            <span>Filename</span>
             <input
+              aria-label="Filename"
               onBlur={commitFileName}
               onChange={(event) => setFileNameDraft(event.target.value)}
               onKeyDown={(event) => {

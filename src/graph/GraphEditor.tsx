@@ -39,6 +39,7 @@ interface GraphEditorProps {
   onRename: (name: string) => void;
   onDownloadGraph: (graph: GraphAsset) => void;
   onRenderModeChange: (mode: GraphRenderMode) => void;
+  onProviderChange: (provider: GraphAsset["provider"]) => void;
 }
 
 const GRAPH_SCREENSHOT_WIDTH = 1400;
@@ -55,7 +56,8 @@ export function GraphEditor({
   onInsertIntoDocument,
   onRename,
   onDownloadGraph,
-  onRenderModeChange
+  onRenderModeChange,
+  onProviderChange
 }: GraphEditorProps) {
   const desmosContainerRef = useRef<HTMLDivElement | null>(null);
   const plotlyContainerRef = useRef<HTMLDivElement | null>(null);
@@ -70,6 +72,7 @@ export function GraphEditor({
   const [plotlyDomainEnd, setPlotlyDomainEnd] = useState(10);
   const [plotlySamples, setPlotlySamples] = useState(200);
   const [graphStyle, setGraphStyle] = useState<GraphStyle>(graph.style);
+  const [isProviderMenuOpen, setIsProviderMenuOpen] = useState(false);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">(
     graph.provider === "desmos" && apiKey.trim() ? "idle" : "loading"
   );
@@ -449,8 +452,8 @@ export function GraphEditor({
       <div className="graph-editor__header">
         <div className="graph-editor__header-main">
           <label className="sync-field graph-editor__name-field">
-            <span>Filename</span>
             <input
+              aria-label="Filename"
               onBlur={commitFileName}
               onChange={(event) => {
                 fileNameDraftRef.current = event.target.value;
@@ -489,7 +492,48 @@ export function GraphEditor({
           ) : null}
         </div>
         <div className="graph-editor__header-meta">
-          <span className="pane__meta">{providerLabel}</span>
+          <div
+            className={`menu-dropdown graph-editor__provider-menu ${
+              isProviderMenuOpen ? "menu-dropdown--open" : ""
+            }`}
+            onMouseEnter={() => setIsProviderMenuOpen(true)}
+            onMouseLeave={() => setIsProviderMenuOpen(false)}
+          >
+            <button
+              aria-expanded={isProviderMenuOpen}
+              aria-haspopup="menu"
+              className="menu-dropdown__trigger graph-editor__provider-trigger"
+              onClick={() => setIsProviderMenuOpen((current) => !current)}
+              type="button"
+            >
+              <span>{providerLabel}</span>
+              <span aria-hidden="true" className="graph-editor__provider-chevron">
+                ▾
+              </span>
+            </button>
+            {isProviderMenuOpen ? (
+              <div className="menu-dropdown__panel graph-editor__provider-panel" role="menu">
+                {(["desmos", "plotly", "gnuplot"] as const).map((provider) => (
+                  <button
+                    className="menu-action"
+                    key={provider}
+                    onClick={() => {
+                      onProviderChange(provider);
+                      setIsProviderMenuOpen(false);
+                    }}
+                    role="menuitem"
+                    type="button"
+                  >
+                    {provider === "desmos"
+                      ? "Desmos"
+                      : provider === "plotly"
+                        ? "Plotly"
+                        : "gnuplot"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 

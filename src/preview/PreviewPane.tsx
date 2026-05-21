@@ -16,6 +16,8 @@ interface PreviewPaneProps {
   onZoomChange?: (zoom: PreviewZoomState) => void;
 }
 
+export type PreviewStatusKind = "live" | "compiling";
+
 export type PreviewZoomMode = "fit-width" | "fit-height" | "fit-page" | "percent";
 
 export interface PreviewZoomState {
@@ -49,7 +51,12 @@ export function PreviewPane({
     return (
       <div className={`preview-state ${paperView ? "preview-state--paper" : ""}`}>
         <div className="preview-status">
-          <p>{isCompiling ? compilerStatus.label : "Preparing preview..."}</p>
+          <p>
+            <PreviewStatusIcon
+              kind={isCompiling ? "compiling" : "live"}
+              label={isCompiling ? compilerStatus.label : "Preparing preview"}
+            />
+          </p>
           {compilerStatus.detail ? (
             <p className="preview-status__detail">{compilerStatus.detail}</p>
           ) : null}
@@ -177,6 +184,24 @@ export function PreviewZoomControls({
         +
       </button>
     </div>
+  );
+}
+
+export function PreviewStatusIcon({
+  kind,
+  label
+}: {
+  kind: PreviewStatusKind;
+  label: string;
+}) {
+  return (
+    <span className="preview-status-icon-wrap" aria-label={label}>
+      <span
+        aria-hidden="true"
+        className={`preview-status-icon preview-status-icon--${kind}`}
+      />
+      <span className="visually-hidden">{label}</span>
+    </span>
   );
 }
 

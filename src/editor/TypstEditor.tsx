@@ -100,6 +100,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const currentValueRef = useRef(value);
+  const isApplyingExternalValueRef = useRef(false);
   const latestOnChangeRef = useRef(onChange);
   const snippetsRef = useRef(snippets);
   const snippetCompletionSource = useMemo<CompletionSource>(
@@ -366,8 +367,14 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
     const view = new EditorView({
       state: createEditorState(value, {
-        onChange: (update) =>
-          latestOnChangeRef.current(applyEditorChanges(currentValueRef, update)),
+        onChange: (update) => {
+          if (isApplyingExternalValueRef.current) {
+            isApplyingExternalValueRef.current = false;
+            return;
+          }
+
+          latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
+        },
         vimMode,
         cursorSmooth,
         cursorSmear,
@@ -400,7 +407,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
     }
 
     const currentLength = view.state.doc.length;
-    currentValueRef.current = value;
+    isApplyingExternalValueRef.current = true;
     view.dispatch({
       changes: {
         from: 0,
@@ -408,6 +415,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         insert: value
       }
     });
+    currentValueRef.current = value;
   }, [value]);
 
   useEffect(() => {

@@ -26,6 +26,12 @@ export interface TypstDocumentFile {
   updatedAt: string;
 }
 
+export interface FileFolder {
+  id: string;
+  name: string;
+  updatedAt: string;
+}
+
 export interface DiagramPoint {
   x: number;
   y: number;
@@ -116,6 +122,7 @@ export interface TypstProject {
   id: string;
   name: string;
   documents: TypstDocumentFile[];
+  folders: FileFolder[];
   activeDocumentId: string;
   createdAt: string;
   updatedAt: string;
@@ -237,6 +244,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       id: createId("project"),
       name: "typr Project",
       documents: [document],
+      folders: [],
       activeDocumentId: document.id,
       createdAt: now,
       updatedAt: now,
@@ -260,6 +268,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
   const storedGraphProvider = snapshot.preferences.graphProvider;
   const diagram = snapshot.project.diagram ?? createDefaultDiagram();
   const figures = Array.isArray(snapshot.project.figures) ? snapshot.project.figures : [];
+  const folders = Array.isArray(snapshot.project.folders) ? snapshot.project.folders : [];
   const graph = snapshot.project.graph ?? createDefaultGraph();
   const graphs = Array.isArray(snapshot.project.graphs) ? snapshot.project.graphs : [];
   const now = new Date().toISOString();
@@ -304,6 +313,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       documents: snapshot.project.documents,
       updatedAt: snapshot.project.updatedAt,
       diagram: currentDiagram,
+      folders: folders.map(normalizeFolderAsset),
       figures: figures.map(normalizeDiagramAsset),
       graph: currentGraph,
       graphs: graphs.map(normalizeGraphAsset)
@@ -325,6 +335,15 @@ function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
     shapes: Array.isArray((diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes)
       ? (diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes.map(normalizeDiagramShape)
       : []
+  };
+}
+
+function normalizeFolderAsset(folder: FileFolder): FileFolder {
+  return {
+    ...folder,
+    id: folder.id ?? createId("folder"),
+    name: typeof folder.name === "string" ? folder.name.trim() || "folder" : "folder",
+    updatedAt: folder.updatedAt ?? new Date().toISOString()
   };
 }
 
@@ -572,6 +591,203 @@ export function createDocumentFromFile(
       ...snapshot.project,
       documents: [...snapshot.project.documents, document],
       activeDocumentId: document.id,
+      updatedAt: now
+    }
+  };
+}
+
+export function createFolder(snapshot: AppSnapshot, name?: string): AppSnapshot {
+  const now = new Date().toISOString();
+  const nextName = createUniqueFolderName(snapshot.project.folders, name);
+
+  const folder: FileFolder = {
+    id: createId("folder"),
+    name: nextName,
+    updatedAt: now
+  };
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      folders: [...snapshot.project.folders, folder],
+      updatedAt: now
+    }
+  };
+}
+
+export function renameDocumentById(
+  snapshot: AppSnapshot,
+  documentId: string,
+  name: string
+): AppSnapshot {
+  const nextName = name.trim();
+  const targetDocument = snapshot.project.documents.find((document) => document.id === documentId);
+
+  if (!targetDocument || !nextName || nextName === targetDocument.name) {
+    return snapshot;
+  }
+
+  const existingNames = new Set(
+    snapshot.project.documents
+      .filter((document) => document.id !== documentId)
+      .map((document) => document.name)
+  );
+  let finalName = nextName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName)) {
+    finalName = `${nextName}-${suffix}`;
+    suffix += 1;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      updatedAt: now,
+      activeDocumentId:
+        snapshot.project.activeDocumentId === documentId
+          ? documentId
+          : snapshot.project.activeDocumentId,
+      documents: snapshot.project.documents.map((document) =>
+        document.id === documentId
+          ? { ...document, name: finalName, updatedAt: now }
+          : document
+      )
+    }
+  };
+}
+
+export function renameFolderById(
+  snapshot: AppSnapshot,
+  folderId: string,
+  name: string
+): AppSnapshot {
+  const nextName = name.trim();
+  const targetFolder = snapshot.project.folders.find((folder) => folder.id === folderId);
+
+  if (!targetFolder || !nextName || nextName === targetFolder.name) {
+    return snapshot;
+  }
+
+  const existingNames = new Set(
+    snapshot.project.folders.filter((folder) => folder.id !== folderId).map((folder) => folder.name)
+  );
+  let finalName = nextName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName)) {
+    finalName = `${nextName}-${suffix}`;
+    suffix += 1;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      folders: snapshot.project.folders.map((folder) =>
+        folder.id === folderId ? { ...folder, name: finalName, updatedAt: now } : folder
+      ),
+      updatedAt: now
+    }
+  };
+}
+
+export function renameDiagramById(
+  snapshot: AppSnapshot,
+  diagramId: string,
+  name: string
+): AppSnapshot {
+  const nextName = normalizeDiagramFileName(name);
+  const diagram = snapshot.project.diagram ?? createDefaultDiagram();
+  const figures = snapshot.project.figures ?? [];
+  const targetFigure = figures.find((figure) => figure.id === diagramId) ?? null;
+  const targetName = diagram.id === diagramId ? diagram.name : targetFigure?.name ?? "";
+
+  if (!targetName || nextName === targetName) {
+    return snapshot;
+  }
+
+  const existingNames = new Set(
+    figures.filter((figure) => figure.id !== diagramId).map((figure) => figure.name)
+  );
+  if (diagram.id !== diagramId) {
+    existingNames.add(diagram.name);
+  }
+
+  let finalName = nextName;
+  let suffix = 2;
+  while (existingNames.has(finalName)) {
+    finalName = `${nextName.replace(/\.svg$/i, "")}-${suffix}.svg`;
+    suffix += 1;
+  }
+
+  const now = new Date().toISOString();
+  const nextDiagram = {
+    ...diagram,
+    name: diagram.id === diagramId ? finalName : diagram.name,
+    updatedAt: diagram.id === diagramId ? now : diagram.updatedAt
+  };
+  const nextFigures = figures.map((figure) =>
+    figure.id === diagramId ? { ...figure, name: finalName, updatedAt: now } : figure
+  );
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: nextDiagram,
+      figures: nextFigures,
+      updatedAt: now
+    }
+  };
+}
+
+export function renameGraphById(snapshot: AppSnapshot, graphId: string, name: string): AppSnapshot {
+  const currentGraph = snapshot.project.graph ?? createDefaultGraph();
+  const nextName = normalizeGraphFileNameForContentType(name, currentGraph.contentType);
+  const graphs = snapshot.project.graphs ?? [];
+  const targetGraph = graphs.find((graph) => graph.id === graphId) ?? null;
+  const targetName = currentGraph.id === graphId ? currentGraph.name : targetGraph?.name ?? "";
+
+  if (!targetName || nextName === targetName) {
+    return snapshot;
+  }
+
+  const existingNames = new Set(graphs.filter((graph) => graph.id !== graphId).map((graph) => graph.name));
+  if (currentGraph.id !== graphId) {
+    existingNames.add(currentGraph.name);
+  }
+
+  let finalName = nextName;
+  let suffix = 2;
+  while (existingNames.has(finalName)) {
+    const baseName = nextName.replace(/\.(png|svg)$/i, "");
+    finalName = `${baseName}-${suffix}.${currentGraph.contentType}`;
+    suffix += 1;
+  }
+
+  const now = new Date().toISOString();
+  const nextGraph = {
+    ...currentGraph,
+    name: currentGraph.id === graphId ? finalName : currentGraph.name,
+    updatedAt: currentGraph.id === graphId ? now : currentGraph.updatedAt
+  };
+  const nextGraphs = graphs.map((graph) =>
+    graph.id === graphId ? { ...graph, name: finalName, updatedAt: now } : graph
+  );
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      graph: nextGraph,
+      graphs: nextGraphs,
       updatedAt: now
     }
   };
@@ -837,6 +1053,22 @@ function createUniqueDocumentName(
   while (existingNames.has(nextName)) {
     nextIndex += 1;
     nextName = `section-${nextIndex}.typ`;
+  }
+
+  return nextName;
+}
+
+function createUniqueFolderName(
+  folders: FileFolder[],
+  requestedName?: string
+): string {
+  const existingNames = new Set(folders.map((folder) => folder.name));
+  let nextIndex = folders.length + 1;
+  let nextName = requestedName?.trim() || `folder ${nextIndex}`;
+
+  while (existingNames.has(nextName)) {
+    nextIndex += 1;
+    nextName = `folder ${nextIndex}`;
   }
 
   return nextName;

@@ -16,6 +16,7 @@ import {
   createDocumentFromFile,
   createDefaultDiagram,
   createDefaultGraph,
+  createFolder,
   createNextGraphSnapshot,
   type GraphProvider,
   type DiagramAsset,
@@ -25,6 +26,9 @@ import {
   getActiveDocument,
   normalizeSnapshot,
   renameActiveDocument,
+  renameDiagramById,
+  renameDocumentById,
+  renameGraphById,
   renameProject,
   setActiveDocument,
   saveCurrentDiagram,
@@ -61,7 +65,11 @@ import {
   pushProjectToGitHub,
   type GitHubRemoteConfig
 } from "../github/githubSync";
-import { PreviewPane, PreviewDebugPanel } from "../preview/PreviewPane";
+import {
+  PreviewPane,
+  PreviewDebugPanel,
+  PreviewStatusIcon
+} from "../preview/PreviewPane";
 import {
   DiagramEditor,
   DiagramEditorErrorBoundary,
@@ -132,6 +140,18 @@ const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
 const APP_VERSION = packageJson.version;
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
+
+function getGraphProviderLabel(provider: GraphProvider): string {
+  if (provider === "plotly") {
+    return "Plotly";
+  }
+
+  if (provider === "gnuplot") {
+    return "gnuplot";
+  }
+
+  return "Desmos";
+}
 
 interface SourceSymbolItem {
   label: string;
@@ -433,6 +453,11 @@ export function App() {
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [isPaperView, setIsPaperView] = useState(false);
   const [diagramInkColor, setDiagramInkColor] = useState("#000000");
+  const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({
+    documents: false,
+    figures: false,
+    graphs: false
+  });
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
   );
@@ -445,6 +470,7 @@ export function App() {
     tone: "neutral",
     text: ""
   });
+  const [isGraphProviderMenuOpen, setIsGraphProviderMenuOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
     () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isSidebarCollapsed
@@ -575,6 +601,18 @@ export function App() {
     () => snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider),
     [snapshot.preferences.graphProvider, snapshot.project.graph]
   );
+  const savedFigures = useMemo(
+    () => snapshot.project.figures ?? [],
+    [snapshot.project.figures]
+  );
+  const savedGraphs = useMemo(
+    () => snapshot.project.graphs ?? [],
+    [snapshot.project.graphs]
+  );
+  const customFolders = useMemo(
+    () => snapshot.project.folders ?? [],
+    [snapshot.project.folders]
+  );
 
   useEffect(() => {
     const normalizedName = normalizeGraphFileNameForContentType(graph.name, graph.contentType);
@@ -590,14 +628,6 @@ export function App() {
       }))
     );
   }, [graph.contentType, graph.name]);
-  const savedFigures = useMemo(
-    () => snapshot.project.figures ?? [],
-    [snapshot.project.figures]
-  );
-  const savedGraphs = useMemo(
-    () => snapshot.project.graphs ?? [],
-    [snapshot.project.graphs]
-  );
   const diagramShadowAssets = useMemo(
     () => buildDiagramShadowFiles([...savedFigures, diagram]),
     [diagram, savedFigures]
@@ -608,8 +638,7 @@ export function App() {
   );
   const diagramAssetsRevision = useMemo(
     () =>
-      [diagram, ...savedFigures]
-        .map((asset) => `${asset.id}:${asset.updatedAt}`)
+      [diagram, ...savedFigures].map((asset) => `${asset.id}:${asset.updatedAt}`)
         .join("|"),
     [diagram, savedFigures]
   );
@@ -1563,6 +1592,53 @@ export function App() {
     });
   }, []);
 
+  const handleAddFolder = useCallback(() => {
+    const nextName = window.prompt("Folder name", "folder");
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => createFolder(currentSnapshot, nextName));
+  }, []);
+
+  const handleToggleFolder = useCallback((folderId: string) => {
+    setCollapsedFileFolders((current) => ({
+      ...current,
+      [folderId]: !current[folderId]
+    }));
+  }, []);
+
+  const handleRenameDocumentFromTree = useCallback((documentId: string, currentName: string) => {
+    const nextName = window.prompt("File name", currentName);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameDocumentById(currentSnapshot, documentId, nextName));
+  }, []);
+
+  const handleRenameFigureFromTree = useCallback((figureId: string, currentName: string) => {
+    const nextName = window.prompt("Figure name", currentName);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameDiagramById(currentSnapshot, figureId, nextName));
+  }, []);
+
+  const handleRenameGraphFromTree = useCallback((graphId: string, currentName: string) => {
+    const nextName = window.prompt("Graph name", currentName);
+
+    if (nextName === null) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => renameGraphById(currentSnapshot, graphId, nextName));
+  }, []);
+
   const handleNewDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) => createNextDiagramSnapshot(currentSnapshot));
   }, []);
@@ -1582,6 +1658,34 @@ export function App() {
         currentSnapshot.preferences.graphProvider
       )
     );
+  }, []);
+
+  const handleOpenDiagramFigure = useCallback((figureId: string) => {
+    setSnapshot((currentSnapshot) => {
+      const figure = currentSnapshot.project.figures?.find((entry) => entry.id === figureId);
+
+      if (!figure) {
+        return currentSnapshot;
+      }
+
+      const savedSnapshot = saveCurrentDiagram(currentSnapshot);
+
+      return {
+        ...savedSnapshot,
+        project: {
+          ...savedSnapshot.project,
+          diagram: {
+            ...figure,
+            strokes: figure.strokes.map((stroke) => ({
+              ...stroke,
+              points: stroke.points.map((point) => ({ ...point }))
+            }))
+          },
+          updatedAt: new Date().toISOString()
+        }
+      };
+    });
+    setActiveSidebarTool("diagram");
   }, []);
 
   const handleOpenGraphFigure = useCallback((figureId: string) => {
@@ -1688,34 +1792,6 @@ export function App() {
 
       return updateGraph(updated, () => nextGraph);
     });
-  }, []);
-
-  const handleOpenDiagramFigure = useCallback((figureId: string) => {
-    setSnapshot((currentSnapshot) => {
-      const figure = currentSnapshot.project.figures?.find((entry) => entry.id === figureId);
-
-      if (!figure) {
-        return currentSnapshot;
-      }
-
-      const savedSnapshot = saveCurrentDiagram(currentSnapshot);
-
-      return {
-        ...savedSnapshot,
-        project: {
-          ...savedSnapshot.project,
-          diagram: {
-            ...figure,
-            strokes: figure.strokes.map((stroke) => ({
-              ...stroke,
-              points: stroke.points.map((point) => ({ ...point }))
-            }))
-          },
-          updatedAt: new Date().toISOString()
-        }
-      };
-    });
-    setActiveSidebarTool("diagram");
   }, []);
 
   const handleDownloadDiagramSvg = useCallback((svgMarkup: string) => {
@@ -2535,99 +2611,190 @@ export function App() {
 
               {activeSidebarTool === "files" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
-                  <div className="sidebar-section__header">
-                    <h3>Documents</h3>
-                  </div>
-                  <div className="file-list" role="list">
-                    {snapshot.project.documents.map((document) => (
+                  <div className="file-tree" role="tree" aria-label="Files">
+                    <div className="file-tree__toolbar">
                       <button
-                        key={document.id}
-                        className={`file-row ${
-                          document.id === activeDocument.id ? "file-row--active" : ""
-                        }`}
-                        onClick={() => handleSelectDocument(document.id)}
+                        className="pane__button pane__button--compact"
+                        onClick={handleAddFolder}
                         type="button"
                       >
-                        <span className="file-row__name">{document.name}</span>
-                        <span className="file-row__meta">
-                          {document.id === activeDocument.id ? "Open" : "Switch"}
-                        </span>
+                        Add folder
                       </button>
+                    </div>
+
+                    <div className="file-tree__branch">
+                      <button
+                        className="file-tree__branch-header file-tree__branch-header--button"
+                        onClick={() => handleToggleFolder("documents")}
+                        type="button"
+                        aria-expanded={!collapsedFileFolders.documents}
+                        aria-label={`${collapsedFileFolders.documents ? "Expand" : "Collapse"} Documents`}
+                      >
+                        <span aria-hidden="true" className="file-tree__chevron-text">
+                          {collapsedFileFolders.documents ? "▸" : "▾"}
+                        </span>
+                        <span className="file-tree__folder-icon" aria-hidden="true" />
+                        <span className="file-tree__branch-label">Documents</span>
+                        <span className="file-row__meta">{snapshot.project.documents.length}</span>
+                      </button>
+                      {!collapsedFileFolders.documents ? (
+                        <div className="file-list file-tree__items" role="group">
+                          {snapshot.project.documents.map((document) => (
+                            <button
+                              key={document.id}
+                              className={`file-row file-tree__entry-row ${
+                                document.id === activeDocument.id ? "file-row--active" : ""
+                              }`}
+                              onClick={(event) => {
+                                if (
+                                  (event.target as HTMLElement).closest(".file-tree__rename-target")
+                                ) {
+                                  return;
+                                }
+                                handleSelectDocument(document.id);
+                              }}
+                              role="treeitem"
+                              type="button"
+                            >
+                              <span
+                                className="file-row__name file-tree__rename-target"
+                                onDoubleClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  handleRenameDocumentFromTree(document.id, document.name);
+                                }}
+                              >
+                                {document.name}
+                              </span>
+                              <span className="file-row__meta">
+                                {document.id === activeDocument.id ? "Open" : "Switch"}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="file-tree__branch">
+                      <button
+                        className="file-tree__branch-header file-tree__branch-header--button"
+                        onClick={() => handleToggleFolder("figures")}
+                        type="button"
+                        aria-expanded={!collapsedFileFolders.figures}
+                        aria-label={`${collapsedFileFolders.figures ? "Expand" : "Collapse"} figures`}
+                      >
+                        <span aria-hidden="true" className="file-tree__chevron-text">
+                          {collapsedFileFolders.figures ? "▸" : "▾"}
+                        </span>
+                        <span className="file-tree__folder-icon" aria-hidden="true" />
+                        <span className="file-tree__branch-label">figures</span>
+                        <span className="file-row__meta">{savedFigures.length}</span>
+                      </button>
+                      {!collapsedFileFolders.figures ? (
+                        <div className="file-list file-tree__items" role="group">
+                          {savedFigures.length > 0 ? (
+                            savedFigures.map((figure) => (
+                              <button
+                                key={figure.id}
+                                className="file-row file-tree__entry-row"
+                                onClick={(event) => {
+                                  if (
+                                    (event.target as HTMLElement).closest(".file-tree__rename-target")
+                                  ) {
+                                    return;
+                                  }
+                                  handleOpenDiagramFigure(figure.id);
+                                }}
+                                role="treeitem"
+                                type="button"
+                              >
+                                <span
+                                  className="file-row__name file-tree__rename-target"
+                                  onDoubleClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    handleRenameFigureFromTree(figure.id, figure.name);
+                                  }}
+                                >
+                                  {figure.name}
+                                </span>
+                                <span className="file-row__meta">Open</span>
+                              </button>
+                            ))
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="file-tree__branch">
+                      <button
+                        className="file-tree__branch-header file-tree__branch-header--button"
+                        onClick={() => handleToggleFolder("graphs")}
+                        type="button"
+                        aria-expanded={!collapsedFileFolders.graphs}
+                        aria-label={`${collapsedFileFolders.graphs ? "Expand" : "Collapse"} graphs`}
+                      >
+                        <span aria-hidden="true" className="file-tree__chevron-text">
+                          {collapsedFileFolders.graphs ? "▸" : "▾"}
+                        </span>
+                        <span className="file-tree__folder-icon" aria-hidden="true" />
+                        <span className="file-tree__branch-label">graphs</span>
+                        <span className="file-row__meta">{savedGraphs.length}</span>
+                      </button>
+                      {!collapsedFileFolders.graphs ? (
+                        <div className="file-list file-tree__items" role="group">
+                          {savedGraphs.length > 0 ? (
+                            savedGraphs.map((graphFigure) => (
+                              <button
+                                key={graphFigure.id}
+                                className="file-row file-tree__entry-row"
+                                onClick={(event) => {
+                                  if (
+                                    (event.target as HTMLElement).closest(".file-tree__rename-target")
+                                  ) {
+                                    return;
+                                  }
+                                  handleOpenGraphFigure(graphFigure.id);
+                                }}
+                                role="treeitem"
+                                type="button"
+                              >
+                                <span
+                                  className="file-row__name file-tree__rename-target"
+                                  onDoubleClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    handleRenameGraphFromTree(graphFigure.id, graphFigure.name);
+                                  }}
+                                >
+                                  {graphFigure.name}
+                                </span>
+                                <span className="file-row__meta">Open</span>
+                              </button>
+                            ))
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {customFolders.map((folder) => (
+                      <div className="file-tree__branch" key={folder.id}>
+                        <button
+                          className="file-tree__branch-header file-tree__branch-header--button"
+                          onClick={() => handleToggleFolder(folder.id)}
+                          type="button"
+                          aria-expanded={!collapsedFileFolders[folder.id]}
+                          aria-label={`${collapsedFileFolders[folder.id] ? "Expand" : "Collapse"} ${folder.name}`}
+                        >
+                          <span aria-hidden="true" className="file-tree__chevron-text">
+                            {collapsedFileFolders[folder.id] ? "▸" : "▾"}
+                          </span>
+                          <span className="file-tree__folder-icon" aria-hidden="true" />
+                          <span className="file-tree__branch-label">{folder.name}</span>
+                          <span className="file-row__meta">0</span>
+                        </button>
+                      </div>
                     ))}
-                  </div>
-
-                  <div className="sidebar-section__header">
-                    <h3>Current figure</h3>
-                  </div>
-                  <div className="file-list" role="list">
-                    <button className="file-row file-row--active" type="button">
-                      <span className="file-row__name">{getDiagramFilePath(diagram.name)}</span>
-                      <span className="file-row__meta">
-                        {savedFigures.some((figure) => figure.id === diagram.id)
-                          ? "Saved"
-                          : "Draft"}
-                      </span>
-                    </button>
-                  </div>
-
-                  <div className="sidebar-section__header">
-                    <h3>Figures</h3>
-                  </div>
-                  <div className="file-list" role="list">
-                    {savedFigures.length > 0 ? (
-                      savedFigures.map((figure) => (
-                        <button
-                          key={figure.id}
-                          className="file-row"
-                          onClick={() => handleOpenDiagramFigure(figure.id)}
-                          type="button"
-                        >
-                          <span className="file-row__name">
-                            {getDiagramFilePath(figure.name)}
-                          </span>
-                          <span className="file-row__meta">Open</span>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="snippet-empty">Saved figures will appear here.</div>
-                    )}
-                  </div>
-
-                  <div className="sidebar-section__header">
-                    <h3>Current graph</h3>
-                  </div>
-                  <div className="file-list" role="list">
-                    <button className="file-row file-row--active" type="button">
-                      <span className="file-row__name">{getGraphFilePath(graph.name)}</span>
-                      <span className="file-row__meta">
-                        {savedGraphs.some((figure) => figure.id === graph.id)
-                          ? "Saved"
-                          : "Draft"}
-                      </span>
-                    </button>
-                  </div>
-
-                  <div className="sidebar-section__header">
-                    <h3>Graphs</h3>
-                  </div>
-                  <div className="file-list" role="list">
-                    {savedGraphs.length > 0 ? (
-                      savedGraphs.map((graphFigure) => (
-                        <button
-                          key={graphFigure.id}
-                          className="file-row"
-                          onClick={() => handleOpenGraphFigure(graphFigure.id)}
-                          type="button"
-                        >
-                          <span className="file-row__name">
-                            {getGraphFilePath(graphFigure.name)}
-                          </span>
-                          <span className="file-row__meta">Open</span>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="snippet-empty">Saved graphs will appear here.</div>
-                    )}
                   </div>
                 </section>
               ) : null}
@@ -2819,6 +2986,7 @@ export function App() {
                       onNew={handleNewGraph}
                       onRename={handleRenameGraph}
                       onSave={handleSaveGraph}
+                      onProviderChange={handleGraphProviderChange}
                       onRenderModeChange={handleGraphRenderModeChange}
                       paperView={isPaperView}
                     />
@@ -3436,7 +3604,12 @@ export function App() {
                   />
                 </div>
                 <div className="pane__header-actions">
-                  <span className="pane__meta">{isCompiling ? compilerStatus.label : "Live"}</span>
+                  <span className="pane__meta pane__meta--status">
+                    <PreviewStatusIcon
+                      kind={isCompiling ? "compiling" : "live"}
+                      label={isCompiling ? compilerStatus.label : "Live"}
+                    />
+                  </span>
                   <button
                     aria-pressed={isPaperView}
                     className="pane__button pane__button--quiet"
@@ -3584,6 +3757,7 @@ export function App() {
                   onNew={handleNewGraph}
                   onRename={handleRenameGraph}
                   onSave={handleSaveGraph}
+                  onProviderChange={handleGraphProviderChange}
                   onRenderModeChange={handleGraphRenderModeChange}
                   paperView={isPaperView}
                 />
@@ -4045,26 +4219,52 @@ export function App() {
                     <div className="settings-section__header">
                       <h3>Graph default</h3>
                       <span className="pane__meta">
-                        {snapshot.preferences.graphProvider === "desmos"
-                          ? "Desmos"
-                          : snapshot.preferences.graphProvider === "plotly"
-                            ? "Plotly"
-                            : "gnuplot"}
+                        {getGraphProviderLabel(snapshot.preferences.graphProvider)}
                       </span>
                     </div>
-                    <label className="sync-field">
-                      <span>New graph provider</span>
-                      <select
-                        value={snapshot.preferences.graphProvider}
-                        onChange={(event) =>
-                          handleGraphProviderChange(event.target.value as GraphProvider)
-                        }
+                    <div className="sync-field">
+                      <span>Graph engine</span>
+                      <div
+                        className={`menu-dropdown settings-graph-provider ${
+                          isGraphProviderMenuOpen ? "menu-dropdown--open" : ""
+                        }`}
+                        onMouseEnter={() => setIsGraphProviderMenuOpen(true)}
+                        onMouseLeave={() => setIsGraphProviderMenuOpen(false)}
                       >
-                        <option value="desmos">Desmos</option>
-                        <option value="plotly">Plotly</option>
-                        <option value="gnuplot">gnuplot</option>
-                      </select>
-                    </label>
+                        <button
+                          aria-expanded={isGraphProviderMenuOpen}
+                          aria-haspopup="menu"
+                          className="menu-dropdown__trigger settings-graph-provider__trigger"
+                          onClick={() =>
+                            setIsGraphProviderMenuOpen((current) => !current)
+                          }
+                          type="button"
+                        >
+                          <span>{getGraphProviderLabel(snapshot.preferences.graphProvider)}</span>
+                          <span aria-hidden="true" className="settings-graph-provider__chevron">
+                            ▾
+                          </span>
+                        </button>
+                        {isGraphProviderMenuOpen ? (
+                          <div className="menu-dropdown__panel settings-graph-provider__panel" role="menu">
+                            {(["desmos", "plotly", "gnuplot"] as const).map((provider) => (
+                              <button
+                                className="menu-action"
+                                key={provider}
+                                onClick={() => {
+                                  handleGraphProviderChange(provider);
+                                  setIsGraphProviderMenuOpen(false);
+                                }}
+                                role="menuitem"
+                                type="button"
+                              >
+                                {getGraphProviderLabel(provider)}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
                     <div className="sidebar-card">
                       <p className="sidebar-card__copy">
                         New graphs will start in the selected provider. Existing graphs keep the
