@@ -63,6 +63,8 @@ export interface TypstEditorHandle {
     endColumn?: number;
   }): void;
   insertText(text: string): void;
+  insertTemplate(template: string): void;
+  insertMathTemplate(template: string): void;
   insertSymbol(snippet: string): void;
   surroundSelection(before: string, after?: string): void;
   toggleCurrentLines(prefix: string, alternatePrefix?: string): void;
@@ -152,6 +154,31 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         }
 
         insertTextIntoView(view, text);
+        view.focus();
+      },
+      insertTemplate(template) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        insertSnippetIntoView(view, template);
+        view.focus();
+      },
+      insertMathTemplate(template) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        const selection = view.state.selection.main;
+        const insertion = isPositionInsideMathMode(view.state, selection.from)
+          ? template
+          : `$${template}$`;
+
+        insertSnippetIntoView(view, insertion);
         view.focus();
       },
       insertSymbol(snippet) {
@@ -448,13 +475,9 @@ function wrapSelection(view: EditorView, before: string, after: string): void {
   replaceSelection(view, before, after);
 }
 
-function insertSymbolIntoView(view: EditorView, template: string): void {
+function insertSnippetIntoView(view: EditorView, template: string): void {
   const selection = view.state.selection.main;
-  const insertion = isPositionInsideMathMode(view.state, selection.from)
-    ? template
-    : `$${template}$`;
-
-  snippet(insertion)(
+  snippet(template)(
     {
       state: view.state,
       dispatch(tr) {
@@ -465,6 +488,15 @@ function insertSymbolIntoView(view: EditorView, template: string): void {
     selection.from,
     selection.to
   );
+}
+
+function insertSymbolIntoView(view: EditorView, template: string): void {
+  const selection = view.state.selection.main;
+  const insertion = isPositionInsideMathMode(view.state, selection.from)
+    ? template
+    : `$${template}$`;
+
+  insertSnippetIntoView(view, insertion);
 }
 
 function toggleCurrentLines(view: EditorView, prefix: string, alternatePrefix?: string): void {

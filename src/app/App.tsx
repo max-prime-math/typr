@@ -135,6 +135,11 @@ type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug";
 type SettingsTab = "github" | "themes" | "snippets";
+type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
+type TableAlignment = "left" | "center" | "right" | "horizon";
+type TableGutter = "none" | "small" | "medium";
+type TableInset = "none" | "small" | "medium";
+type TableStroke = "default" | "none";
 
 interface SyncFeedback {
   tone: "neutral" | "success" | "error";
@@ -154,6 +159,58 @@ interface OutlineEntry {
   lineNumber: number;
   title: string;
 }
+
+interface MatrixSettings {
+  rows: number;
+  columns: number;
+  delimiter: MatrixDelimiter;
+}
+
+interface TableSettings {
+  rows: number;
+  columns: number;
+  header: boolean;
+  footer: boolean;
+  striped: boolean;
+  align: TableAlignment;
+  gutter: TableGutter;
+  inset: TableInset;
+  stroke: TableStroke;
+}
+
+const MATRIX_ROW_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
+const MATRIX_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
+const MATRIX_DELIMITER_OPTIONS: Array<{
+  id: MatrixDelimiter;
+  label: string;
+  delim: string;
+}> = [
+  { id: "paren", label: "()", delim: "(" },
+  { id: "bracket", label: "[]", delim: "[" },
+  { id: "brace", label: "{}", delim: "{" },
+  { id: "bar", label: "||", delim: "|" },
+  { id: "angle", label: "<>", delim: "<" },
+  { id: "none", label: "None", delim: "" }
+];
+
+const TABLE_ROW_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
+const TABLE_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
+const TABLE_ALIGNMENT_OPTIONS: Array<{ id: TableAlignment; label: string }> = [
+  { id: "left", label: "Left" },
+  { id: "center", label: "Center" },
+  { id: "right", label: "Right" },
+  { id: "horizon", label: "Horizon" }
+];
+const TABLE_GUTTER_OPTIONS: Array<{ id: TableGutter; label: string; value: string }> = [
+  { id: "none", label: "None", value: "0pt" },
+  { id: "small", label: "Small", value: "0.2em" },
+  { id: "medium", label: "Medium", value: "0.45em" }
+];
+const TABLE_INSET_OPTIONS: Array<{ id: TableInset; label: string; value: string }> = [
+  { id: "none", label: "None", value: "0pt" },
+  { id: "small", label: "Small", value: "0.15em" },
+  { id: "medium", label: "Medium", value: "0.35em" }
+];
 
 function clampPanelWidth(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -265,6 +322,23 @@ export function App() {
     regexp: false,
     wholeWord: false
   });
+  const [matrixSettings, setMatrixSettings] = useState<MatrixSettings>({
+    rows: 2,
+    columns: 2,
+    delimiter: "paren"
+  });
+  const [tableSettings, setTableSettings] = useState<TableSettings>({
+    rows: 3,
+    columns: 3,
+    header: true,
+    footer: false,
+    striped: true,
+    align: "left",
+    gutter: "small",
+    inset: "small",
+    stroke: "default"
+  });
+  const [openToolbarMenu, setOpenToolbarMenu] = useState<"matrix" | "table" | null>(null);
   const [themeImportFeedback, setThemeImportFeedback] = useState<SyncFeedback>({
     tone: "neutral",
     text: ""
@@ -876,6 +950,10 @@ export function App() {
     editorRef.current?.insertText(text);
   }, []);
 
+  const handleInsertEditorTemplate = useCallback((template: string) => {
+    editorRef.current?.insertTemplate(template);
+  }, []);
+
   const handleInsertSymbol = useCallback((template: string) => {
     editorRef.current?.insertSymbol(template);
   }, []);
@@ -964,6 +1042,18 @@ export function App() {
 
   const handleCycleHeading = useCallback(() => {
     editorRef.current?.cycleCurrentLinesHeading();
+  }, []);
+
+  const handleInsertMatrix = useCallback(() => {
+    editorRef.current?.insertMathTemplate(buildMatrixTemplate(matrixSettings));
+  }, [matrixSettings]);
+
+  const handleInsertTable = useCallback(() => {
+    handleInsertEditorTemplate(buildTableTemplate(tableSettings));
+  }, [handleInsertEditorTemplate, tableSettings]);
+
+  const toggleToolbarMenu = useCallback((menu: "matrix" | "table") => {
+    setOpenToolbarMenu((current) => (current === menu ? null : menu));
   }, []);
 
   const handlePreviewSourceJump = useCallback((sourceLocation: string) => {
@@ -2288,6 +2378,261 @@ export function App() {
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--heading" />
                   </button>
+                  <div className={`matrix-menu ${openToolbarMenu === "matrix" ? "matrix-menu--open" : ""}`}>
+                    <button
+                      aria-expanded={openToolbarMenu === "matrix"}
+                      aria-label="Matrix options"
+                      className="pane__button pane__button--compact pane__icon-button"
+                      onClick={() => toggleToolbarMenu("matrix")}
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--matrix" />
+                    </button>
+                    {openToolbarMenu === "matrix" ? (
+                    <div className="matrix-menu__panel" role="menu" aria-label="Matrix options">
+                      <label className="matrix-menu__field">
+                        <span>Rows</span>
+                        <select
+                          onChange={(event) =>
+                            setMatrixSettings((current) => ({
+                              ...current,
+                              rows: Number(event.target.value)
+                            }))
+                          }
+                          value={matrixSettings.rows}
+                        >
+                          {MATRIX_ROW_OPTIONS.map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="matrix-menu__field">
+                        <span>Columns</span>
+                        <select
+                          onChange={(event) =>
+                            setMatrixSettings((current) => ({
+                              ...current,
+                              columns: Number(event.target.value)
+                            }))
+                          }
+                          value={matrixSettings.columns}
+                        >
+                          {MATRIX_COLUMN_OPTIONS.map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="matrix-menu__delimiters" role="group" aria-label="Brackets">
+                        {MATRIX_DELIMITER_OPTIONS.map((option) => (
+                          <button
+                            key={option.id}
+                            className={`matrix-menu__delimiter ${
+                              matrixSettings.delimiter === option.id
+                                ? "matrix-menu__delimiter--active"
+                                : ""
+                            }`}
+                            onClick={() =>
+                              setMatrixSettings((current) => ({
+                                ...current,
+                                delimiter: option.id
+                              }))
+                            }
+                            type="button"
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        className="pane__button matrix-menu__insert"
+                        onClick={() => {
+                          handleInsertMatrix();
+                          setOpenToolbarMenu(null);
+                        }}
+                        type="button"
+                      >
+                        Insert matrix
+                      </button>
+                    </div>
+                    ) : null}
+                  </div>
+                  <div className={`table-menu ${openToolbarMenu === "table" ? "table-menu--open" : ""}`}>
+                    <button
+                      aria-expanded={openToolbarMenu === "table"}
+                      aria-label="Table options"
+                      className="pane__button pane__button--compact pane__icon-button"
+                      onClick={() => toggleToolbarMenu("table")}
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--table" />
+                    </button>
+                    {openToolbarMenu === "table" ? (
+                    <div className="table-menu__panel" role="menu" aria-label="Table options">
+                      <div className="table-menu__grid">
+                        <label className="table-menu__field">
+                          <span>Rows</span>
+                          <select
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                rows: Number(event.target.value)
+                              }))
+                            }
+                            value={tableSettings.rows}
+                          >
+                            {TABLE_ROW_OPTIONS.map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="table-menu__field">
+                          <span>Columns</span>
+                          <select
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                columns: Number(event.target.value)
+                              }))
+                            }
+                            value={tableSettings.columns}
+                          >
+                            {TABLE_COLUMN_OPTIONS.map((value) => (
+                              <option key={value} value={value}>
+                                {value}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="table-menu__field">
+                          <span>Alignment</span>
+                          <select
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                align: event.target.value as TableAlignment
+                              }))
+                            }
+                            value={tableSettings.align}
+                          >
+                            {TABLE_ALIGNMENT_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="table-menu__field">
+                          <span>Gutter</span>
+                          <select
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                gutter: event.target.value as TableGutter
+                              }))
+                            }
+                            value={tableSettings.gutter}
+                          >
+                            {TABLE_GUTTER_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="table-menu__field">
+                          <span>Inset</span>
+                          <select
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                inset: event.target.value as TableInset
+                              }))
+                            }
+                            value={tableSettings.inset}
+                          >
+                            {TABLE_INSET_OPTIONS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="table-menu__field">
+                          <span>Stroke</span>
+                          <select
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                stroke: event.target.value as TableStroke
+                              }))
+                            }
+                            value={tableSettings.stroke}
+                          >
+                            <option value="default">Default</option>
+                            <option value="none">None</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="table-menu__toggles">
+                        <label className="table-menu__toggle">
+                          <input
+                            checked={tableSettings.header}
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                header: event.target.checked
+                              }))
+                            }
+                            type="checkbox"
+                          />
+                          <span>Header row</span>
+                        </label>
+                        <label className="table-menu__toggle">
+                          <input
+                            checked={tableSettings.footer}
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                footer: event.target.checked
+                              }))
+                            }
+                            type="checkbox"
+                          />
+                          <span>Footer row</span>
+                        </label>
+                        <label className="table-menu__toggle">
+                          <input
+                            checked={tableSettings.striped}
+                            onChange={(event) =>
+                              setTableSettings((current) => ({
+                                ...current,
+                                striped: event.target.checked
+                              }))
+                            }
+                            type="checkbox"
+                          />
+                          <span>Striped fill</span>
+                        </label>
+                      </div>
+                      <button
+                        className="pane__button table-menu__insert"
+                        onClick={() => {
+                          handleInsertTable();
+                          setOpenToolbarMenu(null);
+                        }}
+                        type="button"
+                      >
+                        Insert table
+                      </button>
+                    </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
@@ -3317,6 +3662,66 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
     case "debug":
       return "Compiler and diagnostics";
   }
+}
+
+function buildMatrixTemplate(settings: MatrixSettings): string {
+  const delimiter = MATRIX_DELIMITER_OPTIONS.find((option) => option.id === settings.delimiter);
+  const rows = Math.max(1, Math.min(6, Math.floor(settings.rows)));
+  const columns = Math.max(1, Math.min(6, Math.floor(settings.columns)));
+  let cellIndex = 1;
+  const rowStrings = Array.from({ length: rows }, (_unused, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_unusedCell, columnIndex) => {
+      const placeholder = `\${${cellIndex}:*}`;
+      cellIndex += 1;
+      return placeholder;
+    });
+
+    return `  ${cells.join(", ")};`;
+  });
+  const delimiterLine = delimiter && delimiter.id !== "none" ? `  delim: "${delimiter.delim}"` : "";
+  const body = delimiterLine ? `${rowStrings.join("\n")}\n${delimiterLine}` : rowStrings.join("\n");
+
+  return `mat(
+${body}
+)`;
+}
+
+function buildTableTemplate(settings: TableSettings): string {
+  const rows = Math.max(1, Math.min(8, Math.floor(settings.rows)));
+  const columns = Math.max(1, Math.min(6, Math.floor(settings.columns)));
+  let cellIndex = 1;
+
+  const buildRow = () =>
+    Array.from({ length: columns }, (_unusedCell, columnIndex) => {
+      const placeholder = `\${${cellIndex}:*}`;
+      cellIndex += 1;
+      return `[${placeholder}]`;
+    }).join(", ");
+
+  const headerRow = settings.header ? `  table.header(\n    ${buildRow()},\n  ),` : "";
+  const bodyRows = Array.from({ length: rows }, () => {
+    return `  ${buildRow()},`;
+  }).join("\n");
+  const footerRow = settings.footer ? `  table.footer(\n    ${buildRow()},\n  ),` : "";
+  const gutter = TABLE_GUTTER_OPTIONS.find((option) => option.id === settings.gutter)?.value ?? "0pt";
+  const inset = TABLE_INSET_OPTIONS.find((option) => option.id === settings.inset)?.value ?? "0pt";
+  const stroke = settings.stroke === "none" ? "none" : "1pt + black";
+  const align = settings.align;
+  const fillLine = settings.striped
+    ? "  fill: (x, y) => if y == 0 { luma(232) } else if calc.odd(y) { luma(246) } else { white },"
+    : "";
+
+  return `#table(
+  columns: ${columns},
+  align: ${align},
+  gutter: ${gutter},
+  inset: ${inset},
+  stroke: ${stroke},
+${fillLine}
+${headerRow}
+${bodyRows}
+${footerRow}
+)`;
 }
 
 function collectOutlineEntries(content: string): OutlineEntry[] {
