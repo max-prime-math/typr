@@ -34,7 +34,8 @@ import {
 } from "../compiler/typstCompiler";
 import {
   TypstEditor,
-  type TypstEditorHandle
+  type TypstEditorHandle,
+  type TypstSearchQueryState
 } from "../editor/TypstEditor";
 import {
   createEmptyGitHubRemoteConfig,
@@ -148,14 +149,6 @@ interface StoredPanelLayout {
   previewRatio?: number;
 }
 
-interface SidebarSearchResult {
-  documentId: string;
-  documentName: string;
-  lineNumber: number;
-  lineText: string;
-  matchColumn: number;
-}
-
 interface OutlineEntry {
   level: number;
   lineNumber: number;
@@ -244,6 +237,7 @@ export function App() {
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
   const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
   const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
   const compileTimerRef = useRef<number | null>(null);
@@ -264,7 +258,13 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("github");
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>("files");
-  const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
+    search: "",
+    replace: "",
+    caseSensitive: false,
+    regexp: false,
+    wholeWord: false
+  });
   const [themeImportFeedback, setThemeImportFeedback] = useState<SyncFeedback>({
     tone: "neutral",
     text: ""
@@ -980,13 +980,6 @@ export function App() {
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
   };
 
-  const handleSidebarSearchQueryChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      setSidebarSearchQuery(event.target.value);
-    },
-    []
-  );
-
   const handleNewDocument = () => {
     setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
   };
@@ -1210,9 +1203,41 @@ export function App() {
 
   const handleUndo = () => editorRef.current?.undo();
   const handleRedo = () => editorRef.current?.redo();
-  const handleSearch = () => editorRef.current?.search();
   const handleGoToLine = () => editorRef.current?.goToLine();
   const handleSelectAll = () => editorRef.current?.selectAll();
+  const openSearchPane = useCallback(() => {
+    setActiveSidebarTool("search");
+    setIsSidebarCollapsed(false);
+
+    if (workspaceMode === "editor" || workspaceMode === "preview") {
+      setWorkspaceMode("split");
+    }
+  }, [workspaceMode]);
+
+  const updateSearchQuery = useCallback(
+    (patch: Partial<TypstSearchQueryState>) => {
+      setSearchQuery((currentQuery) => {
+        const nextQuery = {
+          ...currentQuery,
+          ...patch
+        };
+        editorRef.current?.setSearchQuery(nextQuery);
+        return nextQuery;
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (activeSidebarTool !== "search" || isSidebarCollapsed) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, [activeSidebarTool, isSidebarCollapsed]);
 
   const togglePreviewPopup = () => {
     setIsPreviewPopupOpen((current) => !current);
@@ -1505,10 +1530,6 @@ export function App() {
     () => mergeSnippets([...DEFAULT_TYPST_SNIPPETS, ...customSnippets]),
     [customSnippets]
   );
-  const sidebarSearchResults = useMemo(
-    () => collectProjectSearchResults(snapshot, sidebarSearchQuery),
-    [sidebarSearchQuery, snapshot]
-  );
   const outlineEntries = useMemo(
     () => collectOutlineEntries(activeDocument.content),
     [activeDocument.content]
@@ -1569,6 +1590,8 @@ export function App() {
   const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
+      const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
+
       if (!isMobileWorkspace && activeSidebarTool === tool && !isSidebarCollapsed) {
         setIsSidebarCollapsed(true);
       } else {
@@ -1581,8 +1604,14 @@ export function App() {
       } else if (workspaceMode === "editor" || workspaceMode === "preview") {
         setWorkspaceMode("split");
       }
+
+      if (shouldOpenSearchPane) {
+        window.requestAnimationFrame(() => {
+          openSearchPane();
+        });
+      }
     },
-    [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]
+    [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, openSearchPane, workspaceMode]
   );
   const focusDocumentLocation = useCallback(
     (documentId: string, line: number, column = 1) => {
@@ -1714,7 +1743,7 @@ export function App() {
             </button>
             <button
               className="menu-action"
-              onClick={handleSearch}
+              onClick={openSearchPane}
               type="button"
             >
               Search
@@ -1749,9 +1778,9 @@ export function App() {
             <button className="menu-action" onClick={() => setFullscreenMode("preview")} type="button">
               Preview
             </button>
-              <button className="menu-action" onClick={() => handleOpenSidebarTool("search")} type="button">
-                Search
-              </button>
+            <button className="menu-action" onClick={openSearchPane} type="button">
+              Search
+            </button>
             <button className="menu-action" onClick={togglePreviewPopup} type="button">
               {isPreviewPopupOpen ? "Hide preview in popup" : "Show preview in popup"}
             </button>
@@ -1890,10 +1919,6 @@ export function App() {
                     >
                       New file
                     </button>
-                  ) : activeSidebarTool === "search" ? (
-                    <button className="pane__button" onClick={handleSearch} type="button">
-                      Search editor
-                    </button>
                   ) : activeSidebarTool === "sync" ? (
                     <button
                       className="pane__button"
@@ -1933,48 +1958,119 @@ export function App() {
 
               {activeSidebarTool === "search" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
-                  <div className="sidebar-search">
-                    <label className="sync-field">
-                      <span>Find in project</span>
-                      <input
-                        onChange={handleSidebarSearchQueryChange}
-                        placeholder="Search across .typ files"
-                        type="text"
-                        value={sidebarSearchQuery}
-                      />
-                    </label>
-                    {sidebarSearchQuery.trim() ? (
-                      sidebarSearchResults.length > 0 ? (
-                        <div className="sidebar-result-list" role="list">
-                          {sidebarSearchResults.map((result) => (
-                            <button
-                              key={`${result.documentId}:${result.lineNumber}:${result.matchColumn}`}
-                              className="sidebar-result"
-                              onClick={() =>
-                                focusDocumentLocation(
-                                  result.documentId,
-                                  result.lineNumber,
-                                  result.matchColumn
-                                )
+                  <div className="sidebar-search-panel">
+                    <div className="sidebar-search-panel__row">
+                      <label className="sync-field sidebar-search-panel__field">
+                        <span>Find</span>
+                        <input
+                          ref={searchInputRef}
+                          onChange={(event) => updateSearchQuery({ search: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              if (event.shiftKey) {
+                                editorRef.current?.findPrevious();
+                              } else {
+                                editorRef.current?.findNext();
                               }
-                              type="button"
-                            >
-                              <div className="sidebar-result__top">
-                                <strong>{result.documentName}</strong>
-                                <span>{`Line ${result.lineNumber}`}</span>
-                              </div>
-                              <code>{result.lineText}</code>
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="snippet-empty">No matches found.</div>
-                      )
-                    ) : (
-                      <div className="snippet-empty">
-                        Search across your open project files and jump directly to matches.
+                            }
+                          }}
+                          placeholder="Search"
+                          type="text"
+                          value={searchQuery.search}
+                        />
+                      </label>
+
+                      <div className="sidebar-search-panel__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={() => editorRef.current?.findPrevious()}
+                          type="button"
+                        >
+                          Previous
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={() => editorRef.current?.findNext()}
+                          type="button"
+                        >
+                          Next
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={() => editorRef.current?.selectMatches()}
+                          type="button"
+                        >
+                          All
+                        </button>
                       </div>
-                    )}
+                    </div>
+
+                    <div className="sidebar-search-panel__toggles">
+                      <label className="sidebar-search-toggle">
+                        <input
+                          checked={searchQuery.caseSensitive}
+                          onChange={(event) =>
+                            updateSearchQuery({ caseSensitive: event.target.checked })
+                          }
+                          type="checkbox"
+                        />
+                        <span>Match case</span>
+                      </label>
+                      <label className="sidebar-search-toggle">
+                        <input
+                          checked={searchQuery.regexp}
+                          onChange={(event) => updateSearchQuery({ regexp: event.target.checked })}
+                          type="checkbox"
+                        />
+                        <span>Regexp</span>
+                      </label>
+                      <label className="sidebar-search-toggle">
+                        <input
+                          checked={searchQuery.wholeWord}
+                          onChange={(event) =>
+                            updateSearchQuery({ wholeWord: event.target.checked })
+                          }
+                          type="checkbox"
+                        />
+                        <span>By word</span>
+                      </label>
+                    </div>
+
+                    <div className="sidebar-search-panel__row">
+                      <label className="sync-field sidebar-search-panel__field">
+                        <span>Replace</span>
+                        <input
+                          onChange={(event) => updateSearchQuery({ replace: event.target.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              editorRef.current?.replaceNext();
+                            }
+                          }}
+                          placeholder="Replace"
+                          type="text"
+                          value={searchQuery.replace}
+                        />
+                      </label>
+
+                      <div className="sidebar-search-panel__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={() => editorRef.current?.replaceNext()}
+                          type="button"
+                        >
+                          Replace
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={() => editorRef.current?.replaceAll()}
+                          type="button"
+                        >
+                          Replace all
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </section>
               ) : null}
@@ -2259,6 +2355,7 @@ export function App() {
             diagnostics={editorDiagnostics}
             highlightErrors={isErrorSettled}
             snippets={allSnippets}
+            onSearchRequested={openSearchPane}
             value={activeDocument.content}
             vimMode={snapshot.preferences.vimMode}
             cursorSmooth={snapshot.preferences.cursorSmooth}
@@ -3220,46 +3317,6 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
     case "debug":
       return "Compiler and diagnostics";
   }
-}
-
-function collectProjectSearchResults(
-  snapshot: AppSnapshot,
-  query: string
-): SidebarSearchResult[] {
-  const trimmedQuery = query.trim().toLowerCase();
-
-  if (!trimmedQuery) {
-    return [];
-  }
-
-  const results: SidebarSearchResult[] = [];
-
-  for (const document of snapshot.project.documents) {
-    const lines = document.content.split("\n");
-
-    for (let index = 0; index < lines.length; index += 1) {
-      const lineText = lines[index];
-      const matchColumn = lineText.toLowerCase().indexOf(trimmedQuery);
-
-      if (matchColumn === -1) {
-        continue;
-      }
-
-      results.push({
-        documentId: document.id,
-        documentName: document.name,
-        lineNumber: index + 1,
-        lineText: lineText.trim() || "(blank line)",
-        matchColumn: matchColumn + 1
-      });
-
-      if (results.length >= 80) {
-        return results;
-      }
-    }
-  }
-
-  return results;
 }
 
 function collectOutlineEntries(content: string): OutlineEntry[] {

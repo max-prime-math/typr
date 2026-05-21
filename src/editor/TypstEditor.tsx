@@ -9,7 +9,17 @@ import type { MutableRefObject } from "react";
 import { snippet } from "@codemirror/autocomplete";
 import type { CompletionSource } from "@codemirror/autocomplete";
 import { undo, redo } from "@codemirror/commands";
-import { openSearchPanel, gotoLine } from "@codemirror/search";
+import {
+  findNext as cmFindNext,
+  findPrevious as cmFindPrevious,
+  getSearchQuery as getEditorSearchQuery,
+  gotoLine,
+  replaceAll as cmReplaceAll,
+  replaceNext as cmReplaceNext,
+  selectMatches as cmSelectMatches,
+  SearchQuery,
+  setSearchQuery as setEditorSearchQuery
+} from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
@@ -32,7 +42,16 @@ interface TypstEditorProps {
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
   snippets: TypstSnippet[];
+  onSearchRequested: () => void;
   onChange: (value: string) => void;
+}
+
+export interface TypstSearchQueryState {
+  search: string;
+  replace: string;
+  caseSensitive: boolean;
+  regexp: boolean;
+  wholeWord: boolean;
 }
 
 export interface TypstEditorHandle {
@@ -54,6 +73,13 @@ export interface TypstEditorHandle {
   search: () => void;
   goToLine: () => void;
   selectAll: () => void;
+  getSearchQuery: () => TypstSearchQueryState;
+  setSearchQuery: (query: TypstSearchQueryState) => void;
+  findNext: () => void;
+  findPrevious: () => void;
+  selectMatches: () => void;
+  replaceNext: () => void;
+  replaceAll: () => void;
 }
 
 export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor({
@@ -65,6 +91,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   diagnostics,
   highlightErrors,
   snippets,
+  onSearchRequested,
   onChange
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -192,11 +219,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         }
       },
       search() {
-        const view = viewRef.current;
-        if (view) {
-          openSearchPanel(view);
-          view.focus();
-        }
+        onSearchRequested();
       },
       goToLine() {
         const view = viewRef.current;
@@ -215,9 +238,87 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
           });
           view.focus();
         }
+      },
+      getSearchQuery() {
+        const view = viewRef.current;
+
+        if (!view) {
+          return {
+            search: "",
+            replace: "",
+            caseSensitive: false,
+            regexp: false,
+            wholeWord: false
+          };
+        }
+
+        const query = getEditorSearchQuery(view.state);
+
+        return {
+          search: query.search,
+          replace: query.replace,
+          caseSensitive: query.caseSensitive,
+          regexp: query.regexp,
+          wholeWord: query.wholeWord
+        };
+      },
+      setSearchQuery(query) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        view.dispatch({
+          effects: setEditorSearchQuery.of(
+            new SearchQuery({
+              search: query.search,
+              replace: query.replace,
+              caseSensitive: query.caseSensitive,
+              regexp: query.regexp,
+              wholeWord: query.wholeWord
+            })
+          )
+        });
+        view.focus();
+      },
+      findNext() {
+        const view = viewRef.current;
+        if (view) {
+          cmFindNext(view);
+          view.focus();
+        }
+      },
+      findPrevious() {
+        const view = viewRef.current;
+        if (view) {
+          cmFindPrevious(view);
+          view.focus();
+        }
+      },
+      selectMatches() {
+        const view = viewRef.current;
+        if (view) {
+          cmSelectMatches(view);
+          view.focus();
+        }
+      },
+      replaceNext() {
+        const view = viewRef.current;
+        if (view) {
+          cmReplaceNext(view);
+          view.focus();
+        }
+      },
+      replaceAll() {
+        const view = viewRef.current;
+        if (view) {
+          cmReplaceAll(view);
+          view.focus();
+        }
       }
     }),
-    []
+    [onSearchRequested]
   );
 
   useEffect(() => {
@@ -235,7 +336,8 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         theme,
         diagnostics,
         highlightErrors,
-        snippetSource: snippetCompletionSource
+        snippetSource: snippetCompletionSource,
+        onSearchRequested
       }),
       parent: containerRef.current
     });

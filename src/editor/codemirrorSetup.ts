@@ -9,7 +9,7 @@ import {
 } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentMore } from "@codemirror/commands";
 import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, syntaxHighlighting } from "@codemirror/language";
-import { searchKeymap } from "@codemirror/search";
+import { search as searchExtension, searchKeymap } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, type Command, type ViewUpdate } from "@codemirror/view";
@@ -31,6 +31,7 @@ interface EditorSetupOptions {
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
   snippetSource: CompletionSource;
+  onSearchRequested: () => void;
 }
 
 export const diagnosticsCompartment = new Compartment();
@@ -156,9 +157,18 @@ export function createEditorExtensions({
   theme,
   diagnostics,
   highlightErrors,
-  snippetSource
+  snippetSource,
+  onSearchRequested
 }: EditorSetupOptions): Extension[] {
-  const keymaps = [...defaultKeymap, ...historyKeymap, ...searchKeymap];
+  const keymaps = [
+    { key: "Mod-f", run: () => {
+      onSearchRequested();
+      return true;
+    }, scope: "editor" },
+    ...defaultKeymap,
+    ...historyKeymap,
+    ...searchKeymap
+  ];
   const tabCommand: Command = (view) => {
     if (nextSnippetField(view)) {
       return true;
@@ -189,6 +199,7 @@ export function createEditorExtensions({
     foldGutter(),
     indentOnInput(),
     bracketMatching(),
+    searchExtension(),
     autocompletion({
       override: [snippetSource]
     }),
