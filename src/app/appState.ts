@@ -56,6 +56,8 @@ export interface DiagramRect {
   y: number;
   width: number;
   height: number;
+  originX: number;
+  originY: number;
   updatedAt: string;
 }
 
@@ -69,6 +71,8 @@ export interface DiagramEllipse {
   cy: number;
   rx: number;
   ry: number;
+  originX: number;
+  originY: number;
   updatedAt: string;
 }
 
@@ -84,7 +88,17 @@ export interface DiagramLine {
   updatedAt: string;
 }
 
-export type DiagramShape = DiagramRect | DiagramEllipse | DiagramLine;
+export interface DiagramPolygon {
+  kind: "polygon";
+  id: string;
+  strokeColor: string;
+  strokeWidth: number;
+  fillColor: string;
+  points: DiagramPoint[];
+  updatedAt: string;
+}
+
+export type DiagramShape = DiagramRect | DiagramEllipse | DiagramLine | DiagramPolygon;
 
 export interface DiagramAsset {
   id: string;
@@ -467,6 +481,8 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
       y: typeof shape.y === "number" ? shape.y : 0,
       width: typeof shape.width === "number" ? shape.width : 0,
       height: typeof shape.height === "number" ? shape.height : 0,
+      originX: typeof shape.originX === "number" ? shape.originX : (typeof shape.x === "number" ? shape.x : 0),
+      originY: typeof shape.originY === "number" ? shape.originY : (typeof shape.y === "number" ? shape.y : 0),
       updatedAt
     };
   }
@@ -482,6 +498,20 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
       cy: typeof shape.cy === "number" ? shape.cy : 0,
       rx: typeof shape.rx === "number" ? shape.rx : 0,
       ry: typeof shape.ry === "number" ? shape.ry : 0,
+      originX: typeof shape.originX === "number" ? shape.originX : (typeof shape.cx === "number" ? shape.cx : 0),
+      originY: typeof shape.originY === "number" ? shape.originY : (typeof shape.cy === "number" ? shape.cy : 0),
+      updatedAt
+    };
+  }
+
+  if (shape.kind === "polygon") {
+    return {
+      ...shape,
+      id: shape.id ?? createId("shape"),
+      strokeColor: shape.strokeColor ?? "#000000",
+      strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      fillColor: shape.fillColor ?? "transparent",
+      points: Array.isArray(shape.points) ? shape.points : [],
       updatedAt
     };
   }
@@ -928,6 +958,44 @@ export function removeLatestDiagramItem(snapshot: AppSnapshot): AppSnapshot {
       diagram: {
         ...diagram,
         shapes: diagram.shapes.slice(0, -1),
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+export function removeDiagramStroke(snapshot: AppSnapshot, strokeId: string): AppSnapshot {
+  const now = new Date().toISOString();
+  const diagram = snapshot.project.diagram ?? createDefaultDiagram();
+  const filtered = diagram.strokes.filter((s) => s.id !== strokeId);
+  if (filtered.length === diagram.strokes.length) return snapshot;
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: {
+        ...diagram,
+        strokes: filtered,
+        updatedAt: now
+      },
+      updatedAt: now
+    }
+  };
+}
+
+export function removeDiagramShape(snapshot: AppSnapshot, shapeId: string): AppSnapshot {
+  const now = new Date().toISOString();
+  const diagram = snapshot.project.diagram ?? createDefaultDiagram();
+  const filtered = diagram.shapes.filter((s) => s.id !== shapeId);
+  if (filtered.length === diagram.shapes.length) return snapshot;
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: {
+        ...diagram,
+        shapes: filtered,
         updatedAt: now
       },
       updatedAt: now

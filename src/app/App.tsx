@@ -35,6 +35,8 @@ import {
   saveCurrentGraph,
   createNextDiagramSnapshot,
   removeLatestDiagramItem,
+  removeDiagramStroke,
+  removeDiagramShape,
   getDefaultGraphSource,
   updateGraphProviderPreference,
   updateGraph,
@@ -63,8 +65,19 @@ import {
   createEmptyGitHubRemoteConfig,
   hasRequiredConfig,
   pushProjectToGitHub,
-  type GitHubRemoteConfig
+  pullProjectFromGitHub,
+  type GitHubRemoteConfig,
+  type GitHubSyncDocument
 } from "../github/githubSync";
+import {
+  detectConflicts,
+  applyResolutions,
+  buildSyncSnapshot,
+  type ConflictSet,
+  type ConflictResolution,
+  type DocumentConflict
+} from "../github/conflict";
+import { ConflictModal } from "../github/ConflictModal";
 import {
   PreviewPane,
   PreviewDebugPanel,
@@ -134,6 +147,7 @@ const SIDEBAR_MAX_WIDTH = 460;
 const PREVIEW_MIN_WIDTH = 320;
 const PANEL_COLLAPSED_WIDTH = 56;
 const PANEL_HANDLE_WIDTH = 8;
+const SYNC_SNAPSHOT_KEY = "typr.sync-snapshot";
 const EDITOR_MIN_WIDTH = 420;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
@@ -532,8 +546,11 @@ export function App() {
   );
   const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>({
     tone: "neutral",
-    text: "Documents stay on this device. Push to GitHub when you are online."
+    text: "Documents stay on this device. Pull, push, or sync with GitHub when you are online."
   });
+  const [conflictSet, setConflictSet] = useState<ConflictSet | null>(null);
+  const [pendingRemoteDocuments, setPendingRemoteDocuments] = useState<GitHubSyncDocument[] | null>(null);
+  const [pendingRemoteProjectName, setPendingRemoteProjectName] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
@@ -1547,6 +1564,14 @@ export function App() {
     setSnapshot((currentSnapshot) => removeLatestDiagramItem(currentSnapshot));
   }, []);
 
+  const handleRemoveDiagramStroke = useCallback((strokeId: string) => {
+    setSnapshot((currentSnapshot) => removeDiagramStroke(currentSnapshot, strokeId));
+  }, []);
+
+  const handleRemoveDiagramShape = useCallback((shapeId: string) => {
+    setSnapshot((currentSnapshot) => removeDiagramShape(currentSnapshot, shapeId));
+  }, []);
+
   const handleClearDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) =>
       updateDiagram(currentSnapshot, (diagramAsset) => ({
@@ -1928,6 +1953,27 @@ export function App() {
     }
   };
 
+  const saveSyncSnapshot = useCallback(() => {
+    const snap = buildSyncSnapshot(snapshot.project.documents);
+    try {
+      localStorage.setItem(SYNC_SNAPSHOT_KEY, JSON.stringify(snap));
+    } catch {
+      // storage full or unavailable
+    }
+  }, [snapshot.project.documents]);
+
+  const loadSyncSnapshot = useCallback((): Record<string, string> => {
+    try {
+      const raw = localStorage.getItem(SYNC_SNAPSHOT_KEY);
+      if (raw) {
+        return JSON.parse(raw) as Record<string, string>;
+      }
+    } catch {
+      // corrupted or unavailable
+    }
+    return {};
+  }, []);
+
   const handlePushToGitHub = async () => {
     if (!isOnline) {
       setSyncFeedback({
@@ -1969,6 +2015,267 @@ export function App() {
       tone: result.ok ? "success" : "error",
       text: result.message
     });
+
+    if (result.ok) {
+      saveSyncSnapshot();
+    }
+  };
+
+  const handlePullFromGitHub = async () => {
+    if (!isOnline) {
+      setSyncFeedback({
+        tone: "error",
+        text: "This device is offline. Local documents are still available."
+      });
+      return;
+    }
+
+    if (!hasRequiredConfig(githubConfig)) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Fill in owner, repo, branch, directory, and token first."
+      });
+      setSettingsTab("github");
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    setIsSyncing(true);
+    setSyncFeedback({
+      tone: "neutral",
+      text: "Pulling from GitHub..."
+    });
+
+    const result = await pullProjectFromGitHub(githubConfig, {
+      projectName: snapshot.project.name
+    });
+
+    setIsSyncing(false);
+
+    if (!result.ok || !result.documents) {
+      setSyncFeedback({
+        tone: result.ok ? "error" : "error",
+        text: result.message
+      });
+      return;
+    }
+
+    const lastSnapshot = loadSyncSnapshot();
+    const localDocs = snapshot.project.documents.map((d) => ({
+      id: d.id,
+      name: d.name,
+      content: d.content,
+      updatedAt: d.updatedAt
+    }));
+    const remoteDocs = result.documents.map((d) => ({
+      name: d.name,
+      content: d.content
+    }));
+
+    const conflicts = detectConflicts(localDocs, remoteDocs, lastSnapshot);
+
+    if (conflicts.conflicts.length > 0) {
+      setPendingRemoteDocuments(result.documents);
+      setPendingRemoteProjectName(result.projectName ?? null);
+      setConflictSet(conflicts);
+      setSyncFeedback({
+        tone: "neutral",
+        text: `${conflicts.conflicts.length} conflict${conflicts.conflicts.length !== 1 ? "s" : ""} found. Resolve to continue.`
+      });
+      return;
+    }
+
+    applyPullResult(conflicts, result.documents, result.projectName ?? null);
+  };
+
+  const applyPullResult = (
+    conflicts: ConflictSet,
+    remoteDocuments: GitHubSyncDocument[],
+    projectName: string | null
+  ) => {
+    const now = new Date().toISOString();
+    const localDocs = snapshot.project.documents.map((d) => ({
+      id: d.id,
+      name: d.name,
+      content: d.content,
+      updatedAt: d.updatedAt
+    }));
+    const remoteDocs = remoteDocuments.map((d) => ({
+      name: d.name,
+      content: d.content
+    }));
+
+    const merged = applyResolutions(localDocs, remoteDocs, []);
+
+    const addedNames = new Set(conflicts.addedRemotely.map((d) => d.name));
+    let newActiveId = snapshot.project.activeDocumentId;
+    if (!newActiveId || !merged.find((d) => d.id === newActiveId)) {
+      const firstAdded = merged.find((d) => addedNames.has(d.name));
+      if (firstAdded) {
+        newActiveId = firstAdded.id;
+      }
+    }
+
+    setSnapshot((current) => ({
+      ...current,
+      project: {
+        ...current.project,
+        name: projectName ?? current.project.name,
+        documents: merged.map((d) => ({
+          id: d.id,
+          name: d.name,
+          content: d.content,
+          updatedAt: d.updatedAt
+        })),
+        activeDocumentId: newActiveId,
+        updatedAt: now
+      }
+    }));
+
+    saveSyncSnapshot();
+
+    const totalAdded = conflicts.addedRemotely.length;
+    const totalAuto = conflicts.autoResolved.length;
+    let msg = "Pull complete";
+    if (totalAdded > 0 || totalAuto > 0) {
+      const parts: string[] = [];
+      if (totalAdded > 0) parts.push(`${totalAdded} added`);
+      if (totalAuto > 0) parts.push(`${totalAuto} updated`);
+      msg += ` (${parts.join(", ")})`;
+    }
+    setSyncFeedback({ tone: "success", text: msg });
+  };
+
+  const handleConflictResolve = (resolutions: ConflictResolution[]) => {
+    if (!pendingRemoteDocuments) return;
+
+    const now = new Date().toISOString();
+    const localDocs = snapshot.project.documents.map((d) => ({
+      id: d.id,
+      name: d.name,
+      content: d.content,
+      updatedAt: d.updatedAt
+    }));
+    const remoteDocs = pendingRemoteDocuments.map((d) => ({
+      name: d.name,
+      content: d.content
+    }));
+
+    const merged = applyResolutions(localDocs, remoteDocs, resolutions);
+
+    setSnapshot((current) => ({
+      ...current,
+      project: {
+        ...current.project,
+        name: pendingRemoteProjectName ?? current.project.name,
+        documents: merged.map((d) => ({
+          id: d.id,
+          name: d.name,
+          content: d.content,
+          updatedAt: d.updatedAt
+        })),
+        activeDocumentId: current.project.activeDocumentId,
+        updatedAt: now
+      }
+    }));
+
+    saveSyncSnapshot();
+    setConflictSet(null);
+    setPendingRemoteDocuments(null);
+    setPendingRemoteProjectName(null);
+
+    const resolvedCount = resolutions.length;
+    setSyncFeedback({
+      tone: "success",
+      text: `Resolved ${resolvedCount} conflict${resolvedCount !== 1 ? "s" : ""}. Pull complete.`
+    });
+  };
+
+  const handleSyncGitHub = async () => {
+    if (!isOnline) {
+      setSyncFeedback({
+        tone: "error",
+        text: "This device is offline. Local documents are still available."
+      });
+      return;
+    }
+
+    if (!hasRequiredConfig(githubConfig)) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Fill in owner, repo, branch, directory, and token first."
+      });
+      setSettingsTab("github");
+      setIsSettingsOpen(true);
+      return;
+    }
+
+    setIsSyncing(true);
+    setSyncFeedback({
+      tone: "neutral",
+      text: `Syncing ${snapshot.project.documents.length} document${
+        snapshot.project.documents.length === 1 ? "" : "s"
+      } with GitHub...`
+    });
+
+    const pushResult = await pushProjectToGitHub(githubConfig, {
+      projectName: snapshot.project.name,
+      documents: snapshot.project.documents.map((document) => ({
+        name: document.name,
+        content: document.content
+      })),
+      commitMessage: `Sync ${snapshot.project.name} from typr`
+    });
+
+    if (!pushResult.ok) {
+      setIsSyncing(false);
+      setSyncFeedback({
+        tone: "error",
+        text: pushResult.message
+      });
+      return;
+    }
+
+    const pullResult = await pullProjectFromGitHub(githubConfig, {
+      projectName: snapshot.project.name
+    });
+
+    setIsSyncing(false);
+
+    if (!pullResult.ok || !pullResult.documents) {
+      setSyncFeedback({
+        tone: "error",
+        text: `Pushed, but pull failed: ${pullResult.message}`
+      });
+      return;
+    }
+
+    const lastSnapshot = loadSyncSnapshot();
+    const localDocs = snapshot.project.documents.map((d) => ({
+      id: d.id,
+      name: d.name,
+      content: d.content,
+      updatedAt: d.updatedAt
+    }));
+    const remoteDocs = pullResult.documents.map((d) => ({
+      name: d.name,
+      content: d.content
+    }));
+
+    const conflicts = detectConflicts(localDocs, remoteDocs, lastSnapshot);
+
+    if (conflicts.conflicts.length > 0) {
+      setPendingRemoteDocuments(pullResult.documents);
+      setPendingRemoteProjectName(pullResult.projectName ?? null);
+      setConflictSet(conflicts);
+      setSyncFeedback({
+        tone: "neutral",
+        text: `Pushed. ${conflicts.conflicts.length} conflict${conflicts.conflicts.length !== 1 ? "s" : ""} found on pull.`
+      });
+      return;
+    }
+
+    applyPullResult(conflicts, pullResult.documents, pullResult.projectName ?? null);
   };
 
   const closeMenusWithDelay = useCallback(() => {
@@ -2579,21 +2886,35 @@ export function App() {
               <div className="pane__header">
                 <div className="pane__header-group">
                   <h2>{sidebarToolTitle}</h2>
-                  {getSidebarToolSubtitle(activeSidebarTool) ? (
-                    <span className="pane__subtitle">
-                      {getSidebarToolSubtitle(activeSidebarTool)}
-                    </span>
-                  ) : null}
                 </div>
                 <div className="pane__header-actions">
                   {activeSidebarTool === "files" ? (
-                    <button
-                      className="pane__button"
-                      onClick={handleNewDocument}
-                      type="button"
-                    >
-                      New file
-                    </button>
+                    <>
+                      <button
+                        className="pane__button pane__button--compact pane__icon-button"
+                        onClick={handleNewDocument}
+                        type="button"
+                        aria-label="New file"
+                      >
+                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-file" />
+                      </button>
+                      <button
+                        className="pane__button pane__button--compact pane__icon-button"
+                        onClick={handleAddFolder}
+                        type="button"
+                        aria-label="New folder"
+                      >
+                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-folder" />
+                      </button>
+                      <button
+                        className="pane__button pane__button--compact pane__icon-button"
+                        onClick={() => documentUploadInputRef.current?.click()}
+                        type="button"
+                        aria-label="Upload .typ"
+                      >
+                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
+                      </button>
+                    </>
                   ) : activeSidebarTool === "sync" ? (
                     <button
                       className="pane__button"
@@ -2612,15 +2933,6 @@ export function App() {
               {activeSidebarTool === "files" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
                   <div className="file-tree" role="tree" aria-label="Files">
-                    <div className="file-tree__toolbar">
-                      <button
-                        className="pane__button pane__button--compact"
-                        onClick={handleAddFolder}
-                        type="button"
-                      >
-                        Add folder
-                      </button>
-                    </div>
 
                     <div className="file-tree__branch">
                       <button
@@ -2958,6 +3270,8 @@ export function App() {
                       inkColor={diagramInkColor}
                       onAddStroke={handleAddDiagramStroke}
                       onAddShape={handleAddDiagramShape}
+                      onRemoveStroke={handleRemoveDiagramStroke}
+                      onRemoveShape={handleRemoveDiagramShape}
                       onClear={handleClearDiagram}
                       onNew={handleNewDiagram}
                       onSave={handleSaveDiagram}
@@ -3018,11 +3332,31 @@ export function App() {
                           className="pane__button"
                           disabled={!canPushToGitHub}
                           onClick={() => {
+                            void handlePullFromGitHub();
+                          }}
+                          type="button"
+                        >
+                          {isSyncing ? "Pulling..." : "Pull"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          disabled={!canPushToGitHub}
+                          onClick={() => {
                             void handlePushToGitHub();
                           }}
                           type="button"
                         >
                           {isSyncing ? "Pushing..." : "Push"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          disabled={!canPushToGitHub}
+                          onClick={() => {
+                            void handleSyncGitHub();
+                          }}
+                          type="button"
+                        >
+                          {isSyncing ? "Syncing..." : "Sync"}
                         </button>
                       </div>
                     </div>
@@ -3117,7 +3451,6 @@ export function App() {
           <div className="pane__header">
             <div className="pane__header-group">
               <h2>Source</h2>
-              <span className="pane__subtitle">{activeDocument.name}</span>
             </div>
             <div className="pane__header-actions">
               <span className="pane__meta">{storageLabel}</span>
@@ -3134,13 +3467,6 @@ export function App() {
                     isSourceToolbarVisible ? "toolbar-icon--toggle-open" : "toolbar-icon--toggle-closed"
                   }`}
                 />
-              </button>
-              <button
-                className="pane__button pane__button--quiet"
-                onClick={() => handlePanelToggle("preview")}
-                type="button"
-              >
-                {isPreviewCollapsed ? "Show preview" : "Hide preview"}
               </button>
             </div>
           </div>
@@ -3593,9 +3919,6 @@ export function App() {
               <div className="pane__header pane__header--preview">
                 <div className="pane__header-group">
                   <h2>Preview</h2>
-                  <span className="pane__subtitle">
-                    {compilerStatus.mode === "worker" ? "Worker render" : "Fallback render"}
-                  </span>
                 </div>
                 <div className="pane__header-center">
                   <PreviewZoomControls
@@ -3617,13 +3940,6 @@ export function App() {
                     type="button"
                   >
                     Paper
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    onClick={() => handlePanelToggle("preview")}
-                    type="button"
-                  >
-                    Hide
                   </button>
                 </div>
               </div>
@@ -3711,6 +4027,8 @@ export function App() {
                   isExpanded
                   onAddStroke={handleAddDiagramStroke}
                   onAddShape={handleAddDiagramShape}
+                  onRemoveStroke={handleRemoveDiagramStroke}
+                  onRemoveShape={handleRemoveDiagramShape}
                   onClear={handleClearDiagram}
                   onNew={handleNewDiagram}
                   onSave={handleSaveDiagram}
@@ -3765,6 +4083,19 @@ export function App() {
             </div>
           </section>
         </div>
+      ) : null}
+
+      {conflictSet && pendingRemoteDocuments ? (
+        <ConflictModal
+          addedRemotely={conflictSet.addedRemotely.map((d) => ({ name: d.name }))}
+          conflicts={conflictSet.conflicts}
+          onClose={() => {
+            setConflictSet(null);
+            setPendingRemoteDocuments(null);
+            setPendingRemoteProjectName(null);
+          }}
+          onResolve={handleConflictResolve}
+        />
       ) : null}
 
       {isSettingsOpen ? (
@@ -3845,7 +4176,7 @@ export function App() {
                         onChange={(event) =>
                           handleGitHubConfigChange("owner", event.target.value)
                         }
-                        placeholder="max-prime-math"
+                        placeholder="GitHub username or org"
                         type="text"
                         value={githubConfig.owner}
                       />
@@ -3858,7 +4189,7 @@ export function App() {
                         onChange={(event) =>
                           handleGitHubConfigChange("repo", event.target.value)
                         }
-                        placeholder="typr"
+                        placeholder="Repository name"
                         type="text"
                         value={githubConfig.repo}
                       />
@@ -3897,7 +4228,7 @@ export function App() {
                       autoCapitalize="none"
                       autoCorrect="off"
                       onChange={(event) => handleGitHubConfigChange("token", event.target.value)}
-                      placeholder="github_pat_..."
+                      placeholder="Create a Fine-grained token at github.com/settings/tokens"
                       type="password"
                       value={githubConfig.token}
                     />
@@ -4307,11 +4638,31 @@ export function App() {
                 className="control-button"
                 disabled={!canPushToGitHub}
                 onClick={() => {
+                  void handlePullFromGitHub();
+                }}
+                type="button"
+              >
+                {isSyncing ? "Pulling..." : "Pull"}
+              </button>
+              <button
+                className="control-button"
+                disabled={!canPushToGitHub}
+                onClick={() => {
                   void handlePushToGitHub();
                 }}
                 type="button"
               >
-                {isSyncing ? "Pushing..." : "Push project"}
+                {isSyncing ? "Pushing..." : "Push"}
+              </button>
+              <button
+                className="control-button"
+                disabled={!canPushToGitHub}
+                onClick={() => {
+                  void handleSyncGitHub();
+                }}
+                type="button"
+              >
+                {isSyncing ? "Syncing..." : "Sync"}
               </button>
             </div>
           </section>
