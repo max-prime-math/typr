@@ -39,7 +39,6 @@ export type WorkspaceSource =
   | { kind: "folder"; id: string }
   | { kind: "diagram"; id: string }
   | { kind: "graph"; id: string }
-  | { kind: "trash-root" }
   | { kind: "trash-item"; id: string; entryKind: WorkspaceTrashEntry["kind"] }
   | { kind: "system-folder"; id: "figures" };
 
@@ -123,19 +122,11 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
     addEntry(createGraphWorkspaceEntry(graph));
   }
 
-  addEntry({
-    path: "Trash",
-    kind: "folder",
-    source: {
-      kind: "trash-root"
-    }
-  });
-
-  for (const trashEntry of snapshot.project.trash ?? []) {
-    addEntry(createTrashWorkspaceEntry(trashEntry));
-  }
-
   return [...entries.values()];
+}
+
+export function buildTrashWorkspaceEntries(trashEntries: WorkspaceTrashEntry[]): WorkspaceFlatEntry[] {
+  return trashEntries.map(createTrashWorkspaceEntry);
 }
 
 export function buildWorkspaceTree(entries: WorkspaceFlatEntry[]): WorkspaceTreeNode[] {
@@ -328,9 +319,11 @@ function createGraphWorkspaceEntry(graph: GraphAsset): WorkspaceFlatEntry {
 }
 
 function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEntry {
+  const path = normalizeWorkspacePath(entry.originalPath);
+
   if (entry.kind === "document") {
     return {
-      path: `Trash/${entry.document.name}`,
+      path,
       kind: "file",
       content: entry.document.content,
       source: {
@@ -343,7 +336,7 @@ function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEnt
 
   if (entry.kind === "folder") {
     return {
-      path: `Trash/${entry.folder.name}`,
+      path,
       kind: "folder",
       source: {
         kind: "trash-item",
@@ -355,7 +348,7 @@ function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEnt
 
   if (entry.kind === "diagram") {
     return {
-      path: `Trash/${entry.diagram.name}`,
+      path,
       kind: "file",
       content: serializeDiagramSvg(entry.diagram),
       source: {
@@ -367,7 +360,7 @@ function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEnt
   }
 
   return {
-    path: `Trash/${entry.graph.name}`,
+    path,
     kind: "file",
     content: new Uint8Array(entry.graph.content),
     source: {

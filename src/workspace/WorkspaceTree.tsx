@@ -1,14 +1,15 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   canDeleteWorkspaceNode,
   canMoveWorkspaceNode,
   canRenameWorkspaceNode,
   getWorkspaceNodeBadge,
-  type WorkspaceFileBadge,
   type WorkspaceTreeNode
 } from "./workspaceTree";
 
 export const WORKSPACE_ROOT_PATH = "__workspace_root__";
+const TOUCH_CONTEXT_MENU_DELAY_MS = 500;
+const TOUCH_CONTEXT_MENU_MOVE_TOLERANCE_PX = 10;
 
 interface WorkspaceTreeProps {
   collapsedPaths: Record<string, boolean>;
@@ -85,7 +86,12 @@ export function WorkspaceTree({
           <span aria-hidden="true" className="file-tree__chevron-text">
             {isRootCollapsed ? "▸" : "▾"}
           </span>
-          <span className="file-tree__folder-icon" aria-hidden="true" />
+          <span
+            className={`file-tree__folder-icon ${
+              isRootCollapsed ? "file-tree__folder-icon--closed" : "file-tree__folder-icon--open"
+            }`}
+            aria-hidden="true"
+          />
           <span className="file-tree__branch-label">{rootLabel}</span>
         </button>
         {!isRootCollapsed ? (
@@ -173,16 +179,82 @@ function WorkspaceTreeBranch({
 }: WorkspaceTreeBranchProps) {
   const isRenaming = renamingPath === node.path;
   const isSelected = selectedPaths.includes(node.path);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressNextClickRef = useRef(false);
 
-  const handleNodeClick = (event: ReactMouseEvent) => {
-    if ((event.target as HTMLElement).closest(".file-tree__toggle-button")) {
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const beginTouchContextMenu = (
+    event: ReactPointerEvent<HTMLElement>,
+    canOpenContextMenu: boolean
+  ) => {
+    if (event.pointerType !== "touch" || !canOpenContextMenu || isRenaming) {
       return;
+    }
+
+    clearLongPressTimer();
+    longPressPointRef.current = {
+      x: event.clientX,
+      y: event.clientY
+    };
+    longPressTimerRef.current = window.setTimeout(() => {
+      suppressNextClickRef.current = true;
+      onRequestContextMenu(node, event.clientX, event.clientY);
+      longPressTimerRef.current = null;
+    }, TOUCH_CONTEXT_MENU_DELAY_MS);
+  };
+
+  const handleTouchPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType !== "touch" || !longPressPointRef.current) {
+      return;
+    }
+
+    const deltaX = event.clientX - longPressPointRef.current.x;
+    const deltaY = event.clientY - longPressPointRef.current.y;
+
+    if (Math.hypot(deltaX, deltaY) > TOUCH_CONTEXT_MENU_MOVE_TOLERANCE_PX) {
+      clearLongPressTimer();
+      longPressPointRef.current = null;
+    }
+  };
+
+  const endTouchGesture = () => {
+    clearLongPressTimer();
+    longPressPointRef.current = null;
+  };
+
+  const handleNodeClick = (event: ReactMouseEvent): boolean => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      event.preventDefault();
+      return false;
+    }
+
+    if ((event.target as HTMLElement).closest(".file-tree__toggle-button")) {
+      return false;
     }
 
     onActivateNode(node, {
       additive: event.metaKey || event.ctrlKey,
       range: event.shiftKey
     });
+
+    return true;
   };
 
   if (node.kind === "folder") {
@@ -190,6 +262,7 @@ function WorkspaceTreeBranch({
     const isEmpty = node.children.length === 0;
     const canRename = canRenameWorkspaceNode(node);
     const canMove = canMoveWorkspaceNode(node);
+    const canOpenContextMenu = canRename || canDeleteWorkspaceNode(node) || canMove;
 
     return (
       <div className="file-tree__branch">
@@ -210,14 +283,13 @@ function WorkspaceTreeBranch({
             event.preventDefault();
             onDropIntoFolder(node);
           }}
+          onPointerCancel={endTouchGesture}
+          onPointerDown={(event) => beginTouchContextMenu(event, canOpenContextMenu)}
+          onPointerMove={handleTouchPointerMove}
+          onPointerUp={endTouchGesture}
           onContextMenu={(event) => {
             event.preventDefault();
-            if (
-              canRename ||
-              canDeleteWorkspaceNode(node) ||
-              node.source.kind === "trash-root" ||
-              canMove
-            ) {
+            if (canOpenContextMenu) {
               onRequestContextMenu(node, event.clientX, event.clientY);
             }
           }}
@@ -247,7 +319,13 @@ function WorkspaceTreeBranch({
             </button>
           )}
           <span
-            className={`file-tree__folder-icon ${isEmpty ? "file-tree__folder-icon--empty" : ""}`}
+            className={`file-tree__folder-icon ${
+              isEmpty
+                ? "file-tree__folder-icon--empty"
+                : isCollapsed
+                  ? "file-tree__folder-icon--closed"
+                  : "file-tree__folder-icon--open"
+            }`}
             aria-hidden="true"
           />
           {isRenaming ? (
@@ -316,15 +394,17 @@ function WorkspaceTreeBranch({
         className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
           isSelected ? "file-row--selected" : ""
         }`}
+        onPointerCancel={endTouchGesture}
+        onPointerDown={(event) => beginTouchContextMenu(event, true)}
+        onPointerMove={handleTouchPointerMove}
+        onPointerUp={endTouchGesture}
         onContextMenu={(event) => {
           event.preventDefault();
           onRequestContextMenu(node, event.clientX, event.clientY);
         }}
         role="treeitem"
       >
-        <span aria-hidden="true" className={`file-tree__file-badge file-tree__file-badge--${badge}`}>
-          {formatWorkspaceBadge(badge)}
-        </span>
+        <span aria-hidden="true" className={`file-tree__file-icon file-tree__file-icon--${badge}`} />
         <input
           autoFocus
           className="file-tree__rename-input"
@@ -357,9 +437,13 @@ function WorkspaceTreeBranch({
       draggable={canMove}
       onDragEnd={onDragEnd}
       onDragStart={() => onDragStart(node)}
+      onPointerCancel={endTouchGesture}
+      onPointerDown={(event) => beginTouchContextMenu(event, true)}
+      onPointerMove={handleTouchPointerMove}
+      onPointerUp={endTouchGesture}
       onClick={(event) => {
-        handleNodeClick(event);
-        if (!event.metaKey && !event.ctrlKey && !event.shiftKey) {
+        const didActivate = handleNodeClick(event);
+        if (didActivate && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
           onOpenFile(node.path);
         }
       }}
@@ -375,31 +459,8 @@ function WorkspaceTreeBranch({
       role="treeitem"
       type="button"
     >
-      <span aria-hidden="true" className={`file-tree__file-badge file-tree__file-badge--${badge}`}>
-        {formatWorkspaceBadge(badge)}
-      </span>
+      <span aria-hidden="true" className={`file-tree__file-icon file-tree__file-icon--${badge}`} />
       <span className="file-row__name">{node.name}</span>
     </button>
   );
-}
-
-function formatWorkspaceBadge(badge: WorkspaceFileBadge): string {
-  switch (badge) {
-    case "typ":
-      return "typ";
-    case "tex":
-      return "tex";
-    case "img":
-      return "img";
-    case "pdf":
-      return "pdf";
-    case "txt":
-      return "txt";
-    case "empty":
-      return "dir";
-    case "dir":
-      return "dir";
-    default:
-      return "bin";
-  }
 }

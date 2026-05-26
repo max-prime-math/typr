@@ -324,7 +324,8 @@ button {
 }
 
 .control-button:disabled,
-.menu-action:disabled {
+.menu-action:disabled,
+.pane__button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
   transform: none;
@@ -340,6 +341,17 @@ button {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
   background: color-mix(in srgb, var(--surface-strong) 76%, var(--accent-soft));
   color: var(--accent-strong);
+}
+
+.pane__button--danger {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  color: var(--danger);
+}
+
+.pane__button--danger:hover,
+.pane__button--danger:focus-visible {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-strong));
 }
 
 .control-button--wide {
@@ -739,6 +751,11 @@ button {
 .toolbar-icon--upload {
   mask-image: url("/icons/toolbar/upload.svg");
   -webkit-mask-image: url("/icons/toolbar/upload.svg");
+}
+
+.toolbar-icon--trash {
+  mask-image: url("/icons/toolbar/trash.svg");
+  -webkit-mask-image: url("/icons/toolbar/trash.svg");
 }
 
 .pane__toolbar {
@@ -1306,6 +1323,12 @@ button {
   margin-bottom: 0.9rem;
 }
 
+.sidebar-section__actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 0.8rem;
+}
+
 .file-list {
   display: flex;
   flex-direction: column;
@@ -1316,6 +1339,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+  -webkit-touch-callout: none;
 }
 
 .file-tree__toolbar {
@@ -1336,6 +1360,7 @@ button {
   min-height: 1.9rem;
   padding: 0.22rem 0.35rem;
   color: var(--text);
+  touch-action: manipulation;
 }
 
 .file-tree__branch-header--button {
@@ -1415,19 +1440,22 @@ button {
   width: 1rem;
   height: 1rem;
   flex: 0 0 auto;
-  background-color: currentColor;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  mask-image: url("/icons/sidebar/folder.svg");
-  -webkit-mask-image: url("/icons/sidebar/folder.svg");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+.file-tree__folder-icon--closed {
+  background-image: url("/icons/files/folder.svg");
+}
+
+.file-tree__folder-icon--open {
+  background-image: url("/icons/files/folder.svg");
 }
 
 .file-tree__folder-icon--empty {
-  opacity: 0.5;
+  background-image: url("/icons/files/folder.svg");
+  opacity: 0.62;
 }
 
 .file-tree__items {
@@ -1444,6 +1472,7 @@ button {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  touch-action: manipulation;
 }
 
 .file-tree .file-row:hover,
@@ -1489,31 +1518,39 @@ button {
   font-size: 0.88rem;
 }
 
-.file-tree__file-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 2rem;
-  padding: 0.1rem 0.3rem;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface-strong) 78%, var(--editor-background));
-  color: var(--text-muted);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+.file-tree__file-icon {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
 }
 
-.file-tree__file-badge--typ {
-  color: var(--accent-strong);
+.file-tree__file-icon--typ {
+  background-image: url("/icons/files/file-typst.svg");
 }
 
-.file-tree__file-badge--img {
-  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+.file-tree__file-icon--tex {
+  background-image: url("/icons/files/tex.svg");
 }
 
-.file-tree__file-badge--pdf {
-  color: var(--danger);
+.file-tree__file-icon--img {
+  background-image: url("/icons/files/image.svg");
+}
+
+.file-tree__file-icon--pdf {
+  background-image: url("/icons/files/pdf.svg");
+}
+
+.file-tree__file-icon--txt {
+  background-image: url("/icons/files/default.svg");
+}
+
+.file-tree__file-icon--bin {
+  background-image: url("/icons/files/default.svg");
+  opacity: 0.76;
 }
 
 .workspace-context-menu {

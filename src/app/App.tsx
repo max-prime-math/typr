@@ -155,6 +155,7 @@ import {
 import { WorkspaceTree, WORKSPACE_ROOT_PATH } from "../workspace/WorkspaceTree";
 import {
   buildProjectWorkspaceEntries,
+  buildTrashWorkspaceEntries,
   buildWorkspaceTree,
   canMoveWorkspaceNode,
   flattenVisibleWorkspaceNodes,
@@ -541,6 +542,7 @@ export function App() {
   const [diagramInkColor, setDiagramInkColor] = useState("#000000");
   const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({});
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
+  const [isTrashViewOpen, setIsTrashViewOpen] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<string[]>([]);
   const [workspaceSelectionAnchorPath, setWorkspaceSelectionAnchorPath] = useState<string | null>(null);
@@ -707,15 +709,20 @@ export function App() {
   } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
+  const trashWorkspaceTree = useMemo(
+    () => buildWorkspaceTree(buildTrashWorkspaceEntries(snapshot.project.trash ?? [])),
+    [snapshot.project.trash]
+  );
+  const visibleWorkspaceTree = isTrashViewOpen ? trashWorkspaceTree : workspaceTree;
   const normalizedSelectedWorkspacePath = selectedWorkspacePath
     ? normalizeWorkspacePath(selectedWorkspacePath)
     : null;
   const selectedWorkspaceNode = useMemo(
     () =>
       normalizedSelectedWorkspacePath
-        ? findWorkspaceNodeByPath(workspaceTree, normalizedSelectedWorkspacePath)
+        ? findWorkspaceNodeByPath(visibleWorkspaceTree, normalizedSelectedWorkspacePath)
         : null,
-    [normalizedSelectedWorkspacePath, workspaceTree]
+    [normalizedSelectedWorkspacePath, visibleWorkspaceTree]
   );
   const workspaceContextMenuPosition = useMemo(() => {
     if (!workspaceContextMenu || !filesSectionRef.current) {
@@ -731,7 +738,7 @@ export function App() {
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
     normalizedSelectedWorkspacePath === null ||
-    selectedWorkspaceNode?.source.kind === "document";
+    (!isTrashViewOpen && selectedWorkspaceNode?.source.kind === "document");
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
@@ -847,35 +854,47 @@ export function App() {
 
   useEffect(() => {
     setSelectedWorkspacePath((currentPath) => {
-      if (currentPath && findWorkspaceNodeByPath(workspaceTree, currentPath)) {
+      if (currentPath && findWorkspaceNodeByPath(visibleWorkspaceTree, currentPath)) {
         return currentPath;
+      }
+
+      if (isTrashViewOpen) {
+        return null;
       }
 
       return normalizeWorkspacePath(activeDocument.name);
     });
-  }, [activeDocument.name, workspaceTree]);
+  }, [activeDocument.name, isTrashViewOpen, visibleWorkspaceTree]);
 
   useEffect(() => {
     setSelectedWorkspacePaths((currentPaths) => {
-      const nextPaths = currentPaths.filter((path) => findWorkspaceNodeByPath(workspaceTree, path));
+      const nextPaths = currentPaths.filter((path) => findWorkspaceNodeByPath(visibleWorkspaceTree, path));
 
       if (nextPaths.length > 0) {
         return nextPaths;
       }
 
+      if (isTrashViewOpen) {
+        return [];
+      }
+
       return [normalizeWorkspacePath(activeDocument.name)];
     });
-  }, [activeDocument.name, workspaceTree]);
+  }, [activeDocument.name, isTrashViewOpen, visibleWorkspaceTree]);
 
   useEffect(() => {
     setWorkspaceSelectionAnchorPath((currentPath) => {
-      if (currentPath && findWorkspaceNodeByPath(workspaceTree, currentPath)) {
+      if (currentPath && findWorkspaceNodeByPath(visibleWorkspaceTree, currentPath)) {
         return currentPath;
+      }
+
+      if (isTrashViewOpen) {
+        return null;
       }
 
       return normalizeWorkspacePath(activeDocument.name);
     });
-  }, [activeDocument.name, workspaceTree]);
+  }, [activeDocument.name, isTrashViewOpen, visibleWorkspaceTree]);
 
   useEffect(() => {
     diagramAssetsRef.current = diagramShadowAssets;
@@ -1582,6 +1601,10 @@ export function App() {
       setWorkspaceSelectionAnchorPath(normalizedPath);
       setWorkspaceContextMenu(null);
 
+      if (isTrashViewOpen) {
+        return;
+      }
+
       const matchingDocument = snapshot.project.documents.find(
         (document) => normalizeWorkspacePath(document.name) === normalizedPath
       );
@@ -1590,7 +1613,7 @@ export function App() {
         handleSelectDocument(matchingDocument.id);
       }
     },
-    [snapshot.project.documents]
+    [isTrashViewOpen, snapshot.project.documents]
   );
 
   const handleActivateWorkspaceNode = useCallback(
@@ -1604,7 +1627,7 @@ export function App() {
       const normalizedPath = normalizeWorkspacePath(node.path);
 
       if (modifiers.range) {
-        const visibleNodes = flattenVisibleWorkspaceNodes(workspaceTree, collapsedFileFolders);
+        const visibleNodes = flattenVisibleWorkspaceNodes(visibleWorkspaceTree, collapsedFileFolders);
         const selectablePaths = visibleNodes.map((entry) => entry.path);
         const anchorPath = workspaceSelectionAnchorPath ?? selectedWorkspacePath ?? normalizedPath;
         const anchorIndex = selectablePaths.indexOf(anchorPath);
@@ -1636,7 +1659,7 @@ export function App() {
       setSelectedWorkspacePaths([normalizedPath]);
       setWorkspaceSelectionAnchorPath(normalizedPath);
     },
-    [collapsedFileFolders, selectedWorkspacePath, workspaceSelectionAnchorPath, workspaceTree]
+    [collapsedFileFolders, selectedWorkspacePath, visibleWorkspaceTree, workspaceSelectionAnchorPath]
   );
 
   const handleRequestWorkspaceRename = useCallback((node: WorkspaceTreeNode) => {
@@ -1655,7 +1678,7 @@ export function App() {
       return;
     }
 
-    const targetNode = findWorkspaceNodeByPath(workspaceTree, renamingWorkspacePath);
+    const targetNode = findWorkspaceNodeByPath(visibleWorkspaceTree, renamingWorkspacePath);
     const nextName = workspaceRenameDraft.trim();
 
     if (!targetNode || !nextName) {
@@ -1685,7 +1708,7 @@ export function App() {
 
     setSelectedWorkspacePath(null);
     handleCancelWorkspaceRename();
-  }, [handleCancelWorkspaceRename, renamingWorkspacePath, workspaceRenameDraft, workspaceTree]);
+  }, [handleCancelWorkspaceRename, renamingWorkspacePath, visibleWorkspaceTree, workspaceRenameDraft]);
 
   const handleRequestWorkspaceContextMenu = useCallback(
     (node: WorkspaceTreeNode, x: number, y: number) => {
@@ -1744,6 +1767,9 @@ export function App() {
   const handleRestoreWorkspaceTrashEntry = useCallback((trashEntryId: string) => {
     setSnapshot((currentSnapshot) => restoreTrashEntry(currentSnapshot, trashEntryId));
     setWorkspaceContextMenu(null);
+    setSelectedWorkspacePath(null);
+    setSelectedWorkspacePaths([]);
+    setWorkspaceSelectionAnchorPath(null);
   }, []);
 
   const handleEmptyWorkspaceTrash = useCallback(() => {
@@ -1850,7 +1876,7 @@ export function App() {
           window.alert("Figures can only be moved inside the figures folder.");
           return;
         }
-      } else if (requestedPath === "figures" || requestedPath.startsWith("figures/") || requestedPath === "Trash" || requestedPath.startsWith("Trash/")) {
+      } else if (requestedPath === "figures" || requestedPath.startsWith("figures/")) {
         window.alert("That destination is reserved.");
         return;
       }
@@ -1884,7 +1910,7 @@ export function App() {
         workspaceHoverExpandTimerRef.current = null;
       }
 
-      if (path === "figures" || path === "Trash" || path === WORKSPACE_ROOT_PATH) {
+      if (path === "figures" || path === WORKSPACE_ROOT_PATH) {
         return;
       }
 
@@ -1936,11 +1962,6 @@ export function App() {
         return;
       }
 
-      if (targetNode.path === "Trash") {
-        handleDeleteWorkspaceNode(draggedNode);
-        return;
-      }
-
       if (draggedNode.source.kind === "diagram" || draggedNode.source.kind === "graph") {
         if (targetNode.path !== "figures" && !targetNode.path.startsWith("figures/")) {
           handleWorkspaceDragEnd();
@@ -1951,7 +1972,7 @@ export function App() {
         return;
       }
 
-      if (targetNode.path === "figures" || targetNode.path.startsWith("figures/") || targetNode.path === "Trash" || targetNode.path.startsWith("Trash/")) {
+      if (targetNode.path === "figures" || targetNode.path.startsWith("figures/")) {
         handleWorkspaceDragEnd();
         return;
       }
@@ -3112,6 +3133,7 @@ export function App() {
   const sidebarPaneCollapsed = !isMobileWorkspace && !showDesktopSidebar;
   const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace;
   const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
+  const filesPanelTitle = activeSidebarTool === "files" && isTrashViewOpen ? "Trash" : sidebarToolTitle;
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
       const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
@@ -3137,6 +3159,14 @@ export function App() {
     },
     [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, openSearchPane, workspaceMode]
   );
+  const handleToggleTrashView = useCallback(() => {
+    setIsTrashViewOpen((current) => !current);
+    setWorkspaceContextMenu(null);
+    setRenamingWorkspacePath(null);
+    setWorkspaceRenameDraft("");
+    setDraggedWorkspacePath(null);
+    setWorkspaceDropTargetPath(null);
+  }, []);
   const focusDocumentLocation = useCallback(
     (documentId: string, line: number, column = 1) => {
       setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
@@ -3450,7 +3480,7 @@ export function App() {
             <>
               <div className="pane__header">
                 <div className="pane__header-group">
-                  <h2>{sidebarToolTitle}</h2>
+                  <h2>{filesPanelTitle}</h2>
                 </div>
                 <div className="pane__header-actions">
                   {activeSidebarTool === "files" ? (
@@ -3479,6 +3509,15 @@ export function App() {
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
                       </button>
+                      <button
+                        aria-label={isTrashViewOpen ? "Close trash" : "Open trash"}
+                        aria-pressed={isTrashViewOpen}
+                        className="pane__button pane__button--compact pane__icon-button"
+                        onClick={handleToggleTrashView}
+                        type="button"
+                      >
+                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--trash" />
+                      </button>
                     </>
                   ) : activeSidebarTool === "sync" ? (
                     <button
@@ -3500,11 +3539,23 @@ export function App() {
                   ref={filesSectionRef}
                   className="sidebar-section sidebar-section--scrollable sidebar-section--files"
                 >
+                  {isTrashViewOpen ? (
+                    <div className="sidebar-section__actions">
+                      <button
+                        className="pane__button pane__button--danger"
+                        disabled={snapshot.project.trash.length === 0}
+                        onClick={handleEmptyWorkspaceTrash}
+                        type="button"
+                      >
+                        Empty Trash
+                      </button>
+                    </div>
+                  ) : null}
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
                     dropTargetPath={workspaceDropTargetPath}
-                    nodes={workspaceTree}
-                    rootLabel={snapshot.project.name}
+                    nodes={visibleWorkspaceTree}
+                    rootLabel={isTrashViewOpen ? "Trash" : snapshot.project.name}
                     renamingPath={renamingWorkspacePath}
                     renameDraft={workspaceRenameDraft}
                     selectedPaths={selectedWorkspacePaths}
@@ -3607,16 +3658,6 @@ export function App() {
                             </>
                           );
                         })()
-                      ) : null}
-                      {workspaceContextMenu.node.source.kind === "trash-root" ? (
-                        <button
-                          className="workspace-context-menu__item workspace-context-menu__item--danger"
-                          disabled={snapshot.project.trash.length === 0}
-                          onClick={handleEmptyWorkspaceTrash}
-                          type="button"
-                        >
-                          Empty Trash
-                        </button>
                       ) : null}
                     </div>
                   ) : null}
@@ -4396,7 +4437,9 @@ export function App() {
             />
           ) : (
             <div className="source-empty-state">
-              <div className="source-empty-state__title">cannot open this filetype</div>
+              <div className="source-empty-state__title">
+                {isTrashViewOpen ? "file is in trash" : "cannot open this filetype"}
+              </div>
               {normalizedSelectedWorkspacePath ? (
                 <div className="source-empty-state__path">{normalizedSelectedWorkspacePath}</div>
               ) : null}

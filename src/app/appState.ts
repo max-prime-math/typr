@@ -1,7 +1,12 @@
 import { AUTO_THEME_ID } from "../theme/themes";
-import { DEFAULT_DIAGRAM_FILE_NAME, normalizeDiagramFileName } from "../diagram/diagramFiles";
+import {
+  DEFAULT_DIAGRAM_FILE_NAME,
+  getDiagramFilePath,
+  normalizeDiagramFileName
+} from "../diagram/diagramFiles";
 import {
   DEFAULT_GRAPH_FILE_NAME,
+  getGraphFilePath,
   normalizeGraphFileName,
   normalizeGraphFileNameForContentType
 } from "../graph/graphFiles";
@@ -36,6 +41,7 @@ export interface TrashedDocumentEntry {
   id: string;
   kind: "document";
   deletedAt: string;
+  originalPath: string;
   document: TypstDocumentFile;
 }
 
@@ -43,6 +49,7 @@ export interface TrashedFolderEntry {
   id: string;
   kind: "folder";
   deletedAt: string;
+  originalPath: string;
   folder: FileFolder;
 }
 
@@ -126,6 +133,7 @@ export interface TrashedDiagramEntry {
   id: string;
   kind: "diagram";
   deletedAt: string;
+  originalPath: string;
   diagram: DiagramAsset;
 }
 
@@ -148,6 +156,7 @@ export interface TrashedGraphEntry {
   id: string;
   kind: "graph";
   deletedAt: string;
+  originalPath: string;
   graph: GraphAsset;
 }
 
@@ -192,7 +201,7 @@ export interface AppPreferences {
 }
 
 export interface AppSnapshot {
-  version: 8;
+  version: 9;
   project: TypstProject;
   preferences: AppPreferences;
 }
@@ -290,7 +299,7 @@ export function createDefaultSnapshot(): AppSnapshot {
   };
 
   return {
-    version: 8,
+    version: 9,
     project: {
       id: createId("project"),
       name: "typr Project",
@@ -350,7 +359,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
 
   return {
     ...snapshot,
-    version: 8,
+    version: 9,
     preferences: {
       theme: snapshot.preferences.theme ?? AUTO_THEME_ID,
       vimMode: snapshot.preferences.vimMode ?? false,
@@ -413,6 +422,9 @@ function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
       ...entry,
       id: entry.id ?? createId("trash"),
       deletedAt,
+      originalPath:
+        normalizeWorkspaceFolderPath(entry.originalPath ?? entry.document?.name ?? DEFAULT_DOCUMENT_NAME) ??
+        DEFAULT_DOCUMENT_NAME,
       document: {
         id: entry.document?.id ?? createId("doc"),
         name: entry.document?.name?.trim() || DEFAULT_DOCUMENT_NAME,
@@ -427,6 +439,7 @@ function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
       ...entry,
       id: entry.id ?? createId("trash"),
       deletedAt,
+      originalPath: normalizeWorkspaceFolderPath(entry.originalPath ?? entry.folder?.name ?? "folder") ?? "folder",
       folder: normalizeFolderAsset(entry.folder)
     };
   }
@@ -436,6 +449,10 @@ function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
       ...entry,
       id: entry.id ?? createId("trash"),
       deletedAt,
+      originalPath:
+        normalizeWorkspaceFolderPath(
+        entry.originalPath ?? getDiagramFilePath(entry.diagram?.name ?? DEFAULT_DIAGRAM_FILE_NAME)
+        ) ?? getDiagramFilePath(DEFAULT_DIAGRAM_FILE_NAME),
       diagram: normalizeDiagramAsset(entry.diagram)
     };
   }
@@ -444,6 +461,10 @@ function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
     ...entry,
     id: entry.id ?? createId("trash"),
     deletedAt,
+    originalPath:
+      normalizeWorkspaceFolderPath(
+        entry.originalPath ?? getGraphFilePath(entry.graph?.name ?? DEFAULT_GRAPH_FILE_NAME)
+      ) ?? getGraphFilePath(DEFAULT_GRAPH_FILE_NAME),
     graph: normalizeGraphAsset(entry.graph)
   };
 }
@@ -851,6 +872,7 @@ export function moveDocumentToTrash(snapshot: AppSnapshot, documentId: string): 
           id: createId("trash"),
           kind: "document",
           deletedAt: now,
+          originalPath: targetDocument.name,
           document: targetDocument
         }
       ],
@@ -879,6 +901,7 @@ export function moveFolderToTrash(snapshot: AppSnapshot, folderId: string): AppS
           id: createId("trash"),
           kind: "folder",
           deletedAt: now,
+          originalPath: targetFolder.name,
           folder: targetFolder
         }
       ],
@@ -1109,6 +1132,7 @@ export function moveDiagramToTrash(snapshot: AppSnapshot, diagramId: string): Ap
           id: createId("trash"),
           kind: "diagram",
           deletedAt: now,
+          originalPath: getDiagramFilePath(targetFigure.name),
           diagram: targetFigure
         }
       ],
@@ -1189,6 +1213,7 @@ export function moveGraphToTrash(snapshot: AppSnapshot, graphId: string): AppSna
           id: createId("trash"),
           kind: "graph",
           deletedAt: now,
+          originalPath: getGraphFilePath(targetGraph.name),
           graph: targetGraph
         }
       ],
@@ -1276,7 +1301,7 @@ export function restoreTrashEntry(snapshot: AppSnapshot, trashEntryId: string): 
     const restoredDocument = {
       ...targetEntry.document,
       id: createId("doc"),
-      name: createUniqueDocumentName(snapshot.project.documents, targetEntry.document.name),
+      name: createUniqueDocumentName(snapshot.project.documents, targetEntry.originalPath),
       updatedAt: now
     };
 
@@ -1296,7 +1321,7 @@ export function restoreTrashEntry(snapshot: AppSnapshot, trashEntryId: string): 
     const restoredFolder = {
       ...targetEntry.folder,
       id: createId("folder"),
-      name: createUniqueFolderName(snapshot.project.folders, targetEntry.folder.name),
+      name: createUniqueFolderName(snapshot.project.folders, targetEntry.originalPath),
       updatedAt: now
     };
 
@@ -1312,11 +1337,12 @@ export function restoreTrashEntry(snapshot: AppSnapshot, trashEntryId: string): 
   }
 
   if (targetEntry.kind === "diagram") {
+    const requestedPath = stripFiguresWorkspacePath(targetEntry.originalPath);
     const restoredDiagram = {
       ...targetEntry.diagram,
       id: createId("diagram"),
       name: createUniqueDiagramName(
-        targetEntry.diagram.name,
+        requestedPath,
         snapshot.project.figures,
         snapshot.project.diagram?.id === targetEntry.diagram.id ? snapshot.project.diagram.name : null
       ),
@@ -1334,11 +1360,12 @@ export function restoreTrashEntry(snapshot: AppSnapshot, trashEntryId: string): 
     };
   }
 
+  const requestedPath = stripFiguresWorkspacePath(targetEntry.originalPath);
   const restoredGraph = {
     ...targetEntry.graph,
     id: createId("graph"),
     name: createUniqueGraphName(
-      targetEntry.graph.name,
+      requestedPath,
       snapshot.project.graphs,
       snapshot.project.graph?.id === targetEntry.graph.id ? snapshot.project.graph.name : null,
       targetEntry.graph.contentType
@@ -1664,6 +1691,20 @@ function joinWorkspacePath(folderPath: string | null, name: string): string {
   return normalizedFolderPath ? `${normalizedFolderPath}/${name}` : name;
 }
 
+function stripFiguresWorkspacePath(path: string): string {
+  const normalizedPath = normalizeWorkspaceFolderPath(path) ?? "";
+
+  if (normalizedPath === "figures") {
+    return "";
+  }
+
+  if (normalizedPath.startsWith("figures/")) {
+    return normalizedPath.slice("figures/".length);
+  }
+
+  return normalizedPath;
+}
+
 function getWorkspaceBaseName(path: string): string {
   return path.split("/").filter(Boolean).at(-1) ?? path;
 }
@@ -1782,8 +1823,14 @@ function createUniqueDocumentName(
   requestedName?: string
 ): string {
   const existingNames = new Set(documents.map((document) => document.name));
+  const normalizedRequestedName = normalizeWorkspaceFolderPath(requestedName ?? "");
+
+  if (normalizedRequestedName) {
+    return createUniqueWorkspacePath(normalizedRequestedName, existingNames);
+  }
+
   let nextIndex = documents.length + 1;
-  let nextName = requestedName?.trim() || `section-${nextIndex}.typ`;
+  let nextName = `section-${nextIndex}.typ`;
 
   while (existingNames.has(nextName)) {
     nextIndex += 1;
@@ -1798,8 +1845,14 @@ function createUniqueFolderName(
   requestedName?: string
 ): string {
   const existingNames = new Set(folders.map((folder) => folder.name));
+  const normalizedRequestedName = normalizeWorkspaceFolderPath(requestedName ?? "");
+
+  if (normalizedRequestedName) {
+    return createUniqueWorkspacePath(normalizedRequestedName, existingNames);
+  }
+
   let nextIndex = folders.length + 1;
-  let nextName = requestedName?.trim() || `folder ${nextIndex}`;
+  let nextName = `folder ${nextIndex}`;
 
   while (existingNames.has(nextName)) {
     nextIndex += 1;
@@ -1807,6 +1860,27 @@ function createUniqueFolderName(
   }
 
   return nextName;
+}
+
+function createUniqueWorkspacePath(requestedPath: string, existingPaths: Set<string>): string {
+  if (!existingPaths.has(requestedPath)) {
+    return requestedPath;
+  }
+
+  const parentPath = getWorkspaceParentPath(requestedPath);
+  const baseName = getWorkspaceBaseName(requestedPath);
+  const extensionMatch = /\.([^.]+)$/i.exec(baseName);
+  const extension = extensionMatch ? `.${extensionMatch[1]}` : "";
+  const stem = extension ? baseName.slice(0, -extension.length) : baseName;
+  let suffix = 2;
+  let nextPath = joinWorkspacePath(parentPath, `${stem}-${suffix}${extension}`);
+
+  while (existingPaths.has(nextPath)) {
+    suffix += 1;
+    nextPath = joinWorkspacePath(parentPath, `${stem}-${suffix}${extension}`);
+  }
+
+  return nextPath;
 }
 
 export function updateThemePreference(
