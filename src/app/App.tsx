@@ -33,9 +33,13 @@ import {
   createNextDiagramSnapshot,
   emptyTrash,
   moveDiagramToTrash,
+  moveDiagramToFolder,
   moveDocumentToTrash,
+  moveDocumentToFolder,
   moveFolderToTrash,
+  moveFolderToFolder,
   moveGraphToTrash,
+  moveGraphToFolder,
   permanentlyDeleteTrashEntry,
   removeLatestDiagramItem,
   removeDiagramStroke,
@@ -148,10 +152,11 @@ import {
   syncSnapshotToOpfs,
   isOpfsAvailable
 } from "../workspace/opfsWorkspace";
-import { WorkspaceTree } from "../workspace/WorkspaceTree";
+import { WorkspaceTree, WORKSPACE_ROOT_PATH } from "../workspace/WorkspaceTree";
 import {
   buildProjectWorkspaceEntries,
   buildWorkspaceTree,
+  canMoveWorkspaceNode,
   findWorkspaceNodeByPath,
   normalizeWorkspacePath,
   type WorkspaceTreeNode
@@ -160,6 +165,7 @@ import {
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
+const MOVE_HOVER_EXPAND_DELAY_MS = 1000;
 const PANEL_LAYOUT_STORAGE_KEY = "typr.panel-layout";
 const PANEL_LAYOUT_VERSION = 5;
 const MOBILE_WORKSPACE_THRESHOLD = 1080;
@@ -386,6 +392,29 @@ function isResizeShortcut(event: KeyboardEvent) {
   return isPrimaryShortcut(event) && event.altKey && !event.shiftKey;
 }
 
+function getWorkspaceParentPath(path: string): string | null {
+  const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
+  segments.pop();
+  return segments.length > 0 ? segments.join("/") : null;
+}
+
+function getWorkspaceBaseName(path: string): string {
+  return normalizeWorkspacePath(path).split("/").filter(Boolean).at(-1) ?? path;
+}
+
+function joinWorkspacePath(path: string | null, name: string): string {
+  const normalizedPath = normalizeWorkspacePath(path ?? "");
+  return normalizedPath ? `${normalizedPath}/${name}` : name;
+}
+
+function getWorkspaceMovePromptLabel(node: WorkspaceTreeNode): string {
+  if (node.source.kind === "diagram" || node.source.kind === "graph") {
+    return "Move to folder inside figures (blank for figures root)";
+  }
+
+  return "Move to folder (blank for root)";
+}
+
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -448,6 +477,7 @@ export function App() {
   const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
   const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const filesSectionRef = useRef<HTMLElement | null>(null);
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
   const compileTimerRef = useRef<number | null>(null);
@@ -515,6 +545,8 @@ export function App() {
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null);
   const [renamingWorkspacePath, setRenamingWorkspacePath] = useState<string | null>(null);
   const [workspaceRenameDraft, setWorkspaceRenameDraft] = useState("");
+  const [draggedWorkspacePath, setDraggedWorkspacePath] = useState<string | null>(null);
+  const [workspaceDropTargetPath, setWorkspaceDropTargetPath] = useState<string | null>(null);
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
   );
@@ -561,6 +593,7 @@ export function App() {
     label: "Waiting to compile"
   });
   const symbolHoverTimerRef = useRef<number | null>(null);
+  const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const symbolHoverItemRef = useRef<SourceSymbolItem | null>(null);
   const symbolHoverPointRef = useRef({ x: 0, y: 0 });
   const compiler = useMemo(
@@ -681,6 +714,18 @@ export function App() {
         : null,
     [normalizedSelectedWorkspacePath, workspaceTree]
   );
+  const workspaceContextMenuPosition = useMemo(() => {
+    if (!workspaceContextMenu || !filesSectionRef.current) {
+      return null;
+    }
+
+    const rect = filesSectionRef.current.getBoundingClientRect();
+
+    return {
+      left: workspaceContextMenu.x - rect.left + filesSectionRef.current.scrollLeft,
+      top: workspaceContextMenu.y - rect.top + filesSectionRef.current.scrollTop
+    };
+  }, [workspaceContextMenu]);
   const isSourceFileEditable =
     normalizedSelectedWorkspacePath === null ||
     selectedWorkspaceNode?.source.kind === "document";
@@ -824,6 +869,9 @@ export function App() {
       isMountedRef.current = false;
       if (compileTimerRef.current !== null) {
         window.clearTimeout(compileTimerRef.current);
+      }
+      if (workspaceHoverExpandTimerRef.current !== null) {
+        window.clearTimeout(workspaceHoverExpandTimerRef.current);
       }
     };
   }, []);
@@ -1624,6 +1672,209 @@ export function App() {
     setWorkspaceContextMenu(null);
     setSelectedWorkspacePath(null);
   }, []);
+
+  const handleMoveWorkspaceNode = useCallback(
+    (node: WorkspaceTreeNode, destinationFolderPath: string | null) => {
+      const normalizedDestination = normalizeWorkspacePath(destinationFolderPath ?? "");
+      const nextDestination = normalizedDestination || null;
+      const movedBaseName = getWorkspaceBaseName(node.path);
+      const nextPath =
+        node.source.kind === "diagram" || node.source.kind === "graph"
+          ? joinWorkspacePath(nextDestination === "figures" ? null : nextDestination?.replace(/^figures\/?/, "") ?? null, movedBaseName)
+          : joinWorkspacePath(nextDestination, movedBaseName);
+      const displayNextPath =
+        node.source.kind === "diagram" || node.source.kind === "graph"
+          ? joinWorkspacePath("figures", nextPath)
+          : nextPath;
+      const nextSelectedPath =
+        selectedWorkspacePath === node.path
+          ? displayNextPath
+          : selectedWorkspacePath && node.source.kind === "folder" && selectedWorkspacePath.startsWith(`${node.path}/`)
+            ? `${displayNextPath}${selectedWorkspacePath.slice(node.path.length)}`
+            : selectedWorkspacePath;
+
+      setSnapshot((currentSnapshot) => {
+        if (node.source.kind === "document") {
+          return moveDocumentToFolder(currentSnapshot, node.source.id, nextDestination);
+        }
+
+        if (node.source.kind === "folder") {
+          return moveFolderToFolder(currentSnapshot, node.source.id, nextDestination);
+        }
+
+        if (node.source.kind === "diagram") {
+          const figureDestination =
+            nextDestination === null
+              ? null
+              : nextDestination === "figures"
+                ? null
+                : nextDestination.startsWith("figures/")
+                  ? nextDestination.slice("figures/".length)
+                  : null;
+          return moveDiagramToFolder(currentSnapshot, node.source.id, figureDestination);
+        }
+
+        if (node.source.kind === "graph") {
+          const figureDestination =
+            nextDestination === null
+              ? null
+              : nextDestination === "figures"
+                ? null
+                : nextDestination.startsWith("figures/")
+                  ? nextDestination.slice("figures/".length)
+                  : null;
+          return moveGraphToFolder(currentSnapshot, node.source.id, figureDestination);
+        }
+
+        return currentSnapshot;
+      });
+
+      setWorkspaceContextMenu(null);
+      setDraggedWorkspacePath(null);
+      setWorkspaceDropTargetPath(null);
+      if (nextSelectedPath) {
+        setSelectedWorkspacePath(nextSelectedPath);
+      }
+    },
+    [selectedWorkspacePath]
+  );
+
+  const handleRequestWorkspaceMove = useCallback(
+    (node: WorkspaceTreeNode) => {
+      const currentParentPath = getWorkspaceParentPath(node.path);
+      const nextValue = window.prompt(
+        getWorkspaceMovePromptLabel(node),
+        currentParentPath ?? ""
+      );
+
+      if (nextValue === null) {
+        setWorkspaceContextMenu(null);
+        return;
+      }
+
+      const requestedPath = normalizeWorkspacePath(nextValue);
+
+      if (node.source.kind === "diagram" || node.source.kind === "graph") {
+        if (requestedPath && requestedPath !== "figures" && !requestedPath.startsWith("figures/")) {
+          window.alert("Figures can only be moved inside the figures folder.");
+          return;
+        }
+      } else if (requestedPath === "figures" || requestedPath.startsWith("figures/") || requestedPath === "Trash" || requestedPath.startsWith("Trash/")) {
+        window.alert("That destination is reserved.");
+        return;
+      }
+
+      handleMoveWorkspaceNode(node, requestedPath || null);
+    },
+    [handleMoveWorkspaceNode]
+  );
+
+  const handleWorkspaceDragStart = useCallback((node: WorkspaceTreeNode) => {
+    setDraggedWorkspacePath(node.path);
+    setWorkspaceContextMenu(null);
+    setWorkspaceDropTargetPath(null);
+  }, []);
+
+  const handleWorkspaceDragEnd = useCallback(() => {
+    setDraggedWorkspacePath(null);
+    setWorkspaceDropTargetPath(null);
+    if (workspaceHoverExpandTimerRef.current !== null) {
+      window.clearTimeout(workspaceHoverExpandTimerRef.current);
+      workspaceHoverExpandTimerRef.current = null;
+    }
+  }, []);
+
+  const handleWorkspaceFolderDragHover = useCallback(
+    (path: string) => {
+      setWorkspaceDropTargetPath(path);
+
+      if (workspaceHoverExpandTimerRef.current !== null) {
+        window.clearTimeout(workspaceHoverExpandTimerRef.current);
+        workspaceHoverExpandTimerRef.current = null;
+      }
+
+      if (path === "figures" || path === "Trash" || path === WORKSPACE_ROOT_PATH) {
+        return;
+      }
+
+      if (!collapsedFileFolders[path]) {
+        return;
+      }
+
+      workspaceHoverExpandTimerRef.current = window.setTimeout(() => {
+        setCollapsedFileFolders((current) => ({
+          ...current,
+          [path]: false
+        }));
+        workspaceHoverExpandTimerRef.current = null;
+      }, MOVE_HOVER_EXPAND_DELAY_MS);
+    },
+    [collapsedFileFolders]
+  );
+
+  const handleWorkspaceDropAtRoot = useCallback(() => {
+    if (!draggedWorkspacePath) {
+      return;
+    }
+
+    const draggedNode = findWorkspaceNodeByPath(workspaceTree, draggedWorkspacePath);
+
+    if (!draggedNode || !canMoveWorkspaceNode(draggedNode)) {
+      handleWorkspaceDragEnd();
+      return;
+    }
+
+    if (draggedNode.source.kind === "diagram" || draggedNode.source.kind === "graph") {
+      handleMoveWorkspaceNode(draggedNode, "figures");
+      return;
+    }
+
+    handleMoveWorkspaceNode(draggedNode, null);
+  }, [draggedWorkspacePath, handleMoveWorkspaceNode, handleWorkspaceDragEnd, workspaceTree]);
+
+  const handleWorkspaceDropIntoFolder = useCallback(
+    (targetNode: WorkspaceTreeNode) => {
+      if (!draggedWorkspacePath) {
+        return;
+      }
+
+      const draggedNode = findWorkspaceNodeByPath(workspaceTree, draggedWorkspacePath);
+
+      if (!draggedNode || !canMoveWorkspaceNode(draggedNode)) {
+        handleWorkspaceDragEnd();
+        return;
+      }
+
+      if (targetNode.path === "Trash") {
+        handleDeleteWorkspaceNode(draggedNode);
+        return;
+      }
+
+      if (draggedNode.source.kind === "diagram" || draggedNode.source.kind === "graph") {
+        if (targetNode.path !== "figures" && !targetNode.path.startsWith("figures/")) {
+          handleWorkspaceDragEnd();
+          return;
+        }
+
+        handleMoveWorkspaceNode(draggedNode, targetNode.path);
+        return;
+      }
+
+      if (targetNode.path === "figures" || targetNode.path.startsWith("figures/") || targetNode.path === "Trash" || targetNode.path.startsWith("Trash/")) {
+        handleWorkspaceDragEnd();
+        return;
+      }
+
+      handleMoveWorkspaceNode(draggedNode, targetNode.path);
+    },
+    [
+      draggedWorkspacePath,
+      handleDeleteWorkspaceNode,
+      handleMoveWorkspaceNode,
+      handleWorkspaceDragEnd,
+      workspaceTree
+    ]
+  );
 
   const handleNewDocument = () => {
     setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
@@ -3154,14 +3405,23 @@ export function App() {
               </div>
 
               {activeSidebarTool === "files" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--files"
+                >
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
+                    dropTargetPath={workspaceDropTargetPath}
                     nodes={workspaceTree}
                     rootLabel={snapshot.project.name}
                     renamingPath={renamingWorkspacePath}
                     renameDraft={workspaceRenameDraft}
                     selectedPath={normalizedSelectedWorkspacePath}
+                    onDragEnd={handleWorkspaceDragEnd}
+                    onDragStart={handleWorkspaceDragStart}
+                    onDropAtRoot={handleWorkspaceDropAtRoot}
+                    onDropIntoFolder={handleWorkspaceDropIntoFolder}
+                    onFolderDragHover={handleWorkspaceFolderDragHover}
                     onOpenFile={handleOpenWorkspaceFile}
                     onToggleFolder={handleToggleFolder}
                     onRenameDraftChange={setWorkspaceRenameDraft}
@@ -3173,14 +3433,14 @@ export function App() {
                   {workspaceLoadError ? (
                     <p className="sidebar-card__copy">{workspaceLoadError}</p>
                   ) : null}
-                  {workspaceContextMenu ? (
+                  {workspaceContextMenu && workspaceContextMenuPosition ? (
                     <div
                       className="workspace-context-menu"
                       role="menu"
                       style={
                         {
-                          left: `${workspaceContextMenu.x}px`,
-                          top: `${workspaceContextMenu.y}px`
+                          left: `${workspaceContextMenuPosition.left}px`,
+                          top: `${workspaceContextMenuPosition.top}px`
                         } as CSSProperties
                       }
                     >
@@ -3205,6 +3465,18 @@ export function App() {
                           type="button"
                         >
                           Rename
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.node.source.kind === "document" ||
+                      workspaceContextMenu.node.source.kind === "folder" ||
+                      workspaceContextMenu.node.source.kind === "diagram" ||
+                      workspaceContextMenu.node.source.kind === "graph" ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={() => handleRequestWorkspaceMove(workspaceContextMenu.node)}
+                          type="button"
+                        >
+                          Move
                         </button>
                       ) : null}
                       {workspaceContextMenu.node.source.kind === "document" ||

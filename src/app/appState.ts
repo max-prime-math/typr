@@ -887,6 +887,103 @@ export function moveFolderToTrash(snapshot: AppSnapshot, folderId: string): AppS
   };
 }
 
+export function moveDocumentToFolder(
+  snapshot: AppSnapshot,
+  documentId: string,
+  destinationFolderPath: string | null
+): AppSnapshot {
+  const targetDocument = snapshot.project.documents.find((document) => document.id === documentId);
+
+  if (!targetDocument) {
+    return snapshot;
+  }
+
+  const nextName = createMovedDocumentName(
+    targetDocument.name,
+    destinationFolderPath,
+    snapshot.project.documents,
+    documentId
+  );
+
+  if (nextName === targetDocument.name) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      documents: snapshot.project.documents.map((document) =>
+        document.id === documentId
+          ? { ...document, name: nextName, updatedAt: now }
+          : document
+      ),
+      updatedAt: now
+    }
+  };
+}
+
+export function moveFolderToFolder(
+  snapshot: AppSnapshot,
+  folderId: string,
+  destinationFolderPath: string | null
+): AppSnapshot {
+  const targetFolder = snapshot.project.folders.find((folder) => folder.id === folderId);
+
+  if (!targetFolder) {
+    return snapshot;
+  }
+
+  const baseName = getWorkspaceBaseName(targetFolder.name);
+  const nextFolderPath = joinWorkspacePath(destinationFolderPath, baseName);
+
+  if (
+    nextFolderPath === targetFolder.name ||
+    nextFolderPath.startsWith(`${targetFolder.name}/`)
+  ) {
+    return snapshot;
+  }
+
+  const existingFolderPaths = new Set(
+    snapshot.project.folders
+      .filter((folder) => folder.id !== folderId)
+      .map((folder) => folder.name)
+  );
+  let finalFolderPath = nextFolderPath;
+  let suffix = 2;
+
+  while (existingFolderPaths.has(finalFolderPath)) {
+    finalFolderPath = joinWorkspacePath(destinationFolderPath, `${baseName}-${suffix}`);
+    suffix += 1;
+  }
+
+  const now = new Date().toISOString();
+  const renamePath = (path: string) =>
+    path === targetFolder.name || path.startsWith(`${targetFolder.name}/`)
+      ? `${finalFolderPath}${path.slice(targetFolder.name.length)}`
+      : path;
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      folders: snapshot.project.folders.map((folder) =>
+        folder.name === targetFolder.name || folder.name.startsWith(`${targetFolder.name}/`)
+          ? { ...folder, name: renamePath(folder.name), updatedAt: now }
+          : folder
+      ),
+      documents: snapshot.project.documents.map((document) =>
+        document.name.startsWith(`${targetFolder.name}/`)
+          ? { ...document, name: renamePath(document.name), updatedAt: now }
+          : document
+      ),
+      updatedAt: now
+    }
+  };
+}
+
 export function renameDiagramById(
   snapshot: AppSnapshot,
   diagramId: string,
@@ -1020,6 +1117,48 @@ export function moveDiagramToTrash(snapshot: AppSnapshot, diagramId: string): Ap
   };
 }
 
+export function moveDiagramToFolder(
+  snapshot: AppSnapshot,
+  diagramId: string,
+  destinationFolderPath: string | null
+): AppSnapshot {
+  const figures = snapshot.project.figures ?? [];
+  const targetFigure = figures.find((figure) => figure.id === diagramId);
+
+  if (!targetFigure) {
+    return snapshot;
+  }
+
+  const nextName = createMovedFigureName(
+    targetFigure.name,
+    destinationFolderPath,
+    diagramId,
+    figures
+  );
+
+  if (nextName === targetFigure.name) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const currentDiagram = snapshot.project.diagram ?? createDefaultDiagram();
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram:
+        currentDiagram.id === diagramId
+          ? { ...currentDiagram, name: nextName, updatedAt: now }
+          : currentDiagram,
+      figures: figures.map((figure) =>
+        figure.id === diagramId ? { ...figure, name: nextName, updatedAt: now } : figure
+      ),
+      updatedAt: now
+    }
+  };
+}
+
 export function moveGraphToTrash(snapshot: AppSnapshot, graphId: string): AppSnapshot {
   const graphs = snapshot.project.graphs ?? [];
   const targetGraph = graphs.find((graph) => graph.id === graphId);
@@ -1053,6 +1192,49 @@ export function moveGraphToTrash(snapshot: AppSnapshot, graphId: string): AppSna
           graph: targetGraph
         }
       ],
+      updatedAt: now
+    }
+  };
+}
+
+export function moveGraphToFolder(
+  snapshot: AppSnapshot,
+  graphId: string,
+  destinationFolderPath: string | null
+): AppSnapshot {
+  const graphs = snapshot.project.graphs ?? [];
+  const targetGraph = graphs.find((graph) => graph.id === graphId);
+
+  if (!targetGraph) {
+    return snapshot;
+  }
+
+  const nextName = createMovedGraphName(
+    targetGraph.name,
+    destinationFolderPath,
+    graphs,
+    graphId,
+    targetGraph.contentType
+  );
+
+  if (nextName === targetGraph.name) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const currentGraph = snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider);
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      graph:
+        currentGraph.id === graphId
+          ? { ...currentGraph, name: nextName, updatedAt: now }
+          : currentGraph,
+      graphs: graphs.map((graph) =>
+        graph.id === graphId ? { ...graph, name: nextName, updatedAt: now } : graph
+      ),
       updatedAt: now
     }
   };
@@ -1470,6 +1652,81 @@ function createNextGraphName(currentName: string, provider: GraphProvider): stri
   const nextIndex = match ? Number(match[1] ?? "1") + 1 : 1;
   const extension = provider === "desmos" ? "png" : "svg";
   return `graph ${nextIndex}.${extension}`;
+}
+
+function normalizeWorkspaceFolderPath(path: string | null): string | null {
+  const normalized = path?.split("/").map((segment) => segment.trim()).filter(Boolean).join("/") ?? "";
+  return normalized || null;
+}
+
+function joinWorkspacePath(folderPath: string | null, name: string): string {
+  const normalizedFolderPath = normalizeWorkspaceFolderPath(folderPath);
+  return normalizedFolderPath ? `${normalizedFolderPath}/${name}` : name;
+}
+
+function getWorkspaceBaseName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
+}
+
+function getWorkspaceParentPath(path: string): string | null {
+  const segments = path.split("/").filter(Boolean);
+  segments.pop();
+  return segments.length > 0 ? segments.join("/") : null;
+}
+
+function createMovedDocumentName(
+  currentName: string,
+  destinationFolderPath: string | null,
+  documents: TypstDocumentFile[],
+  documentId: string
+): string {
+  const baseName = getWorkspaceBaseName(currentName);
+  const targetPath = joinWorkspacePath(destinationFolderPath, baseName);
+  const existingNames = new Set(
+    documents.filter((document) => document.id !== documentId).map((document) => document.name)
+  );
+
+  if (!existingNames.has(targetPath)) {
+    return targetPath;
+  }
+
+  const extensionMatch = /\.([^.]+)$/i.exec(baseName);
+  const extension = extensionMatch ? `.${extensionMatch[1]}` : "";
+  const stem = extension ? baseName.slice(0, -extension.length) : baseName;
+  let suffix = 2;
+  let nextPath = joinWorkspacePath(destinationFolderPath, `${stem}-${suffix}${extension}`);
+
+  while (existingNames.has(nextPath)) {
+    suffix += 1;
+    nextPath = joinWorkspacePath(destinationFolderPath, `${stem}-${suffix}${extension}`);
+  }
+
+  return nextPath;
+}
+
+function createMovedFigureName(
+  currentName: string,
+  destinationFolderPath: string | null,
+  diagramId: string,
+  figures: DiagramAsset[]
+): string {
+  const baseName = getWorkspaceBaseName(currentName);
+  const requestedName = joinWorkspacePath(destinationFolderPath, baseName);
+  const existingFigures = figures.filter((figure) => figure.id !== diagramId);
+  return createUniqueDiagramName(requestedName, existingFigures);
+}
+
+function createMovedGraphName(
+  currentName: string,
+  destinationFolderPath: string | null,
+  graphs: GraphAsset[],
+  graphId: string,
+  contentType: "png" | "svg"
+): string {
+  const baseName = getWorkspaceBaseName(currentName);
+  const requestedName = joinWorkspacePath(destinationFolderPath, baseName);
+  const existingGraphs = graphs.filter((graph) => graph.id !== graphId);
+  return createUniqueGraphName(requestedName, existingGraphs, null, contentType);
 }
 
 function createUniqueDiagramName(

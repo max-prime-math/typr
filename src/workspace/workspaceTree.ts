@@ -228,6 +228,15 @@ export function canDeleteWorkspaceNode(node: WorkspaceTreeNode): boolean {
   );
 }
 
+export function canMoveWorkspaceNode(node: WorkspaceTreeNode): boolean {
+  return (
+    node.source.kind === "document" ||
+    (node.source.kind === "folder" && !node.source.id.startsWith("virtual:")) ||
+    node.source.kind === "diagram" ||
+    node.source.kind === "graph"
+  );
+}
+
 export function isTextWorkspaceFile(path: string): boolean {
   const extension = getWorkspacePathExtension(path);
   return extension !== null && TEXT_FILE_EXTENSIONS.has(extension);
