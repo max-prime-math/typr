@@ -1176,6 +1176,37 @@ button {
   overflow: hidden;
 }
 
+.source-empty-state {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.source-empty-state__title {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.source-empty-state__path {
+  max-width: min(32rem, 100%);
+  font-family:
+    "Iosevka Term",
+    "JetBrains Mono",
+    "SFMono-Regular",
+    monospace;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 .source-inline-status {
   border-top: 1px solid var(--border);
   padding: 0.68rem 0.85rem 0.78rem;
@@ -1316,6 +1347,20 @@ button {
   color: var(--accent-strong);
 }
 
+.file-tree__branch-header--static {
+  color: var(--text-muted);
+}
+
+.file-tree__toggle-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.9rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .file-tree__branch-label {
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -1353,6 +1398,10 @@ button {
   -webkit-mask-image: url("/icons/sidebar/folder.svg");
 }
 
+.file-tree__folder-icon--empty {
+  opacity: 0.5;
+}
+
 .file-tree__items {
   margin-left: 0.45rem;
   padding-left: 0.85rem;
@@ -1380,6 +1429,8 @@ button {
 
 .file-tree__entry-row {
   width: 100%;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .file-tree__entry-row .file-row__name {
@@ -1394,6 +1445,39 @@ button {
 .file-tree__rename-target {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.file-tree__empty {
+  padding: 0.25rem 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.file-tree__file-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-strong) 78%, var(--editor-background));
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.file-tree__file-badge--typ {
+  color: var(--accent-strong);
+}
+
+.file-tree__file-badge--img {
+  color: color-mix(in srgb, var(--accent) 72%, var(--text));
+}
+
+.file-tree__file-badge--pdf {
+  color: var(--danger);
 }
 
 .preview-status-icon-wrap {

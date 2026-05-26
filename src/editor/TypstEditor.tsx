@@ -36,6 +36,7 @@ import {
 interface TypstEditorProps {
   value: string;
   vimMode: boolean;
+  relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   theme: ThemeDefinition;
@@ -99,6 +100,7 @@ export interface TypstEditorHandle {
 export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor({
   value,
   vimMode,
+  relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
   theme,
@@ -390,6 +392,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
           latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
         },
         vimMode,
+        relativeLineNumbers,
         cursorSmooth,
         cursorSmear,
         theme,
@@ -433,7 +436,15 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
       view.destroy();
       viewRef.current = null;
     };
-  }, [cursorSmear, cursorSmooth, onCompileRequested, theme, vimMode, snippetCompletionSource]);
+  }, [
+    cursorSmear,
+    cursorSmooth,
+    onCompileRequested,
+    relativeLineNumbers,
+    theme,
+    vimMode,
+    snippetCompletionSource
+  ]);
 
   useEffect(() => {
     const view = viewRef.current;

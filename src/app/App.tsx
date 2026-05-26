@@ -26,9 +26,6 @@ import {
   getActiveDocument,
   normalizeSnapshot,
   renameActiveDocument,
-  renameDiagramById,
-  renameDocumentById,
-  renameGraphById,
   renameProject,
   setActiveDocument,
   saveCurrentDiagram,
@@ -45,6 +42,7 @@ import {
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
   updateLiveCompilationPreference,
+  updateRelativeLineNumbersPreference,
   updateThemePreference,
   updateVimPreference,
   type AppSnapshot,
@@ -135,6 +133,20 @@ import {
   type TypstSnippet
 } from "../snippets/snippets";
 import { PreviewZoomControls } from "../preview/PreviewPane";
+import {
+  loadWorkspaceTreeFromOpfs,
+  syncSnapshotToOpfs,
+  isOpfsAvailable
+} from "../workspace/opfsWorkspace";
+import { WorkspaceTree } from "../workspace/WorkspaceTree";
+import {
+  buildProjectWorkspaceEntries,
+  buildWorkspaceTree,
+  canEditWorkspaceFile,
+  findWorkspaceNodeByPath,
+  normalizeWorkspacePath,
+  type WorkspaceTreeNode
+} from "../workspace/workspaceTree";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
@@ -481,11 +493,10 @@ export function App() {
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [isPaperView, setIsPaperView] = useState(false);
   const [diagramInkColor, setDiagramInkColor] = useState("#000000");
-  const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({
-    documents: false,
-    figures: false,
-    graphs: false
-  });
+  const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({});
+  const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
+  const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
+  const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
   );
@@ -606,6 +617,14 @@ export function App() {
       )
     );
   }, []);
+  const handleRelativeLineNumbersToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateRelativeLineNumbersPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.relativeLineNumbers
+      )
+    );
+  }, []);
   const togglePreviewDebug = useCallback(() => {
     setIsPreviewDebugVisible((current) => !current);
   }, []);
@@ -634,6 +653,22 @@ export function App() {
   } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
+  const normalizedSelectedWorkspacePath = selectedWorkspacePath
+    ? normalizeWorkspacePath(selectedWorkspacePath)
+    : null;
+  const selectedWorkspaceNode = useMemo(
+    () =>
+      normalizedSelectedWorkspacePath
+        ? findWorkspaceNodeByPath(workspaceTree, normalizedSelectedWorkspacePath)
+        : null,
+    [normalizedSelectedWorkspacePath, workspaceTree]
+  );
+  const isSourceFileEditable =
+    normalizedSelectedWorkspacePath === null || canEditWorkspaceFile(normalizedSelectedWorkspacePath);
+  const isSourceFileUnsupported =
+    normalizedSelectedWorkspacePath !== null &&
+    selectedWorkspaceNode?.kind === "file" &&
+    !isSourceFileEditable;
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
@@ -650,11 +685,6 @@ export function App() {
     () => snapshot.project.graphs ?? [],
     [snapshot.project.graphs]
   );
-  const customFolders = useMemo(
-    () => snapshot.project.folders ?? [],
-    [snapshot.project.folders]
-  );
-
   useEffect(() => {
     const normalizedName = normalizeGraphFileNameForContentType(graph.name, graph.contentType);
 
@@ -695,6 +725,64 @@ export function App() {
   useEffect(() => {
     compileResultRef.current = compileResult;
   }, [compileResult]);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      const loadWorkspace = async () => {
+        try {
+          if (isOpfsAvailable()) {
+            await syncSnapshotToOpfs(snapshot);
+            const nextTree = await loadWorkspaceTreeFromOpfs();
+
+            if (!cancelled) {
+              setWorkspaceTree(nextTree);
+              setWorkspaceLoadError(null);
+            }
+
+            return;
+          }
+
+          const fallbackTree = buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot));
+
+          if (!cancelled) {
+            setWorkspaceTree(fallbackTree);
+            setWorkspaceLoadError(null);
+          }
+        } catch (error) {
+          const fallbackTree = buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot));
+
+          if (!cancelled) {
+            setWorkspaceTree(fallbackTree);
+            setWorkspaceLoadError(
+              error instanceof Error ? error.message : "Unable to load workspace explorer."
+            );
+          }
+        }
+      };
+
+      void loadWorkspace();
+    }, 280);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [isHydrated, snapshot]);
+
+  useEffect(() => {
+    setSelectedWorkspacePath((currentPath) => {
+      if (currentPath && findWorkspaceNodeByPath(workspaceTree, currentPath)) {
+        return currentPath;
+      }
+
+      return normalizeWorkspacePath(activeDocument.name);
+    });
+  }, [activeDocument.name, workspaceTree]);
 
   useEffect(() => {
     diagramAssetsRef.current = diagramShadowAssets;
@@ -1378,8 +1466,30 @@ export function App() {
   }, []);
 
   const handleSelectDocument = (documentId: string) => {
+    const nextDocument = snapshot.project.documents.find((document) => document.id === documentId);
+
+    if (nextDocument) {
+      setSelectedWorkspacePath(normalizeWorkspacePath(nextDocument.name));
+    }
+
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
   };
+
+  const handleOpenWorkspaceFile = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+      setSelectedWorkspacePath(normalizedPath);
+
+      const matchingDocument = snapshot.project.documents.find(
+        (document) => normalizeWorkspacePath(document.name) === normalizedPath
+      );
+
+      if (matchingDocument) {
+        handleSelectDocument(matchingDocument.id);
+      }
+    },
+    [snapshot.project.documents]
+  );
 
   const handleNewDocument = () => {
     setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
@@ -1696,36 +1806,6 @@ export function App() {
     }));
   }, []);
 
-  const handleRenameDocumentFromTree = useCallback((documentId: string, currentName: string) => {
-    const nextName = window.prompt("File name", currentName);
-
-    if (nextName === null) {
-      return;
-    }
-
-    setSnapshot((currentSnapshot) => renameDocumentById(currentSnapshot, documentId, nextName));
-  }, []);
-
-  const handleRenameFigureFromTree = useCallback((figureId: string, currentName: string) => {
-    const nextName = window.prompt("Figure name", currentName);
-
-    if (nextName === null) {
-      return;
-    }
-
-    setSnapshot((currentSnapshot) => renameDiagramById(currentSnapshot, figureId, nextName));
-  }, []);
-
-  const handleRenameGraphFromTree = useCallback((graphId: string, currentName: string) => {
-    const nextName = window.prompt("Graph name", currentName);
-
-    if (nextName === null) {
-      return;
-    }
-
-    setSnapshot((currentSnapshot) => renameGraphById(currentSnapshot, graphId, nextName));
-  }, []);
-
   const handleNewDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) => createNextDiagramSnapshot(currentSnapshot));
   }, []);
@@ -1745,59 +1825,6 @@ export function App() {
         currentSnapshot.preferences.graphProvider
       )
     );
-  }, []);
-
-  const handleOpenDiagramFigure = useCallback((figureId: string) => {
-    setSnapshot((currentSnapshot) => {
-      const figure = currentSnapshot.project.figures?.find((entry) => entry.id === figureId);
-
-      if (!figure) {
-        return currentSnapshot;
-      }
-
-      const savedSnapshot = saveCurrentDiagram(currentSnapshot);
-
-      return {
-        ...savedSnapshot,
-        project: {
-          ...savedSnapshot.project,
-          diagram: {
-            ...figure,
-            strokes: figure.strokes.map((stroke) => ({
-              ...stroke,
-              points: stroke.points.map((point) => ({ ...point }))
-            }))
-          },
-          updatedAt: new Date().toISOString()
-        }
-      };
-    });
-    setActiveSidebarTool("diagram");
-  }, []);
-
-  const handleOpenGraphFigure = useCallback((figureId: string) => {
-    setSnapshot((currentSnapshot) => {
-      const figure = currentSnapshot.project.graphs?.find((entry) => entry.id === figureId);
-
-      if (!figure) {
-        return currentSnapshot;
-      }
-
-      const savedSnapshot = saveCurrentGraph(currentSnapshot);
-
-      return {
-        ...savedSnapshot,
-        project: {
-          ...savedSnapshot.project,
-          graph: {
-            ...figure,
-            content: new Uint8Array(figure.content)
-          },
-          updatedAt: new Date().toISOString()
-        }
-      };
-    });
-    setActiveSidebarTool("graph");
   }, []);
 
   const handleRenameGraph = useCallback((nextName: string) => {
@@ -2994,182 +3021,17 @@ export function App() {
 
               {activeSidebarTool === "files" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
-                  <div className="file-tree" role="tree" aria-label="Files">
-
-                    <div className="file-tree__branch">
-                      <button
-                        className="file-tree__branch-header file-tree__branch-header--button"
-                        onClick={() => handleToggleFolder("documents")}
-                        type="button"
-                        aria-expanded={!collapsedFileFolders.documents}
-                        aria-label={`${collapsedFileFolders.documents ? "Expand" : "Collapse"} Documents`}
-                      >
-                        <span aria-hidden="true" className="file-tree__chevron-text">
-                          {collapsedFileFolders.documents ? "▸" : "▾"}
-                        </span>
-                        <span className="file-tree__folder-icon" aria-hidden="true" />
-                        <span className="file-tree__branch-label">Documents</span>
-                        <span className="file-row__meta">{snapshot.project.documents.length}</span>
-                      </button>
-                      {!collapsedFileFolders.documents ? (
-                        <div className="file-list file-tree__items" role="group">
-                          {snapshot.project.documents.map((document) => (
-                            <button
-                              key={document.id}
-                              className={`file-row file-tree__entry-row ${
-                                document.id === activeDocument.id ? "file-row--active" : ""
-                              }`}
-                              onClick={(event) => {
-                                if (
-                                  (event.target as HTMLElement).closest(".file-tree__rename-target")
-                                ) {
-                                  return;
-                                }
-                                handleSelectDocument(document.id);
-                              }}
-                              role="treeitem"
-                              type="button"
-                            >
-                              <span
-                                className="file-row__name file-tree__rename-target"
-                                onDoubleClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  handleRenameDocumentFromTree(document.id, document.name);
-                                }}
-                              >
-                                {document.name}
-                              </span>
-                              <span className="file-row__meta">
-                                {document.id === activeDocument.id ? "Open" : "Switch"}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="file-tree__branch">
-                      <button
-                        className="file-tree__branch-header file-tree__branch-header--button"
-                        onClick={() => handleToggleFolder("figures")}
-                        type="button"
-                        aria-expanded={!collapsedFileFolders.figures}
-                        aria-label={`${collapsedFileFolders.figures ? "Expand" : "Collapse"} figures`}
-                      >
-                        <span aria-hidden="true" className="file-tree__chevron-text">
-                          {collapsedFileFolders.figures ? "▸" : "▾"}
-                        </span>
-                        <span className="file-tree__folder-icon" aria-hidden="true" />
-                        <span className="file-tree__branch-label">figures</span>
-                        <span className="file-row__meta">{savedFigures.length}</span>
-                      </button>
-                      {!collapsedFileFolders.figures ? (
-                        <div className="file-list file-tree__items" role="group">
-                          {savedFigures.length > 0 ? (
-                            savedFigures.map((figure) => (
-                              <button
-                                key={figure.id}
-                                className="file-row file-tree__entry-row"
-                                onClick={(event) => {
-                                  if (
-                                    (event.target as HTMLElement).closest(".file-tree__rename-target")
-                                  ) {
-                                    return;
-                                  }
-                                  handleOpenDiagramFigure(figure.id);
-                                }}
-                                role="treeitem"
-                                type="button"
-                              >
-                                <span
-                                  className="file-row__name file-tree__rename-target"
-                                  onDoubleClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    handleRenameFigureFromTree(figure.id, figure.name);
-                                  }}
-                                >
-                                  {figure.name}
-                                </span>
-                                <span className="file-row__meta">Open</span>
-                              </button>
-                            ))
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="file-tree__branch">
-                      <button
-                        className="file-tree__branch-header file-tree__branch-header--button"
-                        onClick={() => handleToggleFolder("graphs")}
-                        type="button"
-                        aria-expanded={!collapsedFileFolders.graphs}
-                        aria-label={`${collapsedFileFolders.graphs ? "Expand" : "Collapse"} graphs`}
-                      >
-                        <span aria-hidden="true" className="file-tree__chevron-text">
-                          {collapsedFileFolders.graphs ? "▸" : "▾"}
-                        </span>
-                        <span className="file-tree__folder-icon" aria-hidden="true" />
-                        <span className="file-tree__branch-label">graphs</span>
-                        <span className="file-row__meta">{savedGraphs.length}</span>
-                      </button>
-                      {!collapsedFileFolders.graphs ? (
-                        <div className="file-list file-tree__items" role="group">
-                          {savedGraphs.length > 0 ? (
-                            savedGraphs.map((graphFigure) => (
-                              <button
-                                key={graphFigure.id}
-                                className="file-row file-tree__entry-row"
-                                onClick={(event) => {
-                                  if (
-                                    (event.target as HTMLElement).closest(".file-tree__rename-target")
-                                  ) {
-                                    return;
-                                  }
-                                  handleOpenGraphFigure(graphFigure.id);
-                                }}
-                                role="treeitem"
-                                type="button"
-                              >
-                                <span
-                                  className="file-row__name file-tree__rename-target"
-                                  onDoubleClick={(event) => {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    handleRenameGraphFromTree(graphFigure.id, graphFigure.name);
-                                  }}
-                                >
-                                  {graphFigure.name}
-                                </span>
-                                <span className="file-row__meta">Open</span>
-                              </button>
-                            ))
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    {customFolders.map((folder) => (
-                      <div className="file-tree__branch" key={folder.id}>
-                        <button
-                          className="file-tree__branch-header file-tree__branch-header--button"
-                          onClick={() => handleToggleFolder(folder.id)}
-                          type="button"
-                          aria-expanded={!collapsedFileFolders[folder.id]}
-                          aria-label={`${collapsedFileFolders[folder.id] ? "Expand" : "Collapse"} ${folder.name}`}
-                        >
-                          <span aria-hidden="true" className="file-tree__chevron-text">
-                            {collapsedFileFolders[folder.id] ? "▸" : "▾"}
-                          </span>
-                          <span className="file-tree__folder-icon" aria-hidden="true" />
-                          <span className="file-tree__branch-label">{folder.name}</span>
-                          <span className="file-row__meta">0</span>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+                  <WorkspaceTree
+                    collapsedPaths={collapsedFileFolders}
+                    nodes={workspaceTree}
+                    rootLabel={snapshot.project.name}
+                    selectedPath={normalizedSelectedWorkspacePath}
+                    onOpenFile={handleOpenWorkspaceFile}
+                    onToggleFolder={handleToggleFolder}
+                  />
+                  {workspaceLoadError ? (
+                    <p className="sidebar-card__copy">{workspaceLoadError}</p>
+                  ) : null}
                 </section>
               ) : null}
 
@@ -3515,7 +3377,7 @@ export function App() {
               <h2>Source</h2>
             </div>
             <div className="pane__header-actions">
-              {snapshot.preferences.liveCompilation ? null : (
+              {snapshot.preferences.liveCompilation || !isSourceFileEditable ? null : (
                 <button
                   className="pane__button"
                   onClick={handleCompile}
@@ -3525,13 +3387,14 @@ export function App() {
                   Compile
                 </button>
               )}
-              <button
-                className="pane__button pane__button--quiet"
-                onClick={() => setIsSourceToolbarVisible((current) => !current)}
-                type="button"
-                aria-pressed={isSourceToolbarVisible}
-                aria-label={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
-              >
+                <button
+                  className="pane__button pane__button--quiet"
+                  onClick={() => setIsSourceToolbarVisible((current) => !current)}
+                  type="button"
+                  disabled={!isSourceFileEditable}
+                  aria-pressed={isSourceToolbarVisible}
+                  aria-label={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
+                >
                 <span
                   aria-hidden="true"
                   className={`toolbar-icon toolbar-icon--toggle ${
@@ -3541,7 +3404,7 @@ export function App() {
               </button>
             </div>
           </div>
-          {isSourceToolbarVisible ? (
+          {isSourceToolbarVisible && isSourceFileEditable ? (
             <div className="pane__toolbar pane__toolbar--source" aria-label="Source toolbar">
               <div className="pane__toolbar-section">
                 <div className="pane__toolbar-group">
@@ -3927,21 +3790,31 @@ export function App() {
               </div>
             </div>
           ) : null}
-          <TypstEditor
-            ref={editorRef}
-            diagnostics={editorDiagnostics}
-            highlightErrors={isErrorSettled}
-            snippets={allSnippets}
-            onCompileRequested={handleCompile}
-            onSearchRequested={openSearchPane}
-            value={activeDocument.content}
-            vimMode={snapshot.preferences.vimMode}
-            cursorSmooth={snapshot.preferences.cursorSmooth}
-            cursorSmear={snapshot.preferences.cursorSmear}
-            theme={theme}
-            onChange={handleDocumentChange}
-          />
-          {compileResult && !compileResult.ok ? (
+          {isSourceFileEditable ? (
+            <TypstEditor
+              ref={editorRef}
+              diagnostics={editorDiagnostics}
+              highlightErrors={isErrorSettled}
+              snippets={allSnippets}
+              onCompileRequested={handleCompile}
+              onSearchRequested={openSearchPane}
+              value={activeDocument.content}
+              vimMode={snapshot.preferences.vimMode}
+              relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
+              cursorSmooth={snapshot.preferences.cursorSmooth}
+              cursorSmear={snapshot.preferences.cursorSmear}
+              theme={theme}
+              onChange={handleDocumentChange}
+            />
+          ) : (
+            <div className="source-empty-state">
+              <div className="source-empty-state__title">cannot open this filetype</div>
+              {normalizedSelectedWorkspacePath ? (
+                <div className="source-empty-state__path">{normalizedSelectedWorkspacePath}</div>
+              ) : null}
+            </div>
+          )}
+          {isSourceFileEditable && compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}
             </div>
@@ -4362,6 +4235,20 @@ export function App() {
                         <input
                           checked={snapshot.preferences.liveCompilation}
                           onChange={handleLiveCompilationToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Relative line numbers</strong>
+                          <small>
+                            Show line numbers relative to the cursor line.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.relativeLineNumbers}
+                          onChange={handleRelativeLineNumbersToggle}
                           type="checkbox"
                         />
                       </label>

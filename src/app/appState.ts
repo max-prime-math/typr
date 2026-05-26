@@ -149,6 +149,7 @@ export interface TypstProject {
 export interface AppPreferences {
   theme: ThemePreference;
   vimMode: boolean;
+  relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
@@ -271,6 +272,7 @@ export function createDefaultSnapshot(): AppSnapshot {
     preferences: {
       theme: AUTO_THEME_ID,
       vimMode: false,
+      relativeLineNumbers: false,
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
@@ -315,6 +317,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     preferences: {
       theme: snapshot.preferences.theme ?? AUTO_THEME_ID,
       vimMode: snapshot.preferences.vimMode ?? false,
+      relativeLineNumbers: snapshot.preferences.relativeLineNumbers ?? false,
       cursorSmooth: snapshot.preferences.cursorSmooth ?? true,
       cursorSmear:
         typeof storedCursorSmear === "number"
@@ -1167,6 +1170,19 @@ export function updateVimPreference(
     preferences: {
       ...snapshot.preferences,
       vimMode
+    }
+  };
+}
+
+export function updateRelativeLineNumbersPreference(
+  snapshot: AppSnapshot,
+  relativeLineNumbers: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      relativeLineNumbers
     }
   };
 }

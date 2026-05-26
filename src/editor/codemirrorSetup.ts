@@ -8,7 +8,7 @@ import {
   type CompletionSource
 } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentMore } from "@codemirror/commands";
-import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { search as searchExtension, searchKeymap } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
@@ -25,6 +25,7 @@ import type { ThemeDefinition } from "../theme/themes";
 interface EditorSetupOptions {
   onChange: (update: ViewUpdate) => void;
   vimMode: boolean;
+  relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   theme: ThemeDefinition;
@@ -146,6 +147,7 @@ export function createEditorState(
 export function createEditorExtensions({
   onChange,
   vimMode,
+  relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
   theme,
@@ -155,6 +157,18 @@ export function createEditorExtensions({
   onSearchRequested,
   onCompileRequested
 }: EditorSetupOptions): Extension[] {
+  const lineNumberExtension = lineNumbers({
+    formatNumber: (lineNumber, state) => {
+      if (!relativeLineNumbers) {
+        return String(lineNumber);
+      }
+
+      const activeLine = state.doc.lineAt(state.selection.main.head).number;
+      const delta = Math.abs(lineNumber - activeLine);
+      return delta === 0 ? String(lineNumber) : String(delta);
+    }
+  });
+
   const keymaps = [
     { key: "Mod-f", run: () => {
       onSearchRequested();
@@ -188,14 +202,13 @@ export function createEditorExtensions({
   };
 
   return [
-    lineNumbers(),
+    lineNumberExtension,
     diagnosticsCompartment.of(
       createEditorDiagnosticExtensions(diagnostics, highlightErrors)
     ),
     highlightActiveLineGutter(),
     drawSelection(),
     history(),
-    foldGutter(),
     indentOnInput(),
     bracketMatching(),
     searchExtension(),

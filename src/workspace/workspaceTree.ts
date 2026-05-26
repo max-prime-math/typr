@@ -1,0 +1,254 @@
+import type { AppSnapshot, DiagramAsset, GraphAsset } from "../app/appState";
+import { getDiagramFilePath } from "../diagram/diagramFiles";
+import { serializeDiagramSvg } from "../diagram/DiagramEditor";
+import { getGraphFilePath } from "../graph/graphFiles";
+
+export type WorkspaceNodeKind = "file" | "folder";
+export type WorkspaceFileBadge =
+  | "typ"
+  | "tex"
+  | "img"
+  | "pdf"
+  | "txt"
+  | "bin"
+  | "dir"
+  | "empty";
+
+export interface WorkspaceFlatEntry {
+  path: string;
+  kind: WorkspaceNodeKind;
+  content?: string | Uint8Array;
+}
+
+export interface WorkspaceTreeNode {
+  path: string;
+  name: string;
+  kind: WorkspaceNodeKind;
+  children: WorkspaceTreeNode[];
+}
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  "typ",
+  "tex",
+  "txt",
+  "md",
+  "json",
+  "yaml",
+  "yml",
+  "csv"
+]);
+const IMAGE_FILE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"]);
+
+export function normalizeWorkspacePath(path: string): string {
+  return path
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFlatEntry[] {
+  const entries = new Map<string, WorkspaceFlatEntry>();
+  const addEntry = (entry: WorkspaceFlatEntry) => {
+    const normalizedPath = normalizeWorkspacePath(entry.path);
+
+    if (!normalizedPath) {
+      return;
+    }
+
+    entries.set(normalizedPath, {
+      ...entry,
+      path: normalizedPath
+    });
+  };
+
+  for (const document of snapshot.project.documents) {
+    addEntry({
+      path: document.name,
+      kind: "file",
+      content: document.content
+    });
+  }
+
+  for (const folder of snapshot.project.folders ?? []) {
+    addEntry({
+      path: folder.name,
+      kind: "folder"
+    });
+  }
+
+  const savedFigures = snapshot.project.figures ?? [];
+  const savedGraphs = snapshot.project.graphs ?? [];
+
+  if (savedFigures.length > 0 || savedGraphs.length > 0) {
+    addEntry({
+      path: "figures",
+      kind: "folder"
+    });
+  }
+
+  for (const figure of savedFigures) {
+    addEntry(createDiagramWorkspaceEntry(figure));
+  }
+
+  for (const graph of savedGraphs) {
+    addEntry(createGraphWorkspaceEntry(graph));
+  }
+
+  return [...entries.values()];
+}
+
+export function buildWorkspaceTree(entries: WorkspaceFlatEntry[]): WorkspaceTreeNode[] {
+  const root = new Map<string, MutableWorkspaceNode>();
+
+  for (const entry of entries) {
+    const normalizedPath = normalizeWorkspacePath(entry.path);
+
+    if (!normalizedPath) {
+      continue;
+    }
+
+    const segments = normalizedPath.split("/");
+    let currentLevel = root;
+    let currentPath = "";
+
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      const isLeaf = index === segments.length - 1;
+      const existing = currentLevel.get(segment);
+      const nextKind: WorkspaceNodeKind = isLeaf ? entry.kind : "folder";
+      const node =
+        existing ??
+        ({
+          path: currentPath,
+          name: segment,
+          kind: nextKind,
+          children: new Map<string, MutableWorkspaceNode>()
+        } satisfies MutableWorkspaceNode);
+
+      node.kind = nextKind === "folder" ? "folder" : node.kind;
+      currentLevel.set(segment, node);
+      currentLevel = node.children;
+    }
+  }
+
+  return sortWorkspaceNodes(convertWorkspaceNodes(root));
+}
+
+export function findWorkspaceNodeByPath(
+  nodes: WorkspaceTreeNode[],
+  path: string
+): WorkspaceTreeNode | null {
+  const normalizedPath = normalizeWorkspacePath(path);
+
+  for (const node of nodes) {
+    if (node.path === normalizedPath) {
+      return node;
+    }
+
+    const nested = findWorkspaceNodeByPath(node.children, normalizedPath);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+export function canEditWorkspaceFile(path: string): boolean {
+  return getWorkspacePathExtension(path) === "typ";
+}
+
+export function isTextWorkspaceFile(path: string): boolean {
+  const extension = getWorkspacePathExtension(path);
+  return extension !== null && TEXT_FILE_EXTENSIONS.has(extension);
+}
+
+export function getWorkspaceNodeBadge(node: WorkspaceTreeNode): WorkspaceFileBadge {
+  if (node.kind === "folder") {
+    return node.children.length === 0 ? "empty" : "dir";
+  }
+
+  const extension = getWorkspacePathExtension(node.path);
+
+  if (extension === "typ") {
+    return "typ";
+  }
+
+  if (extension === "tex") {
+    return "tex";
+  }
+
+  if (extension === "pdf") {
+    return "pdf";
+  }
+
+  if (extension !== null && IMAGE_FILE_EXTENSIONS.has(extension)) {
+    return "img";
+  }
+
+  if (extension !== null && TEXT_FILE_EXTENSIONS.has(extension)) {
+    return "txt";
+  }
+
+  return "bin";
+}
+
+export function getWorkspacePathExtension(path: string): string | null {
+  const fileName = normalizeWorkspacePath(path).split("/").at(-1) ?? "";
+  const extension = fileName.includes(".") ? fileName.split(".").at(-1) : null;
+  return extension?.toLowerCase() ?? null;
+}
+
+interface MutableWorkspaceNode {
+  path: string;
+  name: string;
+  kind: WorkspaceNodeKind;
+  children: Map<string, MutableWorkspaceNode>;
+}
+
+function createDiagramWorkspaceEntry(figure: DiagramAsset): WorkspaceFlatEntry {
+  return {
+    path: getDiagramFilePath(figure.name),
+    kind: "file",
+    content: serializeDiagramSvg(figure)
+  };
+}
+
+function createGraphWorkspaceEntry(graph: GraphAsset): WorkspaceFlatEntry {
+  return {
+    path: getGraphFilePath(graph.name),
+    kind: "file",
+    content: new Uint8Array(graph.content)
+  };
+}
+
+function convertWorkspaceNodes(
+  entries: Map<string, MutableWorkspaceNode>
+): WorkspaceTreeNode[] {
+  return [...entries.values()].map((entry) => ({
+    path: entry.path,
+    name: entry.name,
+    kind: entry.kind,
+    children: convertWorkspaceNodes(entry.children)
+  }));
+}
+
+function sortWorkspaceNodes(nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] {
+  return nodes
+    .map((node) => ({
+      ...node,
+      children: sortWorkspaceNodes(node.children)
+    }))
+    .sort((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === "folder" ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name, undefined, {
+        numeric: true,
+        sensitivity: "base"
+      });
+    });
+}
