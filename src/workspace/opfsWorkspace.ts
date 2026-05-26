@@ -117,7 +117,11 @@ async function collectWorkspaceEntries(
     if (handle.kind === "directory") {
       entries.push({
         path: nextPath,
-        kind: "folder"
+        kind: "folder",
+        source: {
+          kind: "folder",
+          id: `virtual:${nextPath}`
+        }
       });
       entries.push(...(await collectWorkspaceEntries(handle as FileSystemDirectoryHandle, nextPath)));
       continue;
@@ -125,7 +129,11 @@ async function collectWorkspaceEntries(
 
     entries.push({
       path: nextPath,
-      kind: "file"
+      kind: "file",
+      source: {
+        kind: "document",
+        id: `virtual:${nextPath}`
+      }
     });
   }
 

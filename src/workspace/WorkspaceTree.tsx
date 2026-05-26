@@ -1,4 +1,6 @@
 import {
+  canDeleteWorkspaceNode,
+  canRenameWorkspaceNode,
   getWorkspaceNodeBadge,
   type WorkspaceFileBadge,
   type WorkspaceTreeNode
@@ -11,8 +13,15 @@ interface WorkspaceTreeProps {
   nodes: WorkspaceTreeNode[];
   rootLabel: string;
   selectedPath: string | null;
+  renamingPath: string | null;
+  renameDraft: string;
   onOpenFile: (path: string) => void;
   onToggleFolder: (path: string) => void;
+  onRenameDraftChange: (value: string) => void;
+  onRenameCancel: () => void;
+  onRenameCommit: () => void;
+  onRequestRename: (node: WorkspaceTreeNode) => void;
+  onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
 }
 
 export function WorkspaceTree({
@@ -20,8 +29,15 @@ export function WorkspaceTree({
   nodes,
   rootLabel,
   selectedPath,
+  renamingPath,
+  renameDraft,
   onOpenFile,
-  onToggleFolder
+  onToggleFolder,
+  onRenameDraftChange,
+  onRenameCancel,
+  onRenameCommit,
+  onRequestRename,
+  onRequestContextMenu
 }: WorkspaceTreeProps) {
   const isRootCollapsed = collapsedPaths[WORKSPACE_ROOT_PATH] ?? false;
 
@@ -49,9 +65,16 @@ export function WorkspaceTree({
                   key={node.path}
                   collapsedPaths={collapsedPaths}
                   node={node}
+                  renamingPath={renamingPath}
+                  renameDraft={renameDraft}
                   selectedPath={selectedPath}
                   onOpenFile={onOpenFile}
                   onToggleFolder={onToggleFolder}
+                  onRenameDraftChange={onRenameDraftChange}
+                  onRenameCancel={onRenameCancel}
+                  onRenameCommit={onRenameCommit}
+                  onRequestRename={onRequestRename}
+                  onRequestContextMenu={onRequestContextMenu}
                 />
               ))
             ) : (
@@ -67,26 +90,54 @@ export function WorkspaceTree({
 interface WorkspaceTreeBranchProps {
   collapsedPaths: Record<string, boolean>;
   node: WorkspaceTreeNode;
+  renamingPath: string | null;
+  renameDraft: string;
   selectedPath: string | null;
   onOpenFile: (path: string) => void;
   onToggleFolder: (path: string) => void;
+  onRenameDraftChange: (value: string) => void;
+  onRenameCancel: () => void;
+  onRenameCommit: () => void;
+  onRequestRename: (node: WorkspaceTreeNode) => void;
+  onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
 }
 
 function WorkspaceTreeBranch({
   collapsedPaths,
   node,
+  renamingPath,
+  renameDraft,
   selectedPath,
   onOpenFile,
-  onToggleFolder
+  onToggleFolder,
+  onRenameDraftChange,
+  onRenameCancel,
+  onRenameCommit,
+  onRequestRename,
+  onRequestContextMenu
 }: WorkspaceTreeBranchProps) {
+  const isRenaming = renamingPath === node.path;
+
   if (node.kind === "folder") {
     const isCollapsed = collapsedPaths[node.path] ?? false;
     const isEmpty = node.children.length === 0;
+    const canRename = canRenameWorkspaceNode(node);
 
     return (
       <div className="file-tree__branch">
         <div
           className={`file-tree__branch-header ${isEmpty ? "file-tree__branch-header--static" : ""}`}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            if (canRename || canDeleteWorkspaceNode(node) || node.source.kind === "trash-root") {
+              onRequestContextMenu(node, event.clientX, event.clientY);
+            }
+          }}
+          onDoubleClick={() => {
+            if (canRename) {
+              onRequestRename(node);
+            }
+          }}
           role="treeitem"
           aria-expanded={isEmpty ? undefined : !isCollapsed}
         >
@@ -110,7 +161,30 @@ function WorkspaceTreeBranch({
             className={`file-tree__folder-icon ${isEmpty ? "file-tree__folder-icon--empty" : ""}`}
             aria-hidden="true"
           />
-          <span className="file-tree__branch-label">{node.name}</span>
+          {isRenaming ? (
+            <input
+              autoFocus
+              className="file-tree__rename-input"
+              onBlur={onRenameCommit}
+              onChange={(event) => onRenameDraftChange(event.target.value)}
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  onRenameCommit();
+                }
+
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  onRenameCancel();
+                }
+              }}
+              type="text"
+              value={renameDraft}
+            />
+          ) : (
+            <span className="file-tree__branch-label">{node.name}</span>
+          )}
         </div>
         {!isEmpty && !isCollapsed ? (
           <div className="file-tree__items" role="group">
@@ -119,9 +193,16 @@ function WorkspaceTreeBranch({
                 key={child.path}
                 collapsedPaths={collapsedPaths}
                 node={child}
+                renamingPath={renamingPath}
+                renameDraft={renameDraft}
                 selectedPath={selectedPath}
                 onOpenFile={onOpenFile}
                 onToggleFolder={onToggleFolder}
+                onRenameDraftChange={onRenameDraftChange}
+                onRenameCancel={onRenameCancel}
+                onRenameCommit={onRenameCommit}
+                onRequestRename={onRequestRename}
+                onRequestContextMenu={onRequestContextMenu}
               />
             ))}
           </div>
@@ -132,10 +213,56 @@ function WorkspaceTreeBranch({
 
   const badge = getWorkspaceNodeBadge(node);
 
+  if (isRenaming) {
+    return (
+      <div
+        className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""}`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onRequestContextMenu(node, event.clientX, event.clientY);
+        }}
+        role="treeitem"
+      >
+        <span aria-hidden="true" className={`file-tree__file-badge file-tree__file-badge--${badge}`}>
+          {formatWorkspaceBadge(badge)}
+        </span>
+        <input
+          autoFocus
+          className="file-tree__rename-input"
+          onBlur={onRenameCommit}
+          onChange={(event) => onRenameDraftChange(event.target.value)}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onRenameCommit();
+            }
+
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onRenameCancel();
+            }
+          }}
+          type="text"
+          value={renameDraft}
+        />
+      </div>
+    );
+  }
+
   return (
     <button
       className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""}`}
       onClick={() => onOpenFile(node.path)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onRequestContextMenu(node, event.clientX, event.clientY);
+      }}
+      onDoubleClick={() => {
+        if (canRenameWorkspaceNode(node)) {
+          onRequestRename(node);
+        }
+      }}
       role="treeitem"
       type="button"
     >

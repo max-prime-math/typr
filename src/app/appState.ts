@@ -32,6 +32,20 @@ export interface FileFolder {
   updatedAt: string;
 }
 
+export interface TrashedDocumentEntry {
+  id: string;
+  kind: "document";
+  deletedAt: string;
+  document: TypstDocumentFile;
+}
+
+export interface TrashedFolderEntry {
+  id: string;
+  kind: "folder";
+  deletedAt: string;
+  folder: FileFolder;
+}
+
 export interface DiagramPoint {
   x: number;
   y: number;
@@ -108,6 +122,13 @@ export interface DiagramAsset {
   shapes: DiagramShape[];
 }
 
+export interface TrashedDiagramEntry {
+  id: string;
+  kind: "diagram";
+  deletedAt: string;
+  diagram: DiagramAsset;
+}
+
 export interface GraphAsset {
   id: string;
   name: string;
@@ -123,6 +144,19 @@ export interface GraphAsset {
   content: Uint8Array;
 }
 
+export interface TrashedGraphEntry {
+  id: string;
+  kind: "graph";
+  deletedAt: string;
+  graph: GraphAsset;
+}
+
+export type WorkspaceTrashEntry =
+  | TrashedDocumentEntry
+  | TrashedFolderEntry
+  | TrashedDiagramEntry
+  | TrashedGraphEntry;
+
 export interface GraphViewport {
   left: number;
   right: number;
@@ -137,6 +171,7 @@ export interface TypstProject {
   name: string;
   documents: TypstDocumentFile[];
   folders: FileFolder[];
+  trash: WorkspaceTrashEntry[];
   activeDocumentId: string;
   createdAt: string;
   updatedAt: string;
@@ -157,7 +192,7 @@ export interface AppPreferences {
 }
 
 export interface AppSnapshot {
-  version: 7;
+  version: 8;
   project: TypstProject;
   preferences: AppPreferences;
 }
@@ -255,12 +290,13 @@ export function createDefaultSnapshot(): AppSnapshot {
   };
 
   return {
-    version: 7,
+    version: 8,
     project: {
       id: createId("project"),
       name: "typr Project",
       documents: [document],
       folders: [],
+      trash: [],
       activeDocumentId: document.id,
       createdAt: now,
       updatedAt: now,
@@ -287,6 +323,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
   const diagram = snapshot.project.diagram ?? createDefaultDiagram();
   const figures = Array.isArray(snapshot.project.figures) ? snapshot.project.figures : [];
   const folders = Array.isArray(snapshot.project.folders) ? snapshot.project.folders : [];
+  const trash = Array.isArray(snapshot.project.trash) ? snapshot.project.trash : [];
   const graph = snapshot.project.graph ?? createDefaultGraph();
   const graphs = Array.isArray(snapshot.project.graphs) ? snapshot.project.graphs : [];
   const now = new Date().toISOString();
@@ -313,7 +350,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
 
   return {
     ...snapshot,
-    version: 7,
+    version: 8,
     preferences: {
       theme: snapshot.preferences.theme ?? AUTO_THEME_ID,
       vimMode: snapshot.preferences.vimMode ?? false,
@@ -334,6 +371,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       updatedAt: snapshot.project.updatedAt,
       diagram: currentDiagram,
       folders: folders.map(normalizeFolderAsset),
+      trash: trash.map(normalizeTrashEntry),
       figures: figures.map(normalizeDiagramAsset),
       graph: currentGraph,
       graphs: graphs.map(normalizeGraphAsset)
@@ -364,6 +402,49 @@ function normalizeFolderAsset(folder: FileFolder): FileFolder {
     id: folder.id ?? createId("folder"),
     name: typeof folder.name === "string" ? folder.name.trim() || "folder" : "folder",
     updatedAt: folder.updatedAt ?? new Date().toISOString()
+  };
+}
+
+function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
+  const deletedAt = entry.deletedAt ?? new Date().toISOString();
+
+  if (entry.kind === "document") {
+    return {
+      ...entry,
+      id: entry.id ?? createId("trash"),
+      deletedAt,
+      document: {
+        id: entry.document?.id ?? createId("doc"),
+        name: entry.document?.name?.trim() || DEFAULT_DOCUMENT_NAME,
+        content: entry.document?.content ?? "",
+        updatedAt: entry.document?.updatedAt ?? deletedAt
+      }
+    };
+  }
+
+  if (entry.kind === "folder") {
+    return {
+      ...entry,
+      id: entry.id ?? createId("trash"),
+      deletedAt,
+      folder: normalizeFolderAsset(entry.folder)
+    };
+  }
+
+  if (entry.kind === "diagram") {
+    return {
+      ...entry,
+      id: entry.id ?? createId("trash"),
+      deletedAt,
+      diagram: normalizeDiagramAsset(entry.diagram)
+    };
+  }
+
+  return {
+    ...entry,
+    id: entry.id ?? createId("trash"),
+    deletedAt,
+    graph: normalizeGraphAsset(entry.graph)
   };
 }
 
@@ -734,6 +815,78 @@ export function renameFolderById(
   };
 }
 
+export function moveDocumentToTrash(snapshot: AppSnapshot, documentId: string): AppSnapshot {
+  const targetDocument = snapshot.project.documents.find((document) => document.id === documentId);
+
+  if (!targetDocument) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const remainingDocuments = snapshot.project.documents.filter((document) => document.id !== documentId);
+  const fallbackDocument =
+    remainingDocuments.length > 0
+      ? null
+      : {
+          id: createId("doc"),
+          name: createUniqueDocumentName(remainingDocuments, DEFAULT_DOCUMENT_NAME),
+          content: "",
+          updatedAt: now
+        };
+  const nextDocuments = fallbackDocument ? [...remainingDocuments, fallbackDocument] : remainingDocuments;
+  const nextActiveDocumentId =
+    snapshot.project.activeDocumentId === documentId
+      ? nextDocuments[0]?.id ?? snapshot.project.activeDocumentId
+      : snapshot.project.activeDocumentId;
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      documents: nextDocuments,
+      activeDocumentId: nextActiveDocumentId,
+      trash: [
+        ...snapshot.project.trash,
+        {
+          id: createId("trash"),
+          kind: "document",
+          deletedAt: now,
+          document: targetDocument
+        }
+      ],
+      updatedAt: now
+    }
+  };
+}
+
+export function moveFolderToTrash(snapshot: AppSnapshot, folderId: string): AppSnapshot {
+  const targetFolder = snapshot.project.folders.find((folder) => folder.id === folderId);
+
+  if (!targetFolder) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      folders: snapshot.project.folders.filter((folder) => folder.id !== folderId),
+      trash: [
+        ...snapshot.project.trash,
+        {
+          id: createId("trash"),
+          kind: "folder",
+          deletedAt: now,
+          folder: targetFolder
+        }
+      ],
+      updatedAt: now
+    }
+  };
+}
+
 export function renameDiagramById(
   snapshot: AppSnapshot,
   diagramId: string,
@@ -829,6 +982,82 @@ export function renameGraphById(snapshot: AppSnapshot, graphId: string, name: st
   };
 }
 
+export function moveDiagramToTrash(snapshot: AppSnapshot, diagramId: string): AppSnapshot {
+  const figures = snapshot.project.figures ?? [];
+  const targetFigure = figures.find((figure) => figure.id === diagramId);
+
+  if (!targetFigure) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const currentDiagram = snapshot.project.diagram ?? createDefaultDiagram();
+  const nextDiagram =
+    currentDiagram.id === diagramId
+      ? {
+          ...createDefaultDiagram(),
+          updatedAt: now
+        }
+      : currentDiagram;
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      diagram: nextDiagram,
+      figures: figures.filter((figure) => figure.id !== diagramId),
+      trash: [
+        ...snapshot.project.trash,
+        {
+          id: createId("trash"),
+          kind: "diagram",
+          deletedAt: now,
+          diagram: targetFigure
+        }
+      ],
+      updatedAt: now
+    }
+  };
+}
+
+export function moveGraphToTrash(snapshot: AppSnapshot, graphId: string): AppSnapshot {
+  const graphs = snapshot.project.graphs ?? [];
+  const targetGraph = graphs.find((graph) => graph.id === graphId);
+
+  if (!targetGraph) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const currentGraph = snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider);
+  const nextGraph =
+    currentGraph.id === graphId
+      ? {
+          ...createDefaultGraph(snapshot.preferences.graphProvider),
+          updatedAt: now
+        }
+      : currentGraph;
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      graph: nextGraph,
+      graphs: graphs.filter((graph) => graph.id !== graphId),
+      trash: [
+        ...snapshot.project.trash,
+        {
+          id: createId("trash"),
+          kind: "graph",
+          deletedAt: now,
+          graph: targetGraph
+        }
+      ],
+      updatedAt: now
+    }
+  };
+}
+
 export function renameProject(
   snapshot: AppSnapshot,
   name: string
@@ -847,6 +1076,133 @@ export function renameProject(
       ...snapshot.project,
       name: nextName,
       updatedAt: now
+    }
+  };
+}
+
+export function restoreTrashEntry(snapshot: AppSnapshot, trashEntryId: string): AppSnapshot {
+  const targetEntry = snapshot.project.trash.find((entry) => entry.id === trashEntryId);
+
+  if (!targetEntry) {
+    return snapshot;
+  }
+
+  const now = new Date().toISOString();
+  const remainingTrash = snapshot.project.trash.filter((entry) => entry.id !== trashEntryId);
+
+  if (targetEntry.kind === "document") {
+    const restoredDocument = {
+      ...targetEntry.document,
+      id: createId("doc"),
+      name: createUniqueDocumentName(snapshot.project.documents, targetEntry.document.name),
+      updatedAt: now
+    };
+
+    return {
+      ...snapshot,
+      project: {
+        ...snapshot.project,
+        documents: [...snapshot.project.documents, restoredDocument],
+        activeDocumentId: restoredDocument.id,
+        trash: remainingTrash,
+        updatedAt: now
+      }
+    };
+  }
+
+  if (targetEntry.kind === "folder") {
+    const restoredFolder = {
+      ...targetEntry.folder,
+      id: createId("folder"),
+      name: createUniqueFolderName(snapshot.project.folders, targetEntry.folder.name),
+      updatedAt: now
+    };
+
+    return {
+      ...snapshot,
+      project: {
+        ...snapshot.project,
+        folders: [...snapshot.project.folders, restoredFolder],
+        trash: remainingTrash,
+        updatedAt: now
+      }
+    };
+  }
+
+  if (targetEntry.kind === "diagram") {
+    const restoredDiagram = {
+      ...targetEntry.diagram,
+      id: createId("diagram"),
+      name: createUniqueDiagramName(
+        targetEntry.diagram.name,
+        snapshot.project.figures,
+        snapshot.project.diagram?.id === targetEntry.diagram.id ? snapshot.project.diagram.name : null
+      ),
+      updatedAt: now
+    };
+
+    return {
+      ...snapshot,
+      project: {
+        ...snapshot.project,
+        figures: [...snapshot.project.figures, restoredDiagram],
+        trash: remainingTrash,
+        updatedAt: now
+      }
+    };
+  }
+
+  const restoredGraph = {
+    ...targetEntry.graph,
+    id: createId("graph"),
+    name: createUniqueGraphName(
+      targetEntry.graph.name,
+      snapshot.project.graphs,
+      snapshot.project.graph?.id === targetEntry.graph.id ? snapshot.project.graph.name : null,
+      targetEntry.graph.contentType
+    ),
+    updatedAt: now
+  };
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      graphs: [...snapshot.project.graphs, restoredGraph],
+      trash: remainingTrash,
+      updatedAt: now
+    }
+  };
+}
+
+export function permanentlyDeleteTrashEntry(snapshot: AppSnapshot, trashEntryId: string): AppSnapshot {
+  const nextTrash = snapshot.project.trash.filter((entry) => entry.id !== trashEntryId);
+
+  if (nextTrash.length === snapshot.project.trash.length) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      trash: nextTrash,
+      updatedAt: new Date().toISOString()
+    }
+  };
+}
+
+export function emptyTrash(snapshot: AppSnapshot): AppSnapshot {
+  if (snapshot.project.trash.length === 0) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    project: {
+      ...snapshot.project,
+      trash: [],
+      updatedAt: new Date().toISOString()
     }
   };
 }
@@ -1114,6 +1470,54 @@ function createNextGraphName(currentName: string, provider: GraphProvider): stri
   const nextIndex = match ? Number(match[1] ?? "1") + 1 : 1;
   const extension = provider === "desmos" ? "png" : "svg";
   return `graph ${nextIndex}.${extension}`;
+}
+
+function createUniqueDiagramName(
+  requestedName: string,
+  figures: DiagramAsset[],
+  currentDiagramName: string | null = null
+): string {
+  const nextName = normalizeDiagramFileName(requestedName);
+  const existingNames = new Set(figures.map((figure) => figure.name));
+
+  if (currentDiagramName) {
+    existingNames.add(currentDiagramName);
+  }
+
+  let finalName = nextName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName)) {
+    finalName = `${nextName.replace(/\.svg$/i, "")}-${suffix}.svg`;
+    suffix += 1;
+  }
+
+  return finalName;
+}
+
+function createUniqueGraphName(
+  requestedName: string,
+  graphs: GraphAsset[],
+  currentGraphName: string | null = null,
+  contentType: "png" | "svg" = "png"
+): string {
+  const nextName = normalizeGraphFileNameForContentType(requestedName, contentType);
+  const existingNames = new Set(graphs.map((graph) => graph.name));
+
+  if (currentGraphName) {
+    existingNames.add(currentGraphName);
+  }
+
+  let finalName = nextName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName)) {
+    const baseName = nextName.replace(/\.(png|svg)$/i, "");
+    finalName = `${baseName}-${suffix}.${contentType}`;
+    suffix += 1;
+  }
+
+  return finalName;
 }
 
 function createUniqueDocumentName(

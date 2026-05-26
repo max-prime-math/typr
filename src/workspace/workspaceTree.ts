@@ -1,4 +1,9 @@
-import type { AppSnapshot, DiagramAsset, GraphAsset } from "../app/appState";
+import type {
+  AppSnapshot,
+  DiagramAsset,
+  GraphAsset,
+  WorkspaceTrashEntry
+} from "../app/appState";
 import { getDiagramFilePath } from "../diagram/diagramFiles";
 import { serializeDiagramSvg } from "../diagram/DiagramEditor";
 import { getGraphFilePath } from "../graph/graphFiles";
@@ -18,14 +23,25 @@ export interface WorkspaceFlatEntry {
   path: string;
   kind: WorkspaceNodeKind;
   content?: string | Uint8Array;
+  source: WorkspaceSource;
 }
 
 export interface WorkspaceTreeNode {
   path: string;
   name: string;
   kind: WorkspaceNodeKind;
+  source: WorkspaceSource;
   children: WorkspaceTreeNode[];
 }
+
+export type WorkspaceSource =
+  | { kind: "document"; id: string }
+  | { kind: "folder"; id: string }
+  | { kind: "diagram"; id: string }
+  | { kind: "graph"; id: string }
+  | { kind: "trash-root" }
+  | { kind: "trash-item"; id: string; entryKind: WorkspaceTrashEntry["kind"] }
+  | { kind: "system-folder"; id: "figures" };
 
 const TEXT_FILE_EXTENSIONS = new Set([
   "typ",
@@ -66,14 +82,22 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
     addEntry({
       path: document.name,
       kind: "file",
-      content: document.content
+      content: document.content,
+      source: {
+        kind: "document",
+        id: document.id
+      }
     });
   }
 
   for (const folder of snapshot.project.folders ?? []) {
     addEntry({
       path: folder.name,
-      kind: "folder"
+      kind: "folder",
+      source: {
+        kind: "folder",
+        id: folder.id
+      }
     });
   }
 
@@ -83,7 +107,11 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
   if (savedFigures.length > 0 || savedGraphs.length > 0) {
     addEntry({
       path: "figures",
-      kind: "folder"
+      kind: "folder",
+      source: {
+        kind: "system-folder",
+        id: "figures"
+      }
     });
   }
 
@@ -93,6 +121,18 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
 
   for (const graph of savedGraphs) {
     addEntry(createGraphWorkspaceEntry(graph));
+  }
+
+  addEntry({
+    path: "Trash",
+    kind: "folder",
+    source: {
+      kind: "trash-root"
+    }
+  });
+
+  for (const trashEntry of snapshot.project.trash ?? []) {
+    addEntry(createTrashWorkspaceEntry(trashEntry));
   }
 
   return [...entries.values()];
@@ -124,10 +164,19 @@ export function buildWorkspaceTree(entries: WorkspaceFlatEntry[]): WorkspaceTree
           path: currentPath,
           name: segment,
           kind: nextKind,
+          source: isLeaf
+            ? entry.source
+            : {
+                kind: "folder",
+                id: `virtual:${currentPath}`
+              },
           children: new Map<string, MutableWorkspaceNode>()
         } satisfies MutableWorkspaceNode);
 
       node.kind = nextKind === "folder" ? "folder" : node.kind;
+      if (isLeaf) {
+        node.source = entry.source;
+      }
       currentLevel.set(segment, node);
       currentLevel = node.children;
     }
@@ -158,6 +207,25 @@ export function findWorkspaceNodeByPath(
 
 export function canEditWorkspaceFile(path: string): boolean {
   return getWorkspacePathExtension(path) === "typ";
+}
+
+export function canRenameWorkspaceNode(node: WorkspaceTreeNode): boolean {
+  return (
+    node.source.kind === "document" ||
+    (node.source.kind === "folder" && !node.source.id.startsWith("virtual:")) ||
+    node.source.kind === "diagram" ||
+    node.source.kind === "graph"
+  );
+}
+
+export function canDeleteWorkspaceNode(node: WorkspaceTreeNode): boolean {
+  return (
+    node.source.kind === "document" ||
+    (node.source.kind === "folder" && !node.source.id.startsWith("virtual:")) ||
+    node.source.kind === "diagram" ||
+    node.source.kind === "graph" ||
+    node.source.kind === "trash-item"
+  );
 }
 
 export function isTextWorkspaceFile(path: string): boolean {
@@ -205,6 +273,7 @@ interface MutableWorkspaceNode {
   path: string;
   name: string;
   kind: WorkspaceNodeKind;
+  source: WorkspaceSource;
   children: Map<string, MutableWorkspaceNode>;
 }
 
@@ -212,7 +281,11 @@ function createDiagramWorkspaceEntry(figure: DiagramAsset): WorkspaceFlatEntry {
   return {
     path: getDiagramFilePath(figure.name),
     kind: "file",
-    content: serializeDiagramSvg(figure)
+    content: serializeDiagramSvg(figure),
+    source: {
+      kind: "diagram",
+      id: figure.id
+    }
   };
 }
 
@@ -220,7 +293,62 @@ function createGraphWorkspaceEntry(graph: GraphAsset): WorkspaceFlatEntry {
   return {
     path: getGraphFilePath(graph.name),
     kind: "file",
-    content: new Uint8Array(graph.content)
+    content: new Uint8Array(graph.content),
+    source: {
+      kind: "graph",
+      id: graph.id
+    }
+  };
+}
+
+function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEntry {
+  if (entry.kind === "document") {
+    return {
+      path: `Trash/${entry.document.name}`,
+      kind: "file",
+      content: entry.document.content,
+      source: {
+        kind: "trash-item",
+        id: entry.id,
+        entryKind: entry.kind
+      }
+    };
+  }
+
+  if (entry.kind === "folder") {
+    return {
+      path: `Trash/${entry.folder.name}`,
+      kind: "folder",
+      source: {
+        kind: "trash-item",
+        id: entry.id,
+        entryKind: entry.kind
+      }
+    };
+  }
+
+  if (entry.kind === "diagram") {
+    return {
+      path: `Trash/${entry.diagram.name}`,
+      kind: "file",
+      content: serializeDiagramSvg(entry.diagram),
+      source: {
+        kind: "trash-item",
+        id: entry.id,
+        entryKind: entry.kind
+      }
+    };
+  }
+
+  return {
+    path: `Trash/${entry.graph.name}`,
+    kind: "file",
+    content: new Uint8Array(entry.graph.content),
+    source: {
+      kind: "trash-item",
+      id: entry.id,
+      entryKind: entry.kind
+    }
   };
 }
 
@@ -231,6 +359,7 @@ function convertWorkspaceNodes(
     path: entry.path,
     name: entry.name,
     kind: entry.kind,
+    source: entry.source,
     children: convertWorkspaceNodes(entry.children)
   }));
 }

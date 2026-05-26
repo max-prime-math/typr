@@ -31,9 +31,20 @@ import {
   saveCurrentDiagram,
   saveCurrentGraph,
   createNextDiagramSnapshot,
+  emptyTrash,
+  moveDiagramToTrash,
+  moveDocumentToTrash,
+  moveFolderToTrash,
+  moveGraphToTrash,
+  permanentlyDeleteTrashEntry,
   removeLatestDiagramItem,
   removeDiagramStroke,
   removeDiagramShape,
+  renameDiagramById,
+  renameDocumentById,
+  renameFolderById,
+  renameGraphById,
+  restoreTrashEntry,
   getDefaultGraphSource,
   updateGraphProviderPreference,
   updateGraph,
@@ -134,7 +145,6 @@ import {
 } from "../snippets/snippets";
 import { PreviewZoomControls } from "../preview/PreviewPane";
 import {
-  loadWorkspaceTreeFromOpfs,
   syncSnapshotToOpfs,
   isOpfsAvailable
 } from "../workspace/opfsWorkspace";
@@ -142,7 +152,6 @@ import { WorkspaceTree } from "../workspace/WorkspaceTree";
 import {
   buildProjectWorkspaceEntries,
   buildWorkspaceTree,
-  canEditWorkspaceFile,
   findWorkspaceNodeByPath,
   normalizeWorkspacePath,
   type WorkspaceTreeNode
@@ -231,6 +240,12 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
 
 interface SourceSymbolTooltipState {
   item: SourceSymbolItem;
+  x: number;
+  y: number;
+}
+
+interface WorkspaceContextMenuState {
+  node: WorkspaceTreeNode;
   x: number;
   y: number;
 }
@@ -497,6 +512,9 @@ export function App() {
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
+  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null);
+  const [renamingWorkspacePath, setRenamingWorkspacePath] = useState<string | null>(null);
+  const [workspaceRenameDraft, setWorkspaceRenameDraft] = useState("");
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
   );
@@ -664,11 +682,8 @@ export function App() {
     [normalizedSelectedWorkspacePath, workspaceTree]
   );
   const isSourceFileEditable =
-    normalizedSelectedWorkspacePath === null || canEditWorkspaceFile(normalizedSelectedWorkspacePath);
-  const isSourceFileUnsupported =
-    normalizedSelectedWorkspacePath !== null &&
-    selectedWorkspaceNode?.kind === "file" &&
-    !isSourceFileEditable;
+    normalizedSelectedWorkspacePath === null ||
+    selectedWorkspaceNode?.source.kind === "document";
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
@@ -699,6 +714,22 @@ export function App() {
       }))
     );
   }, [graph.contentType, graph.name]);
+
+  useEffect(() => {
+    if (!workspaceContextMenu) {
+      return;
+    }
+
+    const handlePointerDown = () => {
+      setWorkspaceContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [workspaceContextMenu]);
   const diagramShadowAssets = useMemo(
     () => buildDiagramShadowFiles([...savedFigures, diagram]),
     [diagram, savedFigures]
@@ -737,14 +768,6 @@ export function App() {
         try {
           if (isOpfsAvailable()) {
             await syncSnapshotToOpfs(snapshot);
-            const nextTree = await loadWorkspaceTreeFromOpfs();
-
-            if (!cancelled) {
-              setWorkspaceTree(nextTree);
-              setWorkspaceLoadError(null);
-            }
-
-            return;
           }
 
           const fallbackTree = buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot));
@@ -1479,6 +1502,7 @@ export function App() {
     (path: string) => {
       const normalizedPath = normalizeWorkspacePath(path);
       setSelectedWorkspacePath(normalizedPath);
+      setWorkspaceContextMenu(null);
 
       const matchingDocument = snapshot.project.documents.find(
         (document) => normalizeWorkspacePath(document.name) === normalizedPath
@@ -1490,6 +1514,116 @@ export function App() {
     },
     [snapshot.project.documents]
   );
+
+  const handleRequestWorkspaceRename = useCallback((node: WorkspaceTreeNode) => {
+    setWorkspaceContextMenu(null);
+    setRenamingWorkspacePath(node.path);
+    setWorkspaceRenameDraft(node.name);
+  }, []);
+
+  const handleCancelWorkspaceRename = useCallback(() => {
+    setRenamingWorkspacePath(null);
+    setWorkspaceRenameDraft("");
+  }, []);
+
+  const handleCommitWorkspaceRename = useCallback(() => {
+    if (!renamingWorkspacePath) {
+      return;
+    }
+
+    const targetNode = findWorkspaceNodeByPath(workspaceTree, renamingWorkspacePath);
+    const nextName = workspaceRenameDraft.trim();
+
+    if (!targetNode || !nextName) {
+      handleCancelWorkspaceRename();
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => {
+      if (targetNode.source.kind === "document") {
+        return renameDocumentById(currentSnapshot, targetNode.source.id, nextName);
+      }
+
+      if (targetNode.source.kind === "folder") {
+        return renameFolderById(currentSnapshot, targetNode.source.id, nextName);
+      }
+
+      if (targetNode.source.kind === "diagram") {
+        return renameDiagramById(currentSnapshot, targetNode.source.id, nextName);
+      }
+
+      if (targetNode.source.kind === "graph") {
+        return renameGraphById(currentSnapshot, targetNode.source.id, nextName);
+      }
+
+      return currentSnapshot;
+    });
+
+    setSelectedWorkspacePath(null);
+    handleCancelWorkspaceRename();
+  }, [handleCancelWorkspaceRename, renamingWorkspacePath, workspaceRenameDraft, workspaceTree]);
+
+  const handleRequestWorkspaceContextMenu = useCallback(
+    (node: WorkspaceTreeNode, x: number, y: number) => {
+      setWorkspaceContextMenu({
+        node,
+        x,
+        y
+      });
+    },
+    []
+  );
+
+  const handleDeleteWorkspaceNode = useCallback(
+    (node: WorkspaceTreeNode) => {
+      setSnapshot((currentSnapshot) => {
+        if (node.source.kind === "document") {
+          return moveDocumentToTrash(currentSnapshot, node.source.id);
+        }
+
+        if (node.source.kind === "folder") {
+          return moveFolderToTrash(currentSnapshot, node.source.id);
+        }
+
+        if (node.source.kind === "diagram") {
+          return moveDiagramToTrash(currentSnapshot, node.source.id);
+        }
+
+        if (node.source.kind === "graph") {
+          return moveGraphToTrash(currentSnapshot, node.source.id);
+        }
+
+        if (node.source.kind === "trash-item") {
+          return permanentlyDeleteTrashEntry(currentSnapshot, node.source.id);
+        }
+
+        return currentSnapshot;
+      });
+
+      if (selectedWorkspacePath === node.path) {
+        setSelectedWorkspacePath(null);
+      }
+
+      handleCancelWorkspaceRename();
+      setWorkspaceContextMenu(null);
+    },
+    [handleCancelWorkspaceRename, selectedWorkspacePath]
+  );
+
+  const handleRestoreWorkspaceTrashEntry = useCallback((trashEntryId: string) => {
+    setSnapshot((currentSnapshot) => restoreTrashEntry(currentSnapshot, trashEntryId));
+    setWorkspaceContextMenu(null);
+  }, []);
+
+  const handleEmptyWorkspaceTrash = useCallback(() => {
+    if (!window.confirm("Empty trash permanently?")) {
+      return;
+    }
+
+    setSnapshot((currentSnapshot) => emptyTrash(currentSnapshot));
+    setWorkspaceContextMenu(null);
+    setSelectedWorkspacePath(null);
+  }, []);
 
   const handleNewDocument = () => {
     setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
@@ -3025,12 +3159,101 @@ export function App() {
                     collapsedPaths={collapsedFileFolders}
                     nodes={workspaceTree}
                     rootLabel={snapshot.project.name}
+                    renamingPath={renamingWorkspacePath}
+                    renameDraft={workspaceRenameDraft}
                     selectedPath={normalizedSelectedWorkspacePath}
                     onOpenFile={handleOpenWorkspaceFile}
                     onToggleFolder={handleToggleFolder}
+                    onRenameDraftChange={setWorkspaceRenameDraft}
+                    onRenameCancel={handleCancelWorkspaceRename}
+                    onRenameCommit={handleCommitWorkspaceRename}
+                    onRequestRename={handleRequestWorkspaceRename}
+                    onRequestContextMenu={handleRequestWorkspaceContextMenu}
                   />
                   {workspaceLoadError ? (
                     <p className="sidebar-card__copy">{workspaceLoadError}</p>
+                  ) : null}
+                  {workspaceContextMenu ? (
+                    <div
+                      className="workspace-context-menu"
+                      role="menu"
+                      style={
+                        {
+                          left: `${workspaceContextMenu.x}px`,
+                          top: `${workspaceContextMenu.y}px`
+                        } as CSSProperties
+                      }
+                    >
+                      {workspaceContextMenu.node.source.kind === "document" ||
+                      workspaceContextMenu.node.source.kind === "diagram" ||
+                      workspaceContextMenu.node.source.kind === "graph" ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={() => handleOpenWorkspaceFile(workspaceContextMenu.node.path)}
+                          type="button"
+                        >
+                          Open
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.node.source.kind === "document" ||
+                      workspaceContextMenu.node.source.kind === "folder" ||
+                      workspaceContextMenu.node.source.kind === "diagram" ||
+                      workspaceContextMenu.node.source.kind === "graph" ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={() => handleRequestWorkspaceRename(workspaceContextMenu.node)}
+                          type="button"
+                        >
+                          Rename
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.node.source.kind === "document" ||
+                      workspaceContextMenu.node.source.kind === "folder" ||
+                      workspaceContextMenu.node.source.kind === "diagram" ||
+                      workspaceContextMenu.node.source.kind === "graph" ? (
+                        <button
+                          className="workspace-context-menu__item workspace-context-menu__item--danger"
+                          onClick={() => handleDeleteWorkspaceNode(workspaceContextMenu.node)}
+                          type="button"
+                        >
+                          Delete
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.node.source.kind === "trash-item" ? (
+                        (() => {
+                          const trashSource = workspaceContextMenu.node.source;
+
+                          return (
+                            <>
+                              <button
+                                className="workspace-context-menu__item"
+                                onClick={() => handleRestoreWorkspaceTrashEntry(trashSource.id)}
+                                type="button"
+                              >
+                                Restore
+                              </button>
+                              <button
+                                className="workspace-context-menu__item workspace-context-menu__item--danger"
+                                onClick={() => handleDeleteWorkspaceNode(workspaceContextMenu.node)}
+                                type="button"
+                              >
+                                Delete Permanently
+                              </button>
+                            </>
+                          );
+                        })()
+                      ) : null}
+                      {workspaceContextMenu.node.source.kind === "trash-root" ? (
+                        <button
+                          className="workspace-context-menu__item workspace-context-menu__item--danger"
+                          disabled={snapshot.project.trash.length === 0}
+                          onClick={handleEmptyWorkspaceTrash}
+                          type="button"
+                        >
+                          Empty Trash
+                        </button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </section>
               ) : null}

@@ -1366,6 +1366,22 @@ button {
   letter-spacing: 0.01em;
 }
 
+.file-tree__rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-strong) 90%, var(--editor-background));
+  color: var(--text);
+  font: inherit;
+}
+
+.file-tree__rename-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .file-tree__chevron-text {
   display: inline-flex;
   align-items: center;
@@ -1477,6 +1493,43 @@ button {
 }
 
 .file-tree__file-badge--pdf {
+  color: var(--danger);
+}
+
+.workspace-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 12rem;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-strong) 96%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.workspace-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+
+.workspace-context-menu__item:hover,
+.workspace-context-menu__item:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--surface-strong) 72%, var(--accent-soft));
+}
+
+.workspace-context-menu__item:disabled {
+  color: var(--text-muted);
+}
+
+.workspace-context-menu__item--danger {
   color: var(--danger);
 }
 
