@@ -273,7 +273,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       vimMode: false,
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
-      liveCompilation: true,
+      liveCompilation: false,
       graphProvider: "desmos"
     }
   };
@@ -322,7 +322,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
           : storedCursorSmear === false
             ? 0
             : DEFAULT_CURSOR_SMEAR,
-      liveCompilation: snapshot.preferences.liveCompilation ?? true,
+      liveCompilation: snapshot.preferences.liveCompilation ?? false,
       graphProvider: normalizeGraphProvider(storedGraphProvider)
     },
     project: {

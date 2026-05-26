@@ -569,6 +569,7 @@ export function App() {
     typeof navigator === "undefined" ? true : navigator.onLine
   );
   const compileShortcutLabel = isApplePlatform() ? "Cmd+Return" : "Ctrl+Enter";
+  const vimToggleShortcutLabel = isApplePlatform() ? "Cmd+;" : "Ctrl+;";
   const handleVimToggle = useCallback(() => {
     setSnapshot((currentSnapshot) => {
       const nextVimMode = !currentSnapshot.preferences.vimMode;
@@ -896,12 +897,11 @@ export function App() {
         return;
       }
 
-      if (
-        event.altKey &&
-        !event.ctrlKey &&
-        !event.metaKey &&
-        event.key.toLowerCase() === "v"
-      ) {
+      const isVimToggleShortcut = isApplePlatform()
+        ? event.metaKey && !event.ctrlKey && !event.altKey && event.key === ";"
+        : event.ctrlKey && !event.metaKey && !event.altKey && event.key === ";";
+
+      if (isVimToggleShortcut) {
         event.preventDefault();
         handleVimToggle();
         return;
@@ -3916,7 +3916,11 @@ export function App() {
                   type="button"
                   aria-label={snapshot.preferences.vimMode ? "Disable Vim mode" : "Enable Vim mode"}
                   aria-pressed={snapshot.preferences.vimMode}
-                  title={snapshot.preferences.vimMode ? "Vim mode on" : "Vim mode off"}
+                  title={
+                    snapshot.preferences.vimMode
+                      ? `Vim mode on (${vimToggleShortcutLabel})`
+                      : `Vim mode off (${vimToggleShortcutLabel})`
+                  }
                 >
                   <span aria-hidden="true" className="toolbar-icon toolbar-icon--vim" />
                 </button>
@@ -4350,7 +4354,7 @@ export function App() {
                     <div className="settings-toggle-stack">
                       <label className="settings-toggle">
                         <span>
-                          <strong>Live compilation</strong>
+                          <strong>Live compilation (experimental)</strong>
                           <small>
                             Recompile the active document automatically while you edit.
                           </small>
