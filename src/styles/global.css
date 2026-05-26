@@ -1351,6 +1351,10 @@ button {
   color: var(--accent-strong);
 }
 
+.file-tree__branch-header--selected {
+  background: color-mix(in srgb, var(--surface-strong) 82%, var(--accent-soft));
+}
+
 .file-tree__branch-header--drop-target {
   background: color-mix(in srgb, var(--accent-soft) 82%, transparent);
 }
@@ -1449,6 +1453,10 @@ button {
 
 .file-tree .file-row--active {
   background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
+}
+
+.file-tree .file-row--selected {
+  background: color-mix(in srgb, var(--surface-strong) 80%, var(--accent-soft));
 }
 
 .file-tree .file-row[draggable="true"] {

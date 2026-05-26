@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   canDeleteWorkspaceNode,
   canMoveWorkspaceNode,
@@ -13,9 +14,14 @@ interface WorkspaceTreeProps {
   collapsedPaths: Record<string, boolean>;
   nodes: WorkspaceTreeNode[];
   rootLabel: string;
+  selectedPaths: string[];
   selectedPath: string | null;
   renamingPath: string | null;
   renameDraft: string;
+  onActivateNode: (
+    node: WorkspaceTreeNode,
+    modifiers: { additive: boolean; range: boolean }
+  ) => void;
   onOpenFile: (path: string) => void;
   onDropAtRoot: () => void;
   onToggleFolder: (path: string) => void;
@@ -35,9 +41,11 @@ export function WorkspaceTree({
   collapsedPaths,
   nodes,
   rootLabel,
+  selectedPaths,
   selectedPath,
   renamingPath,
   renameDraft,
+  onActivateNode,
   onOpenFile,
   onDropAtRoot,
   onToggleFolder,
@@ -90,7 +98,9 @@ export function WorkspaceTree({
                   node={node}
                   renamingPath={renamingPath}
                   renameDraft={renameDraft}
+                  selectedPaths={selectedPaths}
                   selectedPath={selectedPath}
+                  onActivateNode={onActivateNode}
                   onOpenFile={onOpenFile}
                   onToggleFolder={onToggleFolder}
                   onDragEnd={onDragEnd}
@@ -120,7 +130,12 @@ interface WorkspaceTreeBranchProps {
   node: WorkspaceTreeNode;
   renamingPath: string | null;
   renameDraft: string;
+  selectedPaths: string[];
   selectedPath: string | null;
+  onActivateNode: (
+    node: WorkspaceTreeNode,
+    modifiers: { additive: boolean; range: boolean }
+  ) => void;
   onOpenFile: (path: string) => void;
   onToggleFolder: (path: string) => void;
   onDragEnd: () => void;
@@ -140,7 +155,9 @@ function WorkspaceTreeBranch({
   node,
   renamingPath,
   renameDraft,
+  selectedPaths,
   selectedPath,
+  onActivateNode,
   onOpenFile,
   onToggleFolder,
   onDragEnd,
@@ -155,6 +172,18 @@ function WorkspaceTreeBranch({
   dropTargetPath
 }: WorkspaceTreeBranchProps) {
   const isRenaming = renamingPath === node.path;
+  const isSelected = selectedPaths.includes(node.path);
+
+  const handleNodeClick = (event: ReactMouseEvent) => {
+    if ((event.target as HTMLElement).closest(".file-tree__toggle-button")) {
+      return;
+    }
+
+    onActivateNode(node, {
+      additive: event.metaKey || event.ctrlKey,
+      range: event.shiftKey
+    });
+  };
 
   if (node.kind === "folder") {
     const isCollapsed = collapsedPaths[node.path] ?? false;
@@ -166,6 +195,8 @@ function WorkspaceTreeBranch({
       <div className="file-tree__branch">
         <div
           className={`file-tree__branch-header ${isEmpty ? "file-tree__branch-header--static" : ""} ${
+            isSelected ? "file-tree__branch-header--selected" : ""
+          } ${
             dropTargetPath === node.path ? "file-tree__branch-header--drop-target" : ""
           }`}
           draggable={canMove}
@@ -190,6 +221,7 @@ function WorkspaceTreeBranch({
               onRequestContextMenu(node, event.clientX, event.clientY);
             }
           }}
+          onClick={handleNodeClick}
           onDoubleClick={() => {
             if (canRename) {
               onRequestRename(node);
@@ -252,7 +284,9 @@ function WorkspaceTreeBranch({
                 node={child}
                 renamingPath={renamingPath}
                 renameDraft={renameDraft}
+                selectedPaths={selectedPaths}
                 selectedPath={selectedPath}
+                onActivateNode={onActivateNode}
                 onOpenFile={onOpenFile}
                 onToggleFolder={onToggleFolder}
                 onDragEnd={onDragEnd}
@@ -279,7 +313,9 @@ function WorkspaceTreeBranch({
   if (isRenaming) {
     return (
       <div
-        className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""}`}
+        className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
+          isSelected ? "file-row--selected" : ""
+        }`}
         onContextMenu={(event) => {
           event.preventDefault();
           onRequestContextMenu(node, event.clientX, event.clientY);
@@ -315,11 +351,18 @@ function WorkspaceTreeBranch({
 
   return (
     <button
-      className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""}`}
+      className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
+        isSelected ? "file-row--selected" : ""
+      }`}
       draggable={canMove}
       onDragEnd={onDragEnd}
       onDragStart={() => onDragStart(node)}
-      onClick={() => onOpenFile(node.path)}
+      onClick={(event) => {
+        handleNodeClick(event);
+        if (!event.metaKey && !event.ctrlKey && !event.shiftKey) {
+          onOpenFile(node.path);
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onRequestContextMenu(node, event.clientX, event.clientY);

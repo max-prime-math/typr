@@ -157,6 +157,7 @@ import {
   buildProjectWorkspaceEntries,
   buildWorkspaceTree,
   canMoveWorkspaceNode,
+  flattenVisibleWorkspaceNodes,
   findWorkspaceNodeByPath,
   normalizeWorkspacePath,
   type WorkspaceTreeNode
@@ -541,6 +542,8 @@ export function App() {
   const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({});
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
+  const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<string[]>([]);
+  const [workspaceSelectionAnchorPath, setWorkspaceSelectionAnchorPath] = useState<string | null>(null);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null);
   const [renamingWorkspacePath, setRenamingWorkspacePath] = useState<string | null>(null);
@@ -844,6 +847,28 @@ export function App() {
 
   useEffect(() => {
     setSelectedWorkspacePath((currentPath) => {
+      if (currentPath && findWorkspaceNodeByPath(workspaceTree, currentPath)) {
+        return currentPath;
+      }
+
+      return normalizeWorkspacePath(activeDocument.name);
+    });
+  }, [activeDocument.name, workspaceTree]);
+
+  useEffect(() => {
+    setSelectedWorkspacePaths((currentPaths) => {
+      const nextPaths = currentPaths.filter((path) => findWorkspaceNodeByPath(workspaceTree, path));
+
+      if (nextPaths.length > 0) {
+        return nextPaths;
+      }
+
+      return [normalizeWorkspacePath(activeDocument.name)];
+    });
+  }, [activeDocument.name, workspaceTree]);
+
+  useEffect(() => {
+    setWorkspaceSelectionAnchorPath((currentPath) => {
       if (currentPath && findWorkspaceNodeByPath(workspaceTree, currentPath)) {
         return currentPath;
       }
@@ -1540,7 +1565,10 @@ export function App() {
     const nextDocument = snapshot.project.documents.find((document) => document.id === documentId);
 
     if (nextDocument) {
-      setSelectedWorkspacePath(normalizeWorkspacePath(nextDocument.name));
+      const nextPath = normalizeWorkspacePath(nextDocument.name);
+      setSelectedWorkspacePath(nextPath);
+      setSelectedWorkspacePaths([nextPath]);
+      setWorkspaceSelectionAnchorPath(nextPath);
     }
 
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
@@ -1550,6 +1578,8 @@ export function App() {
     (path: string) => {
       const normalizedPath = normalizeWorkspacePath(path);
       setSelectedWorkspacePath(normalizedPath);
+      setSelectedWorkspacePaths([normalizedPath]);
+      setWorkspaceSelectionAnchorPath(normalizedPath);
       setWorkspaceContextMenu(null);
 
       const matchingDocument = snapshot.project.documents.find(
@@ -1561,6 +1591,52 @@ export function App() {
       }
     },
     [snapshot.project.documents]
+  );
+
+  const handleActivateWorkspaceNode = useCallback(
+    (
+      node: WorkspaceTreeNode,
+      modifiers: {
+        additive: boolean;
+        range: boolean;
+      }
+    ) => {
+      const normalizedPath = normalizeWorkspacePath(node.path);
+
+      if (modifiers.range) {
+        const visibleNodes = flattenVisibleWorkspaceNodes(workspaceTree, collapsedFileFolders);
+        const selectablePaths = visibleNodes.map((entry) => entry.path);
+        const anchorPath = workspaceSelectionAnchorPath ?? selectedWorkspacePath ?? normalizedPath;
+        const anchorIndex = selectablePaths.indexOf(anchorPath);
+        const targetIndex = selectablePaths.indexOf(normalizedPath);
+
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex);
+          const end = Math.max(anchorIndex, targetIndex);
+          setSelectedWorkspacePaths(selectablePaths.slice(start, end + 1));
+        } else {
+          setSelectedWorkspacePaths([normalizedPath]);
+        }
+
+        return;
+      }
+
+      if (modifiers.additive) {
+        setSelectedWorkspacePaths((currentPaths) => {
+          if (currentPaths.includes(normalizedPath)) {
+            return currentPaths.filter((path) => path !== normalizedPath);
+          }
+
+          return [...currentPaths, normalizedPath];
+        });
+        setWorkspaceSelectionAnchorPath(normalizedPath);
+        return;
+      }
+
+      setSelectedWorkspacePaths([normalizedPath]);
+      setWorkspaceSelectionAnchorPath(normalizedPath);
+    },
+    [collapsedFileFolders, selectedWorkspacePath, workspaceSelectionAnchorPath, workspaceTree]
   );
 
   const handleRequestWorkspaceRename = useCallback((node: WorkspaceTreeNode) => {
@@ -1613,6 +1689,10 @@ export function App() {
 
   const handleRequestWorkspaceContextMenu = useCallback(
     (node: WorkspaceTreeNode, x: number, y: number) => {
+      setSelectedWorkspacePaths((currentPaths) =>
+        currentPaths.includes(node.path) ? currentPaths : [node.path]
+      );
+      setWorkspaceSelectionAnchorPath(node.path);
       setWorkspaceContextMenu({
         node,
         x,
@@ -1651,6 +1731,9 @@ export function App() {
       if (selectedWorkspacePath === node.path) {
         setSelectedWorkspacePath(null);
       }
+      setSelectedWorkspacePaths((currentPaths) =>
+        currentPaths.filter((path) => path !== node.path && !path.startsWith(`${node.path}/`))
+      );
 
       handleCancelWorkspaceRename();
       setWorkspaceContextMenu(null);
@@ -1692,6 +1775,13 @@ export function App() {
           : selectedWorkspacePath && node.source.kind === "folder" && selectedWorkspacePath.startsWith(`${node.path}/`)
             ? `${displayNextPath}${selectedWorkspacePath.slice(node.path.length)}`
             : selectedWorkspacePath;
+      const nextSelectedPaths = selectedWorkspacePaths.map((path) =>
+        path === node.path
+          ? displayNextPath
+          : node.source.kind === "folder" && path.startsWith(`${node.path}/`)
+            ? `${displayNextPath}${path.slice(node.path.length)}`
+            : path
+      );
 
       setSnapshot((currentSnapshot) => {
         if (node.source.kind === "document") {
@@ -1732,11 +1822,12 @@ export function App() {
       setWorkspaceContextMenu(null);
       setDraggedWorkspacePath(null);
       setWorkspaceDropTargetPath(null);
+      setSelectedWorkspacePaths(nextSelectedPaths);
       if (nextSelectedPath) {
         setSelectedWorkspacePath(nextSelectedPath);
       }
     },
-    [selectedWorkspacePath]
+    [selectedWorkspacePath, selectedWorkspacePaths]
   );
 
   const handleRequestWorkspaceMove = useCallback(
@@ -3416,7 +3507,9 @@ export function App() {
                     rootLabel={snapshot.project.name}
                     renamingPath={renamingWorkspacePath}
                     renameDraft={workspaceRenameDraft}
+                    selectedPaths={selectedWorkspacePaths}
                     selectedPath={normalizedSelectedWorkspacePath}
+                    onActivateNode={handleActivateWorkspaceNode}
                     onDragEnd={handleWorkspaceDragEnd}
                     onDragStart={handleWorkspaceDragStart}
                     onDropAtRoot={handleWorkspaceDropAtRoot}

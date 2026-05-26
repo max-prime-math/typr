@@ -205,6 +205,23 @@ export function findWorkspaceNodeByPath(
   return null;
 }
 
+export function flattenVisibleWorkspaceNodes(
+  nodes: WorkspaceTreeNode[],
+  collapsedPaths: Record<string, boolean>
+): WorkspaceTreeNode[] {
+  const result: WorkspaceTreeNode[] = [];
+
+  for (const node of nodes) {
+    result.push(node);
+
+    if (node.kind === "folder" && !(collapsedPaths[node.path] ?? false)) {
+      result.push(...flattenVisibleWorkspaceNodes(node.children, collapsedPaths));
+    }
+  }
+
+  return result;
+}
+
 export function canEditWorkspaceFile(path: string): boolean {
   return getWorkspacePathExtension(path) === "typ";
 }
