@@ -77,6 +77,7 @@ import {
 } from "../editor/TypstEditor";
 import {
   createEmptyGitHubRemoteConfig,
+  getDefaultGitHubDirectory,
   hasRequiredConfig,
   pushProjectToGitHub,
   pullProjectFromGitHub,
@@ -252,11 +253,18 @@ interface SourceSymbolTooltipState {
   y: number;
 }
 
-interface WorkspaceContextMenuState {
-  node: WorkspaceTreeNode;
-  x: number;
-  y: number;
-}
+type WorkspaceContextMenuState =
+  | {
+      kind: "project-root";
+      x: number;
+      y: number;
+    }
+  | {
+      kind: "node";
+      node: WorkspaceTreeNode;
+      x: number;
+      y: number;
+    };
 
 const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
@@ -709,6 +717,10 @@ export function App() {
   } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
+  const defaultGitHubDirectory = useMemo(
+    () => getDefaultGitHubDirectory(snapshot.project.name),
+    [snapshot.project.name]
+  );
   const trashWorkspaceTree = useMemo(
     () => buildWorkspaceTree(buildTrashWorkspaceEntries(snapshot.project.trash ?? [])),
     [snapshot.project.trash]
@@ -724,6 +736,7 @@ export function App() {
         : null,
     [normalizedSelectedWorkspacePath, visibleWorkspaceTree]
   );
+  const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
   const workspaceContextMenuPosition = useMemo(() => {
     if (!workspaceContextMenu || !filesSectionRef.current) {
       return null;
@@ -737,8 +750,7 @@ export function App() {
     };
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
-    normalizedSelectedWorkspacePath === null ||
-    (!isTrashViewOpen && selectedWorkspaceNode?.source.kind === "document");
+    sourceWorkspaceNode === null || sourceWorkspaceNode.source.kind === "document";
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
@@ -1678,6 +1690,12 @@ export function App() {
       return;
     }
 
+    if (renamingWorkspacePath === WORKSPACE_ROOT_PATH) {
+      setSnapshot((currentSnapshot) => renameProject(currentSnapshot, workspaceRenameDraft));
+      handleCancelWorkspaceRename();
+      return;
+    }
+
     const targetNode = findWorkspaceNodeByPath(visibleWorkspaceTree, renamingWorkspacePath);
     const nextName = workspaceRenameDraft.trim();
 
@@ -1710,6 +1728,16 @@ export function App() {
     handleCancelWorkspaceRename();
   }, [handleCancelWorkspaceRename, renamingWorkspacePath, visibleWorkspaceTree, workspaceRenameDraft]);
 
+  const handleRequestWorkspaceRootRename = useCallback(() => {
+    if (isTrashViewOpen) {
+      return;
+    }
+
+    setWorkspaceContextMenu(null);
+    setRenamingWorkspacePath(WORKSPACE_ROOT_PATH);
+    setWorkspaceRenameDraft(snapshot.project.name);
+  }, [isTrashViewOpen, snapshot.project.name]);
+
   const handleRequestWorkspaceContextMenu = useCallback(
     (node: WorkspaceTreeNode, x: number, y: number) => {
       setSelectedWorkspacePaths((currentPaths) =>
@@ -1717,12 +1745,28 @@ export function App() {
       );
       setWorkspaceSelectionAnchorPath(node.path);
       setWorkspaceContextMenu({
+        kind: "node",
         node,
         x,
         y
       });
     },
     []
+  );
+
+  const handleRequestWorkspaceRootContextMenu = useCallback(
+    (x: number, y: number) => {
+      if (isTrashViewOpen) {
+        return;
+      }
+
+      setWorkspaceContextMenu({
+        kind: "project-root",
+        x,
+        y
+      });
+    },
+    [isTrashViewOpen]
   );
 
   const handleDeleteWorkspaceNode = useCallback(
@@ -2572,7 +2616,7 @@ export function App() {
     if (!hasRequiredConfig(githubConfig)) {
       setSyncFeedback({
         tone: "error",
-        text: "Fill in owner, repo, branch, directory, and token first."
+        text: "Fill in owner, repo, branch, and token first. Leave directory blank to use the project name."
       });
       setSettingsTab("github");
       setIsSettingsOpen(true);
@@ -2619,7 +2663,7 @@ export function App() {
     if (!hasRequiredConfig(githubConfig)) {
       setSyncFeedback({
         tone: "error",
-        text: "Fill in owner, repo, branch, directory, and token first."
+        text: "Fill in owner, repo, branch, and token first. Leave directory blank to use the project name."
       });
       setSettingsTab("github");
       setIsSettingsOpen(true);
@@ -2789,7 +2833,7 @@ export function App() {
     if (!hasRequiredConfig(githubConfig)) {
       setSyncFeedback({
         tone: "error",
-        text: "Fill in owner, repo, branch, directory, and token first."
+        text: "Fill in owner, repo, branch, and token first. Leave directory blank to use the project name."
       });
       setSettingsTab("github");
       setIsSettingsOpen(true);
@@ -3556,6 +3600,7 @@ export function App() {
                     dropTargetPath={workspaceDropTargetPath}
                     nodes={visibleWorkspaceTree}
                     rootLabel={isTrashViewOpen ? "Trash" : snapshot.project.name}
+                    rootIsRenameable={!isTrashViewOpen}
                     renamingPath={renamingWorkspacePath}
                     renameDraft={workspaceRenameDraft}
                     selectedPaths={selectedWorkspacePaths}
@@ -3571,6 +3616,8 @@ export function App() {
                     onRenameDraftChange={setWorkspaceRenameDraft}
                     onRenameCancel={handleCancelWorkspaceRename}
                     onRenameCommit={handleCommitWorkspaceRename}
+                    onRequestRootContextMenu={handleRequestWorkspaceRootContextMenu}
+                    onRequestRootRename={handleRequestWorkspaceRootRename}
                     onRequestRename={handleRequestWorkspaceRename}
                     onRequestContextMenu={handleRequestWorkspaceContextMenu}
                   />
@@ -3588,9 +3635,19 @@ export function App() {
                         } as CSSProperties
                       }
                     >
-                      {workspaceContextMenu.node.source.kind === "document" ||
-                      workspaceContextMenu.node.source.kind === "diagram" ||
-                      workspaceContextMenu.node.source.kind === "graph" ? (
+                      {workspaceContextMenu.kind === "project-root" ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={handleRequestWorkspaceRootRename}
+                          type="button"
+                        >
+                          Rename
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.kind === "node" &&
+                      (workspaceContextMenu.node.source.kind === "document" ||
+                        workspaceContextMenu.node.source.kind === "diagram" ||
+                        workspaceContextMenu.node.source.kind === "graph") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() => handleOpenWorkspaceFile(workspaceContextMenu.node.path)}
@@ -3599,10 +3656,11 @@ export function App() {
                           Open
                         </button>
                       ) : null}
-                      {workspaceContextMenu.node.source.kind === "document" ||
-                      workspaceContextMenu.node.source.kind === "folder" ||
-                      workspaceContextMenu.node.source.kind === "diagram" ||
-                      workspaceContextMenu.node.source.kind === "graph" ? (
+                      {workspaceContextMenu.kind === "node" &&
+                      (workspaceContextMenu.node.source.kind === "document" ||
+                        workspaceContextMenu.node.source.kind === "folder" ||
+                        workspaceContextMenu.node.source.kind === "diagram" ||
+                        workspaceContextMenu.node.source.kind === "graph") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() => handleRequestWorkspaceRename(workspaceContextMenu.node)}
@@ -3611,10 +3669,11 @@ export function App() {
                           Rename
                         </button>
                       ) : null}
-                      {workspaceContextMenu.node.source.kind === "document" ||
-                      workspaceContextMenu.node.source.kind === "folder" ||
-                      workspaceContextMenu.node.source.kind === "diagram" ||
-                      workspaceContextMenu.node.source.kind === "graph" ? (
+                      {workspaceContextMenu.kind === "node" &&
+                      (workspaceContextMenu.node.source.kind === "document" ||
+                        workspaceContextMenu.node.source.kind === "folder" ||
+                        workspaceContextMenu.node.source.kind === "diagram" ||
+                        workspaceContextMenu.node.source.kind === "graph") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() => handleRequestWorkspaceMove(workspaceContextMenu.node)}
@@ -3623,10 +3682,11 @@ export function App() {
                           Move
                         </button>
                       ) : null}
-                      {workspaceContextMenu.node.source.kind === "document" ||
-                      workspaceContextMenu.node.source.kind === "folder" ||
-                      workspaceContextMenu.node.source.kind === "diagram" ||
-                      workspaceContextMenu.node.source.kind === "graph" ? (
+                      {workspaceContextMenu.kind === "node" &&
+                      (workspaceContextMenu.node.source.kind === "document" ||
+                        workspaceContextMenu.node.source.kind === "folder" ||
+                        workspaceContextMenu.node.source.kind === "diagram" ||
+                        workspaceContextMenu.node.source.kind === "graph") ? (
                         <button
                           className="workspace-context-menu__item workspace-context-menu__item--danger"
                           onClick={() => handleDeleteWorkspaceNode(workspaceContextMenu.node)}
@@ -3635,7 +3695,7 @@ export function App() {
                           Delete
                         </button>
                       ) : null}
-                      {workspaceContextMenu.node.source.kind === "trash-item" ? (
+                      {workspaceContextMenu.kind === "node" && workspaceContextMenu.node.source.kind === "trash-item" ? (
                         (() => {
                           const trashSource = workspaceContextMenu.node.source;
 
@@ -4437,9 +4497,7 @@ export function App() {
             />
           ) : (
             <div className="source-empty-state">
-              <div className="source-empty-state__title">
-                {isTrashViewOpen ? "file is in trash" : "cannot open this filetype"}
-              </div>
+              <div className="source-empty-state__title">cannot open this filetype</div>
               {normalizedSelectedWorkspacePath ? (
                 <div className="source-empty-state__path">{normalizedSelectedWorkspacePath}</div>
               ) : null}
@@ -4795,7 +4853,7 @@ export function App() {
                         onChange={(event) =>
                           handleGitHubConfigChange("directory", event.target.value)
                         }
-                        placeholder="docs"
+                        placeholder={defaultGitHubDirectory}
                         type="text"
                         value={githubConfig.directory}
                       />

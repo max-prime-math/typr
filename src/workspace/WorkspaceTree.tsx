@@ -15,6 +15,7 @@ interface WorkspaceTreeProps {
   collapsedPaths: Record<string, boolean>;
   nodes: WorkspaceTreeNode[];
   rootLabel: string;
+  rootIsRenameable: boolean;
   selectedPaths: string[];
   selectedPath: string | null;
   renamingPath: string | null;
@@ -32,6 +33,8 @@ interface WorkspaceTreeProps {
   onRenameDraftChange: (value: string) => void;
   onRenameCancel: () => void;
   onRenameCommit: () => void;
+  onRequestRootContextMenu: (x: number, y: number) => void;
+  onRequestRootRename: () => void;
   onRequestRename: (node: WorkspaceTreeNode) => void;
   onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
   onDropIntoFolder: (targetNode: WorkspaceTreeNode) => void;
@@ -42,6 +45,7 @@ export function WorkspaceTree({
   collapsedPaths,
   nodes,
   rootLabel,
+  rootIsRenameable,
   selectedPaths,
   selectedPath,
   renamingPath,
@@ -56,17 +60,20 @@ export function WorkspaceTree({
   onRenameDraftChange,
   onRenameCancel,
   onRenameCommit,
+  onRequestRootContextMenu,
+  onRequestRootRename,
   onRequestRename,
   onRequestContextMenu,
   onDropIntoFolder,
   dropTargetPath
 }: WorkspaceTreeProps) {
   const isRootCollapsed = collapsedPaths[WORKSPACE_ROOT_PATH] ?? false;
+  const isRootRenaming = renamingPath === WORKSPACE_ROOT_PATH;
 
   return (
     <div className="file-tree" role="tree" aria-label="Files">
       <div className="file-tree__branch">
-        <button
+        <div
           className={`file-tree__branch-header file-tree__branch-header--button ${
             dropTargetPath === WORKSPACE_ROOT_PATH ? "file-tree__branch-header--drop-target" : ""
           }`}
@@ -79,9 +86,22 @@ export function WorkspaceTree({
             onDropAtRoot();
           }}
           onClick={() => onToggleFolder(WORKSPACE_ROOT_PATH)}
-          type="button"
+          onContextMenu={(event) => {
+            if (!rootIsRenameable) {
+              return;
+            }
+
+            event.preventDefault();
+            onRequestRootContextMenu(event.clientX, event.clientY);
+          }}
+          onDoubleClick={() => {
+            if (rootIsRenameable) {
+              onRequestRootRename();
+            }
+          }}
           aria-expanded={!isRootCollapsed}
           aria-label={`${isRootCollapsed ? "Expand" : "Collapse"} ${rootLabel}`}
+          role="treeitem"
         >
           <span aria-hidden="true" className="file-tree__chevron-text">
             {isRootCollapsed ? "▸" : "▾"}
@@ -92,8 +112,31 @@ export function WorkspaceTree({
             }`}
             aria-hidden="true"
           />
-          <span className="file-tree__branch-label">{rootLabel}</span>
-        </button>
+          {isRootRenaming ? (
+            <input
+              autoFocus
+              className="file-tree__rename-input"
+              onBlur={onRenameCommit}
+              onChange={(event) => onRenameDraftChange(event.target.value)}
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  onRenameCommit();
+                }
+
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  onRenameCancel();
+                }
+              }}
+              type="text"
+              value={renameDraft}
+            />
+          ) : (
+            <span className="file-tree__branch-label">{rootLabel}</span>
+          )}
+        </div>
         {!isRootCollapsed ? (
           <div className="file-tree__items" role="group">
             {nodes.length > 0 ? (

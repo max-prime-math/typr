@@ -37,7 +37,7 @@ export function createEmptyGitHubRemoteConfig(): GitHubRemoteConfig {
     owner: "",
     repo: "",
     branch: "main",
-    directory: "docs",
+    directory: "",
     token: ""
   };
 }
@@ -49,7 +49,6 @@ export function hasRequiredConfig(
     config?.owner?.trim() &&
       config.repo?.trim() &&
       config.branch?.trim() &&
-      config.directory?.trim() &&
       config.token?.trim()
   );
 }
@@ -61,7 +60,7 @@ export async function pushProjectToGitHub(
   if (!hasRequiredConfig(config)) {
     return {
       ok: false,
-      message: "Fill in the GitHub owner, repo, branch, directory, and token first."
+      message: "Fill in the GitHub owner, repo, branch, and token first."
     };
   }
 
@@ -72,7 +71,7 @@ export async function pushProjectToGitHub(
     };
   }
 
-  const normalizedDirectory = normalizeDirectory(config.directory);
+  const normalizedDirectory = resolveSyncDirectory(config.directory, target.projectName);
   const commitMessage = target.commitMessage.trim() || "Sync project from typr";
   const files = [
     ...target.documents.map((document) => ({
@@ -124,11 +123,11 @@ export async function pullProjectFromGitHub(
   if (!hasRequiredConfig(config)) {
     return {
       ok: false,
-      message: "Fill in owner, repo, branch, directory, and token first."
+      message: "Fill in owner, repo, branch, and token first."
     };
   }
 
-  const normalizedDirectory = normalizeDirectory(config.directory);
+  const normalizedDirectory = resolveSyncDirectory(config.directory, _target.projectName);
   const branch = config.branch.trim();
 
   try {
@@ -285,6 +284,21 @@ function normalizeDirectory(directory: string): string {
     .trim()
     .replace(/^\/+|\/+$/g, "")
     .replace(/\/{2,}/g, "/");
+}
+
+export function getDefaultGitHubDirectory(projectName: string): string {
+  return (
+    projectName
+      .trim()
+      .replace(/[/\\?%*:|"<>]/g, "-")
+      .replace(/\s+/g, " ")
+      .slice(0, 120) || "project"
+  );
+}
+
+function resolveSyncDirectory(directory: string, projectName: string): string {
+  const normalizedDirectory = normalizeDirectory(directory);
+  return normalizedDirectory || normalizeDirectory(getDefaultGitHubDirectory(projectName));
 }
 
 function sanitizeDocumentName(name: string): string {
