@@ -43,7 +43,18 @@ interface TypstEditorProps {
   highlightErrors: boolean;
   snippets: TypstSnippet[];
   onSearchRequested: () => void;
+  onCompileRequested: () => void;
   onChange: (value: string) => void;
+}
+
+interface PreservedEditorViewState {
+  selection: {
+    anchor: number;
+    head: number;
+  };
+  scrollTop: number;
+  scrollLeft: number;
+  hadFocus: boolean;
 }
 
 export interface TypstSearchQueryState {
@@ -95,6 +106,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   highlightErrors,
   snippets,
   onSearchRequested,
+  onCompileRequested,
   onChange
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -103,6 +115,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   const isApplyingExternalValueRef = useRef(false);
   const latestOnChangeRef = useRef(onChange);
   const snippetsRef = useRef(snippets);
+  const preservedViewStateRef = useRef<PreservedEditorViewState | null>(null);
   const snippetCompletionSource = useMemo<CompletionSource>(
     () => (context) => createSnippetCompletionSource(snippetsRef.current)(context),
     []
@@ -357,7 +370,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         }
       }
     }),
-    [onSearchRequested]
+    [onCompileRequested, onSearchRequested]
   );
 
   useEffect(() => {
@@ -365,6 +378,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
       return;
     }
 
+    const preservedViewState = preservedViewStateRef.current;
     const view = new EditorView({
       state: createEditorState(value, {
         onChange: (update) => {
@@ -382,18 +396,44 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         diagnostics,
         highlightErrors,
         snippetSource: snippetCompletionSource,
-        onSearchRequested
+        onSearchRequested,
+        onCompileRequested
       }),
       parent: containerRef.current
     });
 
+    if (preservedViewState) {
+      view.dispatch({
+        selection: EditorSelection.range(
+          preservedViewState.selection.anchor,
+          preservedViewState.selection.head
+        )
+      });
+      view.scrollDOM.scrollTop = preservedViewState.scrollTop;
+      view.scrollDOM.scrollLeft = preservedViewState.scrollLeft;
+
+      if (preservedViewState.hadFocus) {
+        view.focus();
+      }
+    }
+
     viewRef.current = view;
+    preservedViewStateRef.current = null;
 
     return () => {
+      preservedViewStateRef.current = {
+        selection: {
+          anchor: view.state.selection.main.anchor,
+          head: view.state.selection.main.head
+        },
+        scrollTop: view.scrollDOM.scrollTop,
+        scrollLeft: view.scrollDOM.scrollLeft,
+        hadFocus: view.hasFocus
+      };
       view.destroy();
       viewRef.current = null;
     };
-  }, [cursorSmear, cursorSmooth, theme, vimMode, snippetCompletionSource]);
+  }, [cursorSmear, cursorSmooth, onCompileRequested, theme, vimMode, snippetCompletionSource]);
 
   useEffect(() => {
     const view = viewRef.current;

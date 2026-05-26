@@ -44,6 +44,7 @@ import {
   updateActiveDocument,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
+  updateLiveCompilationPreference,
   updateThemePreference,
   updateVimPreference,
   type AppSnapshot,
@@ -426,6 +427,7 @@ export function App() {
   const graphAssetsRef = useRef<CompileAssetFile[]>([]);
   const themeRef = useRef<ThemeDefinition | null>(null);
   const compileResultRef = useRef<CompileResult | null>(null);
+  const handleCompileRef = useRef<() => void>(() => {});
   const compileInFlightRef = useRef(false);
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
@@ -579,6 +581,14 @@ export function App() {
       updateCursorSmoothPreference(
         currentSnapshot,
         !currentSnapshot.preferences.cursorSmooth
+      )
+    );
+  }, []);
+  const handleLiveCompilationToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateLiveCompilationPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.liveCompilation
       )
     );
   }, []);
@@ -884,6 +894,12 @@ export function App() {
         return;
       }
 
+      if (event.ctrlKey && !event.altKey && event.key === "Enter") {
+        event.preventDefault();
+        handleCompileRef.current();
+        return;
+      }
+
       if (isTypingTarget(event.target)) {
         return;
       }
@@ -1123,27 +1139,41 @@ export function App() {
     }
   }, [compiler, isHydrated]);
 
-  const scheduleCompile = useCallback(() => {
+  const queueCompile = useCallback((debounced: boolean) => {
     if (compileTimerRef.current !== null) {
       window.clearTimeout(compileTimerRef.current);
+      compileTimerRef.current = null;
     }
 
+    pendingSourceRef.current = createThemedPreviewSource(
+      previewSourceDraftRef.current,
+      themeRef.current ?? theme,
+      isPaperView
+    );
     setIsCompiling(true);
 
     if (compileInFlightRef.current) {
       return;
     }
 
+    if (!debounced) {
+      void runCompile();
+      return;
+    }
+
     compileTimerRef.current = window.setTimeout(() => {
       compileTimerRef.current = null;
-      pendingSourceRef.current = createThemedPreviewSource(
-        previewSourceDraftRef.current,
-        themeRef.current ?? theme,
-        isPaperView
-      );
       void runCompile();
     }, COMPILE_DEBOUNCE_MS);
   }, [isPaperView, runCompile]);
+
+  const handleCompile = useCallback(() => {
+    queueCompile(false);
+  }, [queueCompile]);
+
+  useEffect(() => {
+    handleCompileRef.current = handleCompile;
+  }, [handleCompile]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -1151,14 +1181,29 @@ export function App() {
     }
 
     previewSourceDraftRef.current = activeDocument.content;
-    scheduleCompile();
+    if (compileResult === null || snapshot.preferences.liveCompilation) {
+      queueCompile(compileResult !== null);
+    }
   }, [
     activeDocument.content,
     diagramAssetsRevision,
+    compileResult,
     graphAssetsRevision,
     isHydrated,
+    queueCompile,
+    snapshot.preferences.liveCompilation
+  ]);
+
+  useEffect(() => {
+    if (!isHydrated || compileResultRef.current === null) {
+      return;
+    }
+
+    queueCompile(false);
+  }, [
+    isHydrated,
     isPaperView,
-    scheduleCompile,
+    queueCompile,
     theme
   ]);
 
@@ -3453,7 +3498,16 @@ export function App() {
               <h2>Source</h2>
             </div>
             <div className="pane__header-actions">
-              <span className="pane__meta">{storageLabel}</span>
+              {snapshot.preferences.liveCompilation ? null : (
+                <button
+                  className="pane__button"
+                  onClick={handleCompile}
+                  title="Compile (Ctrl+Enter)"
+                  type="button"
+                >
+                  Compile
+                </button>
+              )}
               <button
                 className="pane__button pane__button--quiet"
                 onClick={() => setIsSourceToolbarVisible((current) => !current)}
@@ -3857,6 +3911,7 @@ export function App() {
             diagnostics={editorDiagnostics}
             highlightErrors={isErrorSettled}
             snippets={allSnippets}
+            onCompileRequested={handleCompile}
             onSearchRequested={openSearchPane}
             value={activeDocument.content}
             vimMode={snapshot.preferences.vimMode}
@@ -4276,6 +4331,20 @@ export function App() {
                     </div>
 
                     <div className="settings-toggle-stack">
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Live compilation</strong>
+                          <small>
+                            Recompile the active document automatically while you edit.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.liveCompilation}
+                          onChange={handleLiveCompilationToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
                       <label className="settings-toggle">
                         <span>
                           <strong>Smooth cursor</strong>

@@ -151,6 +151,7 @@ export interface AppPreferences {
   vimMode: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  liveCompilation: boolean;
   graphProvider: GraphProvider;
 }
 
@@ -272,6 +273,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       vimMode: false,
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
+      liveCompilation: true,
       graphProvider: "desmos"
     }
   };
@@ -320,6 +322,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
           : storedCursorSmear === false
             ? 0
             : DEFAULT_CURSOR_SMEAR,
+      liveCompilation: snapshot.preferences.liveCompilation ?? true,
       graphProvider: normalizeGraphProvider(storedGraphProvider)
     },
     project: {
@@ -1190,6 +1193,19 @@ export function updateCursorSmoothPreference(
     preferences: {
       ...snapshot.preferences,
       cursorSmooth
+    }
+  };
+}
+
+export function updateLiveCompilationPreference(
+  snapshot: AppSnapshot,
+  liveCompilation: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      liveCompilation
     }
   };
 }

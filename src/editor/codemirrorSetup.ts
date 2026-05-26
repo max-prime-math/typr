@@ -12,7 +12,7 @@ import { bracketMatching, defaultHighlightStyle, foldGutter, indentOnInput, synt
 import { search as searchExtension, searchKeymap } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
 import { Compartment, EditorState } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers, type Command, type ViewUpdate } from "@codemirror/view";
+import { drawSelection, EditorView, highlightActiveLineGutter, keymap, lineNumbers, type Command, type ViewUpdate } from "@codemirror/view";
 import { getCM, vim } from "@replit/codemirror-vim";
 import type { StyleSpec } from "style-mod";
 import type { CompileDiagnostic } from "../compiler/types";
@@ -32,6 +32,7 @@ interface EditorSetupOptions {
   highlightErrors: boolean;
   snippetSource: CompletionSource;
   onSearchRequested: () => void;
+  onCompileRequested: () => void;
 }
 
 export const diagnosticsCompartment = new Compartment();
@@ -65,7 +66,9 @@ function createEditorTheme(theme: ThemeDefinition, cursorSmooth: boolean): Exten
           borderRadius: "0",
           opacity: 0,
           backgroundColor: "var(--accent)",
-          willChange: "transform, width, height, opacity",
+          contain: "layout style paint",
+          backfaceVisibility: "hidden",
+          willChange: "transform, width, height, opacity, clip-path",
           transition: "opacity 90ms ease"
         },
         ".cm-smooth-cursor-smear": {
@@ -78,25 +81,15 @@ function createEditorTheme(theme: ThemeDefinition, cursorSmooth: boolean): Exten
           opacity: 0,
           background:
             "linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--accent) 72%, transparent))",
-          willChange: "transform, width, height, opacity"
+          contain: "layout style paint",
+          backfaceVisibility: "hidden",
+          willChange: "transform, width, height, opacity, clip-path, background"
         },
         ".cm-smooth-cursor-smear--visible": {
           opacity: 0.28
         },
         ".cm-smooth-cursor--visible": {
-          opacity: 1,
-          animation: "typr-cursor-breathe 1.15s ease-in-out infinite"
-        },
-        "@keyframes typr-cursor-breathe": {
-          "0%, 100%": {
-            filter: "brightness(0.9)",
-            opacity: 0.72,
-            transformOrigin: "center"
-          },
-          "50%": {
-            filter: "brightness(1.45)",
-            opacity: 1
-          }
+          opacity: 1
         }
       }
     : {};
@@ -124,14 +117,15 @@ function createEditorTheme(theme: ThemeDefinition, cursorSmooth: boolean): Exten
         color: "var(--editor-gutter-foreground)",
         border: "none"
       },
-      ".cm-activeLine": {
-        backgroundColor: "var(--editor-active-line)"
-      },
       ".cm-activeLineGutter": {
         backgroundColor: "var(--editor-active-line)"
       },
-      ".cm-selectionBackground, .cm-content ::selection": {
-        backgroundColor: "var(--editor-selection) !important"
+      ".cm-selectionBackground": {
+        backgroundColor:
+          "color-mix(in srgb, var(--accent) 22%, var(--editor-background)) !important"
+      },
+      ".cm-line::selection, .cm-line > span::selection, .cm-content ::selection": {
+        backgroundColor: "transparent !important"
       },
       ...smoothCursorStyles
     },
@@ -158,11 +152,16 @@ export function createEditorExtensions({
   diagnostics,
   highlightErrors,
   snippetSource,
-  onSearchRequested
+  onSearchRequested,
+  onCompileRequested
 }: EditorSetupOptions): Extension[] {
   const keymaps = [
     { key: "Mod-f", run: () => {
       onSearchRequested();
+      return true;
+    }, scope: "editor" },
+    { key: "Ctrl-Enter", run: () => {
+      onCompileRequested();
       return true;
     }, scope: "editor" },
     ...defaultKeymap,
@@ -203,7 +202,6 @@ export function createEditorExtensions({
     autocompletion({
       override: [snippetSource]
     }),
-    highlightActiveLine(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     typstLanguage(),
     keymap.of([
