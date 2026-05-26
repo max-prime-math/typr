@@ -20,8 +20,8 @@ export default defineConfig(({ command }) => {
           "icons/icon-512.png"
         ],
         manifest: {
-          name: "typr",
-          short_name: "typr",
+          name: "Typr",
+          short_name: "Typr",
           description: "A local-first, browser-based Typst editor for iPad and desktop.",
           theme_color: "#f5f2ea",
           background_color: "#f5f2ea",
