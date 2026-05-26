@@ -156,6 +156,18 @@ const APP_VERSION = packageJson.version;
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
 
+function isApplePlatform(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const platform =
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    "";
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
 function getGraphProviderLabel(provider: GraphProvider): string {
   if (provider === "plotly") {
     return "Plotly";
@@ -556,6 +568,7 @@ export function App() {
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
+  const compileShortcutLabel = isApplePlatform() ? "Cmd+Return" : "Ctrl+Enter";
   const handleVimToggle = useCallback(() => {
     setSnapshot((currentSnapshot) => {
       const nextVimMode = !currentSnapshot.preferences.vimMode;
@@ -894,7 +907,11 @@ export function App() {
         return;
       }
 
-      if (event.ctrlKey && !event.altKey && event.key === "Enter") {
+      const isCompileShortcut = isApplePlatform()
+        ? event.metaKey && !event.ctrlKey && !event.altKey && event.key === "Enter"
+        : event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Enter";
+
+      if (isCompileShortcut) {
         event.preventDefault();
         handleCompileRef.current();
         return;
@@ -3502,7 +3519,7 @@ export function App() {
                 <button
                   className="pane__button"
                   onClick={handleCompile}
-                  title="Compile (Ctrl+Enter)"
+                  title={`Compile (${compileShortcutLabel})`}
                   type="button"
                 >
                   Compile

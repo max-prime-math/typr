@@ -160,7 +160,7 @@ export function createEditorExtensions({
       onSearchRequested();
       return true;
     }, scope: "editor" },
-    { key: "Ctrl-Enter", run: () => {
+    { key: "Mod-Enter", run: () => {
       onCompileRequested();
       return true;
     }, scope: "editor" },

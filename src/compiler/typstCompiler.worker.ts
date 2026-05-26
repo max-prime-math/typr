@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { createMockCompiler } from "./mockCompiler";
+import * as typstSnippetModule from "@myriaddreamin/typst.ts/contrib/snippet";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
@@ -58,7 +59,6 @@ interface TypstStructuredDiagnostic {
 }
 const COMPILER_TIMEOUT_MS = 15000;
 
-let loadPromise: Promise<TypstSnippetModule> | null = null;
 let initConfigured = false;
 let bootstrapFailed = false;
 let fallbackWarning: CompileDiagnostic | null = null;
@@ -74,13 +74,7 @@ function emitStatus(id: number, status: CompilerStatus): void {
 }
 
 async function loadTypstModule(): Promise<TypstSnippetModule> {
-  if (!loadPromise) {
-    loadPromise = import(
-      "@myriaddreamin/typst.ts/contrib/snippet"
-    ) as unknown as Promise<TypstSnippetModule>;
-  }
-
-  const module = await loadPromise;
+  const module = typstSnippetModule as unknown as TypstSnippetModule;
 
   if (!initConfigured) {
     module.$typst.setCompilerInitOptions({

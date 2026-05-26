@@ -1,4 +1,5 @@
 import { createMockCompiler } from "./mockCompiler";
+import * as typstSnippetModule from "@myriaddreamin/typst.ts/contrib/snippet";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
@@ -56,7 +57,6 @@ export function createMainThreadTypstCompiler(
   options: TypstCompilerOptions = {}
 ): TypstCompiler {
   const notifyStatus = options.onStatusChange ?? (() => {});
-  let loadPromise: Promise<TypstSnippetModule> | null = null;
   let initConfigured = false;
   let bootstrapFailed = false;
   let fallbackWarning: CompileDiagnostic | null = null;
@@ -68,18 +68,12 @@ export function createMainThreadTypstCompiler(
   }
 
   async function loadTypstModule(): Promise<TypstSnippetModule> {
-    if (!loadPromise) {
-      emitStatus({
-        phase: "loading-typst",
-        mode: "main-thread",
-        label: "Loading Typst runtime"
-      });
-      loadPromise = import(
-        "@myriaddreamin/typst.ts/contrib/snippet"
-      ) as unknown as Promise<TypstSnippetModule>;
-    }
-
-    const module = await loadPromise;
+    emitStatus({
+      phase: "loading-typst",
+      mode: "main-thread",
+      label: "Loading Typst runtime"
+    });
+    const module = typstSnippetModule as unknown as TypstSnippetModule;
 
     if (!initConfigured) {
       module.$typst.setCompilerInitOptions({
