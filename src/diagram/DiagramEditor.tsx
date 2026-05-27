@@ -530,7 +530,6 @@ export function DiagramEditor({
 
   function commitFrame(nextFrame: DiagramCanvasFrame) {
     const normalizedFrame = normalizeCanvasFrame(nextFrame);
-    setViewportCenter(getFrameCenter(normalizedFrame));
     onUpdateFrame(normalizedFrame);
   }
 
@@ -1146,66 +1145,86 @@ export function DiagramEditor({
       </div>
 
       <div className="diagram-editor__palette" aria-label="Diagram colors">
-        <div className="diagram-editor__toolrow" aria-label="Diagram tools">
-          {DIAGRAM_TOOL_ITEMS.map(({ tool, label }) => (
-            <button
-              aria-label={label}
-              aria-pressed={activeTool === tool}
-              className="pane__button pane__button--compact diagram-editor__tool"
-              key={tool}
-              onClick={() => {
-                setActiveTool(tool);
-                activePointerIdRef.current = null;
-                draftStrokeRef.current = null;
-                draftShapeRef.current = null;
-                setSelectedTarget(null);
-                setSelectionBounds(null);
-                setSelectionRotation(0);
-                setTransformState(null);
-                setCropTransformState(null);
-                setDraftStroke(null);
-                setDraftShape(null);
-                setDraftPolygon(null);
-                setPolygonCursor(null);
-              }}
-              title={label}
-              type="button"
-            >
-              <DiagramToolIcon tool={tool} />
-              <span className="visually-hidden">{label}</span>
-            </button>
-          ))}
-        </div>
-        <ColorSwatchRow
-          activeColor={inkColor}
-          ariaLabel="Stroke colors"
-          customColorInputLabel="Custom stroke color"
-          isCustomColor={isCustomInkColor}
-          label="Stroke"
-          onColorChange={handleStrokeColorChange}
-        />
-        {supportsFill ? (
+        <PaletteGroup isExpanded={isExpanded} title="Tools">
+          <div className="diagram-editor__toolrow" aria-label="Diagram tools">
+            {DIAGRAM_TOOL_ITEMS.map(({ tool, label }) => (
+              <button
+                aria-label={label}
+                aria-pressed={activeTool === tool}
+                className="pane__button pane__button--compact diagram-editor__tool"
+                key={tool}
+                onClick={() => {
+                  setActiveTool(tool);
+                  activePointerIdRef.current = null;
+                  draftStrokeRef.current = null;
+                  draftShapeRef.current = null;
+                  setSelectedTarget(null);
+                  setSelectionBounds(null);
+                  setSelectionRotation(0);
+                  setTransformState(null);
+                  setCropTransformState(null);
+                  setDraftStroke(null);
+                  setDraftShape(null);
+                  setDraftPolygon(null);
+                  setPolygonCursor(null);
+                }}
+                title={label}
+                type="button"
+              >
+                <DiagramToolIcon tool={tool} />
+                <span className="visually-hidden">{label}</span>
+              </button>
+            ))}
+          </div>
+        </PaletteGroup>
+        <PaletteGroup isExpanded={isExpanded} title="Stroke">
           <ColorSwatchRow
-            activeColor={fillColor}
-            ariaLabel="Fill colors"
-            customColorInputLabel="Custom fill color"
-            isCustomColor={isCustomFillColor}
-            label="Fill"
-            onColorChange={handleFillColorChange}
+            activeColor={inkColor}
+            ariaLabel="Stroke colors"
+            customColorInputLabel="Custom stroke color"
+            hideInlineLabel={isExpanded}
+            isCustomColor={isCustomInkColor}
+            label="Stroke"
+            onColorChange={handleStrokeColorChange}
           />
+        </PaletteGroup>
+        {supportsFill ? (
+          <PaletteGroup isExpanded={isExpanded} title="Fill">
+            <ColorSwatchRow
+              activeColor={fillColor}
+              ariaLabel="Fill colors"
+              customColorInputLabel="Custom fill color"
+              hideInlineLabel={isExpanded}
+              isCustomColor={isCustomFillColor}
+              label="Fill"
+              onColorChange={handleFillColorChange}
+            />
+          </PaletteGroup>
         ) : null}
-        <StrokeStyleRow activeStyle={strokeStyle} onStyleChange={handleStrokeStyleChange} />
-        <StrokeWidthRow
-          onStrokeWidthChange={handleStrokeWidthChange}
-          strokeWidth={strokeWidth}
-        />
-        {supportsEndpoints ? (
-          <EndpointRow
-            endMarker={endMarker}
-            onEndMarkerChange={(nextMarker) => handleEndpointChange("end", nextMarker)}
-            onStartMarkerChange={(nextMarker) => handleEndpointChange("start", nextMarker)}
-            startMarker={startMarker}
+        <PaletteGroup isExpanded={isExpanded} title="Style">
+          <StrokeStyleRow
+            activeStyle={strokeStyle}
+            hideInlineLabel={isExpanded}
+            onStyleChange={handleStrokeStyleChange}
           />
+        </PaletteGroup>
+        <PaletteGroup isExpanded={isExpanded} title="Width">
+          <StrokeWidthRow
+            hideInlineLabel={isExpanded}
+            onStrokeWidthChange={handleStrokeWidthChange}
+            strokeWidth={strokeWidth}
+          />
+        </PaletteGroup>
+        {supportsEndpoints ? (
+          <PaletteGroup isExpanded={isExpanded} title="Ends">
+            <EndpointRow
+              endMarker={endMarker}
+              hideInlineLabel={isExpanded}
+              onEndMarkerChange={(nextMarker) => handleEndpointChange("end", nextMarker)}
+              onStartMarkerChange={(nextMarker) => handleEndpointChange("start", nextMarker)}
+              startMarker={startMarker}
+            />
+          </PaletteGroup>
         ) : null}
       </div>
 
@@ -1745,6 +1764,7 @@ function ColorSwatchRow({
   activeColor,
   isCustomColor,
   customColorInputLabel,
+  hideInlineLabel = false,
   onColorChange
 }: {
   label: string;
@@ -1752,6 +1772,7 @@ function ColorSwatchRow({
   activeColor: string;
   isCustomColor: boolean;
   customColorInputLabel: string;
+  hideInlineLabel?: boolean;
   onColorChange: (color: string) => void;
 }) {
   const colorInputValue =
@@ -1759,7 +1780,7 @@ function ColorSwatchRow({
 
   return (
     <div className="diagram-editor__color-row" aria-label={ariaLabel}>
-      <span className="diagram-editor__color-row-label">{label}</span>
+      {!hideInlineLabel ? <span className="diagram-editor__color-row-label">{label}</span> : null}
       <button
         aria-label={`${label} empty color`}
         aria-pressed={activeColor === EMPTY_COLOR_VALUE}
@@ -1813,14 +1834,16 @@ function ColorSwatchRow({
 
 function StrokeStyleRow({
   activeStyle,
+  hideInlineLabel = false,
   onStyleChange
 }: {
   activeStyle: DiagramStrokeStyle;
+  hideInlineLabel?: boolean;
   onStyleChange: (style: DiagramStrokeStyle) => void;
 }) {
   return (
     <div className="diagram-editor__control-row" aria-label="Stroke styles">
-      <span className="diagram-editor__control-row-label">Style</span>
+      {!hideInlineLabel ? <span className="diagram-editor__control-row-label">Style</span> : null}
       <div className="diagram-editor__control-group">
         {DIAGRAM_STROKE_STYLE_ITEMS.map(({ style, label }) => (
           <button
@@ -1843,14 +1866,16 @@ function StrokeStyleRow({
 
 function StrokeWidthRow({
   strokeWidth,
+  hideInlineLabel = false,
   onStrokeWidthChange
 }: {
   strokeWidth: number;
+  hideInlineLabel?: boolean;
   onStrokeWidthChange: (width: number) => void;
 }) {
   return (
     <div className="diagram-editor__control-row" aria-label="Stroke width">
-      <span className="diagram-editor__control-row-label">Width</span>
+      {!hideInlineLabel ? <span className="diagram-editor__control-row-label">Width</span> : null}
       <div className="diagram-editor__control-group diagram-editor__control-group--width">
         {STROKE_WIDTH_PRESETS.map((preset) => (
           <button
@@ -1894,17 +1919,19 @@ function StrokeWidthRow({
 function EndpointRow({
   startMarker,
   endMarker,
+  hideInlineLabel = false,
   onStartMarkerChange,
   onEndMarkerChange
 }: {
   startMarker: DiagramEndpoint;
   endMarker: DiagramEndpoint;
+  hideInlineLabel?: boolean;
   onStartMarkerChange: (marker: DiagramEndpoint) => void;
   onEndMarkerChange: (marker: DiagramEndpoint) => void;
 }) {
   return (
     <div className="diagram-editor__control-row diagram-editor__control-row--endpoints" aria-label="Line endpoints">
-      <span className="diagram-editor__control-row-label">Ends</span>
+      {!hideInlineLabel ? <span className="diagram-editor__control-row-label">Ends</span> : null}
       <div className="diagram-editor__endpoint-sections">
         <div className="diagram-editor__endpoint-section">
           <span className="diagram-editor__endpoint-label">Start</span>
@@ -1945,6 +1972,23 @@ function EndpointRow({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PaletteGroup({
+  title,
+  isExpanded,
+  children
+}: {
+  title: string;
+  isExpanded: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="diagram-editor__palette-group">
+      {isExpanded ? <div className="diagram-editor__palette-group-title">{title}</div> : null}
+      {children}
     </div>
   );
 }

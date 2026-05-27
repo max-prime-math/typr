@@ -2043,11 +2043,47 @@ button {
   align-items: stretch;
 }
 
+.diagram-editor__palette-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.diagram-editor__palette-group-title {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.diagram-editor--expanded .diagram-editor__palette {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.diagram-editor--expanded .diagram-editor__palette > * {
+  flex: 0 0 auto;
+  min-width: max-content;
+  max-width: 100%;
+}
+
+.diagram-editor--expanded .diagram-editor__palette-group {
+  min-width: max-content;
+  max-width: 100%;
+}
+
 .diagram-editor__toolrow {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
   width: 100%;
+}
+
+.diagram-editor--expanded .diagram-editor__toolrow {
+  width: auto;
 }
 
 .diagram-editor__tool {
@@ -2098,6 +2134,10 @@ button {
 
 .diagram-editor__control-group--width {
   flex: 1 1 auto;
+}
+
+.diagram-editor--expanded .diagram-editor__control-group--width {
+  flex: 0 0 auto;
 }
 
 .diagram-editor__option-button {
