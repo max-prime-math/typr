@@ -103,9 +103,10 @@ export function WorkspaceTree({
           aria-label={`${isRootCollapsed ? "Expand" : "Collapse"} ${rootLabel}`}
           role="treeitem"
         >
-          <span aria-hidden="true" className="file-tree__chevron-text">
-            {isRootCollapsed ? "▸" : "▾"}
-          </span>
+          <span
+            aria-hidden="true"
+            className={`tree-disclosure-icon ${isRootCollapsed ? "tree-disclosure-icon--collapsed" : ""}`}
+          />
           <span
             className={`file-tree__folder-icon ${
               isRootCollapsed ? "file-tree__folder-icon--closed" : "file-tree__folder-icon--open"
@@ -356,9 +357,10 @@ function WorkspaceTreeBranch({
               type="button"
               aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
             >
-              <span aria-hidden="true" className="file-tree__chevron-text">
-                {isCollapsed ? "▸" : "▾"}
-              </span>
+              <span
+                aria-hidden="true"
+                className={`tree-disclosure-icon ${isCollapsed ? "tree-disclosure-icon--collapsed" : ""}`}
+              />
             </button>
           )}
           <span

@@ -7,67 +7,65 @@ export const toggleMathDelimiterCommand: Command = (view) => {
 };
 
 export function cycleMathDelimiter(view: EditorView): void {
-  const selection = view.state.selection.main;
+  const transaction = view.state.changeByRange((selection) => {
+    if (selection.from === selection.to) {
+      return {
+        changes: {
+          from: selection.from,
+          insert: "$  $"
+        },
+        range: EditorSelection.cursor(selection.from + 2)
+      };
+    }
 
-  if (selection.from === selection.to) {
-    view.dispatch({
+    const selectionState = classifyMathSelection(view, selection);
+
+    if (selectionState === "spaced") {
+      return {
+        changes: [
+          {
+            from: selection.from - 2,
+            to: selection.from,
+            insert: ""
+          },
+          {
+            from: selection.to,
+            to: selection.to + 2,
+            insert: ""
+          }
+        ],
+        range: shiftSelection(selection, -2)
+      };
+    }
+
+    if (selectionState === "tight") {
+      return {
+        changes: [
+          {
+            from: selection.from,
+            insert: " "
+          },
+          {
+            from: selection.to,
+            insert: " "
+          }
+        ],
+        range: shiftSelection(selection, 1)
+      };
+    }
+
+    return {
       changes: {
         from: selection.from,
-        insert: "$  $"
+        to: selection.to,
+        insert: `$${view.state.sliceDoc(selection.from, selection.to)}$`
       },
-      selection: EditorSelection.cursor(selection.from + 2),
-      scrollIntoView: true
-    });
-    return;
-  }
-
-  const selectionState = classifyMathSelection(view, selection);
-
-  if (selectionState === "spaced") {
-    view.dispatch({
-      changes: [
-        {
-          from: selection.from - 2,
-          to: selection.from,
-          insert: ""
-        },
-        {
-          from: selection.to,
-          to: selection.to + 2,
-          insert: ""
-        }
-      ],
-      selection: shiftSelection(selection, -2),
-      scrollIntoView: true
-    });
-    return;
-  }
-
-  if (selectionState === "tight") {
-    view.dispatch({
-      changes: [
-        {
-          from: selection.from,
-          insert: " "
-        },
-        {
-          from: selection.to,
-          insert: " "
-        }
-      ],
-      selection: shiftSelection(selection, 1),
-      scrollIntoView: true
-    });
-    return;
-  }
+      range: shiftSelection(selection, 1)
+    };
+  });
 
   view.dispatch({
-    changes: {
-      from: selection.from,
-      to: selection.to,
-      insert: `$${view.state.sliceDoc(selection.from, selection.to)}$`
-    },
-    selection: shiftSelection(selection, 1),
+    ...transaction,
     scrollIntoView: true
   });
 }

@@ -78,6 +78,7 @@ class SmoothCursorPlugin implements PluginValue {
 
   destroy(): void {
     this.stopAnimation();
+    this.view.dom.classList.remove("cm-smooth-cursor-active");
     this.smear.remove();
     this.cursor.remove();
   }
@@ -87,7 +88,7 @@ class SmoothCursorPlugin implements PluginValue {
       read: (view) => {
         const selection = view.state.selection.main;
 
-        if (!view.hasFocus || !selection.empty) {
+        if (!view.hasFocus || view.state.selection.ranges.length !== 1 || !selection.empty) {
           return null;
         }
 
@@ -124,6 +125,7 @@ class SmoothCursorPlugin implements PluginValue {
         }
 
         this.targetQuad = nextTarget;
+        this.view.dom.classList.add("cm-smooth-cursor-active");
         this.cursor.classList.add("cm-smooth-cursor--visible");
 
         if (!this.currentQuad || !this.trailQuad) {
@@ -264,6 +266,7 @@ class SmoothCursorPlugin implements PluginValue {
     this.lastMotion = null;
     this.lastSmearGradient = null;
     this.hideSmear();
+    this.view.dom.classList.remove("cm-smooth-cursor-active");
     this.cursor.classList.remove("cm-smooth-cursor--visible");
     this.cursor.style.clipPath = "none";
   }

@@ -26,6 +26,7 @@ import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
+import type { KeybindingMap } from "../app/keybindings";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import {
   createSnippetCompletionSource,
@@ -39,20 +40,24 @@ interface TypstEditorProps {
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  editorFontSize: number;
+  keybindings: KeybindingMap;
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
   snippets: TypstSnippet[];
   onSearchRequested: () => void;
   onCompileRequested: () => void;
+  onSelectionChange: (lineNumber: number) => void;
   onChange: (value: string) => void;
 }
 
 interface PreservedEditorViewState {
-  selection: {
+  selectionRanges: {
     anchor: number;
     head: number;
-  };
+  }[];
+  mainSelectionIndex: number;
   scrollTop: number;
   scrollLeft: number;
   hadFocus: boolean;
@@ -103,12 +108,15 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
+  editorFontSize,
+  keybindings,
   theme,
   diagnostics,
   highlightErrors,
   snippets,
   onSearchRequested,
   onCompileRequested,
+  onSelectionChange,
   onChange
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -390,10 +398,15 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
           latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
         },
+        onSelectionChange: (update) => {
+          onSelectionChange(update.state.doc.lineAt(update.state.selection.main.head).number);
+        },
         vimMode,
         relativeLineNumbers,
         cursorSmooth,
         cursorSmear,
+        editorFontSize,
+        keybindings,
         theme,
         diagnostics,
         highlightErrors,
@@ -406,9 +419,11 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
     if (preservedViewState) {
       view.dispatch({
-        selection: EditorSelection.range(
-          preservedViewState.selection.anchor,
-          preservedViewState.selection.head
+        selection: EditorSelection.create(
+          preservedViewState.selectionRanges.map((range) =>
+            EditorSelection.range(range.anchor, range.head)
+          ),
+          preservedViewState.mainSelectionIndex
         )
       });
       view.scrollDOM.scrollTop = preservedViewState.scrollTop;
@@ -421,13 +436,15 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
     viewRef.current = view;
     preservedViewStateRef.current = null;
+    onSelectionChange(view.state.doc.lineAt(view.state.selection.main.head).number);
 
     return () => {
       preservedViewStateRef.current = {
-        selection: {
-          anchor: view.state.selection.main.anchor,
-          head: view.state.selection.main.head
-        },
+        selectionRanges: view.state.selection.ranges.map((range) => ({
+          anchor: range.anchor,
+          head: range.head
+        })),
+        mainSelectionIndex: view.state.selection.mainIndex,
         scrollTop: view.scrollDOM.scrollTop,
         scrollLeft: view.scrollDOM.scrollLeft,
         hadFocus: view.hasFocus
@@ -438,7 +455,10 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
   }, [
     cursorSmear,
     cursorSmooth,
+    editorFontSize,
+    keybindings,
     onCompileRequested,
+    onSelectionChange,
     relativeLineNumbers,
     theme,
     vimMode,
@@ -510,38 +530,45 @@ function insertTextIntoView(
   text: string,
   selectInsertedText = false
 ): void {
-  const selection = view.state.selection.main;
-
-  view.dispatch({
+  const transaction = view.state.changeByRange((selection) => ({
     changes: {
       from: selection.from,
       to: selection.to,
       insert: text
     },
-    selection: selectInsertedText
+    range: selectInsertedText
       ? EditorSelection.range(selection.from, selection.from + text.length)
-      : EditorSelection.cursor(selection.from + text.length),
+      : EditorSelection.cursor(selection.from + text.length)
+  }));
+
+  view.dispatch({
+    ...transaction,
     scrollIntoView: true
   });
 }
 
 function replaceSelection(view: EditorView, before: string, after: string): void {
-  const selection = view.state.selection.main;
-  const selectedText = view.state.sliceDoc(selection.from, selection.to);
-  const hasSelection = selection.from !== selection.to;
-  const insert = hasSelection
-    ? `${before}${selectedText}${after}`
-    : `${before}${after}`;
-  const cursor = selection.from + before.length;
-  const head = hasSelection ? cursor + selectedText.length : cursor;
+  const transaction = view.state.changeByRange((selection) => {
+    const selectedText = view.state.sliceDoc(selection.from, selection.to);
+    const hasSelection = selection.from !== selection.to;
+    const insert = hasSelection
+      ? `${before}${selectedText}${after}`
+      : `${before}${after}`;
+    const cursor = selection.from + before.length;
+    const head = hasSelection ? cursor + selectedText.length : cursor;
+
+    return {
+      changes: {
+        from: selection.from,
+        to: selection.to,
+        insert
+      },
+      range: EditorSelection.range(cursor, head)
+    };
+  });
 
   view.dispatch({
-    changes: {
-      from: selection.from,
-      to: selection.to,
-      insert
-    },
-    selection: EditorSelection.range(cursor, head),
+    ...transaction,
     scrollIntoView: true
   });
 }
@@ -575,14 +602,7 @@ function insertSymbolIntoView(view: EditorView, template: string): void {
 }
 
 function toggleCurrentLines(view: EditorView, prefix: string, alternatePrefix?: string): void {
-  const selection = view.state.selection.main;
-  const fromLine = view.state.doc.lineAt(selection.from);
-  const toLine = view.state.doc.lineAt(selection.to);
-  const lineNumbers = [];
-
-  for (let lineNumber = fromLine.number; lineNumber <= toLine.number; lineNumber += 1) {
-    lineNumbers.push(lineNumber);
-  }
+  const lineNumbers = getSelectedLineNumbers(view);
 
   const changes = lineNumbers.map((lineNumber) => {
     const line = view.state.doc.line(lineNumber);
@@ -617,14 +637,7 @@ function toggleCurrentLines(view: EditorView, prefix: string, alternatePrefix?: 
 }
 
 function cycleCurrentLinesHeading(view: EditorView, maxLevel: number): void {
-  const selection = view.state.selection.main;
-  const fromLine = view.state.doc.lineAt(selection.from);
-  const toLine = view.state.doc.lineAt(selection.to);
-  const lineNumbers = [];
-
-  for (let lineNumber = fromLine.number; lineNumber <= toLine.number; lineNumber += 1) {
-    lineNumbers.push(lineNumber);
-  }
+  const lineNumbers = getSelectedLineNumbers(view);
 
   const changes = lineNumbers.map((lineNumber) => {
     const line = view.state.doc.line(lineNumber);
@@ -651,6 +664,21 @@ function cycleCurrentLinesHeading(view: EditorView, maxLevel: number): void {
     changes,
     scrollIntoView: true
   });
+}
+
+function getSelectedLineNumbers(view: EditorView): number[] {
+  const lineNumbers = new Set<number>();
+
+  for (const selection of view.state.selection.ranges) {
+    const fromLine = view.state.doc.lineAt(selection.from);
+    const toLine = view.state.doc.lineAt(selection.to);
+
+    for (let lineNumber = fromLine.number; lineNumber <= toLine.number; lineNumber += 1) {
+      lineNumbers.add(lineNumber);
+    }
+  }
+
+  return [...lineNumbers].sort((left, right) => left - right);
 }
 
 function clampLineNumber(view: EditorView, lineNumber: number): number {

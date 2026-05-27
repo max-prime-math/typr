@@ -8,10 +8,13 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ChangeEvent,
-  type ReactNode
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction
 } from "react";
 import {
   createDefaultSnapshot,
+  DEFAULT_EDITOR_FONT_SIZE,
   createDocument,
   createDocumentFromFile,
   createDefaultDiagram,
@@ -56,6 +59,8 @@ import {
   updateActiveDocument,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
+  updateEditorFontSizePreference,
+  updateKeybindingsPreference,
   updateLiveCompilationPreference,
   updateRelativeLineNumbersPreference,
   updateThemePreference,
@@ -63,6 +68,15 @@ import {
   type AppSnapshot,
   type ThemePreference
 } from "./appState";
+import {
+  DEFAULT_KEYBINDINGS,
+  KEYBINDING_DEFINITIONS,
+  findKeybindingConflicts,
+  formatKeybinding,
+  keybindingFromKeyboardEvent,
+  matchesKeybinding,
+  type KeybindingCommandId
+} from "./keybindings";
 import {
   createTypstCompiler,
   type CompilerStatus,
@@ -271,7 +285,7 @@ type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
-type SettingsTab = "github" | "themes" | "snippets" | "graphs";
+type SettingsTab = "github" | "themes" | "keybindings" | "snippets" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
 type TableGutter = "none" | "small" | "medium";
@@ -295,6 +309,11 @@ interface OutlineEntry {
   level: number;
   lineNumber: number;
   title: string;
+}
+
+interface OutlineTreeEntry extends OutlineEntry {
+  id: string;
+  children: OutlineTreeEntry[];
 }
 
 interface MatrixSettings {
@@ -394,14 +413,6 @@ function isMobileWorkspaceViewport(width: number) {
   return width > 0 && width <= MOBILE_WORKSPACE_THRESHOLD;
 }
 
-function isPrimaryShortcut(event: KeyboardEvent) {
-  return event.metaKey || event.ctrlKey;
-}
-
-function isResizeShortcut(event: KeyboardEvent) {
-  return isPrimaryShortcut(event) && event.altKey && !event.shiftKey;
-}
-
 function getWorkspaceParentPath(path: string): string | null {
   const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
   segments.pop();
@@ -431,7 +442,7 @@ function isTypingTarget(target: EventTarget | null) {
   }
 
   const tag = target.tagName.toLowerCase();
-  return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+  return tag === "input" || tag === "textarea" || tag === "select";
 }
 
 function clampTooltipPosition(x: number, y: number) {
@@ -547,6 +558,8 @@ export function App() {
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [isPaperView, setIsPaperView] = useState(false);
+  const [recordingKeybindingId, setRecordingKeybindingId] =
+    useState<KeybindingCommandId | null>(null);
   const [diagramInkColor, setDiagramInkColor] = useState("#000000");
   const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({});
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
@@ -563,6 +576,10 @@ export function App() {
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
     null
   );
+  const [collapsedOutlineEntries, setCollapsedOutlineEntries] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [currentEditorLineNumber, setCurrentEditorLineNumber] = useState(1);
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [customSnippets, setCustomSnippets] = useState<TypstSnippet[]>([]);
   const [snippetImportText, setSnippetImportText] = useState(
@@ -643,8 +660,16 @@ export function App() {
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
-  const compileShortcutLabel = isApplePlatform() ? "Cmd+Return" : "Ctrl+Enter";
-  const vimToggleShortcutLabel = isApplePlatform() ? "Cmd+;" : "Ctrl+;";
+  const isAppleShortcutPlatform = isApplePlatform();
+  const keybindings = snapshot.preferences.keybindings;
+  const compileShortcutLabel = formatKeybinding(
+    keybindings.compile,
+    isAppleShortcutPlatform
+  );
+  const vimToggleShortcutLabel = formatKeybinding(
+    keybindings.toggleVim,
+    isAppleShortcutPlatform
+  );
   const handleVimToggle = useCallback(() => {
     setSnapshot((currentSnapshot) => {
       const nextVimMode = !currentSnapshot.preferences.vimMode;
@@ -664,6 +689,41 @@ export function App() {
     },
     []
   );
+
+  const handleKeybindingChange = useCallback(
+    (commandId: KeybindingCommandId, binding: string) => {
+      setSnapshot((currentSnapshot) =>
+        updateKeybindingsPreference(currentSnapshot, {
+          ...currentSnapshot.preferences.keybindings,
+          [commandId]: binding
+        })
+      );
+    },
+    []
+  );
+
+  const handleKeybindingReset = useCallback((commandId: KeybindingCommandId) => {
+    setSnapshot((currentSnapshot) =>
+      updateKeybindingsPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.keybindings,
+        [commandId]: DEFAULT_KEYBINDINGS[commandId]
+      })
+    );
+    setRecordingKeybindingId(null);
+  }, []);
+
+  const handleResetAllKeybindings = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateKeybindingsPreference(currentSnapshot, DEFAULT_KEYBINDINGS)
+    );
+    setRecordingKeybindingId(null);
+  }, []);
+
+  const setEditorFontSize = useCallback((editorFontSize: number) => {
+    setSnapshot((currentSnapshot) =>
+      updateEditorFontSizePreference(currentSnapshot, editorFontSize)
+    );
+  }, []);
 
   const handleCursorSmoothToggle = useCallback(() => {
     setSnapshot((currentSnapshot) =>
@@ -1087,6 +1147,79 @@ export function App() {
     );
   }, [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth]);
 
+  const runAppKeybindingCommand = useCallback(
+    (commandId: KeybindingCommandId): boolean => {
+      switch (commandId) {
+        case "compile":
+          handleCompileRef.current();
+          return true;
+        case "toggleVim":
+          handleVimToggle();
+          return true;
+        case "openSearch":
+          setActiveSidebarTool("search");
+          setIsSidebarCollapsed(false);
+          if (workspaceMode === "editor" || workspaceMode === "preview") {
+            setWorkspaceMode("split");
+          }
+          return true;
+        case "toggleSidebar":
+          handlePanelToggle("sidebar");
+          return true;
+        case "togglePreview":
+          handlePanelToggle("preview");
+          return true;
+        case "resetPanels":
+          resetPanelWidths();
+          return true;
+        case "showSidebarOnly":
+          setFullscreenMode("sidebar");
+          return true;
+        case "showEditorOnly":
+          setFullscreenMode("editor");
+          return true;
+        case "showPreviewOnly":
+          setFullscreenMode("preview");
+          return true;
+        case "showSplit":
+          setFullscreenMode("split");
+          return true;
+        case "previousSidebarTool":
+          cycleSidebarTool(-1);
+          return true;
+        case "nextSidebarTool":
+          cycleSidebarTool(1);
+          return true;
+        case "increaseEditorFont":
+          setEditorFontSize(snapshot.preferences.editorFontSize + 1);
+          return true;
+        case "decreaseEditorFont":
+          setEditorFontSize(snapshot.preferences.editorFontSize - 1);
+          return true;
+        case "resetEditorFont":
+          setEditorFontSize(DEFAULT_EDITOR_FONT_SIZE);
+          return true;
+        case "increasePreviewZoom":
+          setPreviewZoom((current) => nextZoomStep(current, 1));
+          return true;
+        case "decreasePreviewZoom":
+          setPreviewZoom((current) => nextZoomStep(current, -1));
+          return true;
+        case "resetPreviewZoom":
+          setPreviewZoom(DEFAULT_ZOOM);
+          return true;
+        default:
+          return false;
+      }
+    },
+    [
+      handleVimToggle,
+      setEditorFontSize,
+      snapshot.preferences.editorFontSize,
+      workspaceMode
+    ]
+  );
+
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -1101,6 +1234,10 @@ export function App() {
     }
 
     function handleKeyDown(event: KeyboardEvent) {
+      if (recordingKeybindingId) {
+        return;
+      }
+
       if (event.key === "Escape") {
         cancelPendingMenuClose();
         cancelPendingMenuOpen();
@@ -1112,23 +1249,7 @@ export function App() {
         return;
       }
 
-      const isVimToggleShortcut = isApplePlatform()
-        ? event.metaKey && !event.ctrlKey && !event.altKey && event.key === ";"
-        : event.ctrlKey && !event.metaKey && !event.altKey && event.key === ";";
-
-      if (isVimToggleShortcut) {
-        event.preventDefault();
-        handleVimToggle();
-        return;
-      }
-
-      const isCompileShortcut = isApplePlatform()
-        ? event.metaKey && !event.ctrlKey && !event.altKey && event.key === "Enter"
-        : event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Enter";
-
-      if (isCompileShortcut) {
-        event.preventDefault();
-        handleCompileRef.current();
+      if (event.defaultPrevented) {
         return;
       }
 
@@ -1136,51 +1257,18 @@ export function App() {
         return;
       }
 
-      if (!isResizeShortcut(event)) {
-        return;
-      }
-
-      const key = event.key.toLowerCase();
-
-      if (key === "b") {
-        event.preventDefault();
-        handlePanelToggle("sidebar");
-        return;
-      }
-
-      if (key === "p") {
-        event.preventDefault();
-        handlePanelToggle("preview");
-        return;
-      }
-
-      if (key === "0") {
-        event.preventDefault();
-        resetPanelWidths();
-        return;
-      }
-
-      if (key === "1") {
-        event.preventDefault();
-        setFullscreenMode("sidebar");
-        return;
-      }
-
-      if (key === "2") {
-        event.preventDefault();
-        setFullscreenMode("editor");
-        return;
-      }
-
-      if (key === "3") {
-        event.preventDefault();
-        setFullscreenMode("preview");
-        return;
-      }
-
-      if (key === "4") {
-        event.preventDefault();
-        setFullscreenMode("split");
+      for (const definition of KEYBINDING_DEFINITIONS) {
+        if (
+          matchesKeybinding(
+            event,
+            snapshot.preferences.keybindings[definition.id],
+            isAppleShortcutPlatform
+          ) &&
+          runAppKeybindingCommand(definition.id)
+        ) {
+          event.preventDefault();
+          return;
+        }
       }
     }
 
@@ -1202,10 +1290,10 @@ export function App() {
   }, [
     cancelPendingMenuClose,
     cancelPendingMenuOpen,
-    handlePanelToggle,
-    handleVimToggle,
-    resetPanelWidths,
-    setFullscreenMode
+    isAppleShortcutPlatform,
+    recordingKeybindingId,
+    runAppKeybindingCommand,
+    snapshot.preferences.keybindings
   ]);
 
   useEffect(() => {
@@ -3008,6 +3096,20 @@ export function App() {
     setWorkspaceMode(mode);
   }
 
+  function cycleSidebarTool(direction: -1 | 1) {
+    setIsSidebarCollapsed(false);
+    setActiveSidebarTool((currentTool) => {
+      const currentIndex = SIDEBAR_TOOLS.findIndex((tool) => tool.id === currentTool);
+      const nextIndex =
+        (currentIndex + direction + SIDEBAR_TOOLS.length) % SIDEBAR_TOOLS.length;
+      return SIDEBAR_TOOLS[nextIndex].id;
+    });
+
+    if (workspaceMode === "editor" || workspaceMode === "preview") {
+      setWorkspaceMode("split");
+    }
+  }
+
   function describeWorkspaceMode(mode: WorkspaceMode) {
     if (mode === "split") {
       return "Split";
@@ -3149,10 +3251,18 @@ export function App() {
     () => mergeSnippets([...DEFAULT_TYPST_SNIPPETS, ...customSnippets]),
     [customSnippets]
   );
-  const outlineEntries = useMemo(
+  const flatOutlineEntries = useMemo(
     () => collectOutlineEntries(activeDocument.content),
     [activeDocument.content]
   );
+  const outlineEntries = useMemo(
+    () => buildOutlineTree(flatOutlineEntries),
+    [flatOutlineEntries]
+  );
+  const activeOutlineEntryId = useMemo(() => {
+    const activeEntry = findActiveOutlineEntry(flatOutlineEntries, currentEditorLineNumber);
+    return activeEntry ? `${activeEntry.lineNumber}:${activeEntry.level}:${activeEntry.title}` : null;
+  }, [currentEditorLineNumber, flatOutlineEntries]);
   const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
   const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
   const effectiveWorkspaceWidth =
@@ -3878,24 +3988,14 @@ export function App() {
                 <section className="sidebar-section sidebar-section--scrollable">
                   {outlineEntries.length > 0 ? (
                     <div className="outline-list" role="list">
-                      {outlineEntries.map((entry) => (
-                        <button
-                          key={`${entry.lineNumber}:${entry.title}`}
-                          className="outline-row"
-                          onClick={() =>
-                            focusDocumentLocation(activeDocument.id, entry.lineNumber, 1)
-                          }
-                          style={
-                            {
-                              "--outline-level": entry.level
-                            } as CSSProperties
-                          }
-                          type="button"
-                        >
-                          <span className="outline-row__title">{entry.title}</span>
-                          <span className="outline-row__meta">{`H${entry.level}`}</span>
-                        </button>
-                      ))}
+                      {renderOutlineEntries(
+                        outlineEntries,
+                        activeDocument.id,
+                        activeOutlineEntryId,
+                        collapsedOutlineEntries,
+                        setCollapsedOutlineEntries,
+                        focusDocumentLocation
+                      )}
                     </div>
                   ) : (
                     <div className="snippet-empty">
@@ -4517,8 +4617,11 @@ export function App() {
               snippets={allSnippets}
               onCompileRequested={handleCompile}
               onSearchRequested={openSearchPane}
+              onSelectionChange={setCurrentEditorLineNumber}
               value={activeDocument.content}
               vimMode={snapshot.preferences.vimMode}
+              editorFontSize={snapshot.preferences.editorFontSize}
+              keybindings={keybindings}
               relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
               cursorSmooth={snapshot.preferences.cursorSmooth}
               cursorSmear={snapshot.preferences.cursorSmear}
@@ -4781,7 +4884,7 @@ export function App() {
               <div>
                 <h2>Typr Settings</h2>
                 <p className="settings-sheet__copy">
-                  Configure sync, themes, snippets, and graph tools from one place.
+                  Configure sync, themes, keybindings, snippets, and graph tools from one place.
                 </p>
               </div>
               <button
@@ -4812,6 +4915,15 @@ export function App() {
                   type="button"
                 >
                   Themes
+                </button>
+                <button
+                  aria-selected={settingsTab === "keybindings"}
+                  className={`settings-tab ${settingsTab === "keybindings" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("keybindings")}
+                  role="tab"
+                  type="button"
+                >
+                  Keybindings
                 </button>
                 <button
                   aria-selected={settingsTab === "snippets"}
@@ -5107,6 +5219,130 @@ export function App() {
                         </div>
                       ) : null}
                     </section>
+                  </div>
+                </div>
+              ) : settingsTab === "keybindings" ? (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="keybindings-table" role="table" aria-label="Keyboard shortcuts">
+                      <div className="keybindings-table__row keybindings-table__row--head" role="row">
+                        <span role="columnheader">Action</span>
+                        <span role="columnheader">Binding</span>
+                        <span role="columnheader">Default</span>
+                        <span role="columnheader">Edit</span>
+                      </div>
+                      {KEYBINDING_DEFINITIONS.map((definition) => {
+                        const binding = keybindings[definition.id];
+                        const conflicts = findKeybindingConflicts(keybindings, definition.id);
+                        const isRecording = recordingKeybindingId === definition.id;
+
+                        return (
+                          <div className="keybindings-table__row" key={definition.id} role="row">
+                            <span role="cell">
+                              <strong>{definition.label}</strong>
+                              <small>{definition.group}</small>
+                              {conflicts.length > 0 ? (
+                                <em>
+                                  Also assigned to{" "}
+                                  {conflicts
+                                    .map(
+                                      (conflictId) =>
+                                        KEYBINDING_DEFINITIONS.find(
+                                          (candidate) => candidate.id === conflictId
+                                        )?.label ?? conflictId
+                                    )
+                                    .join(", ")}
+                                </em>
+                              ) : null}
+                            </span>
+                            <button
+                              className={`keybinding-recorder ${
+                                isRecording ? "keybinding-recorder--active" : ""
+                              }`}
+                              onClick={() => setRecordingKeybindingId(definition.id)}
+                              onKeyDown={(event) => {
+                                if (!isRecording) {
+                                  return;
+                                }
+
+                                event.preventDefault();
+                                event.stopPropagation();
+
+                                if (event.key === "Escape") {
+                                  setRecordingKeybindingId(null);
+                                  return;
+                                }
+
+                                const nextBinding = keybindingFromKeyboardEvent(
+                                  event.nativeEvent,
+                                  isAppleShortcutPlatform
+                                );
+                                if (!nextBinding) {
+                                  return;
+                                }
+
+                                handleKeybindingChange(definition.id, nextBinding);
+                                setRecordingKeybindingId(null);
+                              }}
+                              role="cell"
+                              type="button"
+                            >
+                              {isRecording
+                                ? "Press keys"
+                                : formatKeybinding(binding, isAppleShortcutPlatform)}
+                            </button>
+                            <kbd role="cell">
+                              {formatKeybinding(
+                                definition.defaultBinding,
+                                isAppleShortcutPlatform
+                              )}
+                            </kbd>
+                            <span className="keybindings-table__actions" role="cell">
+                              <button
+                                aria-label={`Reset ${definition.label}`}
+                                className="pane__button pane__button--compact pane__icon-button"
+                                onClick={() => handleKeybindingReset(definition.id)}
+                                title={`Reset ${definition.label}`}
+                                type="button"
+                              >
+                                <span aria-hidden="true" className="toolbar-icon toolbar-icon--reset" />
+                              </button>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <section className="keybindings-card">
+                      <div className="keybindings-card__header">
+                        <h4>Mouse gestures</h4>
+                        <span className="pane__meta">Fixed</span>
+                      </div>
+                      <div className="keybindings-gesture-list">
+                        <div>
+                          <span>Insert cursor</span>
+                          <kbd>{isAppleShortcutPlatform ? "Option+Click" : "Alt+Click"}</kbd>
+                        </div>
+                        <div>
+                          <span>Column selection</span>
+                          <kbd>
+                            {isAppleShortcutPlatform
+                              ? "Shift+Option+Drag"
+                              : "Shift+Alt+Drag"}
+                          </kbd>
+                        </div>
+                      </div>
+                    </section>
+
+                    <div className="keybindings-footer">
+                      <button
+                        className="pane__button pane__button--quiet"
+                        onClick={handleResetAllKeybindings}
+                        type="button"
+                      >
+                        Reset all
+                      </button>
+                    </div>
                   </div>
                 </div>
               ) : settingsTab === "snippets" ? (
@@ -5829,6 +6065,134 @@ function collectOutlineEntries(content: string): OutlineEntry[] {
         } satisfies OutlineEntry
       ];
     });
+}
+
+function buildOutlineTree(entries: OutlineEntry[]): OutlineTreeEntry[] {
+  const root: OutlineTreeEntry[] = [];
+  const stack: OutlineTreeEntry[] = [];
+
+  for (const entry of entries) {
+    const node: OutlineTreeEntry = {
+      ...entry,
+      id: `${entry.lineNumber}:${entry.level}:${entry.title}`,
+      children: []
+    };
+
+    while (stack.length > 0 && stack[stack.length - 1].level >= node.level) {
+      stack.pop();
+    }
+
+    if (stack.length === 0) {
+      root.push(node);
+    } else {
+      stack[stack.length - 1].children.push(node);
+    }
+
+    stack.push(node);
+  }
+
+  return root;
+}
+
+function findActiveOutlineEntry(
+  entries: OutlineEntry[],
+  currentLineNumber: number
+): OutlineEntry | null {
+  let activeEntry: OutlineEntry | null = null;
+
+  for (const entry of entries) {
+    if (entry.lineNumber > currentLineNumber) {
+      break;
+    }
+
+    activeEntry = entry;
+  }
+
+  return activeEntry;
+}
+
+function renderOutlineEntries(
+  entries: OutlineTreeEntry[],
+  documentId: string,
+  activeEntryId: string | null,
+  collapsedEntries: Record<string, boolean>,
+  setCollapsedEntries: Dispatch<SetStateAction<Record<string, boolean>>>,
+  focusDocumentLocation: (
+    documentId: string,
+    line: number,
+    column: number,
+    endLine?: number,
+    endColumn?: number
+  ) => void,
+  depth = 0
+): ReactNode {
+  return entries.map((entry) => {
+    const isCollapsed = collapsedEntries[entry.id] ?? false;
+    const hasChildren = entry.children.length > 0;
+
+    return (
+      <div
+        className="outline-node"
+        key={entry.id}
+        role="listitem"
+        style={
+          {
+            "--outline-depth": depth
+          } as CSSProperties
+        }
+      >
+        <div
+          className={`outline-row ${entry.id === activeEntryId ? "outline-row--selected" : ""}`}
+        >
+          {hasChildren ? (
+            <button
+              aria-label={isCollapsed ? `Expand ${entry.title}` : `Collapse ${entry.title}`}
+              className="outline-row__toggle"
+              onClick={(event) => {
+                event.stopPropagation();
+                setCollapsedEntries((current) => ({
+                  ...current,
+                  [entry.id]: !isCollapsed
+                }));
+              }}
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className={`tree-disclosure-icon ${
+                  isCollapsed ? "tree-disclosure-icon--collapsed" : ""
+                }`}
+              />
+            </button>
+          ) : (
+            <span aria-hidden="true" className="outline-row__spacer" />
+          )}
+
+          <button
+            className="outline-row__link"
+            onClick={() => focusDocumentLocation(documentId, entry.lineNumber, 1)}
+            type="button"
+          >
+            <span className="outline-row__title">{entry.title}</span>
+          </button>
+        </div>
+
+        {hasChildren && !isCollapsed ? (
+          <div className="outline-children" role="list">
+            {renderOutlineEntries(
+              entry.children,
+              documentId,
+              activeEntryId,
+              collapsedEntries,
+              setCollapsedEntries,
+              focusDocumentLocation,
+              depth + 1
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
+  });
 }
 
 function formatDiagnosticRange(diagnostic: {

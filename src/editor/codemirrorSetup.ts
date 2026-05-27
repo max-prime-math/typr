@@ -7,14 +7,38 @@ import {
   prevSnippetField,
   type CompletionSource
 } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap, indentMore } from "@codemirror/commands";
+import {
+  addCursorAbove,
+  addCursorBelow,
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentMore
+} from "@codemirror/commands";
 import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
-import { search as searchExtension, searchKeymap } from "@codemirror/search";
+import {
+  search as searchExtension,
+  searchKeymap,
+  selectNextOccurrence,
+  selectSelectionMatches
+} from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
-import { Compartment, EditorState } from "@codemirror/state";
-import { drawSelection, EditorView, highlightActiveLineGutter, keymap, lineNumbers, type Command, type ViewUpdate } from "@codemirror/view";
+import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import {
+  crosshairCursor,
+  drawSelection,
+  EditorView,
+  highlightActiveLineGutter,
+  keymap,
+  lineNumbers,
+  rectangularSelection,
+  type Command,
+  type ViewUpdate
+} from "@codemirror/view";
 import { getCM, vim } from "@replit/codemirror-vim";
 import type { StyleSpec } from "style-mod";
+import type { KeybindingMap } from "../app/keybindings";
+import { toCodeMirrorKeybinding } from "../app/keybindings";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { toggleMathDelimiterCommand } from "./mathActions";
@@ -24,10 +48,13 @@ import type { ThemeDefinition } from "../theme/themes";
 
 interface EditorSetupOptions {
   onChange: (update: ViewUpdate) => void;
+  onSelectionChange: (update: ViewUpdate) => void;
   vimMode: boolean;
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  editorFontSize: number;
+  keybindings: KeybindingMap;
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
@@ -38,21 +65,25 @@ interface EditorSetupOptions {
 
 export const diagnosticsCompartment = new Compartment();
 
-function createEditorTheme(theme: ThemeDefinition, cursorSmooth: boolean): Extension {
+function createEditorTheme(
+  theme: ThemeDefinition,
+  cursorSmooth: boolean,
+  editorFontSize: number
+): Extension {
   const dark = theme.mode === "dark";
   const smoothCursorStyles: Record<string, StyleSpec> = cursorSmooth
     ? {
         ".cm-content": {
           caretColor: "transparent"
         },
-        ".cm-cursor, .cm-dropCursor, .cm-fat-cursor": {
+        "&.cm-smooth-cursor-active .cm-cursor, &.cm-smooth-cursor-active .cm-dropCursor, &.cm-smooth-cursor-active .cm-fat-cursor": {
           borderLeftColor: "transparent !important",
           borderRightColor: "transparent !important",
           borderTopColor: "transparent !important",
           borderBottomColor: "transparent !important",
           opacity: "0 !important"
         },
-        ".cm-focused .cm-cursor, .cm-focused .cm-dropCursor, .cm-focused .cm-fat-cursor": {
+        "&.cm-smooth-cursor-active.cm-focused .cm-cursor, &.cm-smooth-cursor-active.cm-focused .cm-dropCursor, &.cm-smooth-cursor-active.cm-focused .cm-fat-cursor": {
           display: "none !important"
         },
         ".cm-fat-cursor-mark": {
@@ -101,7 +132,7 @@ function createEditorTheme(theme: ThemeDefinition, cursorSmooth: boolean): Exten
         height: "100%",
         color: "var(--editor-foreground)",
         backgroundColor: "var(--editor-background)",
-        fontSize: "16px"
+        fontSize: `${editorFontSize}px`
       },
       ".cm-scroller": {
         overflow: "auto",
@@ -146,10 +177,13 @@ export function createEditorState(
 
 export function createEditorExtensions({
   onChange,
+  onSelectionChange,
   vimMode,
   relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
+  editorFontSize,
+  keybindings,
   theme,
   diagnostics,
   highlightErrors,
@@ -170,17 +204,29 @@ export function createEditorExtensions({
   });
 
   const keymaps = [
-    { key: "Mod-f", run: () => {
+    { key: toCodeMirrorKeybinding(keybindings.openSearch), run: () => {
       onSearchRequested();
       return true;
     }, scope: "editor" },
-    { key: "Mod-Enter", run: () => {
+    { key: toCodeMirrorKeybinding(keybindings.compile), run: () => {
       onCompileRequested();
       return true;
     }, scope: "editor" },
-    ...defaultKeymap,
+    { key: toCodeMirrorKeybinding(keybindings.multiCursorAbove), run: addCursorAbove },
+    { key: toCodeMirrorKeybinding(keybindings.multiCursorBelow), run: addCursorBelow },
+    { key: toCodeMirrorKeybinding(keybindings.multiCursorNextMatch), run: selectNextOccurrence, preventDefault: true },
+    { key: toCodeMirrorKeybinding(keybindings.multiCursorAllMatches), run: selectSelectionMatches },
+    { key: toCodeMirrorKeybinding(keybindings.multiCursorLineEnds), run: addCursorToSelectedLineEnds },
+    ...defaultKeymap.filter(
+      (binding) => binding.run !== addCursorAbove && binding.run !== addCursorBelow
+    ),
     ...historyKeymap,
-    ...searchKeymap
+    ...searchKeymap.filter(
+      (binding) =>
+        binding.key !== "Mod-f" &&
+        binding.run !== selectNextOccurrence &&
+        binding.run !== selectSelectionMatches
+    )
   ];
   const tabCommand: Command = (view) => {
     if (nextSnippetField(view)) {
@@ -202,6 +248,12 @@ export function createEditorExtensions({
   };
 
   return [
+    EditorState.allowMultipleSelections.of(true),
+    EditorView.clickAddsSelectionRange.of((event) => event.altKey),
+    rectangularSelection({
+      eventFilter: isRectangularSelectionGesture
+    }),
+    crosshairCursor({ key: "Alt" }),
     lineNumberExtension,
     diagnosticsCompartment.of(
       createEditorDiagnosticExtensions(diagnostics, highlightErrors)
@@ -225,11 +277,15 @@ export function createEditorExtensions({
       ...keymaps
     ]),
     EditorView.lineWrapping,
-    createEditorTheme(theme, cursorSmooth),
+    createEditorTheme(theme, cursorSmooth, editorFontSize),
     ...(cursorSmooth ? [smoothCursor(vimMode, cursorSmear)] : []),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         onChange(update);
+      }
+
+      if (update.selectionSet) {
+        onSelectionChange(update);
       }
     }),
     ...(vimMode ? [vim()] : [])
@@ -243,3 +299,34 @@ function shouldHandleMathDelimiterShortcut(view: EditorView, vimMode: boolean): 
 
   return getCM(view)?.state.vim?.insertMode === true;
 }
+
+function isRectangularSelectionGesture(event: MouseEvent): boolean {
+  return event.button === 0 && event.altKey && event.shiftKey;
+}
+
+const addCursorToSelectedLineEnds: Command = (view) => {
+  const lineEnds = new Map<number, number>();
+
+  for (const selection of view.state.selection.ranges) {
+    const fromLine = view.state.doc.lineAt(selection.from);
+    const toLine = view.state.doc.lineAt(selection.to);
+
+    for (let lineNumber = fromLine.number; lineNumber <= toLine.number; lineNumber += 1) {
+      const line = view.state.doc.line(lineNumber);
+      lineEnds.set(lineNumber, line.to);
+    }
+  }
+
+  if (lineEnds.size <= 1 && view.state.selection.ranges.length === 1) {
+    return false;
+  }
+
+  const ranges = [...lineEnds.values()].map((position) => EditorSelection.cursor(position));
+  view.dispatch({
+    selection: EditorSelection.create(ranges, ranges.length - 1),
+    scrollIntoView: true,
+    userEvent: "select.multiple"
+  });
+
+  return true;
+};

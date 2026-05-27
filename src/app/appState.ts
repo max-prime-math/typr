@@ -10,6 +10,7 @@ import {
   normalizeGraphFileName,
   normalizeGraphFileNameForContentType
 } from "../graph/graphFiles";
+import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from "./keybindings";
 
 export type ThemePreference = string;
 export type GraphProvider = "desmos" | "plotly" | "gnuplot";
@@ -198,6 +199,8 @@ export interface AppPreferences {
   cursorSmear: number;
   liveCompilation: boolean;
   graphProvider: GraphProvider;
+  keybindings: KeybindingMap;
+  editorFontSize: number;
 }
 
 export interface AppSnapshot {
@@ -225,6 +228,9 @@ Start writing your document here.
 `;
 
 const DEFAULT_CURSOR_SMEAR = 25;
+export const DEFAULT_EDITOR_FONT_SIZE = 16;
+const MIN_EDITOR_FONT_SIZE = 12;
+const MAX_EDITOR_FONT_SIZE = 28;
 function createId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
 }
@@ -321,7 +327,9 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
-      graphProvider: "desmos"
+      graphProvider: "desmos",
+      keybindings: DEFAULT_KEYBINDINGS,
+      editorFontSize: DEFAULT_EDITOR_FONT_SIZE
     }
   };
 }
@@ -372,7 +380,13 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
             ? 0
             : DEFAULT_CURSOR_SMEAR,
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
-      graphProvider: normalizeGraphProvider(storedGraphProvider)
+      graphProvider: normalizeGraphProvider(storedGraphProvider),
+      keybindings: normalizeKeybindings(
+        (snapshot.preferences as Partial<AppPreferences>).keybindings
+      ),
+      editorFontSize: clampEditorFontSize(
+        (snapshot.preferences as Partial<AppPreferences>).editorFontSize
+      )
     },
     project: {
       ...snapshot.project,
@@ -639,6 +653,12 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
 
 function clampCursorSmear(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function clampEditorFontSize(value: unknown): number {
+  return typeof value === "number"
+    ? Math.max(MIN_EDITOR_FONT_SIZE, Math.min(MAX_EDITOR_FONT_SIZE, Math.round(value)))
+    : DEFAULT_EDITOR_FONT_SIZE;
 }
 
 export function getActiveDocument(project: TypstProject): TypstDocumentFile {
@@ -1944,6 +1964,32 @@ export function updateCursorSmoothPreference(
     preferences: {
       ...snapshot.preferences,
       cursorSmooth
+    }
+  };
+}
+
+export function updateKeybindingsPreference(
+  snapshot: AppSnapshot,
+  keybindings: KeybindingMap
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      keybindings: normalizeKeybindings(keybindings)
+    }
+  };
+}
+
+export function updateEditorFontSizePreference(
+  snapshot: AppSnapshot,
+  editorFontSize: number
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      editorFontSize: clampEditorFontSize(editorFontSize)
     }
   };
 }
