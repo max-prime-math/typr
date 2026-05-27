@@ -23,8 +23,11 @@ import {
   createNextGraphSnapshot,
   type GraphProvider,
   type DiagramAsset,
+  type DiagramCanvasFrame,
+  type DiagramEndpoint,
   type DiagramShape,
   type DiagramStroke,
+  type DiagramStrokeStyle,
   type GraphAsset,
   getActiveDocument,
   normalizeSnapshot,
@@ -285,6 +288,7 @@ type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
+type DiagramPaneMode = "sidebar" | "source" | "preview";
 type SettingsTab = "github" | "themes" | "keybindings" | "snippets" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
@@ -553,7 +557,7 @@ export function App() {
     text: ""
   });
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
-  const [isDiagramExpanded, setIsDiagramExpanded] = useState(false);
+  const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("sidebar");
   const [isGraphExpanded, setIsGraphExpanded] = useState(false);
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
@@ -561,6 +565,11 @@ export function App() {
   const [recordingKeybindingId, setRecordingKeybindingId] =
     useState<KeybindingCommandId | null>(null);
   const [diagramInkColor, setDiagramInkColor] = useState("#000000");
+  const [diagramFillColor, setDiagramFillColor] = useState("transparent");
+  const [diagramStrokeStyle, setDiagramStrokeStyle] = useState<DiagramStrokeStyle>("solid");
+  const [diagramStrokeWidth, setDiagramStrokeWidth] = useState(2.5);
+  const [diagramStartMarker, setDiagramStartMarker] = useState<DiagramEndpoint>("none");
+  const [diagramEndMarker, setDiagramEndMarker] = useState<DiagramEndpoint>("none");
   const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({});
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
   const [isTrashViewOpen, setIsTrashViewOpen] = useState(false);
@@ -754,12 +763,6 @@ export function App() {
   }, []);
   const togglePaperView = useCallback(() => {
     setIsPaperView((current) => !current);
-  }, []);
-  const openDiagramExpanded = useCallback(() => {
-    setIsDiagramExpanded(true);
-  }, []);
-  const closeDiagramExpanded = useCallback(() => {
-    setIsDiagramExpanded(false);
   }, []);
   const openGraphExpanded = useCallback(() => {
     setIsGraphExpanded(true);
@@ -1243,7 +1246,7 @@ export function App() {
         cancelPendingMenuOpen();
         setActiveMenu(null);
         setIsSettingsOpen(false);
-        setIsDiagramExpanded(false);
+        setDiagramPaneMode("sidebar");
         setIsGraphExpanded(false);
         setWorkspaceMode("split");
         return;
@@ -2373,6 +2376,37 @@ export function App() {
     setSnapshot((currentSnapshot) => removeDiagramShape(currentSnapshot, shapeId));
   }, []);
 
+  const handleUpdateDiagramStroke = useCallback((nextStroke: DiagramStroke) => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagram(currentSnapshot, (diagramAsset) => ({
+        ...diagramAsset,
+        strokes: diagramAsset.strokes.map((stroke) =>
+          stroke.id === nextStroke.id ? nextStroke : stroke
+        )
+      }))
+    );
+  }, []);
+
+  const handleUpdateDiagramShape = useCallback((nextShape: DiagramShape) => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagram(currentSnapshot, (diagramAsset) => ({
+        ...diagramAsset,
+        shapes: diagramAsset.shapes.map((shape) =>
+          shape.id === nextShape.id ? nextShape : shape
+        )
+      }))
+    );
+  }, []);
+
+  const handleUpdateDiagramFrame = useCallback((nextFrame: DiagramCanvasFrame | null) => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagram(currentSnapshot, (diagramAsset) => ({
+        ...diagramAsset,
+        frame: nextFrame
+      }))
+    );
+  }, []);
+
   const handleClearDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) =>
       updateDiagram(currentSnapshot, (diagramAsset) => ({
@@ -3096,6 +3130,36 @@ export function App() {
     setWorkspaceMode(mode);
   }
 
+  function expandDiagramPaneForward() {
+    setWorkspaceMode("split");
+    setIsSidebarCollapsed(false);
+    setDiagramPaneMode((currentMode) => {
+      if (currentMode === "sidebar") {
+        return "source";
+      }
+
+      if (currentMode === "source") {
+        return "preview";
+      }
+
+      return currentMode;
+    });
+  }
+
+  function expandDiagramPaneBackward() {
+    setDiagramPaneMode((currentMode) => {
+      if (currentMode === "preview") {
+        return "source";
+      }
+
+      if (currentMode === "source") {
+        return "sidebar";
+      }
+
+      return currentMode;
+    });
+  }
+
   function cycleSidebarTool(direction: -1 | 1) {
     setIsSidebarCollapsed(false);
     setActiveSidebarTool((currentTool) => {
@@ -3270,13 +3334,29 @@ export function App() {
   const isMobileWorkspace =
     effectiveWorkspaceWidth > 0 && effectiveWorkspaceWidth <= MOBILE_WORKSPACE_THRESHOLD;
   const showDesktopSidebar = !isMobileWorkspace && !isSidebarCollapsed;
-  const sidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
-  const previewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
+  const isDiagramInlineExpanded =
+    showDesktopSidebar &&
+    workspaceMode === "split" &&
+    activeSidebarTool === "diagram" &&
+    diagramPaneMode !== "sidebar";
+  const isDiagramPreviewExpanded = isDiagramInlineExpanded && diagramPaneMode === "preview";
+  const showSourcePane = !isDiagramInlineExpanded;
+  const showPreviewPane = !isDiagramPreviewExpanded;
   const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
-  const handleWidthTotal = sidebarHandleWidth + previewHandleWidth;
+  const baseSidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
+  const basePreviewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
+  const baseHandleWidthTotal = baseSidebarHandleWidth + basePreviewHandleWidth;
   const previewPaneWidth = isPreviewCollapsed
     ? PANEL_COLLAPSED_WIDTH
-    : getPreviewPaneWidth(effectiveWorkspaceWidth, sidebarPaneWidth, handleWidthTotal, previewRatio);
+    : getPreviewPaneWidth(
+        effectiveWorkspaceWidth,
+        sidebarPaneWidth,
+        baseHandleWidthTotal,
+        previewRatio
+      );
+  const sidebarHandleWidth = showDesktopSidebar && showSourcePane ? PANEL_HANDLE_WIDTH : 0;
+  const previewHandleWidth = !isMobileWorkspace && showPreviewPane ? PANEL_HANDLE_WIDTH : 0;
+  const handleWidthTotal = sidebarHandleWidth + previewHandleWidth;
   const sourcePaneWidth =
     workspaceMode === "split" && effectiveWorkspaceWidth > 0
       ? Math.max(
@@ -3284,11 +3364,22 @@ export function App() {
           effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - handleWidthTotal
         )
       : 0;
+  const expandedSidebarPaneWidth = isDiagramInlineExpanded
+    ? Math.max(0, effectiveWorkspaceWidth - previewPaneWidth - previewHandleWidth)
+    : sidebarPaneWidth;
   const workspaceGridStyle: CSSProperties =
     isMobileWorkspace
       ? {
           display: "flex",
           flexDirection: "column"
+        }
+      : workspaceMode === "split" && isDiagramPreviewExpanded
+      ? {
+          gridTemplateColumns: "minmax(0, 1fr)"
+        }
+      : workspaceMode === "split" && isDiagramInlineExpanded
+      ? {
+          gridTemplateColumns: `${expandedSidebarPaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
         }
       : workspaceMode === "split"
       ? {
@@ -3315,9 +3406,23 @@ export function App() {
       : "pane--mobile-hidden"
     : "";
   const sidebarPaneCollapsed = !isMobileWorkspace && !showDesktopSidebar;
-  const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace;
+  const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace && showPreviewPane;
   const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
   const filesPanelTitle = activeSidebarTool === "files" && isTrashViewOpen ? "Trash" : sidebarToolTitle;
+
+  useEffect(() => {
+    if (
+      !isMobileWorkspace &&
+      workspaceMode === "split" &&
+      activeSidebarTool === "diagram" &&
+      !isSidebarCollapsed
+    ) {
+      return;
+    }
+
+    setDiagramPaneMode("sidebar");
+  }, [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
+
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
       const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
@@ -3333,6 +3438,10 @@ export function App() {
         setMobileWorkspaceTab("files");
       } else if (workspaceMode === "editor" || workspaceMode === "preview") {
         setWorkspaceMode("split");
+      }
+
+      if (tool !== "diagram") {
+        setDiagramPaneMode("sidebar");
       }
 
       if (shouldOpenSearchPane) {
@@ -3714,6 +3823,17 @@ export function App() {
                     >
                       {isSyncing ? "Pushing..." : "Push"}
                     </button>
+                  ) : activeSidebarTool === "diagram" &&
+                    isDiagramInlineExpanded &&
+                    !snapshot.preferences.liveCompilation ? (
+                    <button
+                      className="pane__button"
+                      onClick={handleCompile}
+                      title={`Compile (${compileShortcutLabel})`}
+                      type="button"
+                    >
+                      Compile
+                    </button>
                   ) : null}
                 </div>
               </div>
@@ -4006,13 +4126,26 @@ export function App() {
               ) : null}
 
               {activeSidebarTool === "diagram" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  className={`sidebar-section sidebar-section--scrollable sidebar-section--diagram ${
+                    isDiagramInlineExpanded ? "sidebar-section--diagram-expanded" : ""
+                  }`}
+                >
                   <DiagramEditorErrorBoundary>
                     <DiagramEditor
                       diagram={diagram}
                       inkColor={diagramInkColor}
+                      fillColor={diagramFillColor}
+                      strokeStyle={diagramStrokeStyle}
+                      strokeWidth={diagramStrokeWidth}
+                      startMarker={diagramStartMarker}
+                      endMarker={diagramEndMarker}
+                      isExpanded={isDiagramInlineExpanded}
                       onAddStroke={handleAddDiagramStroke}
                       onAddShape={handleAddDiagramShape}
+                      onUpdateStroke={handleUpdateDiagramStroke}
+                      onUpdateShape={handleUpdateDiagramShape}
+                      onUpdateFrame={handleUpdateDiagramFrame}
                       onRemoveStroke={handleRemoveDiagramStroke}
                       onRemoveShape={handleRemoveDiagramShape}
                       onClear={handleClearDiagram}
@@ -4023,7 +4156,19 @@ export function App() {
                       onDownloadSvg={handleDownloadDiagramSvg}
                       onUndo={handleUndoDiagramStroke}
                       onInkColorChange={setDiagramInkColor}
-                      onExpand={openDiagramExpanded}
+                      onFillColorChange={setDiagramFillColor}
+                      onStrokeStyleChange={setDiagramStrokeStyle}
+                      onStrokeWidthChange={setDiagramStrokeWidth}
+                      onStartMarkerChange={setDiagramStartMarker}
+                      onEndMarkerChange={setDiagramEndMarker}
+                      onExpandLeft={
+                        isDiagramInlineExpanded ? expandDiagramPaneBackward : undefined
+                      }
+                      onExpandRight={
+                        !isMobileWorkspace && diagramPaneMode !== "preview"
+                          ? expandDiagramPaneForward
+                          : undefined
+                      }
                       paperView={isPaperView}
                     />
                   </DiagramEditorErrorBoundary>
@@ -4178,7 +4323,7 @@ export function App() {
           </aside>
         ) : null}
 
-        {showDesktopSidebar ? (
+        {showDesktopSidebar && showSourcePane ? (
           <button
             aria-label="Resize sidebar"
             className="workspace-handle workspace-handle--left"
@@ -4187,6 +4332,7 @@ export function App() {
           />
         ) : null}
 
+        {showSourcePane ? (
         <section
           className={`pane pane--editor ${editorVisibilityClass}`}
           aria-label="Typst source editor"
@@ -4661,16 +4807,18 @@ export function App() {
             </div>
           ) : null}
         </section>
+        ) : null}
 
-        {isMobileWorkspace ? null : (
+        {!isMobileWorkspace && showPreviewPane ? (
           <button
             aria-label="Resize preview"
             className="workspace-handle workspace-handle--right"
             onPointerDown={beginPanelResize("preview")}
             type="button"
           />
-        )}
+        ) : null}
 
+        {showPreviewPane ? (
         <section
           className={`pane pane--preview ${
             previewPaneCollapsed ? "pane--collapsed" : ""
@@ -4728,6 +4876,7 @@ export function App() {
             </>
           )}
         </section>
+        ) : null}
       </main>
       </div>
       </div>
@@ -4767,51 +4916,6 @@ export function App() {
               result={compileResult}
               zoom={previewZoom}
             />
-          </section>
-        </div>
-      ) : null}
-
-      {isDiagramExpanded ? (
-        <div
-          className="sheet-backdrop diagram-popup-backdrop"
-          onClick={closeDiagramExpanded}
-          role="presentation"
-        >
-          <section
-            aria-label="Expanded diagram editor"
-            className="diagram-popup"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="diagram-popup__header">
-              <div>
-                <h2>Diagram</h2>
-              </div>
-              <button className="pane__button" onClick={closeDiagramExpanded} type="button">
-                Close
-              </button>
-            </div>
-            <div className="diagram-popup__body">
-              <DiagramEditorErrorBoundary>
-                <DiagramEditor
-                  diagram={diagram}
-                  inkColor={diagramInkColor}
-                  isExpanded
-                  onAddStroke={handleAddDiagramStroke}
-                  onAddShape={handleAddDiagramShape}
-                  onRemoveStroke={handleRemoveDiagramStroke}
-                  onRemoveShape={handleRemoveDiagramShape}
-                  onClear={handleClearDiagram}
-                  onNew={handleNewDiagram}
-                  onSave={handleSaveDiagram}
-                  onInsertIntoDocument={handleInsertDiagramIntoDocument}
-                  onRename={handleRenameDiagram}
-                  onDownloadSvg={handleDownloadDiagramSvg}
-                  onUndo={handleUndoDiagramStroke}
-                  onInkColorChange={setDiagramInkColor}
-                  paperView={isPaperView}
-                />
-              </DiagramEditorErrorBoundary>
-            </div>
           </section>
         </div>
       ) : null}

@@ -427,6 +427,7 @@ button {
   max-width: none;
   margin: 0;
   overflow: hidden;
+  transition: grid-template-columns 180ms ease;
 }
 
 .workspace--triple {
@@ -531,6 +532,7 @@ button {
 }
 
 .pane {
+  min-width: 0;
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1315,6 +1317,20 @@ button {
   position: relative;
 }
 
+.sidebar-section--diagram {
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-section--diagram .diagram-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sidebar-section--diagram-expanded {
+  overflow: hidden;
+}
+
 .sidebar-section--status {
   flex: 0 0 auto;
   margin-top: 0;
@@ -1893,6 +1909,66 @@ button {
   min-width: 0;
 }
 
+.diagram-editor__header-dimensions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.diagram-editor__zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.diagram-editor__zoom-button {
+  min-width: 2rem;
+  justify-content: center;
+}
+
+.diagram-editor__zoom-label {
+  min-width: 3.4rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.diagram-editor__dimension-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.diagram-editor__dimension-field:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.diagram-editor__dimension-field input {
+  width: 4.4rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.diagram-editor__dimension-field input::-webkit-inner-spin-button,
+.diagram-editor__dimension-field input::-webkit-outer-spin-button {
+  margin: 0;
+}
+
 .diagram-editor__name-field {
   flex: 1 1 auto;
   min-width: 0;
@@ -1907,9 +1983,44 @@ button {
   box-sizing: border-box;
 }
 
+.diagram-editor__nav-buttons {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
 .diagram-editor__expand-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   align-self: stretch;
   box-sizing: border-box;
+  min-width: 2.4rem;
+  padding-inline: 0.65rem;
+}
+
+.diagram-editor__expand-icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  mask-image: url("/icons/files/disclosure.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("/icons/files/disclosure.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.diagram-editor__expand-icon--left {
+  transform: rotate(90deg);
+}
+
+.diagram-editor__expand-icon--right {
+  transform: rotate(-90deg);
 }
 
 .diagram-editor__header strong {
@@ -1927,9 +2038,9 @@ button {
 .diagram-editor__palette {
   display: flex;
   width: 100%;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.45rem;
-  align-items: center;
+  align-items: stretch;
 }
 
 .diagram-editor__toolrow {
@@ -1940,7 +2051,122 @@ button {
 }
 
 .diagram-editor__tool {
-  min-width: 4.2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.45rem;
+  min-width: 2.45rem;
+  min-height: 2.45rem;
+  padding: 0.45rem;
+}
+
+.diagram-editor__tool-icon {
+  display: block;
+  width: 1.2rem;
+  height: 1.2rem;
+  overflow: visible;
+}
+
+.diagram-editor__color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.diagram-editor__color-row-label,
+.diagram-editor__control-row-label {
+  min-width: 3.25rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.diagram-editor__control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.diagram-editor__control-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.diagram-editor__control-group--width {
+  flex: 1 1 auto;
+}
+
+.diagram-editor__option-button {
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0.35rem 0.45rem;
+}
+
+.diagram-editor__option-button--width {
+  width: 2.25rem;
+  justify-content: center;
+}
+
+.diagram-editor__width-preview {
+  display: block;
+  width: 1.15rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.diagram-editor__width-input {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-strong);
+}
+
+.diagram-editor__width-input:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.diagram-editor__width-input input {
+  width: 4rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.diagram-editor__width-input input::-webkit-inner-spin-button,
+.diagram-editor__width-input input::-webkit-outer-spin-button {
+  margin: 0;
+}
+
+.diagram-editor__endpoint-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.diagram-editor__endpoint-section {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.diagram-editor__endpoint-label {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .diagram-editor__color-swatch {
@@ -1976,6 +2202,17 @@ button {
   width: 1rem;
   height: 1rem;
   border-radius: 999px;
+}
+
+.diagram-editor__color-swatch-fill--empty {
+  position: relative;
+  background:
+    linear-gradient(135deg, transparent 0 43%, currentColor 43% 57%, transparent 57% 100%);
+  opacity: 0.8;
+}
+
+.diagram-editor__color-swatch-slash {
+  display: none;
 }
 
 .diagram-editor__color-swatch--hue {

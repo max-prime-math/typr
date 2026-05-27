@@ -60,10 +60,23 @@ export interface DiagramPoint {
   pressure: number;
 }
 
+export interface DiagramCanvasFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export type DiagramStrokeStyle = "solid" | "dotted" | "fine-dotted" | "dashed";
+export type DiagramEndpoint = "none" | "arrow" | "dot" | "open-dot";
+
 export interface DiagramStroke {
   id: string;
   color: string;
   width: number;
+  strokeStyle: DiagramStrokeStyle;
+  startMarker: DiagramEndpoint;
+  endMarker: DiagramEndpoint;
   points: DiagramPoint[];
   updatedAt: string;
 }
@@ -73,7 +86,9 @@ export interface DiagramRect {
   id: string;
   strokeColor: string;
   strokeWidth: number;
+  strokeStyle: DiagramStrokeStyle;
   fillColor: string;
+  rotation: number;
   x: number;
   y: number;
   width: number;
@@ -88,7 +103,9 @@ export interface DiagramEllipse {
   id: string;
   strokeColor: string;
   strokeWidth: number;
+  strokeStyle: DiagramStrokeStyle;
   fillColor: string;
+  rotation: number;
   cx: number;
   cy: number;
   rx: number;
@@ -103,6 +120,9 @@ export interface DiagramLine {
   id: string;
   strokeColor: string;
   strokeWidth: number;
+  strokeStyle: DiagramStrokeStyle;
+  startMarker: DiagramEndpoint;
+  endMarker: DiagramEndpoint;
   x1: number;
   y1: number;
   x2: number;
@@ -115,6 +135,7 @@ export interface DiagramPolygon {
   id: string;
   strokeColor: string;
   strokeWidth: number;
+  strokeStyle: DiagramStrokeStyle;
   fillColor: string;
   points: DiagramPoint[];
   updatedAt: string;
@@ -126,6 +147,7 @@ export interface DiagramAsset {
   id: string;
   name: string;
   updatedAt: string;
+  frame: DiagramCanvasFrame | null;
   strokes: DiagramStroke[];
   shapes: DiagramShape[];
 }
@@ -270,6 +292,7 @@ export function createDefaultDiagram(): DiagramAsset {
     id: createId("diagram"),
     name: DEFAULT_DIAGRAM_FILE_NAME,
     updatedAt: now,
+    frame: null,
     strokes: [],
     shapes: []
   };
@@ -353,6 +376,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     id: diagram.id ?? createDefaultDiagram().id,
     name: normalizedDiagramName,
     updatedAt: diagram.updatedAt ?? now,
+    frame: normalizeDiagramCanvasFrame(diagram.frame),
     strokes: Array.isArray(diagram.strokes)
       ? diagram.strokes.map(normalizeDiagramStroke)
       : [],
@@ -410,6 +434,7 @@ function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
     id: diagram.id ?? createDefaultDiagram().id,
     name: normalizedName,
     updatedAt: diagram.updatedAt ?? new Date().toISOString(),
+    frame: normalizeDiagramCanvasFrame(diagram.frame),
     strokes: Array.isArray(diagram.strokes)
       ? diagram.strokes.map(normalizeDiagramStroke)
       : [],
@@ -578,12 +603,54 @@ function normalizeGraphRenderMode(value: GraphRenderMode | undefined): GraphRend
   return value === "png" || value === "typst" ? value : "auto";
 }
 
+function normalizeDiagramStrokeStyle(value: DiagramStrokeStyle | undefined): DiagramStrokeStyle {
+  return value === "dotted" ||
+    value === "fine-dotted" ||
+    value === "dashed" ||
+    value === "solid"
+    ? value
+    : "solid";
+}
+
+function normalizeDiagramEndpoint(value: DiagramEndpoint | undefined): DiagramEndpoint {
+  return value === "arrow" || value === "dot" || value === "open-dot" || value === "none"
+    ? value
+    : "none";
+}
+
+function normalizeDiagramCanvasFrame(
+  frame: DiagramCanvasFrame | null | undefined
+): DiagramCanvasFrame | null {
+  if (!frame) {
+    return null;
+  }
+
+  if (
+    typeof frame.x !== "number" ||
+    typeof frame.y !== "number" ||
+    typeof frame.width !== "number" ||
+    typeof frame.height !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    x: frame.x,
+    y: frame.y,
+    width: Math.max(24, frame.width),
+    height: Math.max(24, frame.height)
+  };
+}
+
 function normalizeDiagramStroke(stroke: DiagramStroke): DiagramStroke {
   return {
     ...stroke,
     id: stroke.id ?? createId("stroke"),
     color: stroke.color ?? "#000000",
     width: typeof stroke.width === "number" ? stroke.width : 4.5,
+    strokeStyle: normalizeDiagramStrokeStyle(stroke.strokeStyle),
+    startMarker: normalizeDiagramEndpoint(stroke.startMarker),
+    endMarker: normalizeDiagramEndpoint(stroke.endMarker),
     points: Array.isArray(stroke.points) ? stroke.points : [],
     updatedAt: stroke.updatedAt ?? new Date().toISOString()
   };
@@ -598,7 +665,9 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
       id: shape.id ?? createId("shape"),
       strokeColor: shape.strokeColor ?? "#000000",
       strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      strokeStyle: normalizeDiagramStrokeStyle(shape.strokeStyle),
       fillColor: shape.fillColor ?? "transparent",
+      rotation: typeof shape.rotation === "number" ? shape.rotation : 0,
       x: typeof shape.x === "number" ? shape.x : 0,
       y: typeof shape.y === "number" ? shape.y : 0,
       width: typeof shape.width === "number" ? shape.width : 0,
@@ -615,7 +684,9 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
       id: shape.id ?? createId("shape"),
       strokeColor: shape.strokeColor ?? "#000000",
       strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      strokeStyle: normalizeDiagramStrokeStyle(shape.strokeStyle),
       fillColor: shape.fillColor ?? "transparent",
+      rotation: typeof shape.rotation === "number" ? shape.rotation : 0,
       cx: typeof shape.cx === "number" ? shape.cx : 0,
       cy: typeof shape.cy === "number" ? shape.cy : 0,
       rx: typeof shape.rx === "number" ? shape.rx : 0,
@@ -632,6 +703,7 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
       id: shape.id ?? createId("shape"),
       strokeColor: shape.strokeColor ?? "#000000",
       strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      strokeStyle: normalizeDiagramStrokeStyle(shape.strokeStyle),
       fillColor: shape.fillColor ?? "transparent",
       points: Array.isArray(shape.points) ? shape.points : [],
       updatedAt
@@ -643,6 +715,9 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
     id: shape.id ?? createId("shape"),
     strokeColor: shape.strokeColor ?? "#000000",
     strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+    strokeStyle: normalizeDiagramStrokeStyle(shape.strokeStyle),
+    startMarker: normalizeDiagramEndpoint(shape.startMarker),
+    endMarker: normalizeDiagramEndpoint(shape.endMarker),
     x1: typeof shape.x1 === "number" ? shape.x1 : 0,
     y1: typeof shape.y1 === "number" ? shape.y1 : 0,
     x2: typeof shape.x2 === "number" ? shape.x2 : 0,
