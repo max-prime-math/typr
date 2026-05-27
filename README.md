@@ -116,9 +116,12 @@ The next compiler-focused improvements are:
 - Improve font management for offline Typst rendering.
 - Add shareable bundles and installable templates.
 - Improve mobile editing ergonomics and keyboard shortcuts.
+- LaTeX to Typst converter
+- Native Typst graphs
+- Live compilation (non-experimental)
 
 ## Open Source Notes
 
-- License: MIT
+- License: GPL
 - Contributor-friendly structure with small, readable modules
 - Clear seams between editor, compiler, preview, and sync layers
