@@ -334,7 +334,6 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
             })
           )
         });
-        view.focus();
       },
       findNext() {
         const view = viewRef.current;

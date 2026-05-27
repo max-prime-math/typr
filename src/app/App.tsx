@@ -2509,6 +2509,11 @@ export function App() {
   const handleGoToLine = () => editorRef.current?.goToLine();
   const handleSelectAll = () => editorRef.current?.selectAll();
   const openSearchPane = useCallback(() => {
+    const editorSearchQuery = editorRef.current?.getSearchQuery();
+    if (editorSearchQuery) {
+      setSearchQuery(editorSearchQuery);
+    }
+
     setActiveSidebarTool("search");
     setIsSidebarCollapsed(false);
 
@@ -2519,17 +2524,42 @@ export function App() {
 
   const updateSearchQuery = useCallback(
     (patch: Partial<TypstSearchQueryState>) => {
-      setSearchQuery((currentQuery) => {
-        const nextQuery = {
-          ...currentQuery,
-          ...patch
-        };
-        editorRef.current?.setSearchQuery(nextQuery);
-        return nextQuery;
-      });
+      setSearchQuery((currentQuery) => ({
+        ...currentQuery,
+        ...patch
+      }));
     },
     []
   );
+
+  const applySearchQuery = useCallback(() => {
+    editorRef.current?.setSearchQuery(searchQuery);
+  }, [searchQuery]);
+
+  const handleFindPrevious = useCallback(() => {
+    applySearchQuery();
+    editorRef.current?.findPrevious();
+  }, [applySearchQuery]);
+
+  const handleFindNext = useCallback(() => {
+    applySearchQuery();
+    editorRef.current?.findNext();
+  }, [applySearchQuery]);
+
+  const handleSelectMatches = useCallback(() => {
+    applySearchQuery();
+    editorRef.current?.selectMatches();
+  }, [applySearchQuery]);
+
+  const handleReplaceNext = useCallback(() => {
+    applySearchQuery();
+    editorRef.current?.replaceNext();
+  }, [applySearchQuery]);
+
+  const handleReplaceAll = useCallback(() => {
+    applySearchQuery();
+    editorRef.current?.replaceAll();
+  }, [applySearchQuery]);
 
   useEffect(() => {
     if (activeSidebarTool !== "search" || isSidebarCollapsed) {
@@ -3736,9 +3766,9 @@ export function App() {
                             if (event.key === "Enter") {
                               event.preventDefault();
                               if (event.shiftKey) {
-                                editorRef.current?.findPrevious();
+                                handleFindPrevious();
                               } else {
-                                editorRef.current?.findNext();
+                                handleFindNext();
                               }
                             }
                           }}
@@ -3752,14 +3782,14 @@ export function App() {
                     <div className="sidebar-search-panel__actions sidebar-search-panel__actions--pair">
                       <button
                         className="pane__button pane__button--compact"
-                        onClick={() => editorRef.current?.findPrevious()}
+                        onClick={handleFindPrevious}
                         type="button"
                       >
                         Previous
                       </button>
                       <button
                         className="pane__button pane__button--compact"
-                        onClick={() => editorRef.current?.findNext()}
+                        onClick={handleFindNext}
                         type="button"
                       >
                         Next
@@ -3769,7 +3799,7 @@ export function App() {
                     <div className="sidebar-search-panel__actions sidebar-search-panel__actions--full">
                       <button
                         className="pane__button pane__button--compact"
-                        onClick={() => editorRef.current?.selectMatches()}
+                        onClick={handleSelectMatches}
                         type="button"
                       >
                         All
@@ -3814,7 +3844,7 @@ export function App() {
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
-                              editorRef.current?.replaceNext();
+                              handleReplaceNext();
                             }
                           }}
                           placeholder="Replace"
@@ -3827,14 +3857,14 @@ export function App() {
                     <div className="sidebar-search-panel__actions sidebar-search-panel__actions--pair">
                       <button
                         className="pane__button pane__button--compact"
-                        onClick={() => editorRef.current?.replaceNext()}
+                        onClick={handleReplaceNext}
                         type="button"
                       >
                         Replace
                       </button>
                       <button
                         className="pane__button pane__button--compact"
-                        onClick={() => editorRef.current?.replaceAll()}
+                        onClick={handleReplaceAll}
                         type="button"
                       >
                         Replace all
