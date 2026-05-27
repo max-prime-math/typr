@@ -1,6 +1,8 @@
 # Typr
 
-Typr is a local-first, browser-based Typst editor for iPad and desktop. It runs as a Progressive Web App, keeps documents on device, and supports live preview, offline reopen, Vim mode, themes, and GitHub push when you are back online.
+https://max-prime-math.github.io/typr/
+
+Typr is a local-first, browser-based Typst editor for iPad and desktop. It runs as a Progressive Web App, keeps documents on device, and supports live preview, offline reopen, Vim mode, themes, and GitHub push when you are back online.  Features a diagram editor as well as a graph editor.  
 
 ## What It Does
 
@@ -119,6 +121,9 @@ The next compiler-focused improvements are:
 - LaTeX to Typst converter
 - Native Typst graphs
 - Live compilation (non-experimental)
+- PDF Markup
+- "Live View" for presenting slides and marking up like a whiteboard.
+- Native iPad app
 
 ## Open Source Notes
 
