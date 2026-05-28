@@ -108,6 +108,7 @@ type DiagramTool =
   | "rect"
   | "ellipse"
   | "line"
+  | "bezier"
   | "polygon"
   | "eraser";
 const DIAGRAM_TOOL_ITEMS: Array<{ tool: DiagramTool; label: string }> = [
@@ -118,6 +119,7 @@ const DIAGRAM_TOOL_ITEMS: Array<{ tool: DiagramTool; label: string }> = [
   { tool: "rect", label: "Rectangle" },
   { tool: "ellipse", label: "Ellipse" },
   { tool: "line", label: "Line" },
+  { tool: "bezier", label: "Bezier" },
   { tool: "polygon", label: "Polygon" },
   { tool: "eraser", label: "Eraser" }
 ];
@@ -127,10 +129,18 @@ type DiagramSelectionTarget =
   | { kind: "shape"; id: string };
 
 type SelectionTransformMode = "move" | "resize-nw" | "resize-ne" | "resize-se" | "resize-sw" | "rotate";
+type BezierHandleKind =
+  | "start"
+  | "control1"
+  | "control2"
+  | "end"
+  | "linked-start"
+  | "linked-end";
 
 type DiagramEntity =
   | { kind: "stroke"; stroke: DiagramStroke }
   | { kind: "shape"; shape: DiagramShape };
+type BezierShapeEntity = { kind: "shape"; shape: Extract<DiagramShape, { kind: "bezier" }> };
 
 interface DiagramBounds {
   x: number;
@@ -171,6 +181,7 @@ interface HandTransformState {
 }
 
 interface SelectionTransformState {
+  kind: "selection";
   mode: SelectionTransformMode;
   selection: DiagramSelectionTarget;
   startPoint: DiagramPoint;
@@ -178,6 +189,17 @@ interface SelectionTransformState {
   originalBounds: DiagramBounds;
   originalSelectionRotation: number;
 }
+
+interface BezierHandleTransformState {
+  kind: "bezier-handle";
+  handle: BezierHandleKind;
+  selection: DiagramSelectionTarget;
+  startPoint: DiagramPoint;
+  originalEntity: BezierShapeEntity;
+  linkedEntity: BezierShapeEntity | null;
+}
+
+type PointerTransformState = SelectionTransformState | BezierHandleTransformState;
 
 type DiagramReorderAction = "front" | "back" | "forward" | "backward";
 
@@ -227,6 +249,12 @@ export function DiagramEditor({
   const [draftShape, setDraftShape] = useState<DiagramShape | null>(null);
   const [draftPolygon, setDraftPolygon] = useState<DiagramPoint[] | null>(null);
   const [polygonCursor, setPolygonCursor] = useState<DiagramPoint | null>(null);
+  const [bezierStartPoint, setBezierStartPoint] = useState<DiagramPoint | null>(null);
+  const [bezierChainOriginPoint, setBezierChainOriginPoint] = useState<DiagramPoint | null>(null);
+  const [bezierChainOriginOutgoingControlPoint, setBezierChainOriginOutgoingControlPoint] = useState<DiagramPoint | null>(null);
+  const [bezierCursor, setBezierCursor] = useState<DiagramPoint | null>(null);
+  const [bezierOutgoingControlPoint, setBezierOutgoingControlPoint] = useState<DiagramPoint | null>(null);
+  const [bezierClosingIncomingControlPoint, setBezierClosingIncomingControlPoint] = useState<DiagramPoint | null>(null);
   const [eraserCursor, setEraserCursor] = useState<DiagramPoint | null>(null);
   const [eraserDragging, setEraserDragging] = useState(false);
   const [fileNameDraft, setFileNameDraft] = useState(diagram.name);
@@ -235,7 +263,7 @@ export function DiagramEditor({
   const [selectedTarget, setSelectedTarget] = useState<DiagramSelectionTarget | null>(null);
   const [selectionBounds, setSelectionBounds] = useState<DiagramBounds | null>(null);
   const [selectionRotation, setSelectionRotation] = useState(0);
-  const [transformState, setTransformState] = useState<SelectionTransformState | null>(null);
+  const [transformState, setTransformState] = useState<PointerTransformState | null>(null);
   const [cropTransformState, setCropTransformState] = useState<CropTransformState | null>(null);
   const [cropDraftFrame, setCropDraftFrame] = useState<DiagramCanvasFrame | null>(null);
   const [isCropToolPrimed, setIsCropToolPrimed] = useState(false);
@@ -264,7 +292,8 @@ export function DiagramEditor({
     activeTool === "polygon" ||
     (activeTool === "pointer" &&
       selectedEntity?.kind === "shape" &&
-      selectedEntity.shape.kind !== "line");
+      selectedEntity.shape.kind !== "line" &&
+      selectedEntity.shape.kind !== "bezier");
   const isCustomInkColor = !DIAGRAM_COLOR_SWATCHES.some(
     (swatch) => swatch.toLowerCase() === inkColor.toLowerCase()
   ) && inkColor !== EMPTY_COLOR_VALUE;
@@ -274,14 +303,17 @@ export function DiagramEditor({
   const supportsEndpoints =
     activeTool === "pen" ||
     activeTool === "line" ||
+    activeTool === "bezier" ||
     (activeTool === "pointer" &&
       (selectedEntity?.kind === "stroke" ||
-        (selectedEntity?.kind === "shape" && selectedEntity.shape.kind === "line")));
+        (selectedEntity?.kind === "shape" &&
+          (selectedEntity.shape.kind === "line" || selectedEntity.shape.kind === "bezier"))));
   const supportsStrokeContext =
     activeTool === "pointer"
       ? Boolean(selectedEntity)
       : activeTool === "pen" ||
         activeTool === "line" ||
+        activeTool === "bezier" ||
         activeTool === "rect" ||
         activeTool === "ellipse" ||
         activeTool === "polygon";
@@ -359,12 +391,86 @@ export function DiagramEditor({
       previewShapes = [...shapes, ...draftShapes];
     }
 
+    if (bezierStartPoint) {
+      const draftShapes: DiagramShape[] = [
+        {
+          kind: "ellipse",
+          id: "draft-bezier-start-dot",
+          strokeColor: inkColor,
+          strokeWidth: 2,
+          strokeStyle: "solid",
+          fillColor: inkColor,
+          rotation: 0,
+          cx: bezierStartPoint.x,
+          cy: bezierStartPoint.y,
+          rx: 5,
+          ry: 5,
+          originX: bezierStartPoint.x,
+          originY: bezierStartPoint.y,
+          updatedAt: new Date().toISOString()
+        }
+      ];
+
+      if (
+        bezierChainOriginPoint &&
+        !pointsMatch(bezierStartPoint, bezierChainOriginPoint)
+      ) {
+        draftShapes.push({
+          kind: "ellipse",
+          id: "draft-bezier-origin-dot",
+          strokeColor: inkColor,
+          strokeWidth: 2,
+          strokeStyle: "solid",
+          fillColor: inkColor,
+          rotation: 0,
+          cx: bezierChainOriginPoint.x,
+          cy: bezierChainOriginPoint.y,
+          rx: 4,
+          ry: 4,
+          originX: bezierChainOriginPoint.x,
+          originY: bezierChainOriginPoint.y,
+          updatedAt: new Date().toISOString()
+        });
+      }
+
+      if (bezierCursor && !draftShape) {
+        draftShapes.push({
+          kind: "line",
+          id: "draft-bezier-guide",
+          strokeColor: inkColor,
+          strokeWidth: 1.5,
+          strokeStyle: "fine-dotted",
+          startMarker: "none",
+          endMarker: "none",
+          x1: bezierStartPoint.x,
+          y1: bezierStartPoint.y,
+          x2: bezierCursor.x,
+          y2: bezierCursor.y,
+          updatedAt: new Date().toISOString()
+        });
+      }
+
+      previewShapes = [...previewShapes, ...draftShapes];
+    }
+
     return {
       ...diagram,
       strokes,
       shapes: previewShapes
     };
-  }, [diagram, draftShape, draftStroke, draftPolygon, polygonCursor, inkColor, strokeStyle, strokeWidth]);
+  }, [
+    bezierCursor,
+    bezierChainOriginPoint,
+    bezierStartPoint,
+    diagram,
+    draftShape,
+    draftStroke,
+    draftPolygon,
+    polygonCursor,
+    inkColor,
+    strokeStyle,
+    strokeWidth
+  ]);
   const autoFrame = useMemo(() => getDiagramAutoFrame(previewDiagram), [previewDiagram]);
   const effectiveFrame = diagram.frame ?? autoFrame;
   const surfaceAspectRatio = useMemo(() => {
@@ -438,6 +544,20 @@ export function DiagramEditor({
     () => (selectionBounds ? getSelectionOverlay(selectionBounds, selectionRotation) : null),
     [selectionBounds, selectionRotation]
   );
+  const bezierOverlay = useMemo(
+    () =>
+      selectedEntity?.kind === "shape" && selectedEntity.shape.kind === "bezier"
+        ? getBezierEditOverlay(diagram, selectedEntity.shape)
+        : null,
+    [diagram, selectedEntity]
+  );
+  const draftBezierOverlay = useMemo(
+    () =>
+      draftShape?.kind === "bezier"
+        ? getBezierEditOverlay(previewDiagram, draftShape)
+        : null,
+    [draftShape, previewDiagram]
+  );
   const cropOverlay = useMemo(
     () => getCropOverlay(cropDraftFrame ?? effectiveFrame),
     [cropDraftFrame, effectiveFrame]
@@ -446,6 +566,8 @@ export function DiagramEditor({
     () => (zoomDragState ? getZoomDragOverlay(zoomDragState) : null),
     [zoomDragState]
   );
+  const activeSelectionMode = transformState?.kind === "selection" ? transformState.mode : null;
+  const activeBezierHandle = transformState?.kind === "bezier-handle" ? transformState.handle : null;
 
   useEffect(() => {
     setFileNameDraft(diagram.name);
@@ -531,7 +653,7 @@ export function DiagramEditor({
     onInkColorChange(entity.shape.strokeColor);
     onStrokeStyleChange(entity.shape.strokeStyle);
     onStrokeWidthChange(entity.shape.strokeWidth);
-    if (entity.shape.kind !== "line") {
+    if (entity.shape.kind !== "line" && entity.shape.kind !== "bezier") {
       onFillColorChange(entity.shape.fillColor);
     } else {
       onStartMarkerChange(entity.shape.startMarker);
@@ -587,7 +709,8 @@ export function DiagramEditor({
       activeTool !== "pointer" ||
       !selectedEntity ||
       selectedEntity.kind !== "shape" ||
-      selectedEntity.shape.kind === "line"
+      selectedEntity.shape.kind === "line" ||
+      selectedEntity.shape.kind === "bezier"
     ) {
       return;
     }
@@ -673,7 +796,7 @@ export function DiagramEditor({
       return;
     }
 
-    if (selectedEntity.shape.kind !== "line") {
+    if (selectedEntity.shape.kind !== "line" && selectedEntity.shape.kind !== "bezier") {
       return;
     }
 
@@ -784,7 +907,11 @@ export function DiagramEditor({
   ): DiagramPoint {
     const rawPoint = pointerEventToDiagramPoint(event, displayFrame);
     const supportsVertexSnap =
-      tool === "line" || tool === "rect" || tool === "ellipse" || tool === "polygon";
+      tool === "line" ||
+      tool === "bezier" ||
+      tool === "rect" ||
+      tool === "ellipse" ||
+      tool === "polygon";
 
     if (!isVertexSnapEnabled || !supportsVertexSnap) {
       return rawPoint;
@@ -997,6 +1124,182 @@ export function DiagramEditor({
     setDraftShape(null);
     setDraftPolygon(null);
     setPolygonCursor(null);
+    setBezierStartPoint(null);
+    setBezierChainOriginPoint(null);
+    setBezierChainOriginOutgoingControlPoint(null);
+    setBezierCursor(null);
+    setBezierOutgoingControlPoint(null);
+    setBezierClosingIncomingControlPoint(null);
+  }
+
+  function clearBezierChain() {
+    activePointerIdRef.current = null;
+    draftShapeRef.current = null;
+    setDraftShape(null);
+    setBezierStartPoint(null);
+    setBezierChainOriginPoint(null);
+    setBezierChainOriginOutgoingControlPoint(null);
+    setBezierCursor(null);
+    setBezierOutgoingControlPoint(null);
+    setBezierClosingIncomingControlPoint(null);
+  }
+
+  function startBezierSegment(event: PointerEvent<SVGSVGElement>) {
+    if (event.button !== 0 && event.pointerType !== "touch" && event.pointerType !== "pen") {
+      return;
+    }
+
+    const point = getSnappedPointerPoint(event, "bezier");
+    surfaceRef.current?.focus();
+
+    if (!bezierStartPoint) {
+      setBezierStartPoint(point);
+      setBezierChainOriginPoint(point);
+      setBezierChainOriginOutgoingControlPoint(null);
+      setBezierCursor(point);
+      setBezierClosingIncomingControlPoint(null);
+      return;
+    }
+
+    const closingSnapRadius = bezierChainOriginPoint
+      ? Math.max(
+          POLYGON_SNAP_DISTANCE,
+          getDiagramHitPadding(event.currentTarget, displayFrame, 12)
+        )
+      : POLYGON_SNAP_DISTANCE;
+    const closingToOrigin =
+      bezierChainOriginPoint &&
+      !pointsMatch(bezierStartPoint, bezierChainOriginPoint) &&
+      distance(point, bezierChainOriginPoint) <= closingSnapRadius;
+    const endPoint = closingToOrigin ? bezierChainOriginPoint : point;
+    const closingIncomingControlPoint = closingToOrigin ? endPoint : null;
+    setBezierClosingIncomingControlPoint(closingIncomingControlPoint);
+
+    const nextShape = createBezierShapeFromHandlePoint(
+      inkColor,
+      strokeWidth,
+      strokeStyle,
+      startMarker,
+      endMarker,
+      bezierStartPoint,
+      endPoint,
+      endPoint,
+      bezierOutgoingControlPoint,
+      closingIncomingControlPoint
+    );
+
+    activePointerIdRef.current = event.pointerId;
+    draftShapeRef.current = nextShape;
+    setDraftShape(nextShape);
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Best effort.
+    }
+  }
+
+  function extendBezierSegment(event: PointerEvent<SVGSVGElement>) {
+    const point = getSnappedPointerPoint(event, "bezier");
+
+    if (activePointerIdRef.current !== event.pointerId) {
+      setBezierCursor(point);
+      return;
+    }
+
+    setDraftShape((currentShape) => {
+      const baseShape =
+        currentShape?.kind === "bezier"
+          ? currentShape
+          : draftShapeRef.current?.kind === "bezier"
+            ? draftShapeRef.current
+            : null;
+
+      if (!baseShape) {
+        return currentShape;
+      }
+
+      const isClosingDraft =
+        Boolean(bezierChainOriginPoint) &&
+        pointsMatch(
+          { x: baseShape.x2, y: baseShape.y2 },
+          bezierChainOriginPoint as DiagramPoint
+        ) &&
+        !pointsMatch(
+          { x: baseShape.x1, y: baseShape.y1 },
+          bezierChainOriginPoint as DiagramPoint
+        );
+
+      const nextShape = isClosingDraft
+        ? updateClosingBezierCreationDraft(baseShape, point)
+        : updateBezierCreationDraft(baseShape, point);
+      draftShapeRef.current = nextShape;
+      return nextShape;
+    });
+  }
+
+  function finishBezierSegment(event: PointerEvent<SVGSVGElement>, commit = true) {
+    if (activePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+
+    activePointerIdRef.current = null;
+    const committedShape = draftShapeRef.current;
+    draftShapeRef.current = null;
+    setDraftShape(null);
+    setBezierClosingIncomingControlPoint(null);
+
+    if (commit && committedShape?.kind === "bezier" && shapeHasArea(committedShape)) {
+      onAddShape(committedShape);
+      if (
+        bezierChainOriginPoint &&
+        !bezierChainOriginOutgoingControlPoint &&
+        pointsMatch(
+          { x: committedShape.x1, y: committedShape.y1 },
+          bezierChainOriginPoint
+        )
+      ) {
+        setBezierChainOriginOutgoingControlPoint({
+          x: committedShape.cx1,
+          y: committedShape.cy1,
+          pressure: 1
+        });
+      }
+      if (
+        bezierChainOriginPoint &&
+        pointsMatch(
+          { x: committedShape.x2, y: committedShape.y2 },
+          bezierChainOriginPoint
+        )
+      ) {
+        try {
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+          }
+        } catch {
+          // Ignore release failures.
+        }
+        clearBezierChain();
+        return;
+      }
+      const nextStart = { x: committedShape.x2, y: committedShape.y2, pressure: 1 };
+      setBezierStartPoint(nextStart);
+      setBezierCursor(nextStart);
+      setBezierOutgoingControlPoint(
+        getMirroredBezierControlPoint(
+          nextStart,
+          { x: committedShape.cx2, y: committedShape.cy2, pressure: 1 }
+        )
+      );
+    }
+
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+    } catch {
+      // Ignore release failures.
+    }
   }
 
   function startStroke(event: PointerEvent<SVGSVGElement>) {
@@ -1311,12 +1614,38 @@ export function DiagramEditor({
     const bounds = getEntityBounds(entity);
     activePointerIdRef.current = event.pointerId;
     setTransformState({
+      kind: "selection",
       mode,
       selection,
       startPoint: point,
       originalEntity: entity,
       originalBounds: bounds,
       originalSelectionRotation: selectionRotation
+    });
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Best effort.
+    }
+  }
+
+  function beginBezierHandleTransform(
+    handle: BezierHandleKind,
+    selection: DiagramSelectionTarget,
+    entity: BezierShapeEntity,
+    linkedEntity: BezierShapeEntity | null,
+    point: DiagramPoint,
+    event: PointerEvent<SVGSVGElement>
+  ) {
+    activePointerIdRef.current = event.pointerId;
+    setTransformState({
+      kind: "bezier-handle",
+      handle,
+      selection,
+      startPoint: point,
+      originalEntity: entity,
+      linkedEntity
     });
 
     try {
@@ -1333,6 +1662,29 @@ export function DiagramEditor({
 
     const point = pointerEventToDiagramPoint(event, displayFrame);
     surfaceRef.current?.focus();
+    const selectedBezierEntity = isBezierShapeEntity(selectedEntity) ? selectedEntity : null;
+    const bezierNeighbors = selectedBezierEntity
+      ? findConnectedBezierNeighbors(diagram, selectedBezierEntity.shape)
+      : null;
+
+    if (selectedTarget && selectedBezierEntity && bezierOverlay) {
+      const bezierHandle = hitTestBezierHandle(bezierOverlay, point);
+      if (bezierHandle) {
+        beginBezierHandleTransform(
+          bezierHandle,
+          selectedTarget,
+          selectedBezierEntity,
+          bezierHandle === "linked-start"
+            ? bezierNeighbors?.previous ?? null
+            : bezierHandle === "linked-end"
+              ? bezierNeighbors?.next ?? null
+              : null,
+          point,
+          event
+        );
+        return;
+      }
+    }
 
     if (selectedTarget && selectedEntity && selectionOverlay) {
       const handle = hitTestSelectionHandle(selectionOverlay, point);
@@ -1371,7 +1723,50 @@ export function DiagramEditor({
     }
 
     const point = pointerEventToDiagramPoint(event, displayFrame);
-    let nextEntity = transformState.originalEntity;
+    let nextEntity: DiagramEntity = transformState.originalEntity;
+
+    if (transformState.kind === "bezier-handle") {
+      if (
+        (transformState.handle === "linked-start" || transformState.handle === "linked-end") &&
+        transformState.linkedEntity
+      ) {
+        const linkedHandle = transformState.handle === "linked-start" ? "control2" : "control1";
+        applyUpdatedEntity({
+          kind: "shape",
+          shape: updateBezierHandle(transformState.linkedEntity.shape, linkedHandle, point)
+        });
+      } else {
+        const localHandle =
+          transformState.handle === "linked-start"
+            ? "control1"
+            : transformState.handle === "linked-end"
+              ? "control2"
+              : transformState.handle;
+        const localPointBase =
+          transformState.handle === "linked-start"
+            ? getMirroredBezierControlPoint(
+                { x: transformState.originalEntity.shape.x1, y: transformState.originalEntity.shape.y1, pressure: 1 },
+                point
+              )
+            : transformState.handle === "linked-end"
+              ? getMirroredBezierControlPoint(
+                  { x: transformState.originalEntity.shape.x2, y: transformState.originalEntity.shape.y2, pressure: 1 },
+                  point
+                )
+              : point;
+        nextEntity = {
+          kind: "shape",
+          shape: updateBezierHandle(
+            transformState.originalEntity.shape,
+            localHandle,
+            localPointBase
+          )
+        };
+        setSelectionBounds(getEntityBounds(nextEntity));
+        applyUpdatedEntity(nextEntity);
+      }
+      return;
+    }
 
     if (transformState.mode === "move") {
       let dx = point.x - transformState.startPoint.x;
@@ -1892,6 +2287,7 @@ export function DiagramEditor({
                 r: "rect",
                 e: "ellipse",
                 l: "line",
+                b: "bezier",
                 p: "polygon",
                 x: "eraser"
               };
@@ -1900,6 +2296,12 @@ export function DiagramEditor({
               if (key === "m") {
                 event.preventDefault();
                 toggleVertexSnap();
+                return;
+              }
+
+              if (key === "escape" && activeTool === "bezier") {
+                event.preventDefault();
+                clearBezierChain();
                 return;
               }
 
@@ -1968,6 +2370,12 @@ export function DiagramEditor({
               setIsZoomOutModifierDown(false);
               return;
             }
+            if (activeTool === "bezier") {
+              if (activePointerIdRef.current === null) {
+                setBezierCursor(null);
+              }
+              return;
+            }
             if (activeTool !== "polygon") return;
             setPolygonCursor(null);
           }}
@@ -1992,6 +2400,10 @@ export function DiagramEditor({
               handleEraserMouseDown(event);
               return;
             }
+            if (activeTool === "bezier") {
+              startBezierSegment(event);
+              return;
+            }
             startStroke(event);
           }}
           onPointerMove={(event) => {
@@ -2013,6 +2425,10 @@ export function DiagramEditor({
             }
             if (activeTool === "eraser") {
               handleEraserMouseMove(event);
+              return;
+            }
+            if (activeTool === "bezier") {
+              extendBezierSegment(event);
               return;
             }
             if (activeTool === "polygon") {
@@ -2048,6 +2464,10 @@ export function DiagramEditor({
               handleEraserMouseUp();
               return;
             }
+            if (activeTool === "bezier") {
+              finishBezierSegment(event);
+              return;
+            }
             finishStroke(event);
           }}
           onPointerCancel={(event) => {
@@ -2069,6 +2489,10 @@ export function DiagramEditor({
             }
             if (activeTool === "eraser") {
               handleEraserMouseUp();
+              return;
+            }
+            if (activeTool === "bezier") {
+              finishBezierSegment(event, false);
               return;
             }
             finishStroke(event);
@@ -2125,12 +2549,18 @@ export function DiagramEditor({
           )}
           {selectionOverlay ? (
             <SelectionOverlay
-              activeMode={transformState?.mode ?? null}
+              activeMode={activeSelectionMode}
               overlay={selectionOverlay}
             />
           ) : null}
+          {bezierOverlay ? (
+            <BezierEditOverlay activeHandle={activeBezierHandle} overlay={bezierOverlay} />
+          ) : null}
           {zoomOverlay ? <ZoomOverlay overlay={zoomOverlay} /> : null}
           {draftShape ? <DiagramShapePath shape={draftShape} isDraft /> : null}
+          {draftBezierOverlay ? (
+            <BezierEditOverlay activeHandle={null} overlay={draftBezierOverlay} />
+          ) : null}
           {eraserCursor ? (
             <>
               <circle
@@ -2350,6 +2780,22 @@ function DiagramToolIcon({ tool }: { tool: DiagramTool }) {
         <path d="M6 18 18 7" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
         <circle cx="6" cy="18" r="1.7" fill="currentColor" />
         <circle cx="18" cy="7" r="1.7" fill="currentColor" />
+      </svg>
+    );
+  }
+
+  if (tool === "bezier") {
+    return (
+      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
+        <path
+          d="M5 18C8 6 16 6 19 13"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeWidth="1.8"
+        />
+        <circle cx="5" cy="18" r="1.5" fill="currentColor" />
+        <circle cx="19" cy="13" r="1.5" fill="currentColor" />
       </svg>
     );
   }
@@ -3206,6 +3652,105 @@ function SelectionOverlay({
   );
 }
 
+interface BezierEditOverlayGeometry {
+  handles: {
+    start: DiagramPoint;
+    control1: DiagramPoint;
+    control2: DiagramPoint;
+    end: DiagramPoint;
+    "linked-start"?: DiagramPoint;
+    "linked-end"?: DiagramPoint;
+  };
+}
+
+function BezierEditOverlay({
+  overlay,
+  activeHandle
+}: {
+  overlay: BezierEditOverlayGeometry;
+  activeHandle: BezierHandleKind | null;
+}) {
+  return (
+    <>
+      <line
+        x1={overlay.handles.start.x}
+        y1={overlay.handles.start.y}
+        x2={overlay.handles.control1.x}
+        y2={overlay.handles.control1.y}
+        stroke="currentColor"
+        strokeDasharray="4 3"
+        strokeOpacity="0.7"
+        strokeWidth="1.2"
+        pointerEvents="none"
+      />
+      <line
+        x1={overlay.handles.end.x}
+        y1={overlay.handles.end.y}
+        x2={overlay.handles.control2.x}
+        y2={overlay.handles.control2.y}
+        stroke="currentColor"
+        strokeDasharray="4 3"
+        strokeOpacity="0.7"
+        strokeWidth="1.2"
+        pointerEvents="none"
+      />
+      {overlay.handles["linked-start"] ? (
+        <line
+          x1={overlay.handles.start.x}
+          y1={overlay.handles.start.y}
+          x2={overlay.handles["linked-start"].x}
+          y2={overlay.handles["linked-start"].y}
+          stroke="currentColor"
+          strokeDasharray="4 3"
+          strokeOpacity="0.45"
+          strokeWidth="1.2"
+          pointerEvents="none"
+        />
+      ) : null}
+      {overlay.handles["linked-end"] ? (
+        <line
+          x1={overlay.handles.end.x}
+          y1={overlay.handles.end.y}
+          x2={overlay.handles["linked-end"].x}
+          y2={overlay.handles["linked-end"].y}
+          stroke="currentColor"
+          strokeDasharray="4 3"
+          strokeOpacity="0.45"
+          strokeWidth="1.2"
+          pointerEvents="none"
+        />
+      ) : null}
+      {(Object.entries(overlay.handles) as Array<[BezierHandleKind, DiagramPoint | undefined]>).map(
+        ([handle, point]) =>
+          !point ? null : handle === "control1" || handle === "control2" || handle === "linked-start" || handle === "linked-end" ? (
+            <circle
+              key={handle}
+              cx={point.x}
+              cy={point.y}
+              r={SELECTION_HANDLE_RADIUS - 2}
+              fill={activeHandle === handle ? "currentColor" : "var(--surface-strong)"}
+              stroke="currentColor"
+              strokeWidth="1.5"
+              pointerEvents="none"
+            />
+          ) : (
+            <rect
+              key={handle}
+              x={point.x - (SELECTION_HANDLE_RADIUS - 1)}
+              y={point.y - (SELECTION_HANDLE_RADIUS - 1)}
+              width={(SELECTION_HANDLE_RADIUS - 1) * 2}
+              height={(SELECTION_HANDLE_RADIUS - 1) * 2}
+              fill={activeHandle === handle ? "currentColor" : "var(--surface-strong)"}
+              stroke="currentColor"
+              strokeWidth="1.5"
+              pointerEvents="none"
+            />
+          )
+      )}
+    </>
+  );
+}
+
 interface CropOverlayGeometry {
   bounds: DiagramCanvasFrame;
   handles: Record<Exclude<CropTransformMode, "move" | "create">, DiagramPoint>;
@@ -3364,6 +3909,66 @@ function findDiagramEntity(
 
   const shape = diagram.shapes.find((entry) => entry.id === target.id);
   return shape ? { kind: "shape", shape } : null;
+}
+
+function isBezierShapeEntity(entity: DiagramEntity | null): entity is BezierShapeEntity {
+  return entity?.kind === "shape" && entity.shape.kind === "bezier";
+}
+
+function pointsMatch(
+  a: Pick<DiagramPoint, "x" | "y">,
+  b: Pick<DiagramPoint, "x" | "y">,
+  epsilon = 0.001
+) {
+  return Math.abs(a.x - b.x) <= epsilon && Math.abs(a.y - b.y) <= epsilon;
+}
+
+function findConnectedBezierNeighbors(
+  diagram: DiagramAsset,
+  shape: Extract<DiagramShape, { kind: "bezier" }>
+) {
+  const beziers = getOrderedDiagramEntities(diagram).filter(isBezierShapeEntity);
+  const currentIndex = beziers.findIndex((entity) => entity.shape.id === shape.id);
+
+  if (currentIndex < 0) {
+    return {
+      previous: null,
+      next: null
+    };
+  }
+
+  let previous: BezierShapeEntity | null = null;
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const candidate = beziers[index];
+    if (
+      pointsMatch(
+        { x: candidate.shape.x2, y: candidate.shape.y2 },
+        { x: shape.x1, y: shape.y1 }
+      )
+    ) {
+      previous = candidate;
+      break;
+    }
+  }
+
+  let next: BezierShapeEntity | null = null;
+  for (let index = currentIndex + 1; index < beziers.length; index += 1) {
+    const candidate = beziers[index];
+    if (
+      pointsMatch(
+        { x: candidate.shape.x1, y: candidate.shape.y1 },
+        { x: shape.x2, y: shape.y2 }
+      )
+    ) {
+      next = candidate;
+      break;
+    }
+  }
+
+  return {
+    previous,
+    next
+  };
 }
 
 function getOrderedDiagramEntities(diagram: DiagramAsset): DiagramEntity[] {
@@ -3672,6 +4277,16 @@ function getDiagramVertices(diagram: DiagramAsset): DiagramPoint[] {
       continue;
     }
 
+    if (shape.kind === "bezier") {
+      vertices.push(
+        { x: shape.x1, y: shape.y1, pressure: 1 },
+        { x: shape.cx1, y: shape.cy1, pressure: 1 },
+        { x: shape.cx2, y: shape.cy2, pressure: 1 },
+        { x: shape.x2, y: shape.y2, pressure: 1 }
+      );
+      continue;
+    }
+
     if (shape.kind === "polygon") {
       vertices.push(...shape.points);
       continue;
@@ -3751,6 +4366,63 @@ function getSelectionOverlay(bounds: DiagramBounds, rotation: number): Selection
       "resize-sw": { ...corners.sw, pressure: 1 }
     }
   };
+}
+
+function getBezierEditOverlay(
+  diagram: DiagramAsset,
+  shape: Extract<DiagramShape, { kind: "bezier" }>
+): BezierEditOverlayGeometry {
+  const neighbors = findConnectedBezierNeighbors(diagram, shape);
+  const startAnchor = { x: shape.x1, y: shape.y1, pressure: 1 };
+  const endAnchor = { x: shape.x2, y: shape.y2, pressure: 1 };
+  return {
+    handles: {
+      start: startAnchor,
+      control1: { x: shape.cx1, y: shape.cy1, pressure: 1 },
+      control2: { x: shape.cx2, y: shape.cy2, pressure: 1 },
+      end: endAnchor,
+      "linked-start": neighbors.previous
+        ? { x: neighbors.previous.shape.cx2, y: neighbors.previous.shape.cy2, pressure: 1 }
+        : getMirroredBezierControlPoint(startAnchor, {
+            x: shape.cx1,
+            y: shape.cy1,
+            pressure: 1
+          }),
+      "linked-end": neighbors.next
+        ? { x: neighbors.next.shape.cx1, y: neighbors.next.shape.cy1, pressure: 1 }
+        : getMirroredBezierControlPoint(endAnchor, {
+            x: shape.cx2,
+            y: shape.cy2,
+            pressure: 1
+          })
+    }
+  };
+}
+
+function hitTestBezierHandle(
+  overlay: BezierEditOverlayGeometry,
+  point: DiagramPoint
+): BezierHandleKind | null {
+  let nearestHandle: BezierHandleKind | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const [handle, handlePoint] of Object.entries(overlay.handles) as Array<
+    [BezierHandleKind, DiagramPoint | undefined]
+  >) {
+    if (!handlePoint) {
+      continue;
+    }
+    const radius = handle === "control1" || handle === "control2"
+      ? SELECTION_HANDLE_RADIUS + 2
+      : SELECTION_HANDLE_RADIUS + 3;
+    const currentDistance = distance(handlePoint, point);
+    if (currentDistance <= radius && currentDistance < nearestDistance) {
+      nearestHandle = handle;
+      nearestDistance = currentDistance;
+    }
+  }
+
+  return nearestHandle;
 }
 
 function getCropOverlay(frame: DiagramCanvasFrame): CropOverlayGeometry {
@@ -3857,6 +4529,13 @@ function getShapeBounds(shape: DiagramShape): DiagramBounds {
 
   if (shape.kind === "polygon") {
     return boundsFromPoints(shape.points, shape.strokeWidth / 2);
+  }
+
+  if (shape.kind === "bezier") {
+    return boundsFromPoints(
+      sampleBezierCurvePoints(shape),
+      shape.strokeWidth / 2 + getEndpointPadding(shape.startMarker, shape.endMarker, shape.strokeWidth)
+    );
   }
 
   return boundsFromPoints(
@@ -3995,6 +4674,45 @@ function hitTestShape(shape: DiagramShape, point: DiagramPoint, padding = 0): bo
     );
   }
 
+  if (shape.kind === "bezier") {
+    if (
+      hitTestEndpointMarker(
+        { x: shape.x1, y: shape.y1, pressure: 1 },
+        point,
+        shape.startMarker,
+        shape.strokeWidth,
+        padding
+      ) ||
+      hitTestEndpointMarker(
+        { x: shape.x2, y: shape.y2, pressure: 1 },
+        point,
+        shape.endMarker,
+        shape.strokeWidth,
+        padding
+      )
+    ) {
+      return true;
+    }
+
+    const curvePoints = sampleBezierCurvePoints(shape);
+    for (let index = 1; index < curvePoints.length; index += 1) {
+      if (
+        pointToSegmentDistance(
+          point,
+          curvePoints[index - 1].x,
+          curvePoints[index - 1].y,
+          curvePoints[index].x,
+          curvePoints[index].y
+        ) <=
+        shape.strokeWidth / 2 + padding
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   if (shapeHasVisibleFill(shape) && pointInPolygon(shape.points, point)) {
     return true;
   }
@@ -4018,10 +4736,8 @@ function hitTestShape(shape: DiagramShape, point: DiagramPoint, padding = 0): bo
   return false;
 }
 
-function shapeHasVisibleFill(
-  shape: Exclude<DiagramShape, { kind: "line" }>
-): boolean {
-  return shape.fillColor !== EMPTY_COLOR_VALUE;
+function shapeHasVisibleFill(shape: DiagramShape): boolean {
+  return "fillColor" in shape && shape.fillColor !== EMPTY_COLOR_VALUE;
 }
 
 function translateEntity(entity: DiagramEntity, dx: number, dy: number): DiagramEntity {
@@ -4078,6 +4794,24 @@ function translateEntity(entity: DiagramEntity, dx: number, dy: number): Diagram
         ...shape,
         x1: shape.x1 + dx,
         y1: shape.y1 + dy,
+        x2: shape.x2 + dx,
+        y2: shape.y2 + dy,
+        updatedAt
+      }
+    };
+  }
+
+  if (shape.kind === "bezier") {
+    return {
+      kind: "shape",
+      shape: {
+        ...shape,
+        x1: shape.x1 + dx,
+        y1: shape.y1 + dy,
+        cx1: shape.cx1 + dx,
+        cy1: shape.cy1 + dy,
+        cx2: shape.cx2 + dx,
+        cy2: shape.cy2 + dy,
         x2: shape.x2 + dx,
         y2: shape.y2 + dy,
         updatedAt
@@ -4145,6 +4879,17 @@ function rotateEntity(entity: DiagramEntity, angleDelta: number, center: Diagram
       shape: {
         ...shape,
         ...rotateLine(shape, center, angleDelta),
+        updatedAt
+      }
+    };
+  }
+
+  if (shape.kind === "bezier") {
+    return {
+      kind: "shape",
+      shape: {
+        ...shape,
+        ...rotateBezier(shape, center, angleDelta),
         updatedAt
       }
     };
@@ -4233,6 +4978,28 @@ function scaleEntityWorld(
         ...shape,
         x1: start.x,
         y1: start.y,
+        x2: end.x,
+        y2: end.y,
+        updatedAt
+      }
+    };
+  }
+
+  if (shape.kind === "bezier") {
+    const start = scalePoint({ x: shape.x1, y: shape.y1, pressure: 1 });
+    const control1 = scalePoint({ x: shape.cx1, y: shape.cy1, pressure: 1 });
+    const control2 = scalePoint({ x: shape.cx2, y: shape.cy2, pressure: 1 });
+    const end = scalePoint({ x: shape.x2, y: shape.y2, pressure: 1 });
+    return {
+      kind: "shape",
+      shape: {
+        ...shape,
+        x1: start.x,
+        y1: start.y,
+        cx1: control1.x,
+        cy1: control1.y,
+        cx2: control2.x,
+        cy2: control2.y,
         x2: end.x,
         y2: end.y,
         updatedAt
@@ -4615,6 +5382,252 @@ function rotateLine(
   };
 }
 
+function rotateBezier(
+  shape: Extract<DiagramShape, { kind: "bezier" }>,
+  center: DiagramPoint,
+  angleDelta: number
+) {
+  const start = rotatePoint({ x: shape.x1, y: shape.y1 }, center, angleDelta);
+  const control1 = rotatePoint({ x: shape.cx1, y: shape.cy1 }, center, angleDelta);
+  const control2 = rotatePoint({ x: shape.cx2, y: shape.cy2 }, center, angleDelta);
+  const end = rotatePoint({ x: shape.x2, y: shape.y2 }, center, angleDelta);
+  return {
+    x1: start.x,
+    y1: start.y,
+    cx1: control1.x,
+    cy1: control1.y,
+    cx2: control2.x,
+    cy2: control2.y,
+    x2: end.x,
+    y2: end.y
+  };
+}
+
+function updateBezierHandle(
+  shape: Extract<DiagramShape, { kind: "bezier" }>,
+  handle: "start" | "control1" | "control2" | "end",
+  point: DiagramPoint
+): Extract<DiagramShape, { kind: "bezier" }> {
+  const updatedAt = new Date().toISOString();
+
+  if (handle === "start") {
+    const dx = point.x - shape.x1;
+    const dy = point.y - shape.y1;
+    return {
+      ...shape,
+      x1: point.x,
+      y1: point.y,
+      cx1: shape.cx1 + dx,
+      cy1: shape.cy1 + dy,
+      updatedAt
+    };
+  }
+
+  if (handle === "end") {
+    const dx = point.x - shape.x2;
+    const dy = point.y - shape.y2;
+    return {
+      ...shape,
+      x2: point.x,
+      y2: point.y,
+      cx2: shape.cx2 + dx,
+      cy2: shape.cy2 + dy,
+      updatedAt
+    };
+  }
+
+  if (handle === "control1") {
+    return {
+      ...shape,
+      cx1: point.x,
+      cy1: point.y,
+      updatedAt
+    };
+  }
+
+  return {
+    ...shape,
+    cx2: point.x,
+    cy2: point.y,
+    updatedAt
+  };
+}
+
+function getMirroredBezierControlPoint(
+  anchor: DiagramPoint,
+  controlPoint: DiagramPoint
+): DiagramPoint {
+  return {
+    x: anchor.x + (anchor.x - controlPoint.x),
+    y: anchor.y + (anchor.y - controlPoint.y),
+    pressure: 1
+  };
+}
+
+function getMatchingClosingStartControlPoint(
+  startPoint: DiagramPoint,
+  endPoint: DiagramPoint,
+  endControlPoint: DiagramPoint
+): DiagramPoint {
+  return {
+    x: startPoint.x + (endPoint.x - endControlPoint.x),
+    y: startPoint.y + (endPoint.y - endControlPoint.y),
+    pressure: 1
+  };
+}
+
+function getLinearBezierControlPoints(start: DiagramPoint, end: DiagramPoint) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  return {
+    cx1: start.x + dx / 3,
+    cy1: start.y + dy / 3,
+    cx2: start.x + (dx * 2) / 3,
+    cy2: start.y + (dy * 2) / 3
+  };
+}
+
+function getBezierControlPointsFromHandlePoint(
+  start: DiagramPoint,
+  end: DiagramPoint,
+  handlePoint: DiagramPoint,
+  startControlPoint?: DiagramPoint | null,
+  endControlPoint?: DiagramPoint | null
+) {
+  const base = getLinearBezierControlPoints(start, end);
+  const offsetX = handlePoint.x - end.x;
+  const offsetY = handlePoint.y - end.y;
+
+  return {
+    x1: start.x,
+    y1: start.y,
+    cx1: startControlPoint?.x ?? base.cx1,
+    cy1: startControlPoint?.y ?? base.cy1,
+    cx2: endControlPoint?.x ?? base.cx2 + offsetX,
+    cy2: endControlPoint?.y ?? base.cy2 + offsetY,
+    x2: end.x,
+    y2: end.y
+  };
+}
+
+function createBezierShapeFromHandlePoint(
+  color: string,
+  strokeWidth: number,
+  strokeStyle: DiagramStrokeStyle,
+  startMarker: DiagramEndpoint,
+  endMarker: DiagramEndpoint,
+  start: DiagramPoint,
+  end: DiagramPoint,
+  handlePoint: DiagramPoint,
+  startControlPoint?: DiagramPoint | null,
+  endControlPoint?: DiagramPoint | null
+): Extract<DiagramShape, { kind: "bezier" }> {
+  return {
+    kind: "bezier",
+    id: `shape-${crypto.randomUUID()}`,
+    strokeColor: color,
+    strokeWidth: clampStrokeWidthValue(strokeWidth),
+    strokeStyle,
+    startMarker,
+    endMarker,
+    ...getBezierControlPointsFromHandlePoint(
+      start,
+      end,
+      handlePoint,
+      startControlPoint,
+      endControlPoint
+    ),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function updateBezierCreationDraft(
+  shape: Extract<DiagramShape, { kind: "bezier" }>,
+  handlePoint: DiagramPoint
+): Extract<DiagramShape, { kind: "bezier" }> {
+  return {
+    ...shape,
+    ...getBezierControlPointsFromHandlePoint(
+      { x: shape.x1, y: shape.y1, pressure: 1 },
+      { x: shape.x2, y: shape.y2, pressure: 1 },
+      handlePoint,
+      { x: shape.cx1, y: shape.cy1, pressure: 1 }
+    ),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function updateClosingBezierCreationDraft(
+  shape: Extract<DiagramShape, { kind: "bezier" }>,
+  handlePoint: DiagramPoint
+): Extract<DiagramShape, { kind: "bezier" }> {
+  const startPoint = { x: shape.x1, y: shape.y1, pressure: 1 };
+  const endPoint = { x: shape.x2, y: shape.y2, pressure: 1 };
+  const matchingStartControlPoint = getMatchingClosingStartControlPoint(
+    startPoint,
+    endPoint,
+    handlePoint
+  );
+  return {
+    ...shape,
+    cx1: matchingStartControlPoint.x,
+    cy1: matchingStartControlPoint.y,
+    cx2: handlePoint.x,
+    cy2: handlePoint.y,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function evaluateBezierPoint(
+  shape: Extract<DiagramShape, { kind: "bezier" }>,
+  t: number
+): DiagramPoint {
+  const inverse = 1 - t;
+  const x =
+    inverse ** 3 * shape.x1 +
+    3 * inverse * inverse * t * shape.cx1 +
+    3 * inverse * t * t * shape.cx2 +
+    t ** 3 * shape.x2;
+  const y =
+    inverse ** 3 * shape.y1 +
+    3 * inverse * inverse * t * shape.cy1 +
+    3 * inverse * t * t * shape.cy2 +
+    t ** 3 * shape.y2;
+  return { x, y, pressure: 1 };
+}
+
+function sampleBezierCurvePoints(
+  shape: Extract<DiagramShape, { kind: "bezier" }>,
+  segments = 24
+): DiagramPoint[] {
+  const points: DiagramPoint[] = [];
+
+  for (let index = 0; index <= segments; index += 1) {
+    points.push(evaluateBezierPoint(shape, index / segments));
+  }
+
+  return points;
+}
+
+function getBezierCurveLength(shape: Extract<DiagramShape, { kind: "bezier" }>): number {
+  const points = sampleBezierCurvePoints(shape);
+  let total = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    total += distance(points[index - 1], points[index]);
+  }
+
+  return total;
+}
+
+function bezierToPathData(shape: Extract<DiagramShape, { kind: "bezier" }>): string {
+  return `M ${formatNumber(shape.x1)} ${formatNumber(shape.y1)} C ${formatNumber(
+    shape.cx1
+  )} ${formatNumber(shape.cy1)} ${formatNumber(shape.cx2)} ${formatNumber(
+    shape.cy2
+  )} ${formatNumber(shape.x2)} ${formatNumber(shape.y2)}`;
+}
+
 function boundsFromPoints(
   points: Array<{ x: number; y: number }>,
   padding = 0
@@ -4854,7 +5867,7 @@ function DiagramShapePath({
   isDraft?: boolean;
 }) {
   const commonProps = {
-    fill: shape.kind === "line" ? "none" : shape.fillColor,
+    fill: shape.kind === "line" || shape.kind === "bezier" ? "none" : shape.fillColor,
     stroke: shape.strokeColor,
     strokeDasharray: isDraft ? "6 4" : getDashArray(shape.strokeStyle, shape.strokeWidth),
     strokeOpacity: isDraft ? 0.85 : 1,
@@ -4906,6 +5919,17 @@ function DiagramShapePath({
     );
   }
 
+  if (shape.kind === "bezier") {
+    return (
+      <path
+        d={bezierToPathData(shape)}
+        markerEnd={getMarkerUrl(shape.endMarker)}
+        markerStart={getMarkerUrl(shape.startMarker)}
+        {...commonProps}
+      />
+    );
+  }
+
   return (
     <line
       x1={shape.x1}
@@ -4949,6 +5973,10 @@ function shapeToSvgNode(shape: DiagramShape): string {
   if (shape.kind === "polygon") {
     const pts = shape.points.map((p) => `${formatNumber(p.x)},${formatNumber(p.y)}`).join(" ");
     return `    <polygon points="${pts}" fill="${shape.fillColor}" stroke="${shape.strokeColor}" stroke-width="${formatNumber(shape.strokeWidth)}"${formatDashSvgAttribute(shape.strokeStyle, shape.strokeWidth)} />`;
+  }
+
+  if (shape.kind === "bezier") {
+    return `    <path d="${bezierToPathData(shape)}" fill="none" stroke="${shape.strokeColor}" stroke-width="${formatNumber(shape.strokeWidth)}"${formatDashSvgAttribute(shape.strokeStyle, shape.strokeWidth)}${formatMarkerSvgAttributes(shape.startMarker, shape.endMarker)} />`;
   }
 
   return `    <line x1="${formatNumber(shape.x1)}" y1="${formatNumber(shape.y1)}" x2="${formatNumber(shape.x2)}" y2="${formatNumber(shape.y2)}" stroke="${shape.strokeColor}" stroke-width="${formatNumber(shape.strokeWidth)}"${formatDashSvgAttribute(shape.strokeStyle, shape.strokeWidth)}${formatMarkerSvgAttributes(shape.startMarker, shape.endMarker)} />`;
@@ -5049,6 +6077,20 @@ function createShapeDraft(
     };
   }
 
+  if (tool === "bezier") {
+    return {
+      kind: "bezier",
+      id: `shape-${crypto.randomUUID()}`,
+      strokeColor: color,
+      strokeWidth: nextStrokeWidth,
+      strokeStyle,
+      startMarker,
+      endMarker,
+      ...getBezierControlPointsFromHandlePoint(point, point, point),
+      updatedAt
+    };
+  }
+
   return {
     kind: "line",
     id: `shape-${crypto.randomUUID()}`,
@@ -5107,6 +6149,18 @@ function updateShapeDraft(shape: DiagramShape, point: DiagramPoint): DiagramShap
     };
   }
 
+  if (shape.kind === "bezier") {
+    return {
+      ...shape,
+      ...getBezierControlPointsFromHandlePoint(
+        { x: shape.x1, y: shape.y1, pressure: 1 },
+        { x: shape.x2, y: shape.y2, pressure: 1 },
+        point
+      ),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
   return shape;
 }
 
@@ -5116,6 +6170,10 @@ function shapeHasArea(shape: DiagramShape): boolean {
       { x: shape.x1, y: shape.y1, pressure: 0 },
       { x: shape.x2, y: shape.y2, pressure: 0 }
     ) >= MIN_MOVEMENT;
+  }
+
+  if (shape.kind === "bezier") {
+    return getBezierCurveLength(shape) >= MIN_MOVEMENT;
   }
 
   if (shape.kind === "ellipse") {

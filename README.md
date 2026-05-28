@@ -118,6 +118,7 @@ The next compiler-focused improvements are:
 - Improve font management for offline Typst rendering.
 - Add shareable bundles and installable templates.
 - Improve mobile editing ergonomics and keyboard shortcuts.
+- Evaluate an embedded lightweight SVG-Edit-based diagram surface.
 - LaTeX to Typst converter
 - Native Typst graphs
 - Live compilation (non-experimental)

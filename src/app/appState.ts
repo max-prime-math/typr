@@ -130,6 +130,25 @@ export interface DiagramLine {
   updatedAt: string;
 }
 
+export interface DiagramBezier {
+  kind: "bezier";
+  id: string;
+  strokeColor: string;
+  strokeWidth: number;
+  strokeStyle: DiagramStrokeStyle;
+  startMarker: DiagramEndpoint;
+  endMarker: DiagramEndpoint;
+  x1: number;
+  y1: number;
+  cx1: number;
+  cy1: number;
+  cx2: number;
+  cy2: number;
+  x2: number;
+  y2: number;
+  updatedAt: string;
+}
+
 export interface DiagramPolygon {
   kind: "polygon";
   id: string;
@@ -141,7 +160,12 @@ export interface DiagramPolygon {
   updatedAt: string;
 }
 
-export type DiagramShape = DiagramRect | DiagramEllipse | DiagramLine | DiagramPolygon;
+export type DiagramShape =
+  | DiagramRect
+  | DiagramEllipse
+  | DiagramLine
+  | DiagramBezier
+  | DiagramPolygon;
 
 export interface DiagramAsset {
   id: string;
@@ -706,6 +730,27 @@ function normalizeDiagramShape(shape: DiagramShape): DiagramShape {
       strokeStyle: normalizeDiagramStrokeStyle(shape.strokeStyle),
       fillColor: shape.fillColor ?? "transparent",
       points: Array.isArray(shape.points) ? shape.points : [],
+      updatedAt
+    };
+  }
+
+  if (shape.kind === "bezier") {
+    return {
+      ...shape,
+      id: shape.id ?? createId("shape"),
+      strokeColor: shape.strokeColor ?? "#000000",
+      strokeWidth: typeof shape.strokeWidth === "number" ? shape.strokeWidth : 2.5,
+      strokeStyle: normalizeDiagramStrokeStyle(shape.strokeStyle),
+      startMarker: normalizeDiagramEndpoint(shape.startMarker),
+      endMarker: normalizeDiagramEndpoint(shape.endMarker),
+      x1: typeof shape.x1 === "number" ? shape.x1 : 0,
+      y1: typeof shape.y1 === "number" ? shape.y1 : 0,
+      cx1: typeof shape.cx1 === "number" ? shape.cx1 : 0,
+      cy1: typeof shape.cy1 === "number" ? shape.cy1 : 0,
+      cx2: typeof shape.cx2 === "number" ? shape.cx2 : 0,
+      cy2: typeof shape.cy2 === "number" ? shape.cy2 : 0,
+      x2: typeof shape.x2 === "number" ? shape.x2 : 0,
+      y2: typeof shape.y2 === "number" ? shape.y2 : 0,
       updatedAt
     };
   }
