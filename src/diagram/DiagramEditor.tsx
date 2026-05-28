@@ -7,6 +7,7 @@ import {
   type PointerEvent,
   type ReactNode
 } from "react";
+import { createPortal } from "react-dom";
 import type {
   DiagramAsset,
   DiagramCanvasFrame,
@@ -68,12 +69,15 @@ const SELECTION_HANDLE_RADIUS = 7;
 const ROTATION_HANDLE_OFFSET = 26;
 const KEYBOARD_MOVE_STEP = 10;
 const KEYBOARD_FINE_MOVE_STEP = 1;
+const VERTEX_SNAP_RADIUS_PX = 12;
 const MIN_STROKE_WIDTH = 0.5;
 const MAX_STROKE_WIDTH = 48;
 const MIN_CANVAS_DIMENSION = 24;
 const MIN_ZOOM_LEVEL = 0.1;
 const MAX_ZOOM_LEVEL = 8;
 const ZOOM_MULTIPLIER = 1.2;
+const ZOOM_CLICK_MULTIPLIER = 1.1;
+const ZOOM_PERCENT_STEPS = [50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300] as const;
 const STROKE_WIDTH_PRESETS = [1, 2.5, 4, 8] as const;
 const DIAGRAM_COLOR_SWATCHES = ["#000000", "#d64545", "#c77718", "#2b6cb0", "#2f855a"] as const;
 const DIAGRAM_STROKE_STYLE_ITEMS: Array<{
@@ -95,9 +99,20 @@ const DIAGRAM_ENDPOINT_ITEMS: Array<{
   { endpoint: "open-dot", label: "Empty dot" }
 ];
 const EMPTY_COLOR_VALUE = "transparent";
-type DiagramTool = "pointer" | "crop" | "pen" | "rect" | "ellipse" | "line" | "polygon" | "eraser";
+type DiagramTool =
+  | "pointer"
+  | "hand"
+  | "crop"
+  | "zoom"
+  | "pen"
+  | "rect"
+  | "ellipse"
+  | "line"
+  | "polygon"
+  | "eraser";
 const DIAGRAM_TOOL_ITEMS: Array<{ tool: DiagramTool; label: string }> = [
   { tool: "pointer", label: "Pointer" },
+  { tool: "hand", label: "Hand" },
   { tool: "crop", label: "Crop" },
   { tool: "pen", label: "Pen" },
   { tool: "rect", label: "Rectangle" },
@@ -124,12 +139,35 @@ interface DiagramBounds {
   height: number;
 }
 
-type CropTransformMode = "move" | "resize-nw" | "resize-ne" | "resize-se" | "resize-sw";
+type CropTransformMode =
+  | "create"
+  | "move"
+  | "resize-n"
+  | "resize-ne"
+  | "resize-e"
+  | "resize-se"
+  | "resize-s"
+  | "resize-sw"
+  | "resize-w"
+  | "resize-nw";
 
 interface CropTransformState {
   mode: CropTransformMode;
   startPoint: DiagramPoint;
   originalFrame: DiagramCanvasFrame;
+}
+
+interface ZoomDragState {
+  startPoint: DiagramPoint;
+  currentPoint: DiagramPoint;
+}
+
+interface HandTransformState {
+  startClientX: number;
+  startClientY: number;
+  originalCenter: DiagramPoint;
+  originalDisplayFrame: DiagramBounds;
+  originalViewportBox: { width: number; height: number };
 }
 
 interface SelectionTransformState {
@@ -140,6 +178,8 @@ interface SelectionTransformState {
   originalBounds: DiagramBounds;
   originalSelectionRotation: number;
 }
+
+type DiagramReorderAction = "front" | "back" | "forward" | "backward";
 
 export function DiagramEditor({
   diagram,
@@ -174,6 +214,11 @@ export function DiagramEditor({
   onDownloadSvg,
   onUndo
 }: DiagramEditorProps) {
+  const temporaryHandPreviousToolRef = useRef<{
+    tool: DiagramTool;
+    isCropToolPrimed: boolean;
+  } | null>(null);
+  const surfaceContainerRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<SVGSVGElement | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
   const draftStrokeRef = useRef<DiagramStroke | null>(null);
@@ -186,14 +231,28 @@ export function DiagramEditor({
   const [eraserDragging, setEraserDragging] = useState(false);
   const [fileNameDraft, setFileNameDraft] = useState(diagram.name);
   const [activeTool, setActiveTool] = useState<DiagramTool>("pen");
+  const [isZoomOutModifierDown, setIsZoomOutModifierDown] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<DiagramSelectionTarget | null>(null);
   const [selectionBounds, setSelectionBounds] = useState<DiagramBounds | null>(null);
   const [selectionRotation, setSelectionRotation] = useState(0);
   const [transformState, setTransformState] = useState<SelectionTransformState | null>(null);
   const [cropTransformState, setCropTransformState] = useState<CropTransformState | null>(null);
+  const [cropDraftFrame, setCropDraftFrame] = useState<DiagramCanvasFrame | null>(null);
+  const [isCropToolPrimed, setIsCropToolPrimed] = useState(false);
+  const [handTransformState, setHandTransformState] = useState<HandTransformState | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [isVertexSnapEnabled, setIsVertexSnapEnabled] = useState(false);
   const [viewportCenter, setViewportCenter] = useState<DiagramPoint | null>(null);
   const [viewportBaseSize, setViewportBaseSize] = useState<Pick<DiagramBounds, "width" | "height"> | null>(null);
+  const [zoomDragState, setZoomDragState] = useState<ZoomDragState | null>(null);
+  const [surfaceViewportBox, setSurfaceViewportBox] = useState({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+    containerWidth: 0,
+    containerHeight: 0
+  });
   const hasExpandControls = onExpandLeft || onExpandRight;
   const selectedEntity = useMemo(
     () => findDiagramEntity(diagram, selectedTarget),
@@ -218,6 +277,24 @@ export function DiagramEditor({
     (activeTool === "pointer" &&
       (selectedEntity?.kind === "stroke" ||
         (selectedEntity?.kind === "shape" && selectedEntity.shape.kind === "line")));
+  const supportsStrokeContext =
+    activeTool === "pointer"
+      ? Boolean(selectedEntity)
+      : activeTool === "pen" ||
+        activeTool === "line" ||
+        activeTool === "rect" ||
+        activeTool === "ellipse" ||
+        activeTool === "polygon";
+  const supportsStyleContext = supportsStrokeContext;
+  const supportsWidthContext = supportsStrokeContext;
+  const supportsArrangeContext = Boolean(selectedTarget);
+  const supportsStrokeInspector = supportsStyleContext || supportsWidthContext || supportsEndpoints;
+  const hasContextControls =
+    supportsArrangeContext ||
+    supportsStrokeContext ||
+    supportsFill ||
+    supportsStrokeInspector ||
+    supportsEndpoints;
 
   const previewDiagram = useMemo(() => {
     const strokes = draftStroke ? [...diagram.strokes, draftStroke] : diagram.strokes;
@@ -290,21 +367,71 @@ export function DiagramEditor({
   }, [diagram, draftShape, draftStroke, draftPolygon, polygonCursor, inkColor, strokeStyle, strokeWidth]);
   const autoFrame = useMemo(() => getDiagramAutoFrame(previewDiagram), [previewDiagram]);
   const effectiveFrame = diagram.frame ?? autoFrame;
+  const surfaceAspectRatio = useMemo(() => {
+    if (!isExpanded) {
+      return 1;
+    }
+
+    if (
+      surfaceViewportBox.containerWidth > 0 &&
+      surfaceViewportBox.containerHeight > 0
+    ) {
+      return surfaceViewportBox.containerWidth / surfaceViewportBox.containerHeight;
+    }
+
+    return effectiveFrame.width / effectiveFrame.height;
+  }, [
+    effectiveFrame.height,
+    effectiveFrame.width,
+    isExpanded,
+    surfaceViewportBox.containerHeight,
+    surfaceViewportBox.containerWidth
+  ]);
   const displayFrame = useMemo(() => {
     const baseSize = viewportBaseSize ?? {
       width: effectiveFrame.width,
       height: effectiveFrame.height
     };
     const center = viewportCenter ?? getFrameCenter(effectiveFrame);
+    let width = baseSize.width / zoomLevel;
+    let height = baseSize.height / zoomLevel;
+    const currentAspect = width / height;
+
+    if (surfaceAspectRatio > 0) {
+      if (currentAspect < surfaceAspectRatio) {
+        width = height * surfaceAspectRatio;
+      } else if (currentAspect > surfaceAspectRatio) {
+        height = width / surfaceAspectRatio;
+      }
+    }
+
     return {
-      x: center.x - baseSize.width / (2 * zoomLevel),
-      y: center.y - baseSize.height / (2 * zoomLevel),
-      width: baseSize.width / zoomLevel,
-      height: baseSize.height / zoomLevel
+      x: center.x - width / 2,
+      y: center.y - height / 2,
+      width,
+      height
     };
-  }, [effectiveFrame, viewportBaseSize, viewportCenter, zoomLevel]);
+  }, [effectiveFrame, surfaceAspectRatio, viewportBaseSize, viewportCenter, zoomLevel]);
+  const zoomSelectValue = useMemo(
+    () => getZoomSelectValue(zoomLevel),
+    [zoomLevel]
+  );
+  const zoomCursor = useMemo(
+    () => createZoomCursorDataUrl(isZoomOutModifierDown),
+    [isZoomOutModifierDown]
+  );
+  const surfaceStyle = useMemo(
+    () => ({
+      aspectRatio: "1 / 1"
+    }),
+    []
+  );
   const svgMarkup = useMemo(
     () => serializeDiagramSvg(previewDiagram),
+    [previewDiagram]
+  );
+  const orderedPreviewEntities = useMemo(
+    () => getOrderedDiagramEntities(previewDiagram),
     [previewDiagram]
   );
   const selectionOverlay = useMemo(
@@ -312,13 +439,60 @@ export function DiagramEditor({
     [selectionBounds, selectionRotation]
   );
   const cropOverlay = useMemo(
-    () => getCropOverlay(effectiveFrame),
-    [effectiveFrame]
+    () => getCropOverlay(cropDraftFrame ?? effectiveFrame),
+    [cropDraftFrame, effectiveFrame]
+  );
+  const zoomOverlay = useMemo(
+    () => (zoomDragState ? getZoomDragOverlay(zoomDragState) : null),
+    [zoomDragState]
   );
 
   useEffect(() => {
     setFileNameDraft(diagram.name);
   }, [diagram.name]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const surfaceContainer = surfaceContainerRef.current;
+    const surface = surfaceRef.current;
+    if (!surfaceContainer || !surface || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const updateViewportBox = () => {
+      const containerRect = surfaceContainer.getBoundingClientRect();
+      const surfaceRect = surface.getBoundingClientRect();
+      const renderedViewportBox = getRenderedViewportBox(
+        surfaceRect.width,
+        surfaceRect.height,
+        displayFrame.width,
+        displayFrame.height
+      );
+
+      setSurfaceViewportBox({
+        left: surfaceRect.left - containerRect.left + renderedViewportBox.left,
+        top: surfaceRect.top - containerRect.top + renderedViewportBox.top,
+        width: renderedViewportBox.width,
+        height: renderedViewportBox.height,
+        containerWidth: containerRect.width,
+        containerHeight: containerRect.height
+      });
+    };
+
+    updateViewportBox();
+    const observer = new ResizeObserver(updateViewportBox);
+    observer.observe(surfaceContainer);
+    observer.observe(surface);
+    window.addEventListener("resize", updateViewportBox);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateViewportBox);
+    };
+  }, [displayFrame.height, displayFrame.width]);
 
   useEffect(() => {
     setZoomLevel(1);
@@ -525,7 +699,45 @@ export function DiagramEditor({
   useEffect(() => {
     if (activeTool !== "crop") {
       setCropTransformState(null);
+      setCropDraftFrame(null);
     }
+  }, [activeTool]);
+
+  useEffect(() => {
+    if (activeTool !== "zoom") {
+      setZoomDragState(null);
+    }
+  }, [activeTool]);
+
+  useEffect(() => {
+    if (activeTool !== "zoom") {
+      setIsZoomOutModifierDown(false);
+      return;
+    }
+
+    const updateModifierState = (event: KeyboardEvent) => {
+      if (event.key === "Shift") {
+        setIsZoomOutModifierDown(event.type === "keydown");
+      }
+    };
+
+    const resetModifierState = () => {
+      setIsZoomOutModifierDown(false);
+    };
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.addEventListener("keydown", updateModifierState);
+    window.addEventListener("keyup", updateModifierState);
+    window.addEventListener("blur", resetModifierState);
+
+    return () => {
+      window.removeEventListener("keydown", updateModifierState);
+      window.removeEventListener("keyup", updateModifierState);
+      window.removeEventListener("blur", resetModifierState);
+    };
   }, [activeTool]);
 
   function commitFrame(nextFrame: DiagramCanvasFrame) {
@@ -552,6 +764,239 @@ export function DiagramEditor({
           : currentZoom / ZOOM_MULTIPLIER
       )
     );
+  }
+
+  function setZoomToPercent(percent: number) {
+    if (!Number.isFinite(percent)) {
+      return;
+    }
+
+    setZoomLevel(clampZoomLevel(percent / 100));
+  }
+
+  function toggleVertexSnap() {
+    setIsVertexSnapEnabled((current) => !current);
+  }
+
+  function getSnappedPointerPoint(
+    event: PointerEvent<SVGSVGElement>,
+    tool: DiagramTool
+  ): DiagramPoint {
+    const rawPoint = pointerEventToDiagramPoint(event, displayFrame);
+    const supportsVertexSnap =
+      tool === "line" || tool === "rect" || tool === "ellipse" || tool === "polygon";
+
+    if (!isVertexSnapEnabled || !supportsVertexSnap) {
+      return rawPoint;
+    }
+
+    return snapPointToNearestVertex(
+      rawPoint,
+      [...getDiagramVertices(diagram), ...(draftPolygon ?? [])],
+      getDiagramHitPadding(event.currentTarget, displayFrame, VERTEX_SNAP_RADIUS_PX)
+    );
+  }
+
+  function applyZoomToSquare(bounds: DiagramBounds) {
+    if (bounds.width < 1 || bounds.height < 1) {
+      return;
+    }
+
+    const baseSize = viewportBaseSize ?? {
+      width: effectiveFrame.width,
+      height: effectiveFrame.height
+    };
+
+    if (baseSize.width <= 0 || baseSize.height <= 0) {
+      return;
+    }
+
+    const nextZoom = clampZoomLevel(Math.min(baseSize.width / bounds.width, baseSize.height / bounds.height));
+    setViewportCenter(getBoundsCenter(bounds));
+    setZoomLevel(nextZoom);
+  }
+
+  function handleZoomToolDown(event: PointerEvent<SVGSVGElement>) {
+    if (event.button !== 0 && event.pointerType !== "touch" && event.pointerType !== "pen") {
+      return;
+    }
+
+    const point = pointerEventToDiagramPoint(event, displayFrame);
+    surfaceRef.current?.focus();
+    activePointerIdRef.current = event.pointerId;
+    setZoomDragState({
+      startPoint: point,
+      currentPoint: point
+    });
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Best effort.
+    }
+  }
+
+  function handleZoomToolMove(event: PointerEvent<SVGSVGElement>) {
+    if (activePointerIdRef.current !== event.pointerId) {
+      setIsZoomOutModifierDown(event.shiftKey);
+      return;
+    }
+
+    const point = pointerEventToDiagramPoint(event, displayFrame);
+    setIsZoomOutModifierDown(event.shiftKey);
+    setZoomDragState((currentDrag) =>
+      currentDrag
+        ? {
+            ...currentDrag,
+            currentPoint: point
+          }
+        : currentDrag
+    );
+  }
+
+  function finishZoomTool(event: PointerEvent<SVGSVGElement>) {
+    if (activePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+
+    const dragState = zoomDragState;
+    activePointerIdRef.current = null;
+    setIsZoomOutModifierDown(event.shiftKey);
+    setZoomDragState(null);
+
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+    } catch {
+      // Ignore release failures.
+    }
+
+    if (!dragState) {
+      return;
+    }
+
+    const dragBounds = getZoomDragBounds(dragState.startPoint, dragState.currentPoint);
+    const dragDistance = distance(dragState.startPoint, dragState.currentPoint);
+
+    if (dragDistance < 4) {
+      const zoomOut = event.shiftKey || isZoomOutModifierDown;
+      setViewportCenter(dragState.startPoint);
+      setZoomLevel((currentZoom) =>
+        clampZoomLevel(
+          currentZoom * (zoomOut ? 1 / ZOOM_CLICK_MULTIPLIER : ZOOM_CLICK_MULTIPLIER)
+        )
+      );
+      return;
+    }
+
+    applyZoomToSquare(dragBounds);
+  }
+
+  function handleHandToolDown(event: PointerEvent<SVGSVGElement>) {
+    if (event.button !== 0 && event.pointerType !== "touch" && event.pointerType !== "pen") {
+      return;
+    }
+
+    surfaceRef.current?.focus();
+    activePointerIdRef.current = event.pointerId;
+    setHandTransformState({
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originalCenter: viewportCenter ?? getFrameCenter(effectiveFrame),
+      originalDisplayFrame: displayFrame,
+      originalViewportBox: {
+        width: Math.max(surfaceViewportBox.width, 1),
+        height: Math.max(surfaceViewportBox.height, 1)
+      }
+    });
+
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Best effort.
+    }
+  }
+
+  function handleHandToolMove(event: PointerEvent<SVGSVGElement>) {
+    if (!handTransformState || activePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+
+    const dx =
+      ((event.clientX - handTransformState.startClientX) * handTransformState.originalDisplayFrame.width) /
+      handTransformState.originalViewportBox.width;
+    const dy =
+      ((event.clientY - handTransformState.startClientY) * handTransformState.originalDisplayFrame.height) /
+      handTransformState.originalViewportBox.height;
+    setViewportCenter({
+      x: handTransformState.originalCenter.x - dx,
+      y: handTransformState.originalCenter.y - dy,
+      pressure: 1
+    });
+  }
+
+  function finishHandTool(event: PointerEvent<SVGSVGElement>) {
+    if (activePointerIdRef.current !== event.pointerId) {
+      return;
+    }
+
+    activePointerIdRef.current = null;
+    setHandTransformState(null);
+
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+    } catch {
+      // Ignore release failures.
+    }
+  }
+
+  function activateTemporaryHandTool() {
+    if (temporaryHandPreviousToolRef.current || activeTool === "hand") {
+      return;
+    }
+
+    temporaryHandPreviousToolRef.current = {
+      tool: activeTool,
+      isCropToolPrimed
+    };
+    activePointerIdRef.current = null;
+    setHandTransformState(null);
+    setActiveTool("hand");
+  }
+
+  function restoreTemporaryHandTool() {
+    const previousTool = temporaryHandPreviousToolRef.current;
+    if (!previousTool) {
+      return;
+    }
+
+    temporaryHandPreviousToolRef.current = null;
+    activePointerIdRef.current = null;
+    setHandTransformState(null);
+    setActiveTool(previousTool.tool);
+    setIsCropToolPrimed(previousTool.tool === "crop" ? previousTool.isCropToolPrimed : false);
+  }
+
+  function activateTool(tool: DiagramTool) {
+    temporaryHandPreviousToolRef.current = null;
+    setActiveTool(tool);
+    setIsCropToolPrimed(tool === "crop");
+    activePointerIdRef.current = null;
+    draftStrokeRef.current = null;
+    draftShapeRef.current = null;
+    setSelectedTarget(null);
+    setSelectionBounds(null);
+    setSelectionRotation(0);
+    setTransformState(null);
+    setCropTransformState(null);
+    setHandTransformState(null);
+    setDraftStroke(null);
+    setDraftShape(null);
+    setDraftPolygon(null);
+    setPolygonCursor(null);
   }
 
   function startStroke(event: PointerEvent<SVGSVGElement>) {
@@ -647,7 +1092,7 @@ export function DiagramEditor({
       return;
     }
 
-    const point = pointerEventToDiagramPoint(event, displayFrame);
+    const point = getSnappedPointerPoint(event, activeTool);
     const nextShape = createShapeDraft(
       activeTool as Exclude<DiagramTool, "pen">,
       inkColor,
@@ -675,7 +1120,7 @@ export function DiagramEditor({
       return;
     }
 
-    const point = pointerEventToDiagramPoint(event, displayFrame);
+    const point = getSnappedPointerPoint(event, activeTool);
     setDraftShape((currentShape) => {
       if (!currentShape) {
         return currentShape;
@@ -787,6 +1232,56 @@ export function DiagramEditor({
     setSelectionBounds(null);
     setSelectionRotation(0);
     setTransformState(null);
+  }
+
+  function reorderSelection(action: DiagramReorderAction) {
+    if (!selectedTarget) {
+      return;
+    }
+
+    const orderedEntities = getOrderedDiagramEntities(diagram);
+    const selectedIndex = orderedEntities.findIndex(
+      (entity) => getDiagramEntityId(entity) === selectedTarget.id
+    );
+
+    if (selectedIndex < 0) {
+      return;
+    }
+
+    if (action === "front") {
+      if (selectedIndex === orderedEntities.length - 1) {
+        return;
+      }
+
+      const selectedOrderEntity = orderedEntities[selectedIndex];
+      const maxTimestamp = Math.max(...orderedEntities.map(getDiagramEntityTimestamp));
+      applyUpdatedEntity(setDiagramEntityTimestamp(selectedOrderEntity, maxTimestamp + 1));
+      return;
+    }
+
+    if (action === "back") {
+      if (selectedIndex === 0) {
+        return;
+      }
+
+      const selectedOrderEntity = orderedEntities[selectedIndex];
+      const minTimestamp = Math.min(...orderedEntities.map(getDiagramEntityTimestamp));
+      applyUpdatedEntity(setDiagramEntityTimestamp(selectedOrderEntity, minTimestamp - 1));
+      return;
+    }
+
+    const swapIndex = action === "forward" ? selectedIndex + 1 : selectedIndex - 1;
+    if (swapIndex < 0 || swapIndex >= orderedEntities.length) {
+      return;
+    }
+
+    const selectedOrderEntity = orderedEntities[selectedIndex];
+    const neighborOrderEntity = orderedEntities[swapIndex];
+    const selectedTimestamp = getDiagramEntityTimestamp(selectedOrderEntity);
+    const neighborTimestamp = getDiagramEntityTimestamp(neighborOrderEntity);
+
+    applyUpdatedEntity(setDiagramEntityTimestamp(selectedOrderEntity, neighborTimestamp));
+    applyUpdatedEntity(setDiagramEntityTimestamp(neighborOrderEntity, selectedTimestamp));
   }
 
   function nudgeSelection(dx: number, dy: number) {
@@ -944,17 +1439,20 @@ export function DiagramEditor({
   function beginCropTransform(
     mode: CropTransformMode,
     point: DiagramPoint,
-    event: PointerEvent<SVGSVGElement>
+    pointerId: number,
+    captureTarget: { setPointerCapture?: (pointerId: number) => void } | null
   ) {
-    activePointerIdRef.current = event.pointerId;
+    activePointerIdRef.current = pointerId;
     setCropTransformState({
       mode,
       startPoint: point,
       originalFrame: effectiveFrame
     });
+    setCropDraftFrame(mode === "create" ? createCanvasFrameFromPoints(point, point) : effectiveFrame);
+    setIsCropToolPrimed(false);
 
     try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+      captureTarget?.setPointerCapture?.(pointerId);
     } catch {
       // Best effort.
     }
@@ -966,16 +1464,27 @@ export function DiagramEditor({
     }
 
     const point = pointerEventToDiagramPoint(event, displayFrame);
+    const handleHitPadding = getDiagramHitPadding(
+      event.currentTarget,
+      displayFrame,
+      event.pointerType === "mouse" ? 12 : 18
+    );
     surfaceRef.current?.focus();
-    const handle = hitTestCropHandle(cropOverlay, point);
+    const activeCropFrame = cropDraftFrame ?? effectiveFrame;
+    const handle = isCropToolPrimed ? null : hitTestCropHandle(cropOverlay, point, handleHitPadding);
 
     if (handle) {
-      beginCropTransform(handle, point, event);
+      beginCropTransform(handle, point, event.pointerId, event.currentTarget);
       return;
     }
 
-    if (pointInBounds(point, effectiveFrame, 6)) {
-      beginCropTransform("move", point, event);
+    if (isCropToolPrimed || !pointInBounds(point, activeCropFrame, 6)) {
+      beginCropTransform("create", point, event.pointerId, event.currentTarget);
+      return;
+    }
+
+    if (pointInBounds(point, activeCropFrame, 6)) {
+      beginCropTransform("move", point, event.pointerId, event.currentTarget);
     }
   }
 
@@ -985,8 +1494,10 @@ export function DiagramEditor({
     }
 
     const point = pointerEventToDiagramPoint(event, displayFrame);
-    const nextFrame =
-      cropTransformState.mode === "move"
+    const rawNextFrame =
+      cropTransformState.mode === "create"
+        ? createCanvasFrameFromPoints(cropTransformState.startPoint, point)
+        : cropTransformState.mode === "move"
         ? translateCanvasFrame(
             cropTransformState.originalFrame,
             point.x - cropTransformState.startPoint.x,
@@ -997,16 +1508,26 @@ export function DiagramEditor({
             cropTransformState.mode,
             point
           );
-    commitFrame(nextFrame);
+    const nextFrame =
+      cropTransformState.mode === "move"
+        ? constrainCanvasFrameToBounds(rawNextFrame, displayFrame)
+        : clipCanvasFrameToBounds(rawNextFrame, displayFrame);
+    setCropDraftFrame(nextFrame);
   }
 
-  function handleCropToolUp(event: PointerEvent<SVGSVGElement>) {
+  function finishCropTool(event: PointerEvent<SVGSVGElement>, commit = true) {
     if (activePointerIdRef.current !== event.pointerId) {
       return;
     }
 
+    const nextFrame = cropDraftFrame;
     activePointerIdRef.current = null;
     setCropTransformState(null);
+    setCropDraftFrame(null);
+
+    if (commit && nextFrame) {
+      commitFrame(nextFrame);
+    }
 
     try {
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -1101,22 +1622,44 @@ export function DiagramEditor({
         </div>
         <div className="diagram-editor__header-dimensions" aria-label="Canvas dimensions">
           <div className="diagram-editor__zoom-controls" aria-label="Canvas zoom">
+            <label className="diagram-editor__zoom-select-field">
+              <span className="visually-hidden">Zoom level</span>
+              <select
+                aria-label="Zoom level"
+                className="diagram-editor__zoom-select"
+                onChange={(event) => setZoomToPercent(Number(event.target.value))}
+                value={zoomSelectValue}
+              >
+                {ZOOM_PERCENT_STEPS.map((percent) => (
+                  <option key={percent} value={percent}>
+                    {percent}%
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
-              aria-label="Zoom out"
-              className="pane__button pane__button--compact diagram-editor__zoom-button"
-              onClick={() => adjustZoom("out")}
+              aria-label="Zoom tool"
+              aria-pressed={activeTool === "zoom"}
+              className="pane__button pane__button--compact diagram-editor__zoom-tool-button"
+              onClick={() => activateTool("zoom")}
+              title="Zoom"
               type="button"
             >
-              -
+              <DiagramToolIcon tool="zoom" />
+              <span className="visually-hidden">Zoom</span>
             </button>
-            <span className="diagram-editor__zoom-label">{`${Math.round(zoomLevel * 100)}%`}</span>
             <button
-              aria-label="Zoom in"
-              className="pane__button pane__button--compact diagram-editor__zoom-button"
-              onClick={() => adjustZoom("in")}
+              aria-label="Vertex snap"
+              aria-pressed={isVertexSnapEnabled}
+              className="pane__button pane__button--compact diagram-editor__zoom-tool-button"
+              onClick={toggleVertexSnap}
+              title={`Vertex snap (${isVertexSnapEnabled ? "on" : "off"})`}
               type="button"
             >
-              +
+              <MagnetIcon />
+              <span className="visually-hidden">
+                {`Vertex snap ${isVertexSnapEnabled ? "on" : "off"}`}
+              </span>
             </button>
           </div>
           <label className="diagram-editor__dimension-field">
@@ -1144,7 +1687,7 @@ export function DiagramEditor({
         </div>
       </div>
 
-      <div className="diagram-editor__palette" aria-label="Diagram colors">
+      <div className="diagram-editor__tool-strip">
         <PaletteGroup isExpanded={isExpanded} title="Tools">
           <div className="diagram-editor__toolrow" aria-label="Diagram tools">
             {DIAGRAM_TOOL_ITEMS.map(({ tool, label }) => (
@@ -1153,21 +1696,7 @@ export function DiagramEditor({
                 aria-pressed={activeTool === tool}
                 className="pane__button pane__button--compact diagram-editor__tool"
                 key={tool}
-                onClick={() => {
-                  setActiveTool(tool);
-                  activePointerIdRef.current = null;
-                  draftStrokeRef.current = null;
-                  draftShapeRef.current = null;
-                  setSelectedTarget(null);
-                  setSelectionBounds(null);
-                  setSelectionRotation(0);
-                  setTransformState(null);
-                  setCropTransformState(null);
-                  setDraftStroke(null);
-                  setDraftShape(null);
-                  setDraftPolygon(null);
-                  setPolygonCursor(null);
-                }}
+                onClick={() => activateTool(tool)}
                 title={label}
                 type="button"
               >
@@ -1177,72 +1706,127 @@ export function DiagramEditor({
             ))}
           </div>
         </PaletteGroup>
-        <PaletteGroup isExpanded={isExpanded} title="Stroke">
-          <ColorSwatchRow
-            activeColor={inkColor}
-            ariaLabel="Stroke colors"
-            customColorInputLabel="Custom stroke color"
-            hideInlineLabel={isExpanded}
-            isCustomColor={isCustomInkColor}
-            label="Stroke"
-            onColorChange={handleStrokeColorChange}
-          />
-        </PaletteGroup>
-        {supportsFill ? (
-          <PaletteGroup isExpanded={isExpanded} title="Fill">
-            <ColorSwatchRow
-              activeColor={fillColor}
-              ariaLabel="Fill colors"
-              customColorInputLabel="Custom fill color"
-              hideInlineLabel={isExpanded}
-              isCustomColor={isCustomFillColor}
-              label="Fill"
-              onColorChange={handleFillColorChange}
-            />
-          </PaletteGroup>
-        ) : null}
-        <PaletteGroup isExpanded={isExpanded} title="Style">
-          <StrokeStyleRow
-            activeStyle={strokeStyle}
-            hideInlineLabel={isExpanded}
-            onStyleChange={handleStrokeStyleChange}
-          />
-        </PaletteGroup>
-        <PaletteGroup isExpanded={isExpanded} title="Width">
-          <StrokeWidthRow
-            hideInlineLabel={isExpanded}
-            onStrokeWidthChange={handleStrokeWidthChange}
-            strokeWidth={strokeWidth}
-          />
-        </PaletteGroup>
-        {supportsEndpoints ? (
-          <PaletteGroup isExpanded={isExpanded} title="Ends">
-            <EndpointRow
-              endMarker={endMarker}
-              hideInlineLabel={isExpanded}
-              onEndMarkerChange={(nextMarker) => handleEndpointChange("end", nextMarker)}
-              onStartMarkerChange={(nextMarker) => handleEndpointChange("start", nextMarker)}
-              startMarker={startMarker}
-            />
-          </PaletteGroup>
-        ) : null}
+      </div>
+
+      <div className="diagram-editor__context-panel" aria-label="Diagram context tools">
+        {hasContextControls ? (
+          <div className="diagram-editor__palette diagram-editor__palette--context">
+            {supportsArrangeContext ? (
+              <PaletteGroup isExpanded={true} title="Arrange">
+                <div className="diagram-editor__selection-actions">
+                  <button
+                    className="pane__button pane__button--compact"
+                    onClick={() => reorderSelection("back")}
+                    title="Send to back (Shift+[)"
+                    type="button"
+                  >
+                    Back
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact"
+                    onClick={() => reorderSelection("backward")}
+                    title="Send backward ([)"
+                    type="button"
+                  >
+                    Down
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact"
+                    onClick={() => reorderSelection("forward")}
+                    title="Bring forward (])"
+                    type="button"
+                  >
+                    Up
+                  </button>
+                  <button
+                    className="pane__button pane__button--compact"
+                    onClick={() => reorderSelection("front")}
+                    title="Bring to front (Shift+])"
+                    type="button"
+                  >
+                    Front
+                  </button>
+                </div>
+              </PaletteGroup>
+            ) : null}
+            {supportsStrokeContext ? (
+              <PaletteGroup isExpanded={true} title="Stroke">
+                <ColorSwatchRow
+                  activeColor={inkColor}
+                  ariaLabel="Stroke colors"
+                  customColorInputLabel="Custom stroke color"
+                  hideInlineLabel={true}
+                  isCustomColor={isCustomInkColor}
+                  label="Stroke"
+                  onColorChange={handleStrokeColorChange}
+                />
+              </PaletteGroup>
+            ) : null}
+            {supportsFill ? (
+              <PaletteGroup isExpanded={true} title="Fill">
+                <ColorSwatchRow
+                  activeColor={fillColor}
+                  ariaLabel="Fill colors"
+                  customColorInputLabel="Custom fill color"
+                  hideInlineLabel={true}
+                  isCustomColor={isCustomFillColor}
+                  label="Fill"
+                  onColorChange={handleFillColorChange}
+                />
+              </PaletteGroup>
+            ) : null}
+            {supportsStrokeInspector ? (
+              <PaletteGroup isExpanded={true} title="Line">
+                <StrokeInspectorMenu
+                  endMarker={endMarker}
+                  onEndMarkerChange={(nextMarker) => handleEndpointChange("end", nextMarker)}
+                  onStartMarkerChange={(nextMarker) => handleEndpointChange("start", nextMarker)}
+                  onStrokeStyleChange={handleStrokeStyleChange}
+                  onStrokeWidthChange={handleStrokeWidthChange}
+                  startMarker={startMarker}
+                  strokeStyle={strokeStyle}
+                  strokeWidth={strokeWidth}
+                  supportsEndpoints={supportsEndpoints}
+                />
+              </PaletteGroup>
+            ) : null}
+          </div>
+        ) : (
+          <div className="diagram-editor__context-empty">No tool settings for this mode.</div>
+        )}
       </div>
 
       <div
-        className={`diagram-editor__surface ${paperView ? "diagram-editor__surface--paper" : ""}`}
+        className={`diagram-editor__surface ${paperView ? "diagram-editor__surface--paper" : ""} ${
+          isExpanded ? "diagram-editor__surface--expanded" : "diagram-editor__surface--fixed"
+        }`}
+        ref={surfaceContainerRef}
+        style={isExpanded ? undefined : surfaceStyle}
       >
         <svg
           aria-label="Diagram drawing surface"
           className="diagram-editor__svg"
-          height={displayFrame.height}
           ref={surfaceRef}
-          style={activeTool === "eraser" ? { cursor: "none", overflow: "visible" } : { overflow: "visible" }}
+          style={
+            activeTool === "eraser"
+              ? { cursor: "none", overflow: "visible" }
+              : activeTool === "hand"
+                ? { cursor: handTransformState ? "grabbing" : "grab", overflow: "visible" }
+              : activeTool === "zoom"
+                ? { cursor: zoomCursor, overflow: "visible" }
+                : { overflow: "visible" }
+          }
           onClick={(event) => {
             if (activeTool === "pointer") return;
+            if (activeTool === "hand") return;
             if (activeTool === "crop") return;
+            if (activeTool === "zoom") return;
             if (activeTool === "eraser") return;
             if (activeTool !== "polygon") return;
-            const point = pointerEventToDiagramPoint(event as unknown as PointerEvent<SVGSVGElement>, displayFrame);
+            const point = getSnappedPointerPoint(
+              event as unknown as PointerEvent<SVGSVGElement>,
+              "polygon"
+            );
             setDraftPolygon((prev) => {
               if (!prev) return [point];
               const start = prev[0];
@@ -1265,6 +1849,7 @@ export function DiagramEditor({
           }}
           onDoubleClick={(event) => {
             if (activeTool === "pointer") return;
+            if (activeTool === "zoom") return;
             if (activeTool !== "polygon") return;
             event.preventDefault();
             setDraftPolygon((prev) => {
@@ -1284,6 +1869,61 @@ export function DiagramEditor({
             });
           }}
           onKeyDown={(event) => {
+            if (event.metaKey || event.ctrlKey || event.altKey) {
+              return;
+            }
+
+            if (event.code === "Space") {
+              event.preventDefault();
+              if (!event.repeat) {
+                activateTemporaryHandTool();
+              }
+              return;
+            }
+
+            if (!event.repeat) {
+              const key = event.key.toLowerCase();
+              const toolKeymap: Partial<Record<string, DiagramTool>> = {
+                a: "pointer",
+                h: "hand",
+                c: "crop",
+                z: "zoom",
+                w: "pen",
+                r: "rect",
+                e: "ellipse",
+                l: "line",
+                p: "polygon",
+                x: "eraser"
+              };
+              const nextTool = toolKeymap[key];
+
+              if (key === "m") {
+                event.preventDefault();
+                toggleVertexSnap();
+                return;
+              }
+
+              if (nextTool) {
+                event.preventDefault();
+                activateTool(nextTool);
+                return;
+              }
+            }
+
+            if (selectedTarget) {
+              if (event.key === "]") {
+                event.preventDefault();
+                reorderSelection(event.shiftKey ? "front" : "forward");
+                return;
+              }
+
+              if (event.key === "[") {
+                event.preventDefault();
+                reorderSelection(event.shiftKey ? "back" : "backward");
+                return;
+              }
+            }
+
             if (activeTool !== "pointer" || !selectedEntity) {
               return;
             }
@@ -1310,9 +1950,22 @@ export function DiagramEditor({
               nudgeSelection(0, step);
             }
           }}
+          onKeyUp={(event) => {
+            if (event.code === "Space") {
+              event.preventDefault();
+              restoreTemporaryHandTool();
+            }
+          }}
+          onBlur={() => {
+            restoreTemporaryHandTool();
+          }}
           onMouseLeave={() => {
             if (activeTool === "eraser") {
               handleEraserMouseLeave();
+              return;
+            }
+            if (activeTool === "zoom") {
+              setIsZoomOutModifierDown(false);
               return;
             }
             if (activeTool !== "polygon") return;
@@ -1323,8 +1976,16 @@ export function DiagramEditor({
               handlePointerToolDown(event);
               return;
             }
+            if (activeTool === "hand") {
+              handleHandToolDown(event);
+              return;
+            }
             if (activeTool === "crop") {
               handleCropToolDown(event);
+              return;
+            }
+            if (activeTool === "zoom") {
+              handleZoomToolDown(event);
               return;
             }
             if (activeTool === "eraser") {
@@ -1338,8 +1999,16 @@ export function DiagramEditor({
               handlePointerToolMove(event);
               return;
             }
+            if (activeTool === "hand") {
+              handleHandToolMove(event);
+              return;
+            }
             if (activeTool === "crop") {
               handleCropToolMove(event);
+              return;
+            }
+            if (activeTool === "zoom") {
+              handleZoomToolMove(event);
               return;
             }
             if (activeTool === "eraser") {
@@ -1347,7 +2016,7 @@ export function DiagramEditor({
               return;
             }
             if (activeTool === "polygon") {
-              const point = pointerEventToDiagramPoint(event, displayFrame);
+              const point = getSnappedPointerPoint(event, "polygon");
               setPolygonCursor(point);
               return;
             }
@@ -1363,8 +2032,16 @@ export function DiagramEditor({
               handlePointerToolUp(event);
               return;
             }
+            if (activeTool === "hand") {
+              finishHandTool(event);
+              return;
+            }
             if (activeTool === "crop") {
-              handleCropToolUp(event);
+              finishCropTool(event);
+              return;
+            }
+            if (activeTool === "zoom") {
+              finishZoomTool(event);
               return;
             }
             if (activeTool === "eraser") {
@@ -1378,8 +2055,16 @@ export function DiagramEditor({
               handlePointerToolUp(event);
               return;
             }
+            if (activeTool === "hand") {
+              finishHandTool(event);
+              return;
+            }
             if (activeTool === "crop") {
-              handleCropToolUp(event);
+              finishCropTool(event, false);
+              return;
+            }
+            if (activeTool === "zoom") {
+              finishZoomTool(event);
               return;
             }
             if (activeTool === "eraser") {
@@ -1392,7 +2077,8 @@ export function DiagramEditor({
           role="img"
           tabIndex={0}
           viewBox={`${displayFrame.x} ${displayFrame.y} ${displayFrame.width} ${displayFrame.height}`}
-          width={displayFrame.width}
+          width="100%"
+          height="100%"
         >
           <defs>
             <DiagramMarkerDefs />
@@ -1426,30 +2112,24 @@ export function DiagramEditor({
             x={displayFrame.x}
             y={displayFrame.y}
           />
-          {previewDiagram.strokes.map((stroke) => (
-            <DiagramStrokePath
-              key={stroke.id}
-              stroke={stroke}
-              displayColor={stroke.color}
-            />
-          ))}
-          {previewDiagram.shapes.map((shape) => (
-            <DiagramShapePath key={shape.id} shape={shape} />
-          ))}
+          {orderedPreviewEntities.map((entity) =>
+            entity.kind === "stroke" ? (
+              <DiagramStrokePath
+                key={entity.stroke.id}
+                stroke={entity.stroke}
+                displayColor={entity.stroke.color}
+              />
+            ) : (
+              <DiagramShapePath key={entity.shape.id} shape={entity.shape} />
+            )
+          )}
           {selectionOverlay ? (
             <SelectionOverlay
               activeMode={transformState?.mode ?? null}
               overlay={selectionOverlay}
             />
           ) : null}
-          {activeTool === "crop" ? (
-            <CropOverlay
-              cropFrame={effectiveFrame}
-              displayFrame={displayFrame}
-              overlay={cropOverlay}
-              activeMode={cropTransformState?.mode ?? null}
-            />
-          ) : null}
+          {zoomOverlay ? <ZoomOverlay overlay={zoomOverlay} /> : null}
           {draftShape ? <DiagramShapePath shape={draftShape} isDraft /> : null}
           {eraserCursor ? (
             <>
@@ -1476,6 +2156,32 @@ export function DiagramEditor({
             </>
           ) : null}
         </svg>
+        <CropViewportOverlay
+          cropFrame={cropDraftFrame ?? effectiveFrame}
+          displayFrame={displayFrame}
+          overlay={cropOverlay}
+          activeMode={cropTransformState?.mode ?? null}
+          isEditable={activeTool === "crop"}
+          showHandles={!isCropToolPrimed}
+          viewportBox={surfaceViewportBox}
+          onHandlePointerDown={(mode, event) => {
+            if (!surfaceRef.current) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            surfaceRef.current.focus();
+            const point = clientPointToDiagramPoint(
+              surfaceRef.current,
+              event.clientX,
+              event.clientY,
+              event.pressure,
+              displayFrame
+            );
+            beginCropTransform(mode, point, event.pointerId, surfaceRef.current);
+          }}
+        />
       </div>
 
       <div className="diagram-editor__actions">
@@ -1541,6 +2247,25 @@ export class DiagramEditorErrorBoundary extends Component<
 }
 
 function DiagramToolIcon({ tool }: { tool: DiagramTool }) {
+  if (tool === "zoom") {
+    return <ZoomToolIcon isZoomOut={false} />;
+  }
+
+  if (tool === "hand") {
+    return (
+      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
+        <path
+          d="M8 11V7.8a1.3 1.3 0 0 1 2.6 0V11m0 0V6.6a1.3 1.3 0 0 1 2.6 0V11m-2.6 0V5.8a1.3 1.3 0 0 1 2.6 0V11m0 0V7.6a1.3 1.3 0 0 1 2.6 0v5.1c0 3.7-2.3 6.3-5.8 6.3-2.4 0-4.2-1.2-5.2-3.3l-1.5-3.3a1.25 1.25 0 0 1 2.22-1.16L8 13.1V11Z"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.6"
+        />
+      </svg>
+    );
+  }
+
   if (tool === "pointer") {
     return (
       <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
@@ -1683,7 +2408,13 @@ function StrokeStyleIcon({ style }: { style: DiagramStrokeStyle }) {
   );
 }
 
-function EndpointIcon({ endpoint }: { endpoint: DiagramEndpoint }) {
+function EndpointIcon({
+  endpoint,
+  side = "end"
+}: {
+  endpoint: DiagramEndpoint;
+  side?: "start" | "end";
+}) {
   return (
     <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
       <path
@@ -1695,7 +2426,7 @@ function EndpointIcon({ endpoint }: { endpoint: DiagramEndpoint }) {
       />
       {endpoint === "arrow" ? (
         <path
-          d="m14.5 7.8 4.8 4.2-4.8 4.2"
+          d={side === "start" ? "m9.5 7.8-4.8 4.2 4.8 4.2" : "m14.5 7.8 4.8 4.2-4.8 4.2"}
           fill="none"
           stroke="currentColor"
           strokeLinecap="round"
@@ -1703,10 +2434,48 @@ function EndpointIcon({ endpoint }: { endpoint: DiagramEndpoint }) {
           strokeWidth="1.8"
         />
       ) : null}
-      {endpoint === "dot" ? <circle cx="19" cy="12" fill="currentColor" r="2.3" /> : null}
-      {endpoint === "open-dot" ? (
-        <circle cx="19" cy="12" fill="none" r="2.3" stroke="currentColor" strokeWidth="1.7" />
+      {endpoint === "dot" ? (
+        <circle cx={side === "start" ? 5 : 19} cy="12" fill="currentColor" r="2.3" />
       ) : null}
+      {endpoint === "open-dot" ? (
+        <circle
+          cx={side === "start" ? 5 : 19}
+          cy="12"
+          fill="none"
+          r="2.3"
+          stroke="currentColor"
+          strokeWidth="1.7"
+        />
+      ) : null}
+    </svg>
+  );
+}
+
+function MagnetIcon() {
+  return (
+    <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
+      <path
+        d="M8 5.5v6.3a4 4 0 0 0 8 0V5.5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M8 5.5h3.2v4.2H8m4.8-4.2H16v4.2h-3.2"
+        fill="none"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M6 18.5h12"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.6"
+      />
     </svg>
   );
 }
@@ -1916,6 +2685,339 @@ function StrokeWidthRow({
   );
 }
 
+type StrokeInspectorMenuSection = "start" | "stroke" | "end" | null;
+
+function StrokeInspectorMenu({
+  strokeStyle,
+  strokeWidth,
+  startMarker,
+  endMarker,
+  supportsEndpoints,
+  onStrokeStyleChange,
+  onStrokeWidthChange,
+  onStartMarkerChange,
+  onEndMarkerChange
+}: {
+  strokeStyle: DiagramStrokeStyle;
+  strokeWidth: number;
+  startMarker: DiagramEndpoint;
+  endMarker: DiagramEndpoint;
+  supportsEndpoints: boolean;
+  onStrokeStyleChange: (style: DiagramStrokeStyle) => void;
+  onStrokeWidthChange: (width: number) => void;
+  onStartMarkerChange: (marker: DiagramEndpoint) => void;
+  onEndMarkerChange: (marker: DiagramEndpoint) => void;
+}) {
+  const [openSection, setOpenSection] = useState<StrokeInspectorMenuSection>(null);
+
+  useEffect(() => {
+    if (openSection === null || typeof window === "undefined") {
+      return;
+    }
+
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      const target = event.target;
+      if (
+        !(target instanceof Element) ||
+        !target.closest('[data-diagram-stroke-menu-root="true"]')
+      ) {
+        setOpenSection(null);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenSection(null);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openSection]);
+
+  return (
+    <div className="diagram-editor__stroke-menu">
+      {supportsEndpoints ? (
+        <StrokeInspectorMenuButton
+          ariaLabel="Start endpoint controls"
+          isOpen={openSection === "start"}
+          onToggle={() => setOpenSection((current) => (current === "start" ? null : "start"))}
+          panel={
+            <EndpointMenuSection
+              activeMarker={startMarker}
+              onMarkerChange={onStartMarkerChange}
+              side="start"
+              title="Start"
+            />
+          }
+          title="Start endpoint"
+        >
+          <LineControlTriggerIcon
+            endpoint={startMarker}
+            side="start"
+            strokeStyle={strokeStyle}
+            strokeWidth={strokeWidth}
+          />
+        </StrokeInspectorMenuButton>
+      ) : null}
+      <StrokeInspectorMenuButton
+        ariaLabel="Stroke style and width controls"
+        isOpen={openSection === "stroke"}
+        onToggle={() => setOpenSection((current) => (current === "stroke" ? null : "stroke"))}
+        panel={
+          <div className="diagram-editor__line-menu-panel">
+            <div className="diagram-editor__line-menu-field">
+              <div className="diagram-editor__line-menu-label">Style</div>
+              <div className="diagram-editor__control-group">
+                {DIAGRAM_STROKE_STYLE_ITEMS.map(({ style, label }) => (
+                  <button
+                    aria-label={label}
+                    aria-pressed={strokeStyle === style}
+                    className="pane__button pane__button--compact diagram-editor__option-button"
+                    key={style}
+                    onClick={() => onStrokeStyleChange(style)}
+                    title={label}
+                    type="button"
+                  >
+                    <StrokeStyleIcon style={style} />
+                    <span className="visually-hidden">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="diagram-editor__line-menu-field">
+              <div className="diagram-editor__line-menu-label">Width</div>
+              <div className="diagram-editor__control-group diagram-editor__control-group--width">
+                {STROKE_WIDTH_PRESETS.map((preset) => (
+                  <button
+                    aria-label={`Stroke width ${preset}`}
+                    aria-pressed={Math.abs(strokeWidth - preset) < 0.01}
+                    className="pane__button pane__button--compact diagram-editor__option-button diagram-editor__option-button--width"
+                    key={preset}
+                    onClick={() => onStrokeWidthChange(preset)}
+                    type="button"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="diagram-editor__width-preview"
+                      style={{ height: `${Math.max(1.5, preset)}px` }}
+                    />
+                  </button>
+                ))}
+                <label className="diagram-editor__width-input">
+                  <span className="visually-hidden">Exact stroke width</span>
+                  <input
+                    aria-label="Exact stroke width"
+                    inputMode="decimal"
+                    max={MAX_STROKE_WIDTH}
+                    min={MIN_STROKE_WIDTH}
+                    onChange={(event) => {
+                      const nextValue = Number(event.target.value);
+                      if (Number.isFinite(nextValue)) {
+                        onStrokeWidthChange(nextValue);
+                      }
+                    }}
+                    step="0.5"
+                    type="number"
+                    value={formatStrokeWidthInput(strokeWidth)}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        }
+        title="Stroke style and width"
+      >
+        <LineControlTriggerIcon side="stroke" strokeStyle={strokeStyle} strokeWidth={strokeWidth} />
+      </StrokeInspectorMenuButton>
+      {supportsEndpoints ? (
+        <StrokeInspectorMenuButton
+          ariaLabel="End endpoint controls"
+          isOpen={openSection === "end"}
+          onToggle={() => setOpenSection((current) => (current === "end" ? null : "end"))}
+          panel={
+            <EndpointMenuSection
+              activeMarker={endMarker}
+              onMarkerChange={onEndMarkerChange}
+              side="end"
+              title="End"
+            />
+          }
+          title="End endpoint"
+        >
+          <LineControlTriggerIcon
+            endpoint={endMarker}
+            side="end"
+            strokeStyle={strokeStyle}
+            strokeWidth={strokeWidth}
+          />
+        </StrokeInspectorMenuButton>
+      ) : null}
+    </div>
+  );
+}
+
+function StrokeInspectorMenuButton({
+  children,
+  panel,
+  isOpen,
+  onToggle,
+  ariaLabel,
+  title
+}: {
+  children: ReactNode;
+  panel: ReactNode;
+  isOpen: boolean;
+  onToggle: () => void;
+  ariaLabel: string;
+  title: string;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [panelPosition, setPanelPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === "undefined") {
+      return;
+    }
+
+    const updatePosition = () => {
+      const triggerBox = triggerRef.current?.getBoundingClientRect();
+      if (!triggerBox) {
+        return;
+      }
+
+      const estimatedPanelWidth = 232;
+      const viewportPadding = 12;
+      const nextLeft = Math.min(
+        Math.max(viewportPadding, triggerBox.left),
+        window.innerWidth - estimatedPanelWidth - viewportPadding
+      );
+      setPanelPosition({
+        top: Math.min(triggerBox.bottom + 6, window.innerHeight - viewportPadding),
+        left: nextLeft
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isOpen]);
+
+  return (
+    <div
+      className={`menu-dropdown diagram-editor__line-menu ${isOpen ? "menu-dropdown--open" : ""}`}
+      data-diagram-stroke-menu-root="true"
+    >
+      <button
+        aria-expanded={isOpen}
+        aria-haspopup="dialog"
+        aria-label={ariaLabel}
+        className="pane__button pane__button--compact diagram-editor__line-menu-trigger"
+        onClick={onToggle}
+        ref={triggerRef}
+        title={title}
+        type="button"
+      >
+        <span className="diagram-editor__line-menu-trigger-icon">{children}</span>
+        <span aria-hidden="true" className="diagram-editor__line-menu-chevron">
+          ▾
+        </span>
+      </button>
+      {isOpen && panelPosition && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="menu-dropdown__panel diagram-editor__line-menu-popover"
+              data-diagram-stroke-menu-root="true"
+              style={{
+                position: "fixed",
+                top: `${panelPosition.top}px`,
+                left: `${panelPosition.left}px`
+              }}
+            >
+              {panel}
+            </div>,
+            document.body
+          )
+        : null}
+    </div>
+  );
+}
+
+function EndpointMenuSection({
+  title,
+  activeMarker,
+  side,
+  onMarkerChange
+}: {
+  title: string;
+  activeMarker: DiagramEndpoint;
+  side: "start" | "end";
+  onMarkerChange: (marker: DiagramEndpoint) => void;
+}) {
+  return (
+    <div className="diagram-editor__line-menu-panel">
+      <div className="diagram-editor__line-menu-field">
+        <div className="diagram-editor__line-menu-label">{title}</div>
+        <div className="diagram-editor__control-group">
+          {DIAGRAM_ENDPOINT_ITEMS.map(({ endpoint, label }) => (
+            <button
+              aria-label={`${title} ${label.toLowerCase()}`}
+              aria-pressed={activeMarker === endpoint}
+              className="pane__button pane__button--compact diagram-editor__option-button"
+              key={`${title}-${endpoint}`}
+              onClick={() => onMarkerChange(endpoint)}
+              title={label}
+              type="button"
+            >
+              <EndpointIcon endpoint={endpoint} side={side} />
+              <span className="visually-hidden">{label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LineControlTriggerIcon({
+  side,
+  strokeStyle,
+  strokeWidth,
+  endpoint = "none"
+}: {
+  side: "start" | "stroke" | "end";
+  strokeStyle: DiagramStrokeStyle;
+  strokeWidth: number;
+  endpoint?: DiagramEndpoint;
+}) {
+  const normalizedStrokeWidth = Math.max(1.5, Math.min(3.2, 1.25 + strokeWidth * 0.35));
+
+  return (
+    <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
+      <path
+        d="M4.5 12h15"
+        fill="none"
+        stroke="currentColor"
+        strokeDasharray={getDashArray(strokeStyle, 1.8)}
+        strokeLinecap="round"
+        strokeWidth={normalizedStrokeWidth}
+      />
+      {side === "start" ? renderLineControlEndpoint("start", endpoint, normalizedStrokeWidth) : null}
+      {side === "end" ? renderLineControlEndpoint("end", endpoint, normalizedStrokeWidth) : null}
+    </svg>
+  );
+}
+
 function EndpointRow({
   startMarker,
   endMarker,
@@ -1974,6 +3076,48 @@ function EndpointRow({
       </div>
     </div>
   );
+}
+
+function renderLineControlEndpoint(
+  side: "start" | "end",
+  endpoint: DiagramEndpoint,
+  strokeWidth: number
+) {
+  const anchorX = side === "start" ? 4.5 : 19.5;
+  const dotX = side === "start" ? 4.9 : 19.1;
+
+  if (endpoint === "arrow") {
+    const baseX = side === "start" ? anchorX + 4.8 : anchorX - 4.8;
+    return (
+      <path
+        d={`M${baseX} 7.8 ${anchorX} 12 ${baseX} 16.2`}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={Math.max(1.7, strokeWidth)}
+      />
+    );
+  }
+
+  if (endpoint === "dot") {
+    return <circle cx={dotX} cy="12" fill="currentColor" r="2.3" />;
+  }
+
+  if (endpoint === "open-dot") {
+    return (
+      <circle
+        cx={dotX}
+        cy="12"
+        fill="none"
+        r="2.3"
+        stroke="currentColor"
+        strokeWidth={Math.max(1.6, strokeWidth * 0.9)}
+      />
+    );
+  }
+
+  return null;
 }
 
 function PaletteGroup({
@@ -2064,106 +3208,143 @@ function SelectionOverlay({
 
 interface CropOverlayGeometry {
   bounds: DiagramCanvasFrame;
-  handles: Record<Exclude<CropTransformMode, "move">, DiagramPoint>;
+  handles: Record<Exclude<CropTransformMode, "move" | "create">, DiagramPoint>;
 }
 
-function CropOverlay({
+interface ZoomOverlayGeometry {
+  bounds: DiagramBounds;
+}
+
+function CropViewportOverlay({
   cropFrame,
   displayFrame,
   overlay,
-  activeMode
+  activeMode,
+  isEditable,
+  showHandles,
+  viewportBox,
+  onHandlePointerDown
 }: {
   cropFrame: DiagramCanvasFrame;
   displayFrame: DiagramBounds;
   overlay: CropOverlayGeometry;
   activeMode: CropTransformMode | null;
+  isEditable: boolean;
+  showHandles: boolean;
+  viewportBox: { left: number; top: number; width: number; height: number };
+  onHandlePointerDown: (
+    mode: Exclude<CropTransformMode, "move" | "create">,
+    event: PointerEvent<HTMLSpanElement>
+  ) => void;
 }) {
-  const topShadeHeight = Math.max(0, cropFrame.y - displayFrame.y);
-  const bottomShadeY = cropFrame.y + cropFrame.height;
-  const bottomShadeHeight = Math.max(
-    0,
-    displayFrame.y + displayFrame.height - bottomShadeY
+  const visibleCropFrame = intersectDiagramCanvasFrames(cropFrame, displayFrame);
+  const overlayOpacity = isEditable ? 0.55 : 0.28;
+
+  if (!visibleCropFrame) {
+    return (
+      <div
+        aria-hidden="true"
+        className="diagram-editor__crop-overlay"
+        style={{
+          backgroundColor: `rgba(168, 168, 168, ${overlayOpacity})`
+        }}
+      />
+    );
+  }
+
+  const cropWindowBounds = getViewportOverlayBounds(
+    visibleCropFrame,
+    displayFrame,
+    viewportBox
   );
-  const leftShadeWidth = Math.max(0, cropFrame.x - displayFrame.x);
-  const rightShadeX = cropFrame.x + cropFrame.width;
-  const rightShadeWidth = Math.max(
-    0,
-    displayFrame.x + displayFrame.width - rightShadeX
-  );
+  const cropWindowStyle = getViewportOverlayBoundsStyle(cropWindowBounds);
+  const cropRight = cropWindowBounds.left + cropWindowBounds.width;
+  const cropBottom = cropWindowBounds.top + cropWindowBounds.height;
+  const overlayShadeStyle = {
+    backgroundColor: `rgba(168, 168, 168, ${overlayOpacity})`
+  };
 
   return (
+    <div aria-hidden="true" className="diagram-editor__crop-overlay">
+      <div
+        className="diagram-editor__crop-shade"
+        style={{
+          ...overlayShadeStyle,
+          left: "0px",
+          top: "0px",
+          width: "100%",
+          height: `${Math.max(0, cropWindowBounds.top)}px`
+        }}
+      />
+      <div
+        className="diagram-editor__crop-shade"
+        style={{
+          ...overlayShadeStyle,
+          left: "0px",
+          top: `${Math.max(0, cropWindowBounds.top)}px`,
+          width: `${Math.max(0, cropWindowBounds.left)}px`,
+          height: `${Math.max(0, cropWindowBounds.height)}px`
+        }}
+      />
+      <div
+        className="diagram-editor__crop-shade"
+        style={{
+          ...overlayShadeStyle,
+          left: `${cropRight}px`,
+          top: `${Math.max(0, cropWindowBounds.top)}px`,
+          right: "0px",
+          height: `${Math.max(0, cropWindowBounds.height)}px`
+        }}
+      />
+      <div
+        className="diagram-editor__crop-shade"
+        style={{
+          ...overlayShadeStyle,
+          left: "0px",
+          top: `${cropBottom}px`,
+          width: "100%",
+          bottom: "0px"
+        }}
+      />
+      <div
+        className={`diagram-editor__crop-window ${isEditable ? "diagram-editor__crop-window--editable" : ""}`}
+        style={cropWindowStyle}
+      />
+      {isEditable && showHandles
+        ? (Object.entries(overlay.handles) as Array<
+            [Exclude<CropTransformMode, "move" | "create">, DiagramPoint]
+          >).map(([mode, point]) => (
+            <span
+              key={mode}
+              className={`diagram-editor__crop-handle ${activeMode === mode ? "diagram-editor__crop-handle--active" : ""}`}
+              onPointerDown={(event) => onHandlePointerDown(mode, event)}
+              style={getViewportOverlayPointStyle(point, displayFrame, viewportBox)}
+            />
+          ))
+        : null}
+    </div>
+  );
+}
+
+function ZoomOverlay({
+  overlay
+}: {
+  overlay: ZoomOverlayGeometry;
+}) {
+  return (
     <>
-      {topShadeHeight > 0 ? (
-        <rect
-          x={displayFrame.x}
-          y={displayFrame.y}
-          width={displayFrame.width}
-          height={topShadeHeight}
-          fill="currentColor"
-          fillOpacity="0.08"
-          pointerEvents="none"
-        />
-      ) : null}
-      {bottomShadeHeight > 0 ? (
-        <rect
-          x={displayFrame.x}
-          y={bottomShadeY}
-          width={displayFrame.width}
-          height={bottomShadeHeight}
-          fill="currentColor"
-          fillOpacity="0.08"
-          pointerEvents="none"
-        />
-      ) : null}
-      {leftShadeWidth > 0 ? (
-        <rect
-          x={displayFrame.x}
-          y={cropFrame.y}
-          width={leftShadeWidth}
-          height={cropFrame.height}
-          fill="currentColor"
-          fillOpacity="0.08"
-          pointerEvents="none"
-        />
-      ) : null}
-      {rightShadeWidth > 0 ? (
-        <rect
-          x={rightShadeX}
-          y={cropFrame.y}
-          width={rightShadeWidth}
-          height={cropFrame.height}
-          fill="currentColor"
-          fillOpacity="0.08"
-          pointerEvents="none"
-        />
-      ) : null}
       <rect
-        x={cropFrame.x}
-        y={cropFrame.y}
-        width={cropFrame.width}
-        height={cropFrame.height}
-        fill="none"
+        x={overlay.bounds.x}
+        y={overlay.bounds.y}
+        width={overlay.bounds.width}
+        height={overlay.bounds.height}
+        fill="color-mix(in srgb, var(--accent) 8%, transparent)"
         stroke="currentColor"
-        strokeDasharray="10 5"
+        strokeDasharray="8 5"
         strokeOpacity="0.9"
         strokeWidth="1.5"
         pointerEvents="none"
       />
-      {(Object.entries(overlay.handles) as Array<
-        [Exclude<CropTransformMode, "move">, DiagramPoint]
-      >).map(([mode, point]) => (
-        <rect
-          key={mode}
-          x={point.x - (SELECTION_HANDLE_RADIUS - 1)}
-          y={point.y - (SELECTION_HANDLE_RADIUS - 1)}
-          width={(SELECTION_HANDLE_RADIUS - 1) * 2}
-          height={(SELECTION_HANDLE_RADIUS - 1) * 2}
-          fill={activeMode === mode ? "currentColor" : "var(--surface-strong)"}
-          stroke="currentColor"
-          strokeWidth="1.5"
-          pointerEvents="none"
-        />
-      ))}
     </>
   );
 }
@@ -2185,22 +3366,328 @@ function findDiagramEntity(
   return shape ? { kind: "shape", shape } : null;
 }
 
-function hitTestDiagramEntity(diagram: DiagramAsset, point: DiagramPoint): DiagramEntity | null {
-  for (let index = diagram.shapes.length - 1; index >= 0; index -= 1) {
-    const shape = diagram.shapes[index];
-    if (hitTestShape(shape, point, SELECTION_HIT_PADDING)) {
-      return { kind: "shape", shape };
-    }
+function getOrderedDiagramEntities(diagram: DiagramAsset): DiagramEntity[] {
+  return [
+    ...diagram.strokes.map((stroke, index) => ({
+      entity: { kind: "stroke", stroke } as DiagramEntity,
+      updatedAt: Date.parse(stroke.updatedAt),
+      kindOrder: 0,
+      index
+    })),
+    ...diagram.shapes.map((shape, index) => ({
+      entity: { kind: "shape", shape } as DiagramEntity,
+      updatedAt: Date.parse(shape.updatedAt),
+      kindOrder: 1,
+      index
+    }))
+  ]
+    .sort((a, b) => {
+      if (a.updatedAt !== b.updatedAt) {
+        return a.updatedAt - b.updatedAt;
+      }
+
+      if (a.kindOrder !== b.kindOrder) {
+        return a.kindOrder - b.kindOrder;
+      }
+
+      return a.index - b.index;
+    })
+    .map(({ entity }) => entity);
+}
+
+function getDiagramEntityId(entity: DiagramEntity): string {
+  return entity.kind === "stroke" ? entity.stroke.id : entity.shape.id;
+}
+
+function getDiagramEntityTimestamp(entity: DiagramEntity): number {
+  const value = Date.parse(entity.kind === "stroke" ? entity.stroke.updatedAt : entity.shape.updatedAt);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function setDiagramEntityTimestamp(entity: DiagramEntity, timestamp: number): DiagramEntity {
+  const updatedAt = new Date(timestamp).toISOString();
+
+  if (entity.kind === "stroke") {
+    return {
+      kind: "stroke",
+      stroke: {
+        ...entity.stroke,
+        updatedAt
+      }
+    };
   }
 
-  for (let index = diagram.strokes.length - 1; index >= 0; index -= 1) {
-    const stroke = diagram.strokes[index];
-    if (hitTestStroke(stroke, point, SELECTION_HIT_PADDING)) {
-      return { kind: "stroke", stroke };
+  return {
+    kind: "shape",
+    shape: {
+      ...entity.shape,
+      updatedAt
+    }
+  };
+}
+
+function hitTestDiagramEntity(diagram: DiagramAsset, point: DiagramPoint): DiagramEntity | null {
+  const orderedEntities = getOrderedDiagramEntities(diagram);
+
+  for (const padding of [0, SELECTION_HIT_PADDING]) {
+    for (let index = orderedEntities.length - 1; index >= 0; index -= 1) {
+      const entity = orderedEntities[index];
+      if (entity.kind === "shape") {
+        if (hitTestShape(entity.shape, point, padding)) {
+          return entity;
+        }
+        continue;
+      }
+
+      if (hitTestStroke(entity.stroke, point, padding)) {
+        return entity;
+      }
     }
   }
 
   return null;
+}
+
+function ZoomToolIcon({ isZoomOut }: { isZoomOut: boolean }) {
+  return (
+    <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
+      <circle
+        cx="10"
+        cy="10"
+        r="5.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M14 14 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <path
+        d={isZoomOut ? "M7.5 10h5" : "M7.5 10h5M10 7.5v5"}
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function createZoomCursorDataUrl(isZoomOut: boolean): string {
+  const symbolPath = isZoomOut ? 'M7.5 10h5' : 'M7.5 10h5M10 7.5v5';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+      <circle cx="10" cy="10" r="5.5" fill="#ffffff" stroke="#111111" stroke-width="1.8" />
+      <path d="M14 14 L20 20" fill="none" stroke="#111111" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+      <path d="${symbolPath}" fill="none" stroke="#111111" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+    </svg>
+  `;
+
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 10 10, ${isZoomOut ? "zoom-out" : "zoom-in"}`;
+}
+
+function getZoomSelectValue(zoomLevel: number): string {
+  const percent = Math.round(zoomLevel * 100);
+  let closest: number = ZOOM_PERCENT_STEPS[0];
+
+  for (const step of ZOOM_PERCENT_STEPS) {
+    if (Math.abs(step - percent) < Math.abs(closest - percent)) {
+      closest = step;
+    }
+  }
+
+  return `${closest}`;
+}
+
+function getZoomDragBounds(startPoint: DiagramPoint, currentPoint: DiagramPoint): DiagramBounds {
+  const deltaX = currentPoint.x - startPoint.x;
+  const deltaY = currentPoint.y - startPoint.y;
+  const side = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+  const x = deltaX >= 0 ? startPoint.x : startPoint.x - side;
+  const y = deltaY >= 0 ? startPoint.y : startPoint.y - side;
+
+  return {
+    x,
+    y,
+    width: side,
+    height: side
+  };
+}
+
+function getZoomDragOverlay(zoomDragState: ZoomDragState): ZoomOverlayGeometry {
+  return {
+    bounds: getZoomDragBounds(zoomDragState.startPoint, zoomDragState.currentPoint)
+  };
+}
+
+function intersectDiagramCanvasFrames(
+  a: DiagramCanvasFrame,
+  b: DiagramBounds
+): DiagramCanvasFrame | null {
+  const x1 = Math.max(a.x, b.x);
+  const y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.width, b.x + b.width);
+  const y2 = Math.min(a.y + a.height, b.y + b.height);
+
+  if (x2 <= x1 || y2 <= y1) {
+    return null;
+  }
+
+  return {
+    x: x1,
+    y: y1,
+    width: x2 - x1,
+    height: y2 - y1
+  };
+}
+
+function getViewportOverlayBounds(
+  bounds: DiagramBounds,
+  displayFrame: DiagramBounds,
+  viewportBox: { left: number; top: number; width: number; height: number }
+) {
+  return {
+    left: viewportBox.left + ((bounds.x - displayFrame.x) / displayFrame.width) * viewportBox.width,
+    top: viewportBox.top + ((bounds.y - displayFrame.y) / displayFrame.height) * viewportBox.height,
+    width: (bounds.width / displayFrame.width) * viewportBox.width,
+    height: (bounds.height / displayFrame.height) * viewportBox.height
+  };
+}
+
+function getViewportOverlayBoundsStyle(bounds: {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}) {
+  return {
+    left: `${bounds.left}px`,
+    top: `${bounds.top}px`,
+    width: `${bounds.width}px`,
+    height: `${bounds.height}px`
+  };
+}
+
+function getViewportOverlayPointStyle(
+  point: DiagramPoint,
+  displayFrame: DiagramBounds,
+  viewportBox: { left: number; top: number; width: number; height: number }
+) {
+  return {
+    left: `${viewportBox.left + ((point.x - displayFrame.x) / displayFrame.width) * viewportBox.width}px`,
+    top: `${viewportBox.top + ((point.y - displayFrame.y) / displayFrame.height) * viewportBox.height}px`
+  };
+}
+
+function getRenderedViewportBox(
+  viewportWidth: number,
+  viewportHeight: number,
+  viewBoxWidth: number,
+  viewBoxHeight: number
+) {
+  if (
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    viewBoxWidth <= 0 ||
+    viewBoxHeight <= 0
+  ) {
+    return {
+      left: 0,
+      top: 0,
+      width: viewportWidth,
+      height: viewportHeight
+    };
+  }
+
+  const scale = Math.min(viewportWidth / viewBoxWidth, viewportHeight / viewBoxHeight);
+  const width = viewBoxWidth * scale;
+  const height = viewBoxHeight * scale;
+
+  return {
+    left: (viewportWidth - width) / 2,
+    top: (viewportHeight - height) / 2,
+    width,
+    height
+  };
+}
+
+function getDiagramHitPadding(
+  surface: SVGSVGElement,
+  displayFrame: DiagramBounds,
+  pixels: number
+): number {
+  const rect = surface.getBoundingClientRect();
+
+  if (rect.width <= 0 || rect.height <= 0) {
+    return pixels;
+  }
+
+  return Math.max((displayFrame.width / rect.width) * pixels, (displayFrame.height / rect.height) * pixels);
+}
+
+function snapPointToNearestVertex(
+  point: DiagramPoint,
+  vertices: DiagramPoint[],
+  snapRadius: number
+): DiagramPoint {
+  let nearestVertex: DiagramPoint | null = null;
+  let nearestDistance = snapRadius;
+
+  for (const vertex of vertices) {
+    const vertexDistance = distance(point, vertex);
+    if (vertexDistance <= nearestDistance) {
+      nearestVertex = vertex;
+      nearestDistance = vertexDistance;
+    }
+  }
+
+  return nearestVertex
+    ? {
+        x: nearestVertex.x,
+        y: nearestVertex.y,
+        pressure: point.pressure
+      }
+    : point;
+}
+
+function getDiagramVertices(diagram: DiagramAsset): DiagramPoint[] {
+  const vertices: DiagramPoint[] = [];
+
+  for (const stroke of diagram.strokes) {
+    vertices.push(...stroke.points);
+  }
+
+  for (const shape of diagram.shapes) {
+    if (shape.kind === "line") {
+      vertices.push(
+        { x: shape.x1, y: shape.y1, pressure: 1 },
+        { x: shape.x2, y: shape.y2, pressure: 1 }
+      );
+      continue;
+    }
+
+    if (shape.kind === "polygon") {
+      vertices.push(...shape.points);
+      continue;
+    }
+
+    if (shape.kind === "rect") {
+      vertices.push(
+        { x: shape.x, y: shape.y, pressure: 1 },
+        { x: shape.x + shape.width, y: shape.y, pressure: 1 },
+        { x: shape.x + shape.width, y: shape.y + shape.height, pressure: 1 },
+        { x: shape.x, y: shape.y + shape.height, pressure: 1 }
+      );
+    }
+  }
+
+  return vertices;
 }
 
 function hitTestSelectionHandle(
@@ -2270,30 +3757,40 @@ function getCropOverlay(frame: DiagramCanvasFrame): CropOverlayGeometry {
   return {
     bounds: frame,
     handles: {
+      "resize-n": { x: frame.x + frame.width / 2, y: frame.y, pressure: 1 },
       "resize-nw": { x: frame.x, y: frame.y, pressure: 1 },
       "resize-ne": { x: frame.x + frame.width, y: frame.y, pressure: 1 },
+      "resize-e": { x: frame.x + frame.width, y: frame.y + frame.height / 2, pressure: 1 },
       "resize-se": { x: frame.x + frame.width, y: frame.y + frame.height, pressure: 1 },
-      "resize-sw": { x: frame.x, y: frame.y + frame.height, pressure: 1 }
+      "resize-s": { x: frame.x + frame.width / 2, y: frame.y + frame.height, pressure: 1 },
+      "resize-sw": { x: frame.x, y: frame.y + frame.height, pressure: 1 },
+      "resize-w": { x: frame.x, y: frame.y + frame.height / 2, pressure: 1 }
     }
   };
 }
 
 function hitTestCropHandle(
   overlay: CropOverlayGeometry,
-  point: DiagramPoint
-): Exclude<CropTransformMode, "move"> | null {
+  point: DiagramPoint,
+  padding: number
+): Exclude<CropTransformMode, "move" | "create"> | null {
+  let nearestHandle: Exclude<CropTransformMode, "move" | "create"> | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
   for (const [mode, handlePoint] of Object.entries(overlay.handles) as Array<
-    [Exclude<CropTransformMode, "move">, DiagramPoint]
+    [Exclude<CropTransformMode, "move" | "create">, DiagramPoint]
   >) {
-    if (
-      Math.abs(handlePoint.x - point.x) <= SELECTION_HANDLE_RADIUS + 2 &&
-      Math.abs(handlePoint.y - point.y) <= SELECTION_HANDLE_RADIUS + 2
-    ) {
-      return mode;
+    const deltaX = handlePoint.x - point.x;
+    const deltaY = handlePoint.y - point.y;
+    const distanceSquared = deltaX * deltaX + deltaY * deltaY;
+
+    if (Math.abs(deltaX) <= padding && Math.abs(deltaY) <= padding && distanceSquared < nearestDistance) {
+      nearestHandle = mode;
+      nearestDistance = distanceSquared;
     }
   }
 
-  return null;
+  return nearestHandle;
 }
 
 function getEntityBounds(entity: DiagramEntity): DiagramBounds {
@@ -2415,21 +3912,61 @@ function hitTestShape(shape: DiagramShape, point: DiagramPoint, padding = 0): bo
   if (shape.kind === "rect") {
     const center = getRectCenter(shape);
     const local = rotatePoint(point, center, -shape.rotation);
-    return (
+    const outerHit =
       local.x >= shape.x - padding &&
       local.x <= shape.x + shape.width + padding &&
       local.y >= shape.y - padding &&
-      local.y <= shape.y + shape.height + padding
-    );
+      local.y <= shape.y + shape.height + padding;
+
+    if (!outerHit) {
+      return false;
+    }
+
+    if (shapeHasVisibleFill(shape)) {
+      return true;
+    }
+
+    const inset = shape.strokeWidth / 2 + padding;
+    const innerLeft = shape.x + inset;
+    const innerRight = shape.x + shape.width - inset;
+    const innerTop = shape.y + inset;
+    const innerBottom = shape.y + shape.height - inset;
+    const innerHit =
+      innerLeft < innerRight &&
+      innerTop < innerBottom &&
+      local.x > innerLeft &&
+      local.x < innerRight &&
+      local.y > innerTop &&
+      local.y < innerBottom;
+
+    return !innerHit;
   }
 
   if (shape.kind === "ellipse") {
     const local = rotatePoint(point, { x: shape.cx, y: shape.cy }, -shape.rotation);
-    const rx = Math.max(shape.rx + padding, 0.0001);
-    const ry = Math.max(shape.ry + padding, 0.0001);
-    const dx = (local.x - shape.cx) / rx;
-    const dy = (local.y - shape.cy) / ry;
-    return dx * dx + dy * dy <= 1;
+    const outerRx = Math.max(shape.rx + shape.strokeWidth / 2 + padding, 0.0001);
+    const outerRy = Math.max(shape.ry + shape.strokeWidth / 2 + padding, 0.0001);
+    const outerDx = (local.x - shape.cx) / outerRx;
+    const outerDy = (local.y - shape.cy) / outerRy;
+    const outerHit = outerDx * outerDx + outerDy * outerDy <= 1;
+
+    if (!outerHit) {
+      return false;
+    }
+
+    if (shapeHasVisibleFill(shape)) {
+      return true;
+    }
+
+    const innerRx = shape.rx - shape.strokeWidth / 2 - padding;
+    const innerRy = shape.ry - shape.strokeWidth / 2 - padding;
+    if (innerRx <= 0 || innerRy <= 0) {
+      return true;
+    }
+
+    const innerDx = (local.x - shape.cx) / innerRx;
+    const innerDy = (local.y - shape.cy) / innerRy;
+    return innerDx * innerDx + innerDy * innerDy >= 1;
   }
 
   if (shape.kind === "line") {
@@ -2458,7 +3995,7 @@ function hitTestShape(shape: DiagramShape, point: DiagramPoint, padding = 0): bo
     );
   }
 
-  if (pointInPolygon(shape.points, point)) {
+  if (shapeHasVisibleFill(shape) && pointInPolygon(shape.points, point)) {
     return true;
   }
 
@@ -2479,6 +4016,12 @@ function hitTestShape(shape: DiagramShape, point: DiagramPoint, padding = 0): bo
   }
 
   return false;
+}
+
+function shapeHasVisibleFill(
+  shape: Exclude<DiagramShape, { kind: "line" }>
+): boolean {
+  return shape.fillColor !== EMPTY_COLOR_VALUE;
 }
 
 function translateEntity(entity: DiagramEntity, dx: number, dy: number): DiagramEntity {
@@ -2913,6 +4456,55 @@ function translateCanvasFrame(
   });
 }
 
+function createCanvasFrameFromPoints(
+  startPoint: DiagramPoint,
+  endPoint: DiagramPoint
+): DiagramCanvasFrame {
+  const x = Math.min(startPoint.x, endPoint.x);
+  const y = Math.min(startPoint.y, endPoint.y);
+
+  return {
+    x,
+    y,
+    width: Math.max(1, Math.abs(endPoint.x - startPoint.x)),
+    height: Math.max(1, Math.abs(endPoint.y - startPoint.y))
+  };
+}
+
+function constrainCanvasFrameToBounds(
+  frame: DiagramCanvasFrame,
+  bounds: DiagramBounds
+): DiagramCanvasFrame {
+  const width = Math.min(frame.width, bounds.width);
+  const height = Math.min(frame.height, bounds.height);
+  const maxX = bounds.x + bounds.width - width;
+  const maxY = bounds.y + bounds.height - height;
+
+  return normalizeCanvasFrame({
+    x: clamp(frame.x, bounds.x, maxX),
+    y: clamp(frame.y, bounds.y, maxY),
+    width,
+    height
+  });
+}
+
+function clipCanvasFrameToBounds(
+  frame: DiagramCanvasFrame,
+  bounds: DiagramBounds
+): DiagramCanvasFrame {
+  const x1 = clamp(frame.x, bounds.x, bounds.x + bounds.width);
+  const y1 = clamp(frame.y, bounds.y, bounds.y + bounds.height);
+  const x2 = clamp(frame.x + frame.width, bounds.x, bounds.x + bounds.width);
+  const y2 = clamp(frame.y + frame.height, bounds.y, bounds.y + bounds.height);
+
+  return normalizeCanvasFrame({
+    x: Math.min(x1, x2),
+    y: Math.min(y1, y2),
+    width: Math.max(1, Math.abs(x2 - x1)),
+    height: Math.max(1, Math.abs(y2 - y1))
+  });
+}
+
 function resizeCanvasFrame(
   frame: DiagramCanvasFrame,
   mode: Exclude<CropTransformMode, "move">,
@@ -2933,6 +4525,28 @@ function resizeBounds(
   point: DiagramPoint,
   minSize: number
 ): DiagramBounds {
+  if (mode === "resize-n") {
+    const bottom = bounds.y + bounds.height;
+    const y = Math.min(point.y, bottom - minSize);
+    return { x: bounds.x, y, width: bounds.width, height: bottom - y };
+  }
+
+  if (mode === "resize-s") {
+    const y2 = Math.max(point.y, bounds.y + minSize);
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: y2 - bounds.y };
+  }
+
+  if (mode === "resize-e") {
+    const x2 = Math.max(point.x, bounds.x + minSize);
+    return { x: bounds.x, y: bounds.y, width: x2 - bounds.x, height: bounds.height };
+  }
+
+  if (mode === "resize-w") {
+    const right = bounds.x + bounds.width;
+    const x = Math.min(point.x, right - minSize);
+    return { x, y: bounds.y, width: right - x, height: bounds.height };
+  }
+
   if (mode === "resize-nw") {
     const right = bounds.x + bounds.width;
     const bottom = bounds.y + bounds.height;
@@ -3085,11 +4699,11 @@ function getDashArray(style: DiagramStrokeStyle, strokeWidth: number): string | 
   const unit = Math.max(strokeWidth, 1);
 
   if (style === "dotted") {
-    return `0 ${formatNumber(unit * 2.4)}`;
+    return `${formatNumber(unit * 0.6)} ${formatNumber(unit * 2.1)}`;
   }
 
   if (style === "fine-dotted") {
-    return `0 ${formatNumber(unit * 1.45)}`;
+    return `${formatNumber(unit * 0.35)} ${formatNumber(unit * 1.25)}`;
   }
 
   if (style === "dashed") {
@@ -3185,8 +4799,11 @@ function formatStrokeWidthInput(width: number): string {
 export function serializeDiagramSvg(diagram: DiagramAsset): string {
   const frame = getDiagramFrame(diagram);
   const markerDefs = getDiagramMarkerDefsSvg();
-  const strokeNodes = diagram.strokes.map((stroke) => strokeToSvgNode(stroke)).join("\n");
-  const shapeNodes = diagram.shapes.map((shape) => shapeToSvgNode(shape)).join("\n");
+  const entityNodes = getOrderedDiagramEntities(diagram)
+    .map((entity) =>
+      entity.kind === "stroke" ? strokeToSvgNode(entity.stroke) : shapeToSvgNode(entity.shape)
+    )
+    .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="${frame.x} ${frame.y} ${frame.width} ${frame.height}" fill="none">
@@ -3194,8 +4811,7 @@ export function serializeDiagramSvg(diagram: DiagramAsset): string {
 ${markerDefs}
   </defs>
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-${strokeNodes}
-${shapeNodes}
+${entityNodes}
   </g>
 </svg>
 `;
@@ -3538,25 +5154,40 @@ function clampStrokeWidthValue(width: number): number {
 }
 
 function pointerEventToDiagramPoint(event: PointerEvent<SVGSVGElement>, _frame: DiagramFrame): DiagramPoint {
-  const svg = event.currentTarget;
+  return clientPointToDiagramPoint(
+    event.currentTarget,
+    event.clientX,
+    event.clientY,
+    event.pressure,
+    _frame
+  );
+}
+
+function clientPointToDiagramPoint(
+  svg: SVGSVGElement,
+  clientX: number,
+  clientY: number,
+  pressure: number,
+  frame: DiagramFrame
+): DiagramPoint {
   const ctm = svg.getScreenCTM();
 
   if (ctm) {
     return {
-      x: (event.clientX - ctm.e) / ctm.a,
-      y: (event.clientY - ctm.f) / ctm.d,
-      pressure: Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : 0.5
+      x: (clientX - ctm.e) / ctm.a,
+      y: (clientY - ctm.f) / ctm.d,
+      pressure: Number.isFinite(pressure) && pressure > 0 ? pressure : 0.5
     };
   }
 
   const rect = svg.getBoundingClientRect();
-  const xRatio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0;
-  const yRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
+  const xRatio = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
+  const yRatio = rect.height > 0 ? (clientY - rect.top) / rect.height : 0;
 
   return {
-    x: _frame.x + clamp(xRatio, 0, 1) * _frame.width,
-    y: _frame.y + clamp(yRatio, 0, 1) * _frame.height,
-    pressure: Number.isFinite(event.pressure) && event.pressure > 0 ? event.pressure : 0.5
+    x: frame.x + clamp(xRatio, 0, 1) * frame.width,
+    y: frame.y + clamp(yRatio, 0, 1) * frame.height,
+    pressure: Number.isFinite(pressure) && pressure > 0 ? pressure : 0.5
   };
 }
 
