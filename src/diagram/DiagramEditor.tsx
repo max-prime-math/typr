@@ -2678,165 +2678,50 @@ export class DiagramEditorErrorBoundary extends Component<
 
 function DiagramToolIcon({ tool }: { tool: DiagramTool }) {
   if (tool === "zoom") {
-    return <ZoomToolIcon isZoomOut={false} />;
+    return <DiagramIcon src="/icons/diagram/zoom-in.svg" alt="Zoom in" />;
   }
 
   if (tool === "hand") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path
-          d="M8 11V7.8a1.3 1.3 0 0 1 2.6 0V11m0 0V6.6a1.3 1.3 0 0 1 2.6 0V11m-2.6 0V5.8a1.3 1.3 0 0 1 2.6 0V11m0 0V7.6a1.3 1.3 0 0 1 2.6 0v5.1c0 3.7-2.3 6.3-5.8 6.3-2.4 0-4.2-1.2-5.2-3.3l-1.5-3.3a1.25 1.25 0 0 1 2.22-1.16L8 13.1V11Z"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="1.6"
-        />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/hand.svg" alt="Hand" />;
   }
 
   if (tool === "pointer") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path
-          d="M7 4.8 17.8 13l-4.7.7 2 4.5-2.6 1.2-2-4.5-3.5 3.2Z"
-          fill="none"
-          stroke="currentColor"
-          strokeLinejoin="round"
-          strokeWidth="1.8"
-        />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/pointer.svg" alt="Pointer" />;
   }
 
   if (tool === "crop") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path
-          d="M8 4v12.2a3.8 3.8 0 0 0 3.8 3.8H20M4 8h8.2A3.8 3.8 0 0 1 16 11.8V20"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="1.8"
-        />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/crop.svg" alt="Crop" />;
   }
 
   if (tool === "pen") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path
-          d="M6 18 15.8 8.2a1.9 1.9 0 0 1 2.7 0l1.3 1.3a1.9 1.9 0 0 1 0 2.7L10 22H6z"
-          fill="none"
-          stroke="currentColor"
-          strokeLinejoin="round"
-          strokeWidth="1.8"
-        />
-        <path d="m14.8 9.2 4 4" fill="none" stroke="currentColor" strokeWidth="1.8" />
-        <path d="M6 22 4.8 19.4 6 18" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.8" />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/pen.svg" alt="Pen" />;
   }
 
   if (tool === "rect") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <rect
-          x="5"
-          y="6"
-          width="14"
-          height="12"
-          rx="1.5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-        />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/rect.svg" alt="Rectangle" />;
   }
 
   if (tool === "ellipse") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <ellipse
-          cx="12"
-          cy="12"
-          rx="7"
-          ry="5.5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-        />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/ellipse.svg" alt="Ellipse" />;
   }
 
   if (tool === "line") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path d="M6 18 18 7" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-        <circle cx="6" cy="18" r="1.7" fill="currentColor" />
-        <circle cx="18" cy="7" r="1.7" fill="currentColor" />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/line.svg" alt="Line" />;
   }
 
   if (tool === "bezier") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path
-          d="M5 18C8 6 16 6 19 13"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeWidth="1.8"
-        />
-        <circle cx="5" cy="18" r="1.5" fill="currentColor" />
-        <circle cx="19" cy="13" r="1.5" fill="currentColor" />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/bezier.svg" alt="Bezier" />;
   }
 
   if (tool === "polygon") {
-    return (
-      <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-        <path
-          d="m12 5 6 4.4-2.3 7.1H8.3L6 9.4Z"
-          fill="none"
-          stroke="currentColor"
-          strokeLinejoin="round"
-          strokeWidth="1.8"
-        />
-        <circle cx="12" cy="5" r="1.2" fill="currentColor" />
-        <circle cx="18" cy="9.4" r="1.2" fill="currentColor" />
-        <circle cx="15.7" cy="16.5" r="1.2" fill="currentColor" />
-        <circle cx="8.3" cy="16.5" r="1.2" fill="currentColor" />
-        <circle cx="6" cy="9.4" r="1.2" fill="currentColor" />
-      </svg>
-    );
+    return <DiagramIcon src="/icons/diagram/polygon.svg" alt="Polygon" />;
   }
 
-  return (
-    <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-      <path
-        d="m8 9 4-4 7 7-4 4"
-        fill="none"
-        stroke="currentColor"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-      <path
-        d="m6 15 3-3 6 6H9a3 3 0 0 1-3-3Z"
-        fill="none"
-        stroke="currentColor"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
+  return <DiagramIcon src="/icons/diagram/default.svg" alt="Shape" />;
+}
+
+function DiagramIcon({ src, alt }: { src: string; alt: string }) {
+  return <img aria-hidden="true" alt={alt} className="diagram-editor__tool-icon" src={src} />;
 }
 
 function StrokeStyleIcon({ style }: { style: DiagramStrokeStyle }) {
@@ -2898,32 +2783,7 @@ function EndpointIcon({
 }
 
 function MagnetIcon() {
-  return (
-    <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-      <path
-        d="M8 5.5v6.3a4 4 0 0 0 8 0V5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M8 5.5h3.2v4.2H8m4.8-4.2H16v4.2h-3.2"
-        fill="none"
-        stroke="currentColor"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M6 18.5h12"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.6"
-      />
-    </svg>
-  );
+  return <DiagramIcon src="/icons/diagram/magnet.svg" alt="Snap" />;
 }
 
 function DiagramMarkerDefs() {
@@ -4054,34 +3914,7 @@ function hitTestDiagramEntity(diagram: DiagramAsset, point: DiagramPoint): Diagr
 }
 
 function ZoomToolIcon({ isZoomOut }: { isZoomOut: boolean }) {
-  return (
-    <svg aria-hidden="true" className="diagram-editor__tool-icon" viewBox="0 0 24 24">
-      <circle
-        cx="10"
-        cy="10"
-        r="5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M14 14 20 20"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-      <path
-        d={isZoomOut ? "M7.5 10h5" : "M7.5 10h5M10 7.5v5"}
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
+  return <DiagramIcon src={isZoomOut ? "/icons/diagram/zoom-out.svg" : "/icons/diagram/zoom-in.svg"} alt={isZoomOut ? "Zoom out" : "Zoom in"} />;
 }
 
 function createZoomCursorDataUrl(isZoomOut: boolean): string {
