@@ -106,9 +106,16 @@ The compiler wrapper loads the peer-package `.wasm` assets directly and passes t
 The next compiler-focused improvements are:
 
 1. Better diagnostic mapping from thrown errors into line-aware editor diagnostics.
-2. More predictable caching for Typst package imports in local-first projects.
+2. On-the-fly Typst package downloads with local caching.
 3. Incremental compile flows inside the warm worker to reduce repeated compile cost.
 4. Stronger GitHub auth plus pull and conflict handling.
+
+Package download plan:
+
+1. Detect package imports during compile and normalize them into stable package keys.
+2. Resolve missing packages from Typst Universe, persist the fetched package tree locally, and reuse it across sessions.
+3. Surface a clear download state and fail fast when a package is unavailable offline.
+4. Keep the implementation isolated behind the compiler layer so the editor and preview code stay unchanged.
 
 ## Roadmap
 

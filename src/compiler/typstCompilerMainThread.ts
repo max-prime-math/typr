@@ -1,10 +1,15 @@
+import { ensureTypstQueueMicrotask } from "./typstPolyfills";
 import { createMockCompiler } from "./mockCompiler";
-import * as typstSnippetModule from "@myriaddreamin/typst.ts/contrib/snippet";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
+import {
+  extractTypstPackageReferences,
+  formatTypstPackageReference
+} from "./typstPackages";
 import { normalizeTypstDiagnostic } from "./diagnostics";
+import { ensureTypstPackageReferences, createTypstPackageRegistry } from "./typstPackageRegistry";
 import type {
   CompileAssetFile,
   CompilerStatus,
@@ -19,6 +24,8 @@ import type {
 interface TypstSnippetModule {
   TypstSnippet: {
     preloadFonts(fonts: (string | Uint8Array)[]): unknown;
+    withAccessModel(accessModel: unknown): unknown;
+    withPackageRegistry(registry: unknown): unknown;
   };
   $typst: {
     setCompilerInitOptions(options: { getModule: () => string }): void;
@@ -53,6 +60,8 @@ interface TypstStructuredDiagnostic {
 }
 const COMPILER_TIMEOUT_MS = 15000;
 
+ensureTypstQueueMicrotask();
+
 export function createMainThreadTypstCompiler(
   options: TypstCompilerOptions = {}
 ): TypstCompiler {
@@ -62,6 +71,7 @@ export function createMainThreadTypstCompiler(
   let fallbackWarning: CompileDiagnostic | null = null;
   let fontsPrimed = false;
   let compilerDriverPromise: Promise<TypstCompilerDriver> | null = null;
+  const packageRegistry = createTypstPackageRegistry();
 
   function emitStatus(status: CompilerStatus): void {
     notifyStatus(status);
@@ -73,7 +83,7 @@ export function createMainThreadTypstCompiler(
       mode: "main-thread",
       label: "Loading Typst runtime"
     });
-    const module = typstSnippetModule as unknown as TypstSnippetModule;
+    const module = (await import("@myriaddreamin/typst.ts/contrib/snippet")) as unknown as TypstSnippetModule;
 
     if (!initConfigured) {
       module.$typst.setCompilerInitOptions({
@@ -83,6 +93,8 @@ export function createMainThreadTypstCompiler(
         getModule: () => typstRendererWasmUrl
       });
       module.$typst.use(module.TypstSnippet.preloadFonts(CORE_FONT_URLS));
+      module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
+      module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));
       initConfigured = true;
     }
 
@@ -140,6 +152,19 @@ export function createMainThreadTypstCompiler(
     return result;
   }
 
+  function emitPackageStatus(references: ReturnType<typeof extractTypstPackageReferences>): void {
+    if (references.length === 0) {
+      return;
+    }
+
+    emitStatus({
+      phase: "loading-packages",
+      mode: "main-thread",
+      label: "Loading Typst packages",
+      detail: `Package imports detected: ${references.map(formatTypstPackageReference).join(", ")}`
+    });
+  }
+
   return {
     async compileDocument(
       source: string,
@@ -158,6 +183,11 @@ export function createMainThreadTypstCompiler(
       try {
         return await withTimeout(
           (async () => {
+            const packageReferences = extractTypstPackageReferences(source);
+            if (packageReferences.length > 0) {
+              emitPackageStatus(packageReferences);
+              await ensureTypstPackageReferences(packageReferences);
+            }
             const module = await loadTypstModule();
             const compiler = await getCompilerDriver();
             compiler.resetShadow();

@@ -1,24 +1,19 @@
-import {
-  createTypstCompiler as createTypstCompilerImpl,
-  createTypstRenderer as createTypstRendererImpl,
-  loadFonts,
-  type TypstRenderer
-} from "@myriaddreamin/typst.ts";
-import {
-  CompileFormatEnum,
-  type TypstCompiler
-} from "@myriaddreamin/typst.ts/compiler";
+import { ensureTypstQueueMicrotask } from "./typstPolyfills";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import type { CompileAssetFile } from "./types";
+import type { TypstCompiler, TypstRenderer } from "@myriaddreamin/typst.ts";
+
+ensureTypstQueueMicrotask();
 
 let compilerPromise: Promise<TypstCompiler> | null = null;
 let rendererPromise: Promise<TypstRenderer> | null = null;
 
 export async function getTypstCompiler(): Promise<TypstCompiler> {
   if (!compilerPromise) {
+    const { createTypstCompiler: createTypstCompilerImpl, loadFonts } = await import("@myriaddreamin/typst.ts");
     const compiler = createTypstCompilerImpl();
     compilerPromise = compiler.init({
       beforeBuild: [loadFonts(CORE_FONT_URLS)],
@@ -31,6 +26,7 @@ export async function getTypstCompiler(): Promise<TypstCompiler> {
 
 export async function getTypstRenderer(): Promise<TypstRenderer> {
   if (!rendererPromise) {
+    const { createTypstRenderer: createTypstRendererImpl, loadFonts } = await import("@myriaddreamin/typst.ts");
     const renderer = createTypstRendererImpl();
     rendererPromise = renderer.init({
       beforeBuild: [loadFonts(CORE_FONT_URLS)],
@@ -45,6 +41,7 @@ export async function exportTypstPdf(
   source: string,
   assets: CompileAssetFile[] = []
 ): Promise<Uint8Array> {
+  const { CompileFormatEnum } = await import("@myriaddreamin/typst.ts/compiler");
   const compiler = await getTypstCompiler();
   await compiler.reset();
   compiler.resetShadow();

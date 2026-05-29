@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 /// <reference types="vite-plugin-pwa/client" />
 
+import { ensureTypstQueueMicrotask } from "./compiler/typstPolyfills";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
@@ -9,6 +10,8 @@ import { warmTypstOfflineAssets } from "./compiler/typstAssets";
 import { primeTypstCompiler } from "./compiler/typstCompiler";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import "./styles/global.css";
+
+ensureTypstQueueMicrotask();
 
 if (import.meta.env.PROD) {
   registerSW({

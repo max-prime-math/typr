@@ -4,6 +4,7 @@ export type CompilerPhase =
   | "idle"
   | "worker-starting"
   | "loading-typst"
+  | "loading-packages"
   | "loading-fonts"
   | "compiling"
   | "rendering"
