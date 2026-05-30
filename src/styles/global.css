@@ -2178,6 +2178,16 @@ button {
   overflow: visible;
 }
 
+.diagram-editor__tool-icon--mask {
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
 .diagram-editor__color-row {
   display: flex;
   flex-wrap: wrap;

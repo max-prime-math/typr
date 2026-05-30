@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
+import { useTheme } from "../theme/ThemeProvider";
+import type { ThemeDefinition } from "../theme/themes";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
 import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
 
@@ -52,6 +54,7 @@ export function PreviewPane({
   onZoomChange,
   workspacePreview
 }: PreviewPaneProps) {
+  const { theme } = useTheme();
   const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const currentZoom = zoom ?? internalZoom;
   const setZoom = onZoomChange ?? setInternalZoom;
@@ -63,6 +66,7 @@ export function PreviewPane({
           <WorkspaceFilePreview
             file={workspacePreview}
             paperView={paperView}
+            theme={theme}
           />
         </div>
       </div>
@@ -116,6 +120,7 @@ export function PreviewPane({
                 paperView={paperView}
                 markup={fallbackResult.output.content}
                 onSourceJump={onSourceJump}
+                theme={theme}
                 zoom={currentZoom}
               />
             )}
@@ -148,14 +153,15 @@ export function PreviewPane({
         {shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
         ) : (
-          <PreviewDocument
-            artifactData={result.output.artifactData}
-            isCompiling={isCompiling}
-            paperView={paperView}
-            markup={result.output.content}
-            onSourceJump={onSourceJump}
-            zoom={currentZoom}
-          />
+            <PreviewDocument
+              artifactData={result.output.artifactData}
+              isCompiling={isCompiling}
+              paperView={paperView}
+              markup={result.output.content}
+              onSourceJump={onSourceJump}
+              theme={theme}
+              zoom={currentZoom}
+            />
         )}
       </div>
     </div>
@@ -234,6 +240,7 @@ function PreviewDocument({
   markup,
   isFaulted = false,
   onSourceJump,
+  theme,
   zoom
 }: {
   artifactData?: Uint8Array;
@@ -242,13 +249,14 @@ function PreviewDocument({
   markup: string;
   isFaulted?: boolean;
   onSourceJump?: (sourceLocation: string) => void;
+  theme: ThemeDefinition;
   zoom: PreviewZoomState;
 }) {
   const blobStartedAt =
     typeof performance === "undefined" ? 0 : performance.now();
   const normalizedMarkup = useMemo(
-    () => normalizePreviewSvg(markup, paperView),
-    [markup, paperView]
+    () => normalizePreviewSvg(markup, paperView, theme),
+    [markup, paperView, theme]
   );
   const displayMarkup = normalizedMarkup;
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -337,16 +345,18 @@ function PreviewDocument({
 
 function WorkspaceFilePreview({
   file,
-  paperView
+  paperView,
+  theme
 }: {
   file: WorkspacePreviewFile;
   paperView: boolean;
+  theme: ThemeDefinition;
 }) {
   const blobUrl = useMemo(() => {
-    const blob = new Blob([file.content as BlobPart], { type: file.mimeType });
+    const blob = buildWorkspacePreviewBlob(file, paperView, theme);
 
     return URL.createObjectURL(blob);
-  }, [file.content, file.mimeType]);
+  }, [file, paperView, theme]);
 
   useEffect(() => {
     return () => {
@@ -741,7 +751,7 @@ function logPreviewTiming(mode: "svg" | "canvas", startedAt: number): void {
   );
 }
 
-function normalizePreviewSvg(markup: string, paperView: boolean): string {
+function normalizePreviewSvg(markup: string, paperView: boolean, theme: ThemeDefinition): string {
   if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
     return markup;
   }
@@ -754,6 +764,8 @@ function normalizePreviewSvg(markup: string, paperView: boolean): string {
     if (!svg || svg.nodeName.toLowerCase() !== "svg") {
       return markup;
     }
+
+    svg.setAttribute("color", paperView ? "#000000" : theme.palette.editorForeground);
 
     if (paperView) {
       const existingBackground = svg.querySelector(":scope > rect[data-preview-background]");
@@ -840,6 +852,10 @@ function normalizePreviewSvg(markup: string, paperView: boolean): string {
 
     for (const defsUse of Array.from(document.querySelectorAll("defs use"))) {
       defsUse.remove();
+    }
+
+    if (!paperView && theme.mode === "dark") {
+      rethemePreviewSvgColors(document, theme);
     }
 
     return new XMLSerializer().serializeToString(document);
@@ -930,4 +946,546 @@ function countMatches(value: string, pattern: RegExp): number {
 function extractAttribute(markup: string, attribute: string): string | null {
   const pattern = new RegExp(`${attribute}="([^"]+)"`, "i");
   return markup.match(pattern)?.[1] ?? null;
+}
+
+interface RgbaColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+interface HslColor {
+  h: number;
+  s: number;
+  l: number;
+}
+
+interface CanonicalColorAnchor {
+  name: string;
+  rgb: RgbaColor;
+  neutral?: boolean;
+}
+
+interface PreviewColorTransform {
+  background: RgbaColor;
+  foreground: RgbaColor;
+  backgroundBrightness: number;
+  foregroundBrightness: number;
+  anchors: Array<CanonicalColorAnchor & { mapped: RgbaColor }>;
+}
+
+const SVG_COLOR_ATTRIBUTES = [
+  "fill",
+  "stroke",
+  "stop-color",
+  "flood-color",
+  "lighting-color",
+  "color"
+] as const;
+
+const COLOR_STYLE_PROPERTY_PATTERN =
+  /(\b(?:fill|stroke|stop-color|flood-color|lighting-color|color|background-color)\s*:\s*)([^;}{]+)/gi;
+
+const COLOR_TOKEN_PATTERN =
+  /#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)|\b[a-z]+\b/gi;
+
+const CANONICAL_COLOR_ANCHORS: CanonicalColorAnchor[] = [
+  { name: "black", rgb: { r: 0, g: 0, b: 0, a: 1 }, neutral: true },
+  { name: "gray", rgb: { r: 128, g: 128, b: 128, a: 1 }, neutral: true },
+  { name: "white", rgb: { r: 255, g: 255, b: 255, a: 1 }, neutral: true },
+  { name: "red", rgb: { r: 255, g: 0, b: 0, a: 1 } },
+  { name: "orange", rgb: { r: 255, g: 165, b: 0, a: 1 } },
+  { name: "yellow", rgb: { r: 255, g: 255, b: 0, a: 1 } },
+  { name: "green", rgb: { r: 0, g: 128, b: 0, a: 1 } },
+  { name: "cyan", rgb: { r: 0, g: 255, b: 255, a: 1 } },
+  { name: "blue", rgb: { r: 0, g: 0, b: 255, a: 1 } },
+  { name: "purple", rgb: { r: 128, g: 0, b: 128, a: 1 } },
+  { name: "magenta", rgb: { r: 255, g: 0, b: 255, a: 1 } },
+  { name: "brown", rgb: { r: 139, g: 69, b: 19, a: 1 } }
+];
+
+let colorParseContext: CanvasRenderingContext2D | null | undefined;
+
+function buildWorkspacePreviewBlob(
+  file: WorkspacePreviewFile,
+  paperView: boolean,
+  theme: ThemeDefinition
+): Blob {
+  if (file.mimeType !== "image/svg+xml") {
+    return new Blob([file.content as BlobPart], { type: file.mimeType });
+  }
+
+  const markup = decodeSvgMarkup(file.content);
+  const normalizedMarkup = normalizePreviewSvg(markup, paperView, theme);
+  return new Blob([normalizedMarkup], { type: file.mimeType });
+}
+
+function decodeSvgMarkup(content: string | Uint8Array): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (typeof TextDecoder === "undefined") {
+    return "";
+  }
+
+  return new TextDecoder().decode(content);
+}
+
+function rethemePreviewSvgColors(document: XMLDocument, theme: ThemeDefinition): void {
+  const transform = createPreviewColorTransform(theme);
+  const root = document.documentElement;
+
+  root.setAttribute("color", formatColor(transform.foreground));
+
+  for (const element of Array.from(document.querySelectorAll("*"))) {
+    for (const attributeName of SVG_COLOR_ATTRIBUTES) {
+      const rawValue = element.getAttribute(attributeName);
+
+      if (!rawValue) {
+        continue;
+      }
+
+      const nextValue = transformStandaloneColorValue(rawValue, transform);
+
+      if (nextValue && nextValue !== rawValue) {
+        element.setAttribute(attributeName, nextValue);
+      }
+    }
+
+    const inlineStyle = element.getAttribute("style");
+    if (inlineStyle) {
+      const nextStyle = replaceColorDeclarations(inlineStyle, transform);
+
+      if (nextStyle !== inlineStyle) {
+        element.setAttribute("style", nextStyle);
+      }
+    }
+  }
+
+  for (const styleElement of Array.from(document.querySelectorAll("style"))) {
+    const cssText = styleElement.textContent;
+
+    if (!cssText) {
+      continue;
+    }
+
+    const nextCssText = replaceColorDeclarations(cssText, transform);
+
+    if (nextCssText !== cssText) {
+      styleElement.textContent = nextCssText;
+    }
+  }
+}
+
+function replaceColorDeclarations(cssText: string, transform: PreviewColorTransform): string {
+  return cssText.replace(COLOR_STYLE_PROPERTY_PATTERN, (_match, prefix, value: string) => {
+    const nextValue = value.replace(COLOR_TOKEN_PATTERN, (token) => {
+      return transformStandaloneColorValue(token, transform) ?? token;
+    });
+
+    return `${prefix}${nextValue}`;
+  });
+}
+
+function transformStandaloneColorValue(
+  rawValue: string,
+  transform: PreviewColorTransform
+): string | null {
+  const parsedColor = parseCssColor(rawValue);
+
+  if (!parsedColor || parsedColor.a === 0) {
+    return null;
+  }
+
+  return formatColor(transformPreviewColor(parsedColor, transform));
+}
+
+function createPreviewColorTransform(theme: ThemeDefinition): PreviewColorTransform {
+  const background = parseCssColor(theme.palette.surfaceStrong) ?? {
+    r: 30,
+    g: 30,
+    b: 46,
+    a: 1
+  };
+  const foreground = parseCssColor(theme.palette.editorForeground) ?? {
+    r: 205,
+    g: 214,
+    b: 244,
+    a: 1
+  };
+
+  return {
+    background,
+    foreground,
+    backgroundBrightness: getPerceivedBrightness(background),
+    foregroundBrightness: getPerceivedBrightness(foreground),
+    anchors: CANONICAL_COLOR_ANCHORS.map((anchor) => ({
+      ...anchor,
+      mapped: anchor.neutral
+        ? mixRgb(background, foreground, 1 - getPerceivedBrightness(anchor.rgb))
+        : mapChromaticAnchor(anchor.rgb, background, foreground)
+    }))
+  };
+}
+
+function transformPreviewColor(color: RgbaColor, transform: PreviewColorTransform): RgbaColor {
+  if (areColorsClose(color, transform.foreground, 20)) {
+    return {
+      ...transform.foreground,
+      a: color.a
+    };
+  }
+
+  if (areColorsClose(color, transform.background, 20)) {
+    return {
+      ...transform.background,
+      a: color.a
+    };
+  }
+
+  const nearestAnchor = findNearestCanonicalColor(color, transform.anchors);
+  const brightness = getPerceivedBrightness(color);
+  const targetBrightness = clamp(
+    transform.backgroundBrightness +
+      (1 - brightness) * (transform.foregroundBrightness - transform.backgroundBrightness),
+    Math.min(transform.backgroundBrightness, transform.foregroundBrightness),
+    Math.max(transform.backgroundBrightness, transform.foregroundBrightness)
+  );
+
+  if (nearestAnchor.neutral || rgbToHsl(color).s < 0.08) {
+    const neutral = mixRgb(
+      transform.background,
+      transform.foreground,
+      1 - brightness
+    );
+
+    return {
+      ...neutral,
+      a: color.a
+    };
+  }
+
+  const sourceHsl = rgbToHsl(color);
+  const anchorHsl = rgbToHsl(nearestAnchor.rgb);
+  const mappedAnchorHsl = rgbToHsl(nearestAnchor.mapped);
+  const hue = wrapHue(mappedAnchorHsl.h + shortestHueDelta(anchorHsl.h, sourceHsl.h));
+  const saturation = clamp(mappedAnchorHsl.s + (sourceHsl.s - anchorHsl.s), 0.18, 1);
+  const lightness = solveLightnessForBrightness(hue, saturation, targetBrightness);
+
+  return {
+    ...hslToRgb({ h: hue, s: saturation, l: lightness }),
+    a: color.a
+  };
+}
+
+function mapChromaticAnchor(
+  anchor: RgbaColor,
+  background: RgbaColor,
+  foreground: RgbaColor
+): RgbaColor {
+  const anchorHsl = rgbToHsl(anchor);
+  const brightness = getPerceivedBrightness(anchor);
+  const backgroundBrightness = getPerceivedBrightness(background);
+  const foregroundBrightness = getPerceivedBrightness(foreground);
+  const targetBrightness = clamp(
+    backgroundBrightness + (1 - brightness) * (foregroundBrightness - backgroundBrightness),
+    Math.min(backgroundBrightness, foregroundBrightness),
+    Math.max(backgroundBrightness, foregroundBrightness)
+  );
+  const lightness = solveLightnessForBrightness(anchorHsl.h, anchorHsl.s, targetBrightness);
+
+  return {
+    ...hslToRgb({ h: anchorHsl.h, s: anchorHsl.s, l: lightness }),
+    a: 1
+  };
+}
+
+function findNearestCanonicalColor(
+  color: RgbaColor,
+  anchors: Array<CanonicalColorAnchor & { mapped: RgbaColor }>
+): CanonicalColorAnchor & { mapped: RgbaColor } {
+  let bestAnchor = anchors[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const anchor of anchors) {
+    const distance = getRgbDistanceSquared(color, anchor.rgb);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestAnchor = anchor;
+    }
+  }
+
+  return bestAnchor;
+}
+
+function solveLightnessForBrightness(
+  hue: number,
+  saturation: number,
+  targetBrightness: number
+): number {
+  let lower = 0;
+  let upper = 1;
+
+  for (let index = 0; index < 18; index += 1) {
+    const candidate = (lower + upper) / 2;
+    const candidateBrightness = getPerceivedBrightness(
+      hslToRgb({ h: hue, s: saturation, l: candidate })
+    );
+
+    if (candidateBrightness < targetBrightness) {
+      lower = candidate;
+    } else {
+      upper = candidate;
+    }
+  }
+
+  return (lower + upper) / 2;
+}
+
+function parseCssColor(rawValue: string): RgbaColor | null {
+  const normalizedValue = normalizeCssColor(rawValue);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  if (normalizedValue.startsWith("#")) {
+    return parseHexColor(normalizedValue);
+  }
+
+  const rgbMatch = normalizedValue.match(
+    /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i
+  );
+
+  if (!rgbMatch) {
+    return null;
+  }
+
+  return {
+    r: clampChannel(Number.parseFloat(rgbMatch[1])),
+    g: clampChannel(Number.parseFloat(rgbMatch[2])),
+    b: clampChannel(Number.parseFloat(rgbMatch[3])),
+    a: clamp(Number.parseFloat(rgbMatch[4] ?? "1"), 0, 1)
+  };
+}
+
+function normalizeCssColor(rawValue: string): string | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const trimmedValue = rawValue.trim();
+  const normalizedKeyword = trimmedValue.toLowerCase();
+  if (
+    trimmedValue.length === 0 ||
+    normalizedKeyword === "none" ||
+    normalizedKeyword === "currentcolor" ||
+    normalizedKeyword === "context-fill" ||
+    normalizedKeyword === "context-stroke" ||
+    normalizedKeyword.startsWith("url(")
+  ) {
+    return null;
+  }
+
+  const option = new Option();
+  option.style.color = "";
+  option.style.color = trimmedValue;
+
+  if (!option.style.color) {
+    return null;
+  }
+
+  const context = getColorParseContext();
+  if (!context) {
+    return null;
+  }
+
+  context.fillStyle = "#010203";
+  context.fillStyle = option.style.color;
+  return typeof context.fillStyle === "string" ? context.fillStyle : null;
+}
+
+function getColorParseContext(): CanvasRenderingContext2D | null {
+  if (colorParseContext !== undefined) {
+    return colorParseContext;
+  }
+
+  if (typeof document === "undefined") {
+    colorParseContext = null;
+    return colorParseContext;
+  }
+
+  const canvas = document.createElement("canvas");
+  colorParseContext = canvas.getContext("2d");
+  return colorParseContext;
+}
+
+function parseHexColor(value: string): RgbaColor | null {
+  const hex = value.slice(1);
+
+  if (hex.length === 3 || hex.length === 4) {
+    const [r, g, b, a = "f"] = hex.split("").map((part) => part + part);
+
+    return {
+      r: Number.parseInt(r, 16),
+      g: Number.parseInt(g, 16),
+      b: Number.parseInt(b, 16),
+      a: Number.parseInt(a, 16) / 255
+    };
+  }
+
+  if (hex.length === 6 || hex.length === 8) {
+    return {
+      r: Number.parseInt(hex.slice(0, 2), 16),
+      g: Number.parseInt(hex.slice(2, 4), 16),
+      b: Number.parseInt(hex.slice(4, 6), 16),
+      a: hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) / 255 : 1
+    };
+  }
+
+  return null;
+}
+
+function rgbToHsl(color: RgbaColor): HslColor {
+  const red = color.r / 255;
+  const green = color.g / 255;
+  const blue = color.b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  const lightness = (max + min) / 2;
+
+  if (delta === 0) {
+    return { h: 0, s: 0, l: lightness };
+  }
+
+  const saturation =
+    lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  let hue = 0;
+
+  switch (max) {
+    case red:
+      hue = (green - blue) / delta + (green < blue ? 6 : 0);
+      break;
+    case green:
+      hue = (blue - red) / delta + 2;
+      break;
+    default:
+      hue = (red - green) / delta + 4;
+      break;
+  }
+
+  return {
+    h: hue * 60,
+    s: saturation,
+    l: lightness
+  };
+}
+
+function hslToRgb(color: HslColor): RgbaColor {
+  const hue = wrapHue(color.h) / 360;
+  const saturation = clamp(color.s, 0, 1);
+  const lightness = clamp(color.l, 0, 1);
+
+  if (saturation === 0) {
+    const channel = Math.round(lightness * 255);
+    return { r: channel, g: channel, b: channel, a: 1 };
+  }
+
+  const q =
+    lightness < 0.5
+      ? lightness * (1 + saturation)
+      : lightness + saturation - lightness * saturation;
+  const p = 2 * lightness - q;
+
+  return {
+    r: Math.round(hueToChannel(p, q, hue + 1 / 3) * 255),
+    g: Math.round(hueToChannel(p, q, hue) * 255),
+    b: Math.round(hueToChannel(p, q, hue - 1 / 3) * 255),
+    a: 1
+  };
+}
+
+function hueToChannel(p: number, q: number, hue: number): number {
+  let normalizedHue = hue;
+
+  if (normalizedHue < 0) {
+    normalizedHue += 1;
+  }
+
+  if (normalizedHue > 1) {
+    normalizedHue -= 1;
+  }
+
+  if (normalizedHue < 1 / 6) {
+    return p + (q - p) * 6 * normalizedHue;
+  }
+
+  if (normalizedHue < 1 / 2) {
+    return q;
+  }
+
+  if (normalizedHue < 2 / 3) {
+    return p + (q - p) * (2 / 3 - normalizedHue) * 6;
+  }
+
+  return p;
+}
+
+function mixRgb(first: RgbaColor, second: RgbaColor, weight: number): RgbaColor {
+  const mix = clamp(weight, 0, 1);
+
+  return {
+    r: Math.round(first.r + (second.r - first.r) * mix),
+    g: Math.round(first.g + (second.g - first.g) * mix),
+    b: Math.round(first.b + (second.b - first.b) * mix),
+    a: first.a + (second.a - first.a) * mix
+  };
+}
+
+function getPerceivedBrightness(color: RgbaColor): number {
+  return Math.sqrt(
+    0.299 * color.r * color.r +
+      0.587 * color.g * color.g +
+      0.114 * color.b * color.b
+  ) / 255;
+}
+
+function getRgbDistanceSquared(first: RgbaColor, second: RgbaColor): number {
+  const red = first.r - second.r;
+  const green = first.g - second.g;
+  const blue = first.b - second.b;
+  return red * red + green * green + blue * blue;
+}
+
+function areColorsClose(first: RgbaColor, second: RgbaColor, threshold: number): boolean {
+  return getRgbDistanceSquared(first, second) <= threshold * threshold * 3;
+}
+
+function shortestHueDelta(from: number, to: number): number {
+  const wrapped = ((to - from + 540) % 360) - 180;
+  return wrapped;
+}
+
+function wrapHue(value: number): number {
+  return ((value % 360) + 360) % 360;
+}
+
+function formatColor(color: RgbaColor): string {
+  if (color.a >= 0.999) {
+    return `rgb(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)})`;
+  }
+
+  return `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)}, ${color.a.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")})`;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function clampChannel(value: number): number {
+  return Math.round(clamp(value, 0, 255));
 }

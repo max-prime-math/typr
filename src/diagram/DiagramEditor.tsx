@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent,
   type ReactNode
 } from "react";
@@ -2721,7 +2722,16 @@ function DiagramToolIcon({ tool }: { tool: DiagramTool }) {
 }
 
 function DiagramIcon({ src, alt }: { src: string; alt: string }) {
-  return <img aria-hidden="true" alt={alt} className="diagram-editor__tool-icon" src={src} />;
+  return (
+    <span
+      aria-hidden="true"
+      className="diagram-editor__tool-icon diagram-editor__tool-icon--mask"
+      style={{
+        maskImage: `url("${src}")`,
+        WebkitMaskImage: `url("${src}")`
+      } satisfies CSSProperties}
+    />
+  );
 }
 
 function StrokeStyleIcon({ style }: { style: DiagramStrokeStyle }) {
