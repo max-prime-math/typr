@@ -28,7 +28,7 @@ export interface GraphStyle {
 export interface TypstDocumentFile {
   id: string;
   name: string;
-  content: string;
+  content: string | Uint8Array;
   updatedAt: string;
 }
 
@@ -853,7 +853,7 @@ export function createDocument(
 export function createDocumentFromFile(
   snapshot: AppSnapshot,
   name: string,
-  content: string
+  content: string | Uint8Array
 ): AppSnapshot {
   const now = new Date().toISOString();
   const document: TypstDocumentFile = {

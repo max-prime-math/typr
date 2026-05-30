@@ -66,8 +66,9 @@ export function ConflictModal({
     }
   }
 
-  function contentPreview(content: string, maxLength = 200): string {
-    const trimmed = content.trim();
+  function contentPreview(content: string | Uint8Array, maxLength = 200): string {
+    const text = typeof content === "string" ? content : `[binary data: ${content.byteLength} bytes]`;
+    const trimmed = text.trim();
     if (trimmed.length === 0) return "(empty)";
     if (trimmed.length <= maxLength) return trimmed;
     return trimmed.slice(0, maxLength) + "…";

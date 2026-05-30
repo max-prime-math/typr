@@ -8,11 +8,12 @@ import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 import { normalizeTypstDiagnostic } from "./diagnostics";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
+import { extractTypstPackageReferences } from "./typstPackages";
+import { createTypstPackageStatusReporter } from "./typstPackageStatus";
 import {
-  extractTypstPackageReferences,
-  formatTypstPackageReference
-} from "./typstPackages";
-import { ensureTypstPackageReferences, createTypstPackageRegistry } from "./typstPackageRegistry";
+  ensureTypstPackageReferences,
+  createTypstPackageRegistry
+} from "./typstPackageRegistry";
 import type {
   CompilerWorkerRequest,
   CompilerWorkerResponse
@@ -157,13 +158,15 @@ async function compileWithTypst(
       (async () => {
         const packageReferences = extractTypstPackageReferences(source);
         if (packageReferences.length > 0) {
-          emitStatus(requestId, {
-            phase: "loading-packages",
-            mode: "worker",
-            label: "Loading Typst packages",
-            detail: `Package imports detected: ${packageReferences.map(formatTypstPackageReference).join(", ")}`
+          const packageStatusReporter = createTypstPackageStatusReporter(
+            "worker",
+            packageReferences,
+            (status) => emitStatus(requestId, status)
+          );
+          packageStatusReporter.emitInitial();
+          await ensureTypstPackageReferences(packageReferences, {
+            onStatus: (status) => packageStatusReporter.handle(status)
           });
-          await ensureTypstPackageReferences(packageReferences);
         }
 
         const module = await loadTypstModule();
@@ -255,18 +258,20 @@ async function compileWithTypst(
       "Timed out compiling Typst. Font asset loading may be blocked or very slow."
     );
   } catch (error) {
+    const detail = formatUnknownError(error);
+    const isPackageDownloadFailure = detail.includes("Failed to download Typst package");
     emitStatus(requestId, {
       phase: "error",
       mode: "worker",
-      label: "Compile failed",
-      detail: formatUnknownError(error)
+      label: isPackageDownloadFailure ? "Failed Typst package download" : "Compile failed",
+      detail
     });
     return {
       ok: false,
       engine: "typst-ts",
       errors: [
         {
-          message: formatUnknownError(error),
+          message: detail,
           severity: "error"
         }
       ]

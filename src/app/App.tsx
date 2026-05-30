@@ -88,6 +88,18 @@ import {
 import type { CompileAssetFile } from "../compiler/types";
 import { exportTypstPdf } from "../compiler/typstRuntime";
 import {
+  clearTypstPackageCache,
+  ensureTypstPackageReferences,
+  getTypstPackageCacheSummary,
+  removeTypstPackageFromCache,
+  type TypstPackageCacheEntry
+} from "../compiler/typstPackageRegistry";
+import {
+  getLatestTypstUniversePackageVersion,
+  searchTypstUniversePackages,
+  type TypstUniversePackageEntry
+} from "../compiler/typstPackageRepository";
+import {
   TypstEditor,
   type TypstEditorHandle,
   type TypstSearchQueryState
@@ -113,7 +125,8 @@ import { ConflictModal } from "../github/ConflictModal";
 import {
   PreviewPane,
   PreviewDebugPanel,
-  PreviewStatusIcon
+  PreviewStatusIcon,
+  type WorkspacePreviewFile
 } from "../preview/PreviewPane";
 import {
   DiagramEditor,
@@ -168,7 +181,8 @@ import {
 import { PreviewZoomControls } from "../preview/PreviewPane";
 import {
   syncSnapshotToOpfs,
-  isOpfsAvailable
+  isOpfsAvailable,
+  readWorkspaceFileFromOpfs
 } from "../workspace/opfsWorkspace";
 import { WorkspaceTree, WORKSPACE_ROOT_PATH } from "../workspace/WorkspaceTree";
 import {
@@ -178,7 +192,9 @@ import {
   canMoveWorkspaceNode,
   flattenVisibleWorkspaceNodes,
   findWorkspaceNodeByPath,
+  getWorkspacePathExtension,
   normalizeWorkspacePath,
+  isTextWorkspaceFile,
   type WorkspaceTreeNode
 } from "../workspace/workspaceTree";
 
@@ -225,6 +241,28 @@ function getGraphProviderLabel(provider: GraphProvider): string {
   }
 
   return "Desmos";
+}
+
+function getWorkspacePreviewMimeType(path: string): string | null {
+  switch (getWorkspacePathExtension(path)) {
+    case "svg":
+      return "image/svg+xml";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "avif":
+      return "image/avif";
+    case "pdf":
+      return "application/pdf";
+    default:
+      return null;
+  }
 }
 
 interface SourceSymbolItem {
@@ -289,7 +327,7 @@ type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
 type DiagramPaneMode = "sidebar" | "source" | "preview";
-type SettingsTab = "github" | "themes" | "keybindings" | "snippets" | "graphs";
+type SettingsTab = "github" | "themes" | "keybindings" | "snippets" | "packages" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
 type TableGutter = "none" | "small" | "medium";
@@ -460,6 +498,18 @@ function clampTooltipPosition(x: number, y: number) {
   };
 }
 
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
   const assets = new Map<string, CompileAssetFile>();
 
@@ -598,6 +648,19 @@ export function App() {
     tone: "neutral",
     text: ""
   });
+  const [packageCacheEntries, setPackageCacheEntries] = useState<TypstPackageCacheEntry[]>([]);
+  const [packageCacheTotalBytes, setPackageCacheTotalBytes] = useState(0);
+  const [isPackageCacheLoading, setIsPackageCacheLoading] = useState(false);
+  const [isPackageCacheClearing, setIsPackageCacheClearing] = useState(false);
+  const [packageCacheFeedback, setPackageCacheFeedback] = useState<SyncFeedback>({
+    tone: "neutral",
+    text: ""
+  });
+  const [packageSearchQuery, setPackageSearchQuery] = useState("");
+  const [packageSearchResults, setPackageSearchResults] = useState<TypstUniversePackageEntry[]>([]);
+  const [isPackageSearchLoading, setIsPackageSearchLoading] = useState(false);
+  const [installingPackageName, setInstallingPackageName] = useState<string | null>(null);
+  const [packageSearchVisibleCount, setPackageSearchVisibleCount] = useState(5);
   const [isGraphProviderMenuOpen, setIsGraphProviderMenuOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
@@ -780,6 +843,8 @@ export function App() {
   } = useTheme();
 
   const activeDocument = getActiveDocument(snapshot.project);
+  const activeDocumentTextContent =
+    typeof activeDocument.content === "string" ? activeDocument.content : "";
   const defaultGitHubDirectory = useMemo(
     () => getDefaultGitHubDirectory(snapshot.project.name),
     [snapshot.project.name]
@@ -800,6 +865,65 @@ export function App() {
     [normalizedSelectedWorkspacePath, visibleWorkspaceTree]
   );
   const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
+  const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadWorkspacePreview() {
+      if (!sourceWorkspaceNode || sourceWorkspaceNode.kind !== "file") {
+        setSelectedWorkspacePreview(null);
+        return;
+      }
+
+      if (isTextWorkspaceFile(sourceWorkspaceNode.path)) {
+        setSelectedWorkspacePreview(null);
+        return;
+      }
+
+      setSelectedWorkspacePreview(null);
+
+      const mimeType = getWorkspacePreviewMimeType(sourceWorkspaceNode.path);
+
+      if (!mimeType) {
+        setSelectedWorkspacePreview(null);
+        return;
+      }
+
+      if (sourceWorkspaceNode.content instanceof Uint8Array) {
+        setSelectedWorkspacePreview({
+          name: sourceWorkspaceNode.name,
+          path: sourceWorkspaceNode.path,
+          content: sourceWorkspaceNode.content,
+          mimeType
+        });
+        return;
+      }
+
+      const bytes = await readWorkspaceFileFromOpfs(sourceWorkspaceNode.path);
+
+      if (cancelled) {
+        return;
+      }
+
+      if (bytes) {
+        setSelectedWorkspacePreview({
+          name: sourceWorkspaceNode.name,
+          path: sourceWorkspaceNode.path,
+          content: bytes,
+          mimeType
+        });
+        return;
+      }
+
+      setSelectedWorkspacePreview(null);
+    }
+
+    void loadWorkspacePreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceWorkspaceNode]);
   const workspaceContextMenuPosition = useMemo(() => {
     if (!workspaceContextMenu || !filesSectionRef.current) {
       return null;
@@ -813,7 +937,8 @@ export function App() {
     };
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
-    sourceWorkspaceNode === null || sourceWorkspaceNode.source.kind === "document";
+    sourceWorkspaceNode === null ||
+    (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path));
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
@@ -1100,6 +1225,89 @@ export function App() {
       cancelled = true;
     };
   }, [setTheme]);
+
+  const refreshTypstPackageCache = useCallback(async () => {
+    setIsPackageCacheLoading(true);
+
+    try {
+      const summary = await getTypstPackageCacheSummary();
+      setPackageCacheEntries(summary.packages);
+      setPackageCacheTotalBytes(summary.totalBytes);
+    } catch {
+      setPackageCacheFeedback({
+        tone: "error",
+        text: "Unable to load Typst package cache."
+      });
+    } finally {
+      setIsPackageCacheLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSettingsOpen || settingsTab !== "packages") {
+      return;
+    }
+
+    void refreshTypstPackageCache();
+  }, [isSettingsOpen, refreshTypstPackageCache, settingsTab]);
+
+  useEffect(() => {
+    if (!isSettingsOpen || settingsTab !== "packages") {
+      return;
+    }
+
+    const normalizedQuery = packageSearchQuery.trim();
+
+    if (!isOnline) {
+      setPackageSearchResults([]);
+      setIsPackageSearchLoading(false);
+      return;
+    }
+
+    if (!normalizedQuery) {
+      setPackageSearchResults([]);
+      setIsPackageSearchLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setIsPackageSearchLoading(true);
+
+      void searchTypstUniversePackages(normalizedQuery)
+        .then((entries) => {
+          if (cancelled) {
+            return;
+          }
+
+          setPackageSearchResults(entries);
+        })
+        .catch(() => {
+          if (cancelled) {
+            return;
+          }
+
+          setPackageCacheFeedback({
+            tone: "error",
+            text: "Unable to search Typst Universe right now."
+          });
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsPackageSearchLoading(false);
+          }
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isOnline, isSettingsOpen, packageSearchQuery, settingsTab]);
+
+  useEffect(() => {
+    setPackageSearchVisibleCount(5);
+  }, [packageSearchQuery]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1503,12 +1711,12 @@ export function App() {
       return;
     }
 
-    previewSourceDraftRef.current = activeDocument.content;
+    previewSourceDraftRef.current = activeDocumentTextContent;
     if (compileResult === null || snapshot.preferences.liveCompilation) {
       queueCompile(compileResult !== null);
     }
   }, [
-    activeDocument.content,
+    activeDocumentTextContent,
     diagramAssetsRevision,
     compileResult,
     graphAssetsRevision,
@@ -1709,14 +1917,24 @@ export function App() {
       }
 
       const matchingDocument = snapshot.project.documents.find(
-        (document) => normalizeWorkspacePath(document.name) === normalizedPath
+        (document) =>
+          normalizeWorkspacePath(document.name) === normalizedPath &&
+          isTextWorkspaceFile(document.name)
       );
 
       if (matchingDocument) {
         handleSelectDocument(matchingDocument.id);
+        return;
+      }
+
+      const matchingNode = findWorkspaceNodeByPath(visibleWorkspaceTree, normalizedPath);
+
+      if (matchingNode && matchingNode.kind === "file") {
+        setWorkspaceMode("split");
+        setIsPreviewCollapsed(false);
       }
     },
-    [isTrashViewOpen, snapshot.project.documents]
+    [isTrashViewOpen, snapshot.project.documents, visibleWorkspaceTree]
   );
 
   const handleActivateWorkspaceNode = useCallback(
@@ -2222,6 +2440,79 @@ export function App() {
     setSnippetImportText(event.target.value);
   };
 
+  const handleRemoveTypstPackage = useCallback(
+    async (entry: TypstPackageCacheEntry) => {
+      try {
+        await removeTypstPackageFromCache(entry.reference);
+        await refreshTypstPackageCache();
+        setPackageCacheFeedback({
+          tone: "neutral",
+          text: `Removed ${entry.reference.key} from the package cache.`
+        });
+      } catch {
+        setPackageCacheFeedback({
+          tone: "error",
+          text: `Unable to remove ${entry.reference.key} from the package cache.`
+        });
+      }
+    },
+    [refreshTypstPackageCache]
+  );
+
+  const handleClearTypstPackages = useCallback(async () => {
+    setIsPackageCacheClearing(true);
+
+    try {
+      await clearTypstPackageCache();
+      await refreshTypstPackageCache();
+      setPackageCacheFeedback({
+        tone: "neutral",
+        text: "Cleared cached Typst packages."
+      });
+    } catch {
+      setPackageCacheFeedback({
+        tone: "error",
+        text: "Unable to clear the Typst package cache."
+      });
+    } finally {
+      setIsPackageCacheClearing(false);
+    }
+  }, [refreshTypstPackageCache]);
+
+  const handleInstallTypstPackage = useCallback(
+    async (entry: TypstUniversePackageEntry) => {
+      setInstallingPackageName(entry.name);
+
+      try {
+        const version = await getLatestTypstUniversePackageVersion(entry.name);
+        await ensureTypstPackageReferences([
+          {
+            namespace: entry.namespace,
+            name: entry.name,
+            version,
+            key: `${entry.namespace}/${entry.name}:${version}`
+          }
+        ]);
+        await refreshTypstPackageCache();
+        setPackageCacheFeedback({
+          tone: "success",
+          text: `Installed @${entry.namespace}/${entry.name}:${version}.`
+        });
+      } catch (error) {
+        setPackageCacheFeedback({
+          tone: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : `Unable to install @${entry.namespace}/${entry.name}.`
+        });
+      } finally {
+        setInstallingPackageName(null);
+      }
+    },
+    [refreshTypstPackageCache]
+  );
+
   const handleClearCustomSnippets = () => {
     setCustomSnippets([]);
     setSnippetImportFeedback({
@@ -2293,8 +2584,8 @@ export function App() {
     }, 0);
   };
 
-  const downloadFile = (name: string, content: string, type = "text/plain") => {
-    downloadBlob(name, new Blob([content], { type }));
+  const downloadFile = (name: string, content: string | Uint8Array, type = "text/plain") => {
+    downloadBlob(name, new Blob([content as BlobPart], { type }));
   };
 
   const handleRenameProject = () => {
@@ -2325,14 +2616,22 @@ export function App() {
       return;
     }
 
-    const content = await file.text();
+    const content = isTextWorkspaceFile(file.name)
+      ? await file.text()
+      : new Uint8Array(await file.arrayBuffer());
     setSnapshot((currentSnapshot) =>
       createDocumentFromFile(currentSnapshot, file.name, content)
     );
   };
 
   const handleDownloadDocument = () => {
-    downloadFile(activeDocument.name, activeDocument.content, "text/plain");
+    downloadFile(
+      activeDocument.name,
+      activeDocument.content,
+      typeof activeDocument.content === "string"
+        ? "text/plain"
+        : getWorkspacePreviewMimeType(activeDocument.name) ?? "application/octet-stream"
+    );
   };
 
   const handleDownloadProject = () => {
@@ -2475,6 +2774,7 @@ export function App() {
 
   const handleSaveDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) => saveCurrentDiagram(currentSnapshot));
+    handleCompileRef.current();
   }, []);
 
   const handleSaveGraph = useCallback((nextGraph: GraphAsset) => {
@@ -2543,6 +2843,9 @@ export function App() {
     }
 
     editorRef.current?.insertTextAndSelect(`\n${insertResult.text}\n`);
+    window.setTimeout(() => {
+      handleCompileRef.current();
+    }, 0);
   }, []);
 
   const handleGraphRenderModeChange = useCallback((mode: GraphAsset["renderMode"]) => {
@@ -2586,6 +2889,9 @@ export function App() {
     editorRef.current?.insertTextAndSelect(
       `\n#figure(image("${getDiagramFilePath(diagram.name)}"))\n`
     );
+    window.setTimeout(() => {
+      handleCompileRef.current();
+    }, 0);
   }, [diagram.name]);
 
   const handleExportPdf = useCallback(async () => {
@@ -2596,7 +2902,7 @@ export function App() {
     setIsExportingPdf(true);
 
     try {
-      const pdfBytes = await exportTypstPdf(activeDocument.content, [
+      const pdfBytes = await exportTypstPdf(activeDocumentTextContent, [
         ...diagramShadowAssets,
         ...graphShadowAssets
       ]);
@@ -2619,7 +2925,7 @@ export function App() {
       setIsExportingPdf(false);
     }
   }, [
-    activeDocument.content,
+    activeDocumentTextContent,
     activeDocument.name,
     diagramShadowAssets,
     graphShadowAssets,
@@ -3315,9 +3621,20 @@ export function App() {
     () => mergeSnippets([...DEFAULT_TYPST_SNIPPETS, ...customSnippets]),
     [customSnippets]
   );
+  const filteredRepositoryPackages = useMemo(() => {
+    return packageSearchResults;
+  }, [packageSearchResults]);
+  const installedPackageKeys = useMemo(
+    () => new Set(packageCacheEntries.map((entry) => entry.reference.key)),
+    [packageCacheEntries]
+  );
+  const visibleRepositoryPackages = useMemo(
+    () => filteredRepositoryPackages.slice(0, packageSearchVisibleCount),
+    [filteredRepositoryPackages, packageSearchVisibleCount]
+  );
   const flatOutlineEntries = useMemo(
-    () => collectOutlineEntries(activeDocument.content),
-    [activeDocument.content]
+    () => collectOutlineEntries(activeDocumentTextContent),
+    [activeDocumentTextContent]
   );
   const outlineEntries = useMemo(
     () => buildOutlineTree(flatOutlineEntries),
@@ -3340,25 +3657,28 @@ export function App() {
     activeSidebarTool === "diagram" &&
     diagramPaneMode !== "sidebar";
   const isDiagramPreviewExpanded = isDiagramInlineExpanded && diagramPaneMode === "preview";
-  const showSourcePane = !isDiagramInlineExpanded;
+  const showSourcePane = !isDiagramInlineExpanded && isSourceFileEditable;
   const showPreviewPane = !isDiagramPreviewExpanded;
   const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
   const baseSidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
   const basePreviewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
   const baseHandleWidthTotal = baseSidebarHandleWidth + basePreviewHandleWidth;
+  const sidebarPreviewGapWidth = showDesktopSidebar && !showSourcePane ? PANEL_HANDLE_WIDTH : 0;
   const previewPaneWidth = isPreviewCollapsed
     ? PANEL_COLLAPSED_WIDTH
-    : getPreviewPaneWidth(
+    : showSourcePane
+    ? getPreviewPaneWidth(
         effectiveWorkspaceWidth,
         sidebarPaneWidth,
         baseHandleWidthTotal,
         previewRatio
-      );
+      )
+    : Math.max(0, effectiveWorkspaceWidth - sidebarPaneWidth - sidebarPreviewGapWidth - baseSidebarHandleWidth);
   const sidebarHandleWidth = showDesktopSidebar && showSourcePane ? PANEL_HANDLE_WIDTH : 0;
-  const previewHandleWidth = !isMobileWorkspace && showPreviewPane ? PANEL_HANDLE_WIDTH : 0;
+  const previewHandleWidth = !isMobileWorkspace && showPreviewPane && showSourcePane ? PANEL_HANDLE_WIDTH : 0;
   const handleWidthTotal = sidebarHandleWidth + previewHandleWidth;
   const sourcePaneWidth =
-    workspaceMode === "split" && effectiveWorkspaceWidth > 0
+    showSourcePane && workspaceMode === "split" && effectiveWorkspaceWidth > 0
       ? Math.max(
           0,
           effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - handleWidthTotal
@@ -3384,8 +3704,12 @@ export function App() {
       : workspaceMode === "split"
       ? {
           gridTemplateColumns: showDesktopSidebar
-            ? `${sidebarPaneWidth}px ${sidebarHandleWidth}px ${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
-            : `${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
+            ? showSourcePane
+              ? `${sidebarPaneWidth}px ${sidebarHandleWidth}px ${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
+              : `${sidebarPaneWidth}px ${sidebarPreviewGapWidth}px ${previewPaneWidth}px`
+            : showSourcePane
+            ? `${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
+            : `${previewPaneWidth}px`
         }
       : {
           gridTemplateColumns: "minmax(0, 1fr)"
@@ -3452,6 +3776,70 @@ export function App() {
     },
     [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, openSearchPane, workspaceMode]
   );
+
+  const handleOpenWorkspaceDiagram = useCallback(
+    (node: WorkspaceTreeNode) => {
+      if (node.source.kind !== "diagram") {
+        return;
+      }
+
+      setWorkspaceContextMenu(null);
+      const sourceDocument = snapshot.project.documents.find(
+        (document) => typeof document.content === "string" && document.content.includes(node.path)
+      );
+
+      setSnapshot((currentSnapshot) => {
+        const savedSnapshot = saveCurrentDiagram(currentSnapshot);
+        const targetDiagram = savedSnapshot.project.figures.find((figure) => figure.id === node.source.id);
+
+        if (!targetDiagram) {
+          return savedSnapshot;
+        }
+
+        const withActiveDocument = sourceDocument
+          ? setActiveDocument(savedSnapshot, sourceDocument.id)
+          : savedSnapshot;
+
+        return {
+          ...withActiveDocument,
+          project: {
+            ...withActiveDocument.project,
+            diagram: targetDiagram,
+            updatedAt: new Date().toISOString()
+          }
+        };
+      });
+
+      if (sourceDocument) {
+        const selectedPath = normalizeWorkspacePath(sourceDocument.name);
+        setSelectedWorkspacePath(selectedPath);
+        setSelectedWorkspacePaths([selectedPath]);
+        setWorkspaceSelectionAnchorPath(selectedPath);
+      } else {
+        setSelectedWorkspacePath(node.path);
+        setSelectedWorkspacePaths([node.path]);
+        setWorkspaceSelectionAnchorPath(node.path);
+      }
+
+      if (sourceDocument) {
+        setWorkspaceMode("split");
+        setDiagramPaneMode("sidebar");
+        if (isMobileWorkspace) {
+          setMobileWorkspaceTab("editor");
+        }
+      }
+
+      setActiveSidebarTool("diagram");
+      setIsSidebarCollapsed(false);
+      setWorkspaceMode("split");
+      setDiagramPaneMode("sidebar");
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("files");
+      }
+    },
+    [isMobileWorkspace, snapshot.project.documents]
+  );
+
   const handleToggleTrashView = useCallback(() => {
     setIsTrashViewOpen((current) => !current);
     setWorkspaceContextMenu(null);
@@ -3887,6 +4275,7 @@ export function App() {
                   {workspaceContextMenu && workspaceContextMenuPosition ? (
                     <div
                       className="workspace-context-menu"
+                      onPointerDown={(event) => event.stopPropagation()}
                       role="menu"
                       style={
                         {
@@ -3910,10 +4299,14 @@ export function App() {
                         workspaceContextMenu.node.source.kind === "graph") ? (
                         <button
                           className="workspace-context-menu__item"
-                          onClick={() => handleOpenWorkspaceFile(workspaceContextMenu.node.path)}
+                          onClick={() =>
+                            workspaceContextMenu.node.source.kind === "diagram"
+                              ? handleOpenWorkspaceDiagram(workspaceContextMenu.node)
+                              : handleOpenWorkspaceFile(workspaceContextMenu.node.path)
+                          }
                           type="button"
                         >
-                          Open
+                          {workspaceContextMenu.node.source.kind === "diagram" ? "Edit" : "Open"}
                         </button>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
@@ -4330,6 +4723,8 @@ export function App() {
             onPointerDown={beginPanelResize("sidebar")}
             type="button"
           />
+        ) : showDesktopSidebar && !showSourcePane ? (
+          <div aria-hidden="true" className="workspace-gap workspace-gap--sidebar-preview" />
         ) : null}
 
         {showSourcePane ? (
@@ -4764,7 +5159,7 @@ export function App() {
               onCompileRequested={handleCompile}
               onSearchRequested={openSearchPane}
               onSelectionChange={setCurrentEditorLineNumber}
-              value={activeDocument.content}
+              value={activeDocumentTextContent}
               vimMode={snapshot.preferences.vimMode}
               editorFontSize={snapshot.preferences.editorFontSize}
               keybindings={keybindings}
@@ -4809,7 +5204,7 @@ export function App() {
         </section>
         ) : null}
 
-        {!isMobileWorkspace && showPreviewPane ? (
+        {!isMobileWorkspace && showPreviewPane && showSourcePane ? (
           <button
             aria-label="Resize preview"
             className="workspace-handle workspace-handle--right"
@@ -4871,6 +5266,7 @@ export function App() {
                 showToolbar={false}
                 onZoomChange={setPreviewZoom}
                 result={compileResult}
+                workspacePreview={selectedWorkspacePreview}
                 zoom={previewZoom}
               />
             </>
@@ -4914,6 +5310,7 @@ export function App() {
               showToolbar={true}
               onZoomChange={setPreviewZoom}
               result={compileResult}
+              workspacePreview={selectedWorkspacePreview}
               zoom={previewZoom}
             />
           </section>
@@ -5037,6 +5434,15 @@ export function App() {
                   type="button"
                 >
                   Snippets
+                </button>
+                <button
+                  aria-selected={settingsTab === "packages"}
+                  className={`settings-tab ${settingsTab === "packages" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("packages")}
+                  role="tab"
+                  type="button"
+                >
+                  Packages
                 </button>
                 <button
                   aria-selected={settingsTab === "graphs"}
@@ -5578,6 +5984,181 @@ export function App() {
                         </div>
                       ) : null}
                     </section>
+                  </div>
+                </div>
+              ) : settingsTab === "packages" ? (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Typst package cache</h3>
+                      <span className="pane__meta">
+                        {packageCacheEntries.length} installed · {formatByteSize(packageCacheTotalBytes)}
+                      </span>
+                    </div>
+
+                    <section className="package-cache-card">
+                      <div className="package-cache-card__copy">
+                        <h4>Add from Universe</h4>
+                        <p>
+                          Search Typst Universe for packages while online, then download them now so
+                          they stay available offline later.
+                        </p>
+                      </div>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        className="package-search-input"
+                        disabled={!isOnline}
+                        onChange={(event) => setPackageSearchQuery(event.target.value)}
+                        placeholder={
+                          isOnline
+                            ? "Search Universe packages like cetz or oxifmt"
+                            : "Go online to search Typst Universe"
+                        }
+                        type="search"
+                        value={packageSearchQuery}
+                      />
+                      {!isOnline ? (
+                        <div className="snippet-empty">
+                          Universe search is only available while you are online.
+                        </div>
+                      ) : isPackageSearchLoading ? (
+                        <div className="snippet-empty">Searching Typst Universe...</div>
+                      ) : filteredRepositoryPackages.length > 0 ? (
+                        <div className="package-repository-list" role="list">
+                          {visibleRepositoryPackages.map((entry) => (
+                            <article className="package-cache-row" key={entry.name} role="listitem">
+                              <div className="package-cache-row__main">
+                                <strong>
+                                  <a
+                                    className="package-cache-row__link"
+                                    href={`https://typst.app/universe/package/${entry.name}/`}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  >
+                                    @{entry.namespace}/{entry.name}
+                                  </a>
+                                </strong>
+                                <span>
+                                  v{entry.version}
+                                  {entry.description ? ` · ${entry.description}` : ""}
+                                </span>
+                              </div>
+                              <button
+                                className="pane__button"
+                                disabled={
+                                  !isOnline ||
+                                  installingPackageName === entry.name ||
+                                  installedPackageKeys.has(`${entry.namespace}/${entry.name}:${entry.version}`)
+                                }
+                                onClick={() => {
+                                  void handleInstallTypstPackage(entry);
+                                }}
+                                type="button"
+                              >
+                                {installingPackageName === entry.name
+                                  ? "Installing..."
+                                  : installedPackageKeys.has(
+                                        `${entry.namespace}/${entry.name}:${entry.version}`
+                                      )
+                                    ? "Installed"
+                                    : "Install"}
+                              </button>
+                            </article>
+                          ))}
+                          {filteredRepositoryPackages.length > visibleRepositoryPackages.length ? (
+                            <button
+                              className="pane__button pane__button--quiet package-repository-list__more"
+                              onClick={() =>
+                                setPackageSearchVisibleCount((currentCount) => currentCount + 5)
+                              }
+                              type="button"
+                            >
+                              Show more...
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">
+                          {packageSearchQuery.trim()
+                            ? "No matching packages found on Typst Universe."
+                            : "Start typing to search Typst Universe packages."}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="package-cache-card">
+                      <div className="package-cache-card__copy">
+                        <h4>Offline package storage</h4>
+                        <p>
+                          Cached Typst packages stay available offline and are reused until you
+                          remove them here.
+                        </p>
+                      </div>
+                      <div className="package-cache-card__actions">
+                        <button
+                          className="pane__button"
+                          onClick={() => {
+                            void refreshTypstPackageCache();
+                          }}
+                          type="button"
+                        >
+                          {isPackageCacheLoading ? "Refreshing..." : "Refresh"}
+                        </button>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          disabled={packageCacheEntries.length === 0 || isPackageCacheClearing}
+                          onClick={() => {
+                            void handleClearTypstPackages();
+                          }}
+                          type="button"
+                        >
+                          {isPackageCacheClearing ? "Clearing..." : "Clear cache"}
+                        </button>
+                      </div>
+                      {packageCacheFeedback.text ? (
+                        <div
+                          className={`sync-feedback package-cache-card__feedback ${
+                            packageCacheFeedback.tone === "success"
+                              ? "sync-feedback--success"
+                              : packageCacheFeedback.tone === "error"
+                                ? "sync-feedback--error"
+                                : ""
+                          }`}
+                        >
+                          <span>{packageCacheFeedback.text}</span>
+                        </div>
+                      ) : null}
+                    </section>
+
+                    {isPackageCacheLoading && packageCacheEntries.length === 0 ? (
+                      <div className="snippet-empty">Loading cached packages...</div>
+                    ) : packageCacheEntries.length > 0 ? (
+                      <div className="package-cache-list" role="list">
+                        {packageCacheEntries.map((entry) => (
+                          <article className="package-cache-row" key={entry.reference.key} role="listitem">
+                            <div className="package-cache-row__main">
+                              <strong>{entry.reference.key}</strong>
+                              <span>{formatByteSize(entry.sizeBytes)}</span>
+                            </div>
+                            <button
+                              className="pane__button pane__button--quiet"
+                              onClick={() => {
+                                void handleRemoveTypstPackage(entry);
+                              }}
+                              type="button"
+                            >
+                              Remove
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="snippet-empty">
+                        No Typst packages are cached yet. Import a package in a document to install
+                        it here.
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (

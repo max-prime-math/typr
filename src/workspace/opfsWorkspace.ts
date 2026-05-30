@@ -44,6 +44,22 @@ export async function loadWorkspaceTreeFromOpfs(): Promise<WorkspaceTreeNode[]> 
   return buildWorkspaceTree(entries);
 }
 
+export async function readWorkspaceFileFromOpfs(path: string): Promise<Uint8Array | null> {
+  if (!isOpfsAvailable()) {
+    return null;
+  }
+
+  const workspaceRoot = await getWorkspaceRootHandle(false);
+  const fileHandle = await getFileHandleByPath(workspaceRoot, path);
+
+  if (!fileHandle) {
+    return null;
+  }
+
+  const file = await fileHandle.getFile();
+  return new Uint8Array(await file.arrayBuffer());
+}
+
 async function getWorkspaceRootHandle(create: boolean): Promise<FileSystemDirectoryHandle> {
   const opfsRoot = await navigator.storage.getDirectory();
   return opfsRoot.getDirectoryHandle(WORKSPACE_ROOT_DIRECTORY, { create });
@@ -61,6 +77,40 @@ async function ensureDirectory(
   }
 
   return current;
+}
+
+async function getFileHandleByPath(
+  root: FileSystemDirectoryHandle,
+  path: string
+): Promise<FileSystemFileHandle | null> {
+  const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  let current: FileSystemDirectoryHandle = root;
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    const isLeaf = index === segments.length - 1;
+
+    if (isLeaf) {
+      try {
+        return await current.getFileHandle(segment, { create: false });
+      } catch {
+        return null;
+      }
+    }
+
+    try {
+      current = await current.getDirectoryHandle(segment, { create: false });
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
 async function clearDirectory(directory: FileSystemDirectoryHandle): Promise<void> {

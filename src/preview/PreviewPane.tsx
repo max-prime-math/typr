@@ -14,6 +14,7 @@ interface PreviewPaneProps {
   onSourceJump?: (sourceLocation: string) => void;
   zoom?: PreviewZoomState;
   onZoomChange?: (zoom: PreviewZoomState) => void;
+  workspacePreview?: WorkspacePreviewFile | null;
 }
 
 export type PreviewStatusKind = "live" | "compiling";
@@ -23,6 +24,13 @@ export type PreviewZoomMode = "fit-width" | "fit-height" | "fit-page" | "percent
 export interface PreviewZoomState {
   mode: PreviewZoomMode;
   percent: number;
+}
+
+export interface WorkspacePreviewFile {
+  name: string;
+  path: string;
+  content: string | Uint8Array;
+  mimeType: string;
 }
 
 const ZOOM_PERCENT_STEPS = [50, 67, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300];
@@ -41,11 +49,25 @@ export function PreviewPane({
   showToolbar = true,
   onSourceJump,
   zoom,
-  onZoomChange
+  onZoomChange,
+  workspacePreview
 }: PreviewPaneProps) {
   const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const currentZoom = zoom ?? internalZoom;
   const setZoom = onZoomChange ?? setInternalZoom;
+
+  if (workspacePreview) {
+    return (
+      <div className={`preview-layout ${paperView ? "preview-layout--paper" : ""}`}>
+        <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
+          <WorkspaceFilePreview
+            file={workspacePreview}
+            paperView={paperView}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (result === null) {
     return (
@@ -309,6 +331,49 @@ function PreviewDocument({
           />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function WorkspaceFilePreview({
+  file,
+  paperView
+}: {
+  file: WorkspacePreviewFile;
+  paperView: boolean;
+}) {
+  const blobUrl = useMemo(() => {
+    const blob = new Blob([file.content as BlobPart], { type: file.mimeType });
+
+    return URL.createObjectURL(blob);
+  }, [file.content, file.mimeType]);
+
+  useEffect(() => {
+    return () => {
+      URL.revokeObjectURL(blobUrl);
+    };
+  }, [blobUrl]);
+
+  const isPdf = file.mimeType === "application/pdf";
+
+  return (
+    <div className={`preview-document preview-document--asset ${paperView ? "preview-document--paper" : ""}`}>
+      {isPdf ? (
+        <object
+          aria-label={file.name}
+          className="preview-file-preview__embed"
+          data={blobUrl}
+          type={file.mimeType}
+        >
+          <p className="preview-file-preview__fallback">
+            {file.name}
+          </p>
+        </object>
+      ) : (
+        <div className="preview-file-preview">
+          <img alt={file.name} className="preview-file-preview__image" src={blobUrl} />
+        </div>
+      )}
     </div>
   );
 }

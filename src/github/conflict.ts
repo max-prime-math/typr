@@ -2,20 +2,22 @@ export interface SyncSnapshot {
   [documentName: string]: string;
 }
 
+type DocumentContent = string | Uint8Array;
+
 export interface DocumentConflict {
   id: string;
   name: string;
-  localContent: string;
-  remoteContent: string;
+  localContent: DocumentContent;
+  remoteContent: DocumentContent;
   localUpdatedAt: string;
   remoteUpdatedAt: string;
 }
 
 export interface ConflictSet {
   conflicts: DocumentConflict[];
-  addedLocally: Array<{ id: string; name: string; content: string; updatedAt: string }>;
-  addedRemotely: Array<{ name: string; content: string }>;
-  autoResolved: Array<{ id: string; name: string; content: string; updatedAt: string }>;
+  addedLocally: Array<{ id: string; name: string; content: DocumentContent; updatedAt: string }>;
+  addedRemotely: Array<{ name: string; content: DocumentContent }>;
+  autoResolved: Array<{ id: string; name: string; content: DocumentContent; updatedAt: string }>;
 }
 
 export type ConflictChoice = "local" | "remote" | "delete";
@@ -36,8 +38,8 @@ export function buildSyncSnapshot(
 }
 
 export function detectConflicts(
-  local: Array<{ id: string; name: string; content: string; updatedAt: string }>,
-  remote: Array<{ name: string; content: string }>,
+  local: Array<{ id: string; name: string; content: DocumentContent; updatedAt: string }>,
+  remote: Array<{ name: string; content: DocumentContent }>,
   lastSnapshot: SyncSnapshot
 ): ConflictSet {
   const conflictSet: ConflictSet = {
@@ -123,15 +125,15 @@ export function detectConflicts(
 }
 
 export function applyResolutions(
-  local: Array<{ id: string; name: string; content: string; updatedAt: string }>,
-  remote: Array<{ name: string; content: string }>,
+  local: Array<{ id: string; name: string; content: DocumentContent; updatedAt: string }>,
+  remote: Array<{ name: string; content: DocumentContent }>,
   resolutions: ConflictResolution[]
-): Array<{ id: string; name: string; content: string; updatedAt: string }> {
+): Array<{ id: string; name: string; content: DocumentContent; updatedAt: string }> {
   const localMap = new Map(local.map((d) => [d.name, d]));
   const remoteMap = new Map(remote.map((d) => [d.name, d]));
   const resolutionMap = new Map(resolutions.map((r) => [r.documentName, r.choice]));
 
-  const result = new Map<string, { id: string; name: string; content: string; updatedAt: string }>();
+  const result = new Map<string, { id: string; name: string; content: DocumentContent; updatedAt: string }>();
 
   for (const d of local) {
     result.set(d.id, d);

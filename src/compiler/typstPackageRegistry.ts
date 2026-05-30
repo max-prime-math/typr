@@ -1,6 +1,7 @@
 import { MemoryAccessModel } from "@myriaddreamin/typst.ts/dist/esm/fs/index.mjs";
 import { openDB } from "idb";
 import {
+  formatTypstPackageReference,
   getTypstPackageUrl,
   type TypstPackageReference
 } from "./typstPackages";
@@ -21,6 +22,26 @@ interface TypstPackageRegistryHandle {
     insertFile(path: string, data: Uint8Array, mtime: Date): void;
   };
   resolve(spec: TypstPackageResolveSpec, context: TypstPackageResolveContext): string | undefined;
+}
+
+export interface TypstPackageCacheEntry {
+  reference: TypstPackageReference;
+  sizeBytes: number;
+}
+
+export interface TypstPackageCacheSummary {
+  packages: TypstPackageCacheEntry[];
+  totalBytes: number;
+}
+
+export interface TypstPackageLoadStatus {
+  reference: TypstPackageReference;
+  state: "cached" | "downloading" | "failed";
+  detail: string;
+}
+
+interface EnsureTypstPackageReferencesOptions {
+  onStatus?: (status: TypstPackageLoadStatus) => void;
 }
 
 const DATABASE_NAME = "wrytr-typst-packages";
@@ -54,14 +75,63 @@ async function savePackageToCache(key: string, data: Uint8Array): Promise<void> 
   await database.put(STORE_NAME, data, key);
 }
 
+export async function getTypstPackageCacheSummary(): Promise<TypstPackageCacheSummary> {
+  const database = await getDatabase();
+  const keys = await database.getAllKeys(STORE_NAME);
+  const packages: TypstPackageCacheEntry[] = [];
+  let totalBytes = 0;
+
+  for (const key of keys) {
+    if (typeof key !== "string") {
+      continue;
+    }
+
+    const data = await database.get(STORE_NAME, key);
+    const reference = parseTypstPackageKey(key);
+
+    if (!data || !reference) {
+      continue;
+    }
+
+    const sizeBytes = data.byteLength;
+    totalBytes += sizeBytes;
+    packages.push({
+      reference,
+      sizeBytes
+    });
+  }
+
+  packages.sort((left, right) => left.reference.key.localeCompare(right.reference.key));
+
+  return {
+    packages,
+    totalBytes
+  };
+}
+
+export async function removeTypstPackageFromCache(reference: TypstPackageReference): Promise<void> {
+  const database = await getDatabase();
+  await database.delete(STORE_NAME, reference.key);
+  packageMemoryCache.delete(reference.key);
+  packageDependencyCache.delete(reference.key);
+}
+
+export async function clearTypstPackageCache(): Promise<void> {
+  const database = await getDatabase();
+  await database.clear(STORE_NAME);
+  packageMemoryCache.clear();
+  packageDependencyCache.clear();
+}
+
 export async function ensureTypstPackageReferences(
-  references: TypstPackageReference[]
+  references: TypstPackageReference[],
+  options: EnsureTypstPackageReferencesOptions = {}
 ): Promise<void> {
   const seen = new Set<string>();
   await Promise.all(
     references
       .filter((reference) => reference.namespace === "preview")
-      .map((reference) => ensureTypstPackage(reference, seen))
+      .map((reference) => ensureTypstPackage(reference, seen, options))
   );
 }
 
@@ -94,13 +164,15 @@ export function createTypstPackageRegistry(): TypstPackageRegistryHandle {
 
 async function ensureTypstPackage(
   reference: TypstPackageReference,
-  seen: Set<string>
+  seen: Set<string>,
+  options: EnsureTypstPackageReferencesOptions
 ): Promise<Uint8Array> {
   const key = reference.key;
 
   if (seen.has(key)) {
     const existing = packageMemoryCache.get(key);
     if (existing) {
+      emitPackageLoadStatus(reference, "cached", options);
       return existing;
     }
   }
@@ -109,14 +181,21 @@ async function ensureTypstPackage(
   const cached = packageMemoryCache.get(key);
 
   if (cached) {
-    await ensurePackageDependencies(reference, cached, seen);
+    emitPackageLoadStatus(reference, "cached", options);
+    await ensurePackageDependencies(reference, cached, seen, options);
     return cached;
   }
 
   const inFlight = pendingPackageLoads.get(key);
 
   if (inFlight) {
-    return inFlight;
+    emitPackageLoadStatus(reference, "downloading", options);
+    try {
+      return await inFlight;
+    } catch (error) {
+      emitPackageLoadStatus(reference, "failed", options, formatUnknownPackageError(reference, error));
+      throw error;
+    }
   }
 
   const loadPromise = (async () => {
@@ -124,9 +203,12 @@ async function ensureTypstPackage(
 
     if (diskCached) {
       packageMemoryCache.set(key, diskCached);
-      await ensurePackageDependencies(reference, diskCached, seen);
+      emitPackageLoadStatus(reference, "cached", options);
+      await ensurePackageDependencies(reference, diskCached, seen, options);
       return diskCached;
     }
+
+    emitPackageLoadStatus(reference, "downloading", options);
 
     const response = await fetch(getTypstPackageUrl(reference));
 
@@ -137,7 +219,7 @@ async function ensureTypstPackage(
     const data = new Uint8Array(await response.arrayBuffer());
     packageMemoryCache.set(key, data);
     await savePackageToCache(key, data);
-    await ensurePackageDependencies(reference, data, seen);
+    await ensurePackageDependencies(reference, data, seen, options);
     return data;
   })();
 
@@ -145,6 +227,9 @@ async function ensureTypstPackage(
 
   try {
     return await loadPromise;
+  } catch (error) {
+    emitPackageLoadStatus(reference, "failed", options, formatUnknownPackageError(reference, error));
+    throw error;
   } finally {
     pendingPackageLoads.delete(key);
   }
@@ -153,13 +238,50 @@ async function ensureTypstPackage(
 async function ensurePackageDependencies(
   reference: TypstPackageReference,
   data: Uint8Array,
-  seen: Set<string>
+  seen: Set<string>,
+  options: EnsureTypstPackageReferencesOptions
 ): Promise<void> {
   const dependencies = await getPackageDependencies(reference, data);
 
   await Promise.all(
-    dependencies.map((dependency) => ensureTypstPackage(dependency, seen))
+    dependencies.map((dependency) => ensureTypstPackage(dependency, seen, options))
   );
+}
+
+function emitPackageLoadStatus(
+  reference: TypstPackageReference,
+  state: TypstPackageLoadStatus["state"],
+  options: EnsureTypstPackageReferencesOptions,
+  detail = defaultPackageStatusDetail(reference, state)
+): void {
+  options.onStatus?.({
+    reference,
+    state,
+    detail
+  });
+}
+
+function defaultPackageStatusDetail(
+  reference: TypstPackageReference,
+  state: TypstPackageLoadStatus["state"]
+): string {
+  const formattedReference = formatTypstPackageReference(reference);
+
+  if (state === "cached") {
+    return `Using cached package ${formattedReference}`;
+  }
+
+  if (state === "downloading") {
+    return `Downloading package ${formattedReference}`;
+  }
+
+  return `Failed to download package ${formattedReference}`;
+}
+
+function formatUnknownPackageError(reference: TypstPackageReference, error: unknown): string {
+  const formattedReference = formatTypstPackageReference(reference);
+  const message = error instanceof Error ? error.message : "Unknown package download error.";
+  return `${formattedReference}: ${message}`;
 }
 
 async function getPackageDependencies(
@@ -255,4 +377,20 @@ function readTarOctal(data: Uint8Array, offset: number, length: number): number 
   }
 
   return Number.parseInt(value, 8);
+}
+
+function parseTypstPackageKey(key: string): TypstPackageReference | null {
+  const slashIndex = key.indexOf("/");
+  const colonIndex = key.lastIndexOf(":");
+
+  if (slashIndex <= 0 || colonIndex <= slashIndex + 1 || colonIndex >= key.length - 1) {
+    return null;
+  }
+
+  return {
+    namespace: key.slice(0, slashIndex),
+    name: key.slice(slashIndex + 1, colonIndex),
+    version: key.slice(colonIndex + 1),
+    key
+  };
 }

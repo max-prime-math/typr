@@ -4,12 +4,13 @@ import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url"
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
-import {
-  extractTypstPackageReferences,
-  formatTypstPackageReference
-} from "./typstPackages";
+import { extractTypstPackageReferences } from "./typstPackages";
 import { normalizeTypstDiagnostic } from "./diagnostics";
-import { ensureTypstPackageReferences, createTypstPackageRegistry } from "./typstPackageRegistry";
+import { createTypstPackageStatusReporter } from "./typstPackageStatus";
+import {
+  ensureTypstPackageReferences,
+  createTypstPackageRegistry
+} from "./typstPackageRegistry";
 import type {
   CompileAssetFile,
   CompilerStatus,
@@ -152,19 +153,6 @@ export function createMainThreadTypstCompiler(
     return result;
   }
 
-  function emitPackageStatus(references: ReturnType<typeof extractTypstPackageReferences>): void {
-    if (references.length === 0) {
-      return;
-    }
-
-    emitStatus({
-      phase: "loading-packages",
-      mode: "main-thread",
-      label: "Loading Typst packages",
-      detail: `Package imports detected: ${references.map(formatTypstPackageReference).join(", ")}`
-    });
-  }
-
   return {
     async compileDocument(
       source: string,
@@ -185,8 +173,15 @@ export function createMainThreadTypstCompiler(
           (async () => {
             const packageReferences = extractTypstPackageReferences(source);
             if (packageReferences.length > 0) {
-              emitPackageStatus(packageReferences);
-              await ensureTypstPackageReferences(packageReferences);
+              const packageStatusReporter = createTypstPackageStatusReporter(
+                "main-thread",
+                packageReferences,
+                emitStatus
+              );
+              packageStatusReporter.emitInitial();
+              await ensureTypstPackageReferences(packageReferences, {
+                onStatus: (status) => packageStatusReporter.handle(status)
+              });
             }
             const module = await loadTypstModule();
             const compiler = await getCompilerDriver();
@@ -278,18 +273,20 @@ export function createMainThreadTypstCompiler(
           "Timed out compiling Typst. Font asset loading may be blocked or very slow."
         );
       } catch (error) {
+        const detail = formatUnknownError(error);
+        const isPackageDownloadFailure = detail.includes("Failed to download Typst package");
         emitStatus({
           phase: "error",
           mode: "main-thread",
-          label: "Compile failed",
-          detail: formatUnknownError(error)
+          label: isPackageDownloadFailure ? "Failed Typst package download" : "Compile failed",
+          detail
         });
         return {
           ok: false,
           engine: "typst-ts",
           errors: [
             {
-              message: formatUnknownError(error),
+              message: detail,
               severity: "error"
             }
           ]

@@ -31,6 +31,7 @@ export interface WorkspaceTreeNode {
   name: string;
   kind: WorkspaceNodeKind;
   source: WorkspaceSource;
+  content?: string | Uint8Array;
   children: WorkspaceTreeNode[];
 }
 
@@ -164,13 +165,14 @@ export function buildWorkspaceTree(entries: WorkspaceFlatEntry[]): WorkspaceTree
           children: new Map<string, MutableWorkspaceNode>()
         } satisfies MutableWorkspaceNode);
 
-      node.kind = nextKind === "folder" ? "folder" : node.kind;
-      if (isLeaf) {
-        node.source = entry.source;
+        node.kind = nextKind === "folder" ? "folder" : node.kind;
+        if (isLeaf) {
+          node.source = entry.source;
+          node.content = entry.content;
+        }
+        currentLevel.set(segment, node);
+        currentLevel = node.children;
       }
-      currentLevel.set(segment, node);
-      currentLevel = node.children;
-    }
   }
 
   return sortWorkspaceNodes(convertWorkspaceNodes(root));
@@ -291,6 +293,7 @@ interface MutableWorkspaceNode {
   name: string;
   kind: WorkspaceNodeKind;
   source: WorkspaceSource;
+  content?: string | Uint8Array;
   children: Map<string, MutableWorkspaceNode>;
 }
 

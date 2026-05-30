@@ -8,7 +8,7 @@ export interface GitHubRemoteConfig {
 
 export interface GitHubSyncDocument {
   name: string;
-  content: string;
+  content: string | Uint8Array;
 }
 
 export interface GitHubSyncTarget {
@@ -26,7 +26,7 @@ export interface GitHubSyncResult {
 
 interface PutFileOptions {
   branch: string;
-  content: string;
+  content: string | Uint8Array;
   message: string;
   path: string;
   sha: string | null;
@@ -132,7 +132,7 @@ export async function pullProjectFromGitHub(
 
   try {
     const remoteFiles = await listDirectoryContents(config, normalizedDirectory, branch);
-    const typstFiles = remoteFiles.filter((file) => file.name.endsWith(".typ") && file.type === "file");
+    const typstFiles = remoteFiles.filter((file) => file.type === "file");
 
     if (typstFiles.length === 0) {
       return {
@@ -156,7 +156,7 @@ export async function pullProjectFromGitHub(
     const projectFile = remoteFiles.find((f) => f.name === "typr-project.json" && f.type === "file");
     if (projectFile) {
       const projectContent = await fetchFileContent(config, projectFile.path, branch);
-      if (projectContent) {
+      if (typeof projectContent === "string" && projectContent) {
         try {
           const parsed = JSON.parse(projectContent) as { name?: string };
           if (parsed.name) {
@@ -268,8 +268,8 @@ async function formatGitHubError(
   return `${fallbackMessage} (${response.status})`;
 }
 
-function encodeBase64(content: string): string {
-  const bytes = new TextEncoder().encode(content);
+function encodeBase64(content: string | Uint8Array): string {
+  const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
   let binary = "";
 
   for (const byte of bytes) {
@@ -356,7 +356,7 @@ async function fetchFileContent(
   config: GitHubRemoteConfig,
   path: string,
   branch: string
-): Promise<string | null> {
+): Promise<string | Uint8Array | null> {
   const response = await fetch(buildContentsUrl(config, path, branch), {
     headers: createGitHubHeaders(config.token)
   });
@@ -384,7 +384,9 @@ async function fetchFileContent(
       if (!downloadResponse.ok) {
         throw new Error(`Unable to download ${path}.`);
       }
-      return downloadResponse.text();
+      return isBinaryGitHubPath(path)
+        ? new Uint8Array(await downloadResponse.arrayBuffer())
+        : downloadResponse.text();
     }
     return "";
   }
@@ -396,8 +398,12 @@ async function fetchFileContent(
     for (let i = 0; i < decoded.length; i++) {
       bytes[i] = decoded.charCodeAt(i);
     }
-    return new TextDecoder().decode(bytes);
+    return isBinaryGitHubPath(path) ? bytes : new TextDecoder().decode(bytes);
   }
 
   return payload.content;
+}
+
+function isBinaryGitHubPath(path: string): boolean {
+  return /\.(png|jpe?g|gif|webp|avif|pdf|svg)$/i.test(path);
 }
