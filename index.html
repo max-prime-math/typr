@@ -19,9 +19,137 @@
     <link rel="icon" type="image/png" sizes="192x192" href="%BASE_URL%icons/icon-192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="%BASE_URL%icons/icon-512.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="%BASE_URL%apple-touch-icon.png" />
+    <style>
+      :root {
+        color-scheme: light;
+        --background: #ece7dc;
+        --background-wash: #f6f3eb;
+        --text: #1c231f;
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+      }
+
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at top left, rgba(23, 111, 95, 0.12), transparent 26%),
+          radial-gradient(circle at top right, rgba(199, 166, 101, 0.12), transparent 22%),
+          linear-gradient(180deg, var(--background-wash), var(--background));
+      }
+
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top left, rgba(23, 111, 95, 0.12), transparent 26%),
+          radial-gradient(circle at top right, rgba(199, 166, 101, 0.12), transparent 22%),
+          linear-gradient(180deg, var(--background-wash), var(--background));
+        transition: opacity 180ms ease;
+      }
+
+      #boot-splash.boot-splash--hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .boot-splash__stack {
+        display: grid;
+        justify-items: center;
+        gap: 0.7rem;
+      }
+
+      .boot-splash__logo {
+        width: 76px;
+        height: 76px;
+      }
+
+      .boot-splash__wordmark {
+        color: var(--text);
+        font:
+          600 17px/1 ui-monospace,
+          "SFMono-Regular",
+          "SF Mono",
+          Menlo,
+          Monaco,
+          Consolas,
+          "Liberation Mono",
+          monospace;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+    </style>
+    <script>
+      (function () {
+        const STORAGE_KEY = "typr.boot-theme";
+        const VARIABLE_NAMES = {
+          background: "--background",
+          backgroundWash: "--background-wash",
+          surface: "--surface",
+          surfaceStrong: "--surface-strong",
+          surfaceMuted: "--surface-muted",
+          text: "--text",
+          textMuted: "--text-muted",
+          border: "--border",
+          accent: "--accent",
+          accentStrong: "--accent-strong",
+          accentSoft: "--accent-soft",
+          danger: "--danger",
+          warning: "--warning",
+          editorBackground: "--editor-background",
+          editorForeground: "--editor-foreground",
+          editorGutter: "--editor-gutter",
+          editorGutterForeground: "--editor-gutter-foreground",
+          editorActiveLine: "--editor-active-line",
+          editorSelection: "--editor-selection",
+          shadow: "--shadow"
+        };
+
+        try {
+          const stored = window.localStorage.getItem(STORAGE_KEY);
+          if (!stored) {
+            return;
+          }
+
+          const parsed = JSON.parse(stored);
+          const theme = parsed && parsed.resolvedTheme;
+          const palette = theme && theme.palette;
+          if (!theme || !palette || (theme.mode !== "light" && theme.mode !== "dark")) {
+            return;
+          }
+
+          const root = document.documentElement;
+          root.dataset.theme = theme.mode;
+
+          for (const key in VARIABLE_NAMES) {
+            if (typeof palette[key] === "string") {
+              root.style.setProperty(VARIABLE_NAMES[key], palette[key]);
+            }
+          }
+        } catch {
+          // Ignore boot theme errors and fall back to the default CSS variables.
+        }
+      })();
+    </script>
     <title>Typr</title>
   </head>
   <body>
+    <div id="boot-splash" aria-hidden="true">
+      <div class="boot-splash__stack">
+        <img class="boot-splash__logo" src="%BASE_URL%icons/icon-192.svg" alt="" />
+        <div class="boot-splash__wordmark">Typr</div>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

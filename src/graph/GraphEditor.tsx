@@ -54,7 +54,9 @@ const FUNCTION_LINE_STYLE_OPTIONS: Array<{ value: SimplePlotLineStyle; label: st
 
 const FUNCTION_ARROW_OPTIONS: Array<{ value: SimplePlotArrowStyle; label: string }> = [
   { value: "none", label: "None" },
-  { value: "arrow", label: "Arrow" }
+  { value: "arrow", label: "Arrow" },
+  { value: "open-circle", label: "Blank circle" },
+  { value: "filled-circle", label: "Filled circle" }
 ];
 
 const GRAPH_PREVIEW_DEBOUNCE_MS = 180;
@@ -150,7 +152,9 @@ export function GraphEditor({
         lineStyle: row.lineStyle,
         startArrow: row.startArrow,
         endArrow: row.endArrow,
-        samples: row.samples
+        samples: row.samples,
+        domainStart: row.domainStart ?? null,
+        domainEnd: row.domainEnd ?? null
       })),
       window: windowDraft
     }),
@@ -623,6 +627,34 @@ export function GraphEditor({
                             value={functionRows[index]?.samples ?? 100}
                           />
                         </label>
+                        <label className="sync-field graph-editor__function-setting">
+                          <span>Domain min</span>
+                          <input
+                            onChange={(event) =>
+                              updateFunctionRow(functionRows[index]!.id, {
+                                domainStart: parseOptionalNumberInput(event.target.value)
+                              })
+                            }
+                            placeholder={`${windowDraft.xmin}`}
+                            step="0.1"
+                            type="number"
+                            value={functionRows[index]?.domainStart ?? ""}
+                          />
+                        </label>
+                        <label className="sync-field graph-editor__function-setting">
+                          <span>Domain max</span>
+                          <input
+                            onChange={(event) =>
+                              updateFunctionRow(functionRows[index]!.id, {
+                                domainEnd: parseOptionalNumberInput(event.target.value)
+                              })
+                            }
+                            placeholder={`${windowDraft.xmax}`}
+                            step="0.1"
+                            type="number"
+                            value={functionRows[index]?.domainEnd ?? ""}
+                          />
+                        </label>
                       </div>
                     ) : null}
                   </div>
@@ -822,8 +854,19 @@ function createFunctionRow(entry: SimplePlotFunctionEntry): GraphFunctionRow {
     lineStyle: entry.lineStyle ?? "solid",
     startArrow: entry.startArrow ?? "none",
     endArrow: entry.endArrow ?? "none",
-    samples: entry.samples ?? 100
+    samples: entry.samples ?? 100,
+    domainStart: entry.domainStart ?? null,
+    domainEnd: entry.domainEnd ?? null
   };
+}
+
+function parseOptionalNumberInput(value: string): number | null {
+  if (value.trim() === "") {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizeColorInputValue(value: string): string {

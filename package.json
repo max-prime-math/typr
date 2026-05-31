@@ -27,8 +27,11 @@
     "@myriaddreamin/typst-ts-web-compiler": "^0.7.0-rc2",
     "@myriaddreamin/typst.ts": "^0.7.0-rc2",
     "@replit/codemirror-vim": "^6.3.0",
+    "@wterm/just-bash": "^0.3.0",
+    "@wterm/react": "^0.3.0",
     "gnuplot-wasm": "^0.1.0",
     "idb": "^8.0.3",
+    "just-bash": "^2.14.5",
     "plotly.js-dist-min": "^3.5.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

@@ -44,8 +44,15 @@ interface AutoThemeSelection {
   themeId: string;
 }
 
+interface BootThemeSnapshot {
+  preferenceId: string;
+  resolvedTheme: ThemeDefinition;
+}
+
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 const AUTO_THEME_STORAGE_KEY = "typr.auto-theme-selection";
+const BOOT_THEME_STORAGE_KEY = "typr.boot-theme";
+const CUSTOM_THEMES_STORAGE_KEY = "typr.custom-themes-cache";
 
 function getSystemThemeMode(): ThemeMode {
   if (typeof window === "undefined") {
@@ -90,6 +97,105 @@ function saveAutoThemeSelection(selection: AutoThemeSelection): void {
   }
 
   window.localStorage.setItem(AUTO_THEME_STORAGE_KEY, JSON.stringify(selection));
+}
+
+function readBootThemeSnapshot(): BootThemeSnapshot | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(BOOT_THEME_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored) as Partial<BootThemeSnapshot> & {
+      resolvedTheme?: Partial<ThemeDefinition> & { palette?: unknown };
+    };
+    if (typeof parsed.preferenceId !== "string" || !parsed.preferenceId) {
+      return null;
+    }
+
+    const resolvedTheme = parsed.resolvedTheme;
+    if (
+      !resolvedTheme ||
+      typeof resolvedTheme.id !== "string" ||
+      typeof resolvedTheme.name !== "string" ||
+      typeof resolvedTheme.description !== "string" ||
+      (resolvedTheme.mode !== "light" && resolvedTheme.mode !== "dark") ||
+      (resolvedTheme.source !== "builtin" && resolvedTheme.source !== "custom") ||
+      !isCompletePalette(resolvedTheme.palette)
+    ) {
+      return null;
+    }
+
+    return {
+      preferenceId: parsed.preferenceId,
+      resolvedTheme: {
+        id: resolvedTheme.id,
+        name: resolvedTheme.name,
+        description: resolvedTheme.description,
+        mode: resolvedTheme.mode,
+        source: resolvedTheme.source,
+        palette: resolvedTheme.palette
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveBootThemeSnapshot(snapshot: BootThemeSnapshot): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(BOOT_THEME_STORAGE_KEY, JSON.stringify(snapshot));
+}
+
+function readCachedCustomThemes(): ThemeDefinition[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const stored = window.localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY);
+    if (!stored) {
+      return [];
+    }
+
+    const parsed = JSON.parse(stored) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((entry): entry is ThemeDefinition => {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+
+      const candidate = entry as Partial<ThemeDefinition> & { palette?: unknown };
+      return (
+        typeof candidate.id === "string" &&
+        typeof candidate.name === "string" &&
+        typeof candidate.description === "string" &&
+        (candidate.mode === "light" || candidate.mode === "dark") &&
+        (candidate.source === "builtin" || candidate.source === "custom") &&
+        isCompletePalette(candidate.palette)
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedCustomThemes(themes: ThemeDefinition[]): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(themes));
 }
 
 function resolveAutoTheme(
@@ -155,11 +261,20 @@ function createThemeFromImportFile(parsed: unknown): ThemeDefinition | null {
 }
 
 export function ThemeProvider({ children }: PropsWithChildren) {
-  const [themePreferenceId, setThemePreferenceId] = useState<string>(AUTO_THEME_ID);
-  const [resolvedThemeId, setResolvedThemeId] = useState<string>(() =>
-    resolveTheme(AUTO_THEME_ID, BUILTIN_THEMES, getSystemThemeMode()).id
+  const bootThemeSnapshotRef = useRef<BootThemeSnapshot | null>(readBootThemeSnapshot());
+  const [themePreferenceId, setThemePreferenceId] = useState<string>(
+    () => bootThemeSnapshotRef.current?.preferenceId ?? AUTO_THEME_ID
   );
-  const [customThemes, setCustomThemes] = useState<ThemeDefinition[]>([]);
+  const [customThemes, setCustomThemes] = useState<ThemeDefinition[]>(() => readCachedCustomThemes());
+  const [resolvedThemeId, setResolvedThemeId] = useState<string>(() => {
+    const bootTheme = bootThemeSnapshotRef.current?.resolvedTheme;
+
+    if (bootTheme) {
+      return bootTheme.id;
+    }
+
+    return resolveTheme(AUTO_THEME_ID, BUILTIN_THEMES, getSystemThemeMode()).id;
+  });
   const [systemThemeMode, setSystemThemeMode] = useState<ThemeMode>(getSystemThemeMode);
   const customThemesRef = useRef(customThemes);
   const systemThemeModeRef = useRef(systemThemeMode);
@@ -233,6 +348,7 @@ export function ThemeProvider({ children }: PropsWithChildren) {
     void saveCustomThemes(customThemes).catch(() => {
       // Ignore persistence failures; the imported theme remains active for this session.
     });
+    saveCachedCustomThemes(customThemes);
   }, [customThemes]);
 
   const setTheme = useCallback((nextThemeId: string) => {
@@ -328,7 +444,10 @@ export function ThemeProvider({ children }: PropsWithChildren) {
 
   const value = useMemo<ThemeContextValue>(() => {
     const availableThemes = [...BUILTIN_THEMES, ...customThemes];
-    const theme = getThemeById(resolvedThemeId, availableThemes);
+    const bootTheme = bootThemeSnapshotRef.current?.resolvedTheme;
+    const theme =
+      availableThemes.find((themeDefinition) => themeDefinition.id === resolvedThemeId) ??
+      (bootTheme?.id === resolvedThemeId ? bootTheme : getThemeById(resolvedThemeId, availableThemes));
 
     return {
       themeId: theme.id,
@@ -341,6 +460,21 @@ export function ThemeProvider({ children }: PropsWithChildren) {
       removeCustomTheme
     };
   }, [customThemes, importThemeFile, removeCustomTheme, resolvedThemeId, setTheme]);
+
+  useEffect(() => {
+    const availableThemes = [...BUILTIN_THEMES, ...customThemes];
+    const bootTheme = bootThemeSnapshotRef.current?.resolvedTheme;
+    const theme =
+      availableThemes.find((themeDefinition) => themeDefinition.id === resolvedThemeId) ??
+      (bootTheme?.id === resolvedThemeId ? bootTheme : getThemeById(resolvedThemeId, availableThemes));
+
+    const snapshot = {
+      preferenceId: themePreferenceId,
+      resolvedTheme: theme
+    };
+    bootThemeSnapshotRef.current = snapshot;
+    saveBootThemeSnapshot(snapshot);
+  }, [customThemes, resolvedThemeId, themePreferenceId]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

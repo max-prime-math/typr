@@ -18,10 +18,12 @@ export interface SimplePlotFunctionEntry {
   startArrow?: SimplePlotArrowStyle;
   endArrow?: SimplePlotArrowStyle;
   samples?: number;
+  domainStart?: number | null;
+  domainEnd?: number | null;
 }
 
 export type SimplePlotLineStyle = "solid" | "dashed" | "dotted";
-export type SimplePlotArrowStyle = "none" | "arrow";
+export type SimplePlotArrowStyle = "none" | "arrow" | "filled-circle" | "open-circle";
 
 export interface SimplePlotWindow {
   xmin: number;
@@ -194,17 +196,13 @@ export function buildSimplePlotFigureSource(
 ): string {
   const normalizedDocument = normalizeSimplePlotGraphDocument(document);
   const normalizedStyle = normalizeSimplePlotStyle(style);
+  const visibleAnalyses = analyzeSimplePlotFunctions(normalizedDocument).filter(
+    (analysis) => analysis.entry.visible && analysis.parsed
+  );
   const plotLines: string[] = [];
-  const functionLines = analyzeSimplePlotFunctions(normalizedDocument)
-    .filter((analysis) => analysis.entry.visible && analysis.parsed)
-    .flatMap((analysis) =>
-      buildFunctionPlotLines(analysis, normalizedDocument.window, normalizedStyle.strokeWidth)
-    );
-  const endpointLines = analyzeSimplePlotFunctions(normalizedDocument)
-    .filter((analysis) => analysis.entry.visible && analysis.parsed)
-    .flatMap((analysis) =>
-      buildArrowMarkerLines(analysis, normalizedDocument.window, normalizedStyle.strokeWidth)
-    );
+  const functionLines = visibleAnalyses.flatMap((analysis) =>
+    buildFunctionPlotLines(analysis, normalizedDocument.window, normalizedStyle.strokeWidth)
+  );
 
   const showGrid = normalizedStyle.showGrid ? '"major"' : "false";
   const xAxisLabel = normalizedStyle.xAxisLabel.trim();
@@ -225,7 +223,6 @@ export function buildSimplePlotFigureSource(
     ...(xAxisLabel ? [`  xlabel: [${escapeTypstString(xAxisLabel)}],`] : []),
     ...(yAxisLabel ? [`  ylabel: [${escapeTypstString(yAxisLabel)}],`] : []),
     ...functionLines,
-    ...endpointLines,
     ")"
   );
 
@@ -235,7 +232,13 @@ export function buildSimplePlotFigureSource(
     return plotSource;
   }
 
-  return buildSingleAxisLabelOverlay(plotSource, normalizedDocument.window, normalizedStyle);
+  return buildPlotOverlayBox(
+    plotSource,
+    normalizedDocument.window,
+    normalizedStyle,
+    buildSingleAxisLabelOverlayEntries(normalizedDocument.window, normalizedStyle),
+    []
+  );
 }
 
 export function buildSimplePlotPreviewDocument(
@@ -279,7 +282,9 @@ function normalizeSimplePlotFunctionEntry(candidate: unknown): SimplePlotFunctio
       lineStyle: "solid",
       startArrow: "none",
       endArrow: "none",
-      samples: DEFAULT_FUNCTION_SAMPLES
+      samples: DEFAULT_FUNCTION_SAMPLES,
+      domainStart: null,
+      domainEnd: null
     };
   }
 
@@ -292,7 +297,9 @@ function normalizeSimplePlotFunctionEntry(candidate: unknown): SimplePlotFunctio
     lineStyle: normalizeLineStyle(entry.lineStyle),
     startArrow: normalizeArrowStyle(entry.startArrow),
     endArrow: normalizeArrowStyle(entry.endArrow),
-    samples: normalizeSamples(entry.samples)
+    samples: normalizeSamples(entry.samples),
+    domainStart: normalizeOptionalFiniteNumber(entry.domainStart),
+    domainEnd: normalizeOptionalFiniteNumber(entry.domainEnd)
   };
 }
 
@@ -325,19 +332,24 @@ function buildFunctionPlotLines(
 
   if (analysis.entry.lineStyle !== "dashed" && analysis.entry.lineStyle !== "dotted") {
     const samples = getEffectiveFunctionSamples(analysis.entry);
+    const domain = resolveFunctionDomain(analysis.entry, window);
+    const hasRestrictedDomain =
+      domain.start !== window.xmin || domain.end !== window.xmax;
+
     return [
       `  (fn: x => ${analysis.parsed.typstExpression}, stroke: ${buildFunctionStroke(
         analysis.color,
         strokeWidth,
         analysis.entry.lineStyle
-      )}, samples: ${samples}),`
+      )}, samples: ${samples}${hasRestrictedDomain ? `, domain: (${formatTypstNumber(domain.start)}, ${formatTypstNumber(domain.end)})` : ""}),`
     ];
   }
 
   const sampledRuns = sampleFunctionRuns(
     analysis.parsed,
     window,
-    getEffectiveFunctionSamples(analysis.entry)
+    getEffectiveFunctionSamples(analysis.entry),
+    resolveFunctionDomain(analysis.entry, window)
   );
 
   return sampledRuns.map(
@@ -775,6 +787,10 @@ function normalizeFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function normalizeOptionalFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function normalizePositiveNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
@@ -796,8 +812,19 @@ function buildSingleAxisLabelOverlay(
   window: SimplePlotWindow,
   style: SimplePlotGraphStyle
 ): string {
-  const width = formatTypstNumber(style.width);
-  const height = formatTypstNumber(style.height);
+  return buildPlotOverlayBox(
+    plotSource,
+    window,
+    style,
+    buildSingleAxisLabelOverlayEntries(window, style),
+    []
+  );
+}
+
+function buildSingleAxisLabelOverlayEntries(
+  window: SimplePlotWindow,
+  style: SimplePlotGraphStyle
+): string[] {
   const yAxisOffset = formatTypstLengthFromCm(
     clamp(resolveHorizontalAxisFraction(window.xmin, window.xmax, 0) * style.width + 0.22, 0, style.width)
   );
@@ -807,9 +834,25 @@ function buildSingleAxisLabelOverlay(
   );
 
   return [
+    `#place(top + left, dx: ${yAxisOffset}, dy: 0.2cm)[${formatAxisMaxLabel(window.ymax)}]`,
+    `#place(top + left, dx: ${xLabelOffset}, dy: ${xTickVerticalOffset})[${formatAxisMaxLabel(window.xmax)}]`
+  ];
+}
+
+function buildPlotOverlayBox(
+  plotSource: string,
+  _window: SimplePlotWindow,
+  style: SimplePlotGraphStyle,
+  baseOverlays: string[],
+  arrowOverlays: string[]
+): string {
+  const width = formatTypstNumber(style.width);
+  const height = formatTypstNumber(style.height);
+
+  return [
     `#box(width: ${width}cm, height: ${height}cm, inset: 0pt, clip: false)[`,
-    `  #place(top + left, dx: ${yAxisOffset}, dy: 0.2cm)[${formatAxisMaxLabel(window.ymax)}]`,
-    `  #place(top + left, dx: ${xLabelOffset}, dy: ${xTickVerticalOffset})[${formatAxisMaxLabel(window.xmax)}]`,
+    ...baseOverlays.map((overlay) => `  ${overlay}`),
+    ...arrowOverlays.map((overlay) => `  ${overlay}`),
     `  ${plotSource}`,
     "]"
   ].join("\n");
@@ -840,7 +883,11 @@ function normalizeLineStyle(value: unknown): SimplePlotLineStyle {
 }
 
 function normalizeArrowStyle(value: unknown): SimplePlotArrowStyle {
-  return value === "arrow" ? "arrow" : "none";
+  if (value === "arrow" || value === "filled-circle" || value === "open-circle") {
+    return value;
+  }
+
+  return "none";
 }
 
 function buildFunctionStroke(
@@ -857,9 +904,11 @@ function buildFunctionStroke(
   return `rgb("${color}") + ${thickness}`;
 }
 
-function buildArrowMarkerLines(
+function buildEndpointLines(
   analysis: SimplePlotFunctionAnalysis,
   window: SimplePlotWindow,
+  widthCm: number,
+  heightCm: number,
   strokeWidth: number
 ): string[] {
   if (!analysis.parsed) {
@@ -867,15 +916,49 @@ function buildArrowMarkerLines(
   }
 
   const lines: string[] = [];
-  const startPoint = sampleFunctionPoint(analysis.parsed, window.xmin);
-  const endPoint = sampleFunctionPoint(analysis.parsed, window.xmax);
+  const domain = resolveFunctionDomain(analysis.entry, window);
+  const startPoint = sampleFunctionPoint(analysis.parsed, domain.start);
+  const endPoint = sampleFunctionPoint(analysis.parsed, domain.end);
 
-  if (analysis.entry.startArrow === "arrow" && startPoint) {
-    lines.push(buildArrowMarkerLine(startPoint, analysis.color, strokeWidth));
+  const startStyle = analysis.entry.startArrow ?? "none";
+  const endStyle = analysis.entry.endArrow ?? "none";
+
+  if (startStyle !== "none" && startStyle !== "arrow" && startPoint) {
+    lines.push(buildEndpointMarkerLine(startPoint, analysis.color, strokeWidth, startStyle));
   }
 
-  if (analysis.entry.endArrow === "arrow" && endPoint) {
-    lines.push(buildArrowMarkerLine(endPoint, analysis.color, strokeWidth));
+  if (endStyle !== "none" && endStyle !== "arrow" && endPoint) {
+    lines.push(buildEndpointMarkerLine(endPoint, analysis.color, strokeWidth, endStyle));
+  }
+
+  if (startStyle === "arrow") {
+    const arrowLines = buildEndpointArrowLines(
+      analysis.parsed,
+      domain,
+      getEffectiveFunctionSamples(analysis.entry),
+      "start",
+      analysis.color,
+      strokeWidth,
+      window,
+      widthCm,
+      heightCm
+    );
+    lines.push(...arrowLines);
+  }
+
+  if (endStyle === "arrow") {
+    const arrowLines = buildEndpointArrowLines(
+      analysis.parsed,
+      domain,
+      getEffectiveFunctionSamples(analysis.entry),
+      "end",
+      analysis.color,
+      strokeWidth,
+      window,
+      widthCm,
+      heightCm
+    );
+    lines.push(...arrowLines);
   }
 
   return lines;
@@ -897,10 +980,11 @@ function sampleFunctionPoint(
 function sampleFunctionRuns(
   parsed: ParsedSimplePlotFunction,
   window: SimplePlotWindow,
-  samples: number
+  samples: number,
+  domain: { start: number; end: number }
 ): Array<Array<{ x: number; y: number }>> {
   const stepCount = Math.max(1, samples - 1);
-  const xSpan = window.xmax - window.xmin;
+  const xSpan = domain.end - domain.start;
   const ySpan = Math.max(1, Math.abs(window.ymax - window.ymin));
   const jumpThreshold = ySpan * 1.5;
   const runs: Array<Array<{ x: number; y: number }>> = [];
@@ -909,7 +993,7 @@ function sampleFunctionRuns(
 
   for (let index = 0; index < samples; index += 1) {
     const fraction = stepCount === 0 ? 0 : index / stepCount;
-    const x = window.xmin + xSpan * fraction;
+    const x = domain.start + xSpan * fraction;
     const point = sampleFunctionPoint(parsed, x);
 
     if (!point) {
@@ -941,22 +1025,203 @@ function sampleFunctionRuns(
   return runs;
 }
 
+function resolveFunctionDomain(
+  entry: SimplePlotFunctionEntry,
+  window: SimplePlotWindow
+): { start: number; end: number } {
+  const start = entry.domainStart ?? window.xmin;
+  const end = entry.domainEnd ?? window.xmax;
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start === end) {
+    return { start: window.xmin, end: window.xmax };
+  }
+
+  return start < end ? { start, end } : { start: end, end: start };
+}
+
 function formatTypstPointData(points: ReadonlyArray<{ x: number; y: number }>): string {
   return `(${points
     .map((point) => `(${formatTypstNumber(point.x)}, ${formatTypstNumber(point.y)})`)
     .join(", ")})`;
 }
 
-function buildArrowMarkerLine(
+function buildEndpointMarkerLine(
   point: { x: number; y: number },
   color: string,
-  strokeWidth: number
+  strokeWidth: number,
+  style: SimplePlotArrowStyle
 ): string {
-  return `  (data: ((${formatTypstNumber(point.x)}, ${formatTypstNumber(point.y)})), mark: "triangle*", mark-size: ${formatMarkerSize(
-    strokeWidth
-  )}, mark-fill: rgb("${color}"), stroke: none),`;
+  const markerConfig = buildEndpointMarkerConfig(color, strokeWidth, style);
+
+  return `  line-plot(((${formatTypstNumber(point.x)}, ${formatTypstNumber(point.y)}),), stroke: none, ${markerConfig}),`;
 }
 
 function formatMarkerSize(strokeWidth: number): string {
   return Number(clamp(strokeWidth * 0.065, 0.08, 0.18).toFixed(3)).toString();
+}
+
+function buildEndpointMarkerConfig(
+  color: string,
+  strokeWidth: number,
+  style: SimplePlotArrowStyle
+): string {
+  const size = formatMarkerSize(strokeWidth);
+  const colorValue = `rgb("${color}")`;
+
+  switch (style) {
+    case "arrow":
+      return `mark: "triangle*", mark-size: ${size}, mark-fill: ${colorValue}, mark-stroke: ${colorValue}`;
+    case "filled-circle":
+      return `mark: "*", mark-size: ${size}, mark-fill: ${colorValue}, mark-stroke: ${colorValue}`;
+    case "open-circle":
+      return `mark: "o", mark-size: ${size}, mark-fill: white, mark-stroke: ${colorValue}`;
+    default:
+      return `mark: "none"`;
+  }
+}
+
+function sampleEndpointSegment(
+  parsed: ParsedSimplePlotFunction,
+  domain: { start: number; end: number },
+  samples: number,
+  side: "start" | "end"
+): { tip: { x: number; y: number }; inner: { x: number; y: number } } | null {
+  const stepCount = Math.max(1, samples - 1);
+  const xSpan = domain.end - domain.start;
+  const indices =
+    side === "start"
+      ? Array.from({ length: samples }, (_, index) => index)
+      : Array.from({ length: samples }, (_, index) => samples - 1 - index);
+  let tip: { x: number; y: number } | null = null;
+
+  for (const index of indices) {
+    const fraction = stepCount === 0 ? 0 : index / stepCount;
+    const point = sampleFunctionPoint(parsed, domain.start + xSpan * fraction);
+
+    if (!point) {
+      if (tip) {
+        break;
+      }
+      continue;
+    }
+
+    if (!tip) {
+      tip = point;
+      continue;
+    }
+
+    if (Math.abs(point.x - tip.x) > 1e-6 || Math.abs(point.y - tip.y) > 1e-6) {
+      return { tip, inner: point };
+    }
+  }
+
+  return null;
+}
+
+function buildEndpointArrowLines(
+  parsed: ParsedSimplePlotFunction,
+  domain: { start: number; end: number },
+  samples: number,
+  side: "start" | "end",
+  color: string,
+  strokeWidth: number,
+  window: SimplePlotWindow,
+  widthCm: number,
+  heightCm: number
+): string[] {
+  const segment = sampleEndpointSegment(parsed, domain, samples, side);
+
+  if (!segment) {
+    return [];
+  }
+
+  const direction = normalizeDataDirection(segment.tip, segment.inner, window, widthCm, heightCm);
+
+  if (!direction) {
+    return [];
+  }
+
+  const shaftLengthPt = clamp(strokeWidth * 6.6, 7.5, 14);
+  const headLengthPt = clamp(strokeWidth * 3.6, 5.2, 9.5);
+  const headSpreadPt = clamp(strokeWidth * 1.25, 1.8, 4.2);
+  const shaftGapPt = clamp(strokeWidth * 1.4, 1.8, 3.2);
+  const headBaseOffset = scaleVector(direction, -headLengthPt);
+  const shaftEndOffset = scaleVector(direction, -(headLengthPt + shaftGapPt));
+  const shaftStartOffset = scaleVector(direction, -(shaftLengthPt + headLengthPt));
+  const normal = { x: -direction.y, y: direction.x };
+  const wingAOffset = addVectors(headBaseOffset, scaleVector(normal, headSpreadPt));
+  const wingBOffset = addVectors(headBaseOffset, scaleVector(normal, -headSpreadPt));
+
+  const shaftStart = addDataOffset(segment.tip, shaftStartOffset, window, widthCm, heightCm);
+  const shaftEnd = addDataOffset(segment.tip, shaftEndOffset, window, widthCm, heightCm);
+  const wingA = addDataOffset(segment.tip, wingAOffset, window, widthCm, heightCm);
+  const wingB = addDataOffset(segment.tip, wingBOffset, window, widthCm, heightCm);
+  const stroke = buildFunctionStroke(color, strokeWidth, "solid");
+
+  return [
+    `  line-plot(${formatTypstPointData([shaftStart, shaftEnd])}, stroke: ${stroke}, mark: "none"),`,
+    `  line-plot(${formatTypstPointData([wingA, segment.tip, wingB])}, stroke: ${stroke}, mark: "none"),`
+  ];
+}
+
+function normalizeDataDirection(
+  tip: { x: number; y: number },
+  inner: { x: number; y: number },
+  window: SimplePlotWindow,
+  widthCm: number,
+  heightCm: number
+): { x: number; y: number } | null {
+  const xScalePtPerUnit = (widthCm * 28.3464567) / Math.max(Math.abs(window.xmax - window.xmin), 0.0001);
+  const yScalePtPerUnit = (heightCm * 28.3464567) / Math.max(Math.abs(window.ymax - window.ymin), 0.0001);
+
+  return normalizeVector({
+    x: (tip.x - inner.x) * xScalePtPerUnit,
+    y: (inner.y - tip.y) * yScalePtPerUnit
+  });
+}
+
+function normalizeVector(vector: { x: number; y: number }): { x: number; y: number } | null {
+  const length = Math.hypot(vector.x, vector.y);
+
+  if (!Number.isFinite(length) || length <= 0.0001) {
+    return null;
+  }
+
+  return {
+    x: vector.x / length,
+    y: vector.y / length
+  };
+}
+
+function addDataOffset(
+  point: { x: number; y: number },
+  offsetPt: { x: number; y: number },
+  window: SimplePlotWindow,
+  widthCm: number,
+  heightCm: number
+): { x: number; y: number } {
+  const xUnitsPerPt = Math.max(Math.abs(window.xmax - window.xmin), 0.0001) / (widthCm * 28.3464567);
+  const yUnitsPerPt = Math.max(Math.abs(window.ymax - window.ymin), 0.0001) / (heightCm * 28.3464567);
+
+  return {
+    x: point.x + offsetPt.x * xUnitsPerPt,
+    y: point.y - offsetPt.y * yUnitsPerPt
+  };
+}
+
+function scaleVector(vector: { x: number; y: number }, factor: number): { x: number; y: number } {
+  return {
+    x: vector.x * factor,
+    y: vector.y * factor
+  };
+}
+
+function addVectors(
+  first: { x: number; y: number },
+  second: { x: number; y: number }
+): { x: number; y: number } {
+  return {
+    x: first.x + second.x,
+    y: first.y + second.y
+  };
 }
