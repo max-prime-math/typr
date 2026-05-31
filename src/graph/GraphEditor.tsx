@@ -38,8 +38,8 @@ interface GraphEditorProps {
   onSave: (graph: GraphAsset) => void;
   onNew: (graph: GraphAsset) => void;
   onInsertIntoDocument: (graph: GraphAsset) => void;
+  onInsertSourceIntoDocument: (graph: GraphAsset) => void;
   onRename: (name: string) => void;
-  onDownloadGraph: (graph: GraphAsset) => void;
 }
 
 interface GraphFunctionRow extends SimplePlotFunctionEntry {
@@ -74,8 +74,8 @@ export function GraphEditor({
   onSave,
   onNew,
   onInsertIntoDocument,
+  onInsertSourceIntoDocument,
   onRename,
-  onDownloadGraph
 }: GraphEditorProps) {
   const [fileNameDraft, setFileNameDraft] = useState(graph.name);
   const [functionRows, setFunctionRows] = useState<GraphFunctionRow[]>(() =>
@@ -745,6 +745,13 @@ export function GraphEditor({
       <div className="graph-editor__actions">
         <button
           className="pane__button pane__button--compact"
+          onClick={handleClear}
+          type="button"
+        >
+          Reset
+        </button>
+        <button
+          className="pane__button pane__button--compact"
           onClick={() => withCapturedGraphAsset(onSave)}
           type="button"
         >
@@ -755,21 +762,14 @@ export function GraphEditor({
           onClick={() => withCapturedGraphAsset(onInsertIntoDocument)}
           type="button"
         >
-          Insert into doc
+          Insert
         </button>
         <button
           className="pane__button pane__button--compact"
-          onClick={() => withCapturedGraphAsset(onDownloadGraph)}
+          onClick={() => withCapturedGraphAsset(onInsertSourceIntoDocument)}
           type="button"
         >
-          Download Typst
-        </button>
-        <button
-          className="pane__button pane__button--compact"
-          onClick={handleClear}
-          type="button"
-        >
-          Reset
+          Insert source
         </button>
       </div>
     </div>

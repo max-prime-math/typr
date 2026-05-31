@@ -534,21 +534,58 @@ function insertTextIntoView(
   text: string,
   selectInsertedText = false
 ): void {
-  const transaction = view.state.changeByRange((selection) => ({
+  const insertionRange = resolveInsertionRange(view);
+  const transaction = {
     changes: {
-      from: selection.from,
-      to: selection.to,
+      from: insertionRange.from,
+      to: insertionRange.to,
       insert: text
     },
-    range: selectInsertedText
-      ? EditorSelection.range(selection.from, selection.from + text.length)
-      : EditorSelection.cursor(selection.from + text.length)
-  }));
+    selection: selectInsertedText
+      ? EditorSelection.range(insertionRange.from, insertionRange.from + text.length)
+      : EditorSelection.cursor(insertionRange.from + text.length)
+  };
 
   view.dispatch({
     ...transaction,
     scrollIntoView: true
   });
+}
+
+function resolveInsertionRange(view: EditorView): { from: number; to: number } {
+  const selection = view.state.selection.main;
+
+  if (isPrimaryCursorVisible(view, selection.from, selection.to)) {
+    return {
+      from: selection.from,
+      to: selection.to
+    };
+  }
+
+  const end = view.state.doc.length;
+  return { from: end, to: end };
+}
+
+function isPrimaryCursorVisible(view: EditorView, from: number, to: number): boolean {
+  if (!view.hasFocus || view.state.selection.ranges.length !== 1) {
+    return false;
+  }
+
+  const position = from === to ? from : to;
+  const cursorRect = view.coordsAtPos(position);
+
+  if (!cursorRect) {
+    return false;
+  }
+
+  const scrollRect = view.scrollDOM.getBoundingClientRect();
+
+  return (
+    cursorRect.bottom >= scrollRect.top &&
+    cursorRect.top <= scrollRect.bottom &&
+    cursorRect.right >= scrollRect.left &&
+    cursorRect.left <= scrollRect.right
+  );
 }
 
 function replaceSelection(view: EditorView, before: string, after: string): void {

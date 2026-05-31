@@ -135,9 +135,8 @@ import {
   GraphEditorErrorBoundary
 } from "../graph/GraphEditor";
 import {
-  buildGraphDownloadBlob,
-  buildGraphDownloadFilename,
   buildGraphInsertResult,
+  buildGraphSourceInsertResult,
   buildGraphTypstFigure
 } from "../graph/graphExport";
 import {
@@ -2828,10 +2827,6 @@ export function App() {
     });
   }, []);
 
-  const handleDownloadGraph = useCallback((graphAsset: GraphAsset) => {
-    downloadBlob(buildGraphDownloadFilename(graphAsset), buildGraphDownloadBlob(graphAsset));
-  }, []);
-
   const handleInsertGraphIntoDocument = useCallback((graphAsset: GraphAsset) => {
     setSnapshot((currentSnapshot) => {
       return saveCurrentGraph(updateGraph(currentSnapshot, () => graphAsset));
@@ -2840,6 +2835,20 @@ export function App() {
 
     if (!insertResult.supported) {
       window.alert("Save the graph before inserting it into the document.");
+      return;
+    }
+
+    editorRef.current?.insertTextAndSelect(`\n${insertResult.text}\n`);
+    window.setTimeout(() => {
+      handleCompileRef.current();
+    }, 0);
+  }, []);
+
+  const handleInsertGraphSourceIntoDocument = useCallback((graphAsset: GraphAsset) => {
+    const insertResult = buildGraphSourceInsertResult(graphAsset);
+
+    if (!insertResult.supported) {
+      window.alert("Add at least one valid function before inserting source.");
       return;
     }
 
@@ -4765,7 +4774,7 @@ export function App() {
                           : undefined
                       }
                       onInsertIntoDocument={handleInsertGraphIntoDocument}
-                      onDownloadGraph={handleDownloadGraph}
+                      onInsertSourceIntoDocument={handleInsertGraphSourceIntoDocument}
                       onNew={handleNewGraph}
                       onRename={handleRenameGraph}
                       onSave={handleSaveGraph}

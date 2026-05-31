@@ -18,6 +18,16 @@ export function buildGraphInsertResult(graph: GraphAsset): GraphInsertResult {
   };
 }
 
+export function buildGraphSourceInsertResult(graph: GraphAsset): GraphInsertResult {
+  const text = decodeGraphTypstSource(graph);
+
+  return {
+    kind: "typst",
+    text,
+    supported: text.trim().length > 0
+  };
+}
+
 export function buildGraphDownloadFilename(graph: GraphAsset): string {
   return graph.name;
 }
