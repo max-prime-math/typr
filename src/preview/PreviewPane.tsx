@@ -17,6 +17,7 @@ interface PreviewPaneProps {
   zoom?: PreviewZoomState;
   onZoomChange?: (zoom: PreviewZoomState) => void;
   workspacePreview?: WorkspacePreviewFile | null;
+  viewportPadding?: number;
 }
 
 export type PreviewStatusKind = "live" | "compiling";
@@ -52,7 +53,8 @@ export function PreviewPane({
   onSourceJump,
   zoom,
   onZoomChange,
-  workspacePreview
+  workspacePreview,
+  viewportPadding = 28
 }: PreviewPaneProps) {
   const { theme } = useTheme();
   const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
@@ -122,6 +124,7 @@ export function PreviewPane({
                 onSourceJump={onSourceJump}
                 theme={theme}
                 zoom={currentZoom}
+                viewportPadding={viewportPadding}
               />
             )}
           </div>
@@ -161,6 +164,7 @@ export function PreviewPane({
               onSourceJump={onSourceJump}
               theme={theme}
               zoom={currentZoom}
+              viewportPadding={viewportPadding}
             />
         )}
       </div>
@@ -241,7 +245,8 @@ function PreviewDocument({
   isFaulted = false,
   onSourceJump,
   theme,
-  zoom
+  zoom,
+  viewportPadding = 28
 }: {
   artifactData?: Uint8Array;
   isCompiling?: boolean;
@@ -251,9 +256,8 @@ function PreviewDocument({
   onSourceJump?: (sourceLocation: string) => void;
   theme: ThemeDefinition;
   zoom: PreviewZoomState;
+  viewportPadding?: number;
 }) {
-  const blobStartedAt =
-    typeof performance === "undefined" ? 0 : performance.now();
   const normalizedMarkup = useMemo(
     () => normalizePreviewSvg(markup, paperView, theme),
     [markup, paperView, theme]
@@ -270,9 +274,14 @@ function PreviewDocument({
     [dimensions, viewportSize, zoom]
   );
 
-  const blobUrl = useMemo(() => {
+  const { blobUrl, blobStartedAt } = useMemo(() => {
+    const startedAt =
+      typeof performance === "undefined" ? 0 : performance.now();
     const blob = new Blob([displayMarkup], { type: "image/svg+xml" });
-    return URL.createObjectURL(blob);
+    return {
+      blobUrl: URL.createObjectURL(blob),
+      blobStartedAt: startedAt
+    };
   }, [displayMarkup]);
 
   useEffect(() => {
@@ -292,8 +301,8 @@ function PreviewDocument({
 
     const updateViewportSize = () => {
       setViewportSize({
-        width: Math.max(0, viewport.clientWidth - 28),
-        height: Math.max(0, viewport.clientHeight - 28)
+        width: Math.max(0, viewport.clientWidth - viewportPadding),
+        height: Math.max(0, viewport.clientHeight - viewportPadding)
       });
     };
 
@@ -306,11 +315,14 @@ function PreviewDocument({
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [viewportPadding]);
 
-  const contentWidth = dimensions
-    ? Math.max(240, Math.round(dimensions.width * resolvedZoom.scale))
-    : Math.max(240, viewportSize.width || 0);
+  const contentWidth =
+    dimensions && viewportSize.width > 0
+      ? Math.max(240, Math.round(dimensions.width * resolvedZoom.scale))
+      : Math.max(240, viewportSize.width || 0);
+  const hasMeasuredViewport = viewportSize.width > 0;
+  const hasStablePreviewLayout = hasMeasuredViewport && dimensions !== null;
 
   return (
     <div
@@ -318,9 +330,11 @@ function PreviewDocument({
       ref={viewportRef}
     >
       <div
-        className="preview-document__canvas"
+        className={`preview-document__canvas ${
+          hasStablePreviewLayout ? "" : "preview-document__canvas--pending"
+        }`}
         style={{
-          width: `${contentWidth}px`
+          width: hasMeasuredViewport ? `${contentWidth}px` : "100%"
         }}
       >
         <img

@@ -49,6 +49,7 @@ import type { ThemeDefinition } from "../theme/themes";
 interface EditorSetupOptions {
   onChange: (update: ViewUpdate) => void;
   onSelectionChange: (update: ViewUpdate) => void;
+  readOnly: boolean;
   vimMode: boolean;
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
@@ -178,6 +179,7 @@ export function createEditorState(
 export function createEditorExtensions({
   onChange,
   onSelectionChange,
+  readOnly,
   vimMode,
   relativeLineNumbers,
   cursorSmooth,
@@ -248,6 +250,7 @@ export function createEditorExtensions({
   };
 
   return [
+    EditorState.readOnly.of(readOnly),
     EditorState.allowMultipleSelections.of(true),
     EditorView.clickAddsSelectionRange.of((event) => event.altKey),
     rectangularSelection({

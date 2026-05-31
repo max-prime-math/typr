@@ -36,6 +36,7 @@ import {
 
 interface TypstEditorProps {
   value: string;
+  readOnly?: boolean;
   vimMode: boolean;
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
@@ -104,6 +105,7 @@ export interface TypstEditorHandle {
 
 export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor({
   value,
+  readOnly = false,
   vimMode,
   relativeLineNumbers,
   cursorSmooth,
@@ -401,6 +403,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
         onSelectionChange: (update) => {
           onSelectionChange(update.state.doc.lineAt(update.state.selection.main.head).number);
         },
+        readOnly,
         vimMode,
         relativeLineNumbers,
         cursorSmooth,
@@ -459,6 +462,7 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
     keybindings,
     onCompileRequested,
     onSelectionChange,
+    readOnly,
     relativeLineNumbers,
     theme,
     vimMode,

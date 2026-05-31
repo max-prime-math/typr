@@ -18,6 +18,7 @@ import type {
   DiagramStroke,
   DiagramStrokeStyle
 } from "../app/appState";
+import { InlinePaneExpandControls } from "../app/InlinePaneExpandControls";
 import { normalizeDiagramFileName } from "./diagramFiles";
 
 interface DiagramEditorProps {
@@ -1985,36 +1986,12 @@ export function DiagramEditor({
             </svg>
             <span className="visually-hidden">New diagram</span>
           </button>
-          {hasExpandControls ? (
-            <div className="diagram-editor__nav-buttons">
-              {onExpandLeft ? (
-                <button
-                  aria-label="Collapse diagram layout"
-                  className="pane__button pane__button--compact diagram-editor__expand-button"
-                  onClick={onExpandLeft}
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="diagram-editor__expand-icon diagram-editor__expand-icon--left"
-                  />
-                </button>
-              ) : null}
-              {onExpandRight ? (
-                <button
-                  aria-label="Expand diagram layout"
-                  className="pane__button pane__button--compact diagram-editor__expand-button"
-                  onClick={onExpandRight}
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="diagram-editor__expand-icon diagram-editor__expand-icon--right"
-                  />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          <InlinePaneExpandControls
+            collapseLabel="Collapse diagram layout"
+            expandLabel="Expand diagram layout"
+            onExpandLeft={onExpandLeft}
+            onExpandRight={onExpandRight}
+          />
         </div>
         <div className="diagram-editor__header-dimensions" aria-label="Canvas dimensions">
           <div className="diagram-editor__zoom-controls" aria-label="Canvas zoom">

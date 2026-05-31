@@ -21,7 +21,6 @@ import {
   createDefaultGraph,
   createFolder,
   createNextGraphSnapshot,
-  type GraphProvider,
   type DiagramAsset,
   type DiagramCanvasFrame,
   type DiagramEndpoint,
@@ -55,8 +54,6 @@ import {
   renameFolderById,
   renameGraphById,
   restoreTrashEntry,
-  getDefaultGraphSource,
-  updateGraphProviderPreference,
   updateGraph,
   updateDiagram,
   updateActiveDocument,
@@ -140,7 +137,8 @@ import {
 import {
   buildGraphDownloadBlob,
   buildGraphDownloadFilename,
-  buildGraphInsertResult
+  buildGraphInsertResult,
+  buildGraphTypstFigure
 } from "../graph/graphExport";
 import {
   getDiagramCompilerPath,
@@ -161,11 +159,9 @@ import {
 import packageJson from "../../package.json";
 import {
   loadGitHubConfig,
-  loadDesmosApiKey,
   loadSnapshot,
   loadCustomSnippets,
   saveGitHubConfig,
-  saveDesmosApiKey,
   saveSnapshot,
   saveCustomSnippets
 } from "../storage/indexedDbStorage";
@@ -229,18 +225,6 @@ function isApplePlatform(): boolean {
     navigator.platform ??
     "";
   return /mac|iphone|ipad|ipod/i.test(platform);
-}
-
-function getGraphProviderLabel(provider: GraphProvider): string {
-  if (provider === "plotly") {
-    return "Plotly";
-  }
-
-  if (provider === "gnuplot") {
-    return "gnuplot";
-  }
-
-  return "Desmos";
 }
 
 function getWorkspacePreviewMimeType(path: string): string | null {
@@ -327,6 +311,7 @@ type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
 type DiagramPaneMode = "sidebar" | "source" | "preview";
+type GraphPaneMode = "sidebar" | "source" | "preview";
 type SettingsTab = "github" | "themes" | "keybindings" | "snippets" | "packages" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
@@ -608,7 +593,7 @@ export function App() {
   });
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
   const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("sidebar");
-  const [isGraphExpanded, setIsGraphExpanded] = useState(false);
+  const [graphPaneMode, setGraphPaneMode] = useState<GraphPaneMode>("sidebar");
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [isPaperView, setIsPaperView] = useState(false);
@@ -661,7 +646,6 @@ export function App() {
   const [isPackageSearchLoading, setIsPackageSearchLoading] = useState(false);
   const [installingPackageName, setInstallingPackageName] = useState<string | null>(null);
   const [packageSearchVisibleCount, setPackageSearchVisibleCount] = useState(5);
-  const [isGraphProviderMenuOpen, setIsGraphProviderMenuOpen] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
     () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isSidebarCollapsed
@@ -709,7 +693,6 @@ export function App() {
   const [githubConfig, setGitHubConfig] = useState<GitHubRemoteConfig>(
     createEmptyGitHubRemoteConfig
   );
-  const [desmosApiKey, setDesmosApiKey] = useState("");
   const [isHydrated, setIsHydrated] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
@@ -827,12 +810,6 @@ export function App() {
   const togglePaperView = useCallback(() => {
     setIsPaperView((current) => !current);
   }, []);
-  const openGraphExpanded = useCallback(() => {
-    setIsGraphExpanded(true);
-  }, []);
-  const closeGraphExpanded = useCallback(() => {
-    setIsGraphExpanded(false);
-  }, []);
   const {
     theme,
     builtinThemes,
@@ -854,6 +831,7 @@ export function App() {
     [snapshot.project.trash]
   );
   const visibleWorkspaceTree = isTrashViewOpen ? trashWorkspaceTree : workspaceTree;
+  const [inspectedWorkspacePath, setInspectedWorkspacePath] = useState<string | null>(null);
   const normalizedSelectedWorkspacePath = selectedWorkspacePath
     ? normalizeWorkspacePath(selectedWorkspacePath)
     : null;
@@ -865,6 +843,26 @@ export function App() {
     [normalizedSelectedWorkspacePath, visibleWorkspaceTree]
   );
   const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
+  const inspectedGraph = useMemo(() => {
+    if (
+      !sourceWorkspaceNode ||
+      sourceWorkspaceNode.kind !== "file" ||
+      sourceWorkspaceNode.source.kind !== "graph" ||
+      normalizeWorkspacePath(sourceWorkspaceNode.path) !== inspectedWorkspacePath
+    ) {
+      return null;
+    }
+
+    return (snapshot.project.graphs ?? []).find(
+      (graphAsset) => graphAsset.id === sourceWorkspaceNode.source.id
+    ) ?? null;
+  }, [inspectedWorkspacePath, snapshot.project.graphs, sourceWorkspaceNode]);
+  const inspectedGraphSource = useMemo(
+    () => (inspectedGraph ? buildGraphTypstFigure(inspectedGraph) ?? "" : ""),
+    [inspectedGraph]
+  );
+  const isInspectingGraphSource = inspectedGraph !== null;
+  const sourceEditorValue = isInspectingGraphSource ? inspectedGraphSource : activeDocumentTextContent;
   const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -924,6 +922,20 @@ export function App() {
       cancelled = true;
     };
   }, [sourceWorkspaceNode]);
+  useEffect(() => {
+    if (
+      sourceWorkspaceNode &&
+      sourceWorkspaceNode.kind === "file" &&
+      sourceWorkspaceNode.source.kind === "graph" &&
+      normalizeWorkspacePath(sourceWorkspaceNode.path) === inspectedWorkspacePath
+    ) {
+      return;
+    }
+
+    if (inspectedWorkspacePath !== null) {
+      setInspectedWorkspacePath(null);
+    }
+  }, [inspectedWorkspacePath, sourceWorkspaceNode]);
   const workspaceContextMenuPosition = useMemo(() => {
     if (!workspaceContextMenu || !filesSectionRef.current) {
       return null;
@@ -938,7 +950,9 @@ export function App() {
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
     sourceWorkspaceNode === null ||
+    isInspectingGraphSource ||
     (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path));
+  const showGraphInspectWarning = isInspectingGraphSource;
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
@@ -1107,6 +1121,14 @@ export function App() {
   }, [graphAssetsRevision, graphShadowAssets]);
 
   useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    handleCompileRef.current();
+  }, [diagramAssetsRevision, graphAssetsRevision, isHydrated]);
+
+  useEffect(() => {
     isMountedRef.current = true;
 
     return () => {
@@ -1199,10 +1221,7 @@ export function App() {
         loadSnapshot(),
         loadGitHubConfig()
       ]);
-      const [storedSnippets, storedDesmosApiKey] = await Promise.all([
-        loadCustomSnippets(),
-        loadDesmosApiKey()
-      ]);
+      const storedSnippets = await loadCustomSnippets();
 
       if (cancelled) {
         return;
@@ -1215,7 +1234,6 @@ export function App() {
       setTheme(nextSnapshot.preferences.theme);
       setGitHubConfig(storedGitHubConfig ?? createEmptyGitHubRemoteConfig());
       setCustomSnippets(storedSnippets ?? []);
-      setDesmosApiKey(storedDesmosApiKey ?? "");
       setIsHydrated(true);
     }
 
@@ -1455,7 +1473,7 @@ export function App() {
         setActiveMenu(null);
         setIsSettingsOpen(false);
         setDiagramPaneMode("sidebar");
-        setIsGraphExpanded(false);
+        setGraphPaneMode("sidebar");
         setWorkspaceMode("split");
         return;
       }
@@ -1538,18 +1556,6 @@ export function App() {
 
     return () => window.clearTimeout(handle);
   }, [githubConfig, isHydrated]);
-
-  useEffect(() => {
-    if (!isHydrated) {
-      return;
-    }
-
-    const handle = window.setTimeout(() => {
-      void saveDesmosApiKey(desmosApiKey).catch(() => {});
-    }, SAVE_DEBOUNCE_MS);
-
-    return () => window.clearTimeout(handle);
-  }, [desmosApiKey, isHydrated]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -1711,12 +1717,12 @@ export function App() {
       return;
     }
 
-    previewSourceDraftRef.current = activeDocumentTextContent;
+    previewSourceDraftRef.current = sourceEditorValue;
     if (compileResult === null || snapshot.preferences.liveCompilation) {
       queueCompile(compileResult !== null);
     }
   }, [
-    activeDocumentTextContent,
+    sourceEditorValue,
     diagramAssetsRevision,
     compileResult,
     graphAssetsRevision,
@@ -1768,8 +1774,36 @@ export function App() {
   }, [compileResult]);
 
   const handleDocumentChange = useCallback((content: string) => {
+    if (isInspectingGraphSource && inspectedGraph) {
+      const encodedContent = new TextEncoder().encode(content);
+      setSnapshot((currentSnapshot) => {
+        const now = new Date().toISOString();
+        const currentGraph = currentSnapshot.project.graph ?? createDefaultGraph(currentSnapshot.preferences.graphProvider);
+        const nextGraph =
+          currentGraph.id === inspectedGraph.id
+            ? { ...currentGraph, content: encodedContent, updatedAt: now }
+            : currentGraph;
+        const nextGraphs = (currentSnapshot.project.graphs ?? []).map((graphEntry) =>
+          graphEntry.id === inspectedGraph.id
+            ? { ...graphEntry, content: encodedContent, updatedAt: now }
+            : graphEntry
+        );
+
+        return {
+          ...currentSnapshot,
+          project: {
+            ...currentSnapshot.project,
+            graph: nextGraph,
+            graphs: nextGraphs,
+            updatedAt: now
+          }
+        };
+      });
+      return;
+    }
+
     setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
-  }, []);
+  }, [inspectedGraph, isInspectingGraphSource]);
 
   const handleInsertEditorText = useCallback((text: string) => {
     editorRef.current?.insertText(text);
@@ -1903,39 +1937,6 @@ export function App() {
 
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
   };
-
-  const handleOpenWorkspaceFile = useCallback(
-    (path: string) => {
-      const normalizedPath = normalizeWorkspacePath(path);
-      setSelectedWorkspacePath(normalizedPath);
-      setSelectedWorkspacePaths([normalizedPath]);
-      setWorkspaceSelectionAnchorPath(normalizedPath);
-      setWorkspaceContextMenu(null);
-
-      if (isTrashViewOpen) {
-        return;
-      }
-
-      const matchingDocument = snapshot.project.documents.find(
-        (document) =>
-          normalizeWorkspacePath(document.name) === normalizedPath &&
-          isTextWorkspaceFile(document.name)
-      );
-
-      if (matchingDocument) {
-        handleSelectDocument(matchingDocument.id);
-        return;
-      }
-
-      const matchingNode = findWorkspaceNodeByPath(visibleWorkspaceTree, normalizedPath);
-
-      if (matchingNode && matchingNode.kind === "file") {
-        setWorkspaceMode("split");
-        setIsPreviewCollapsed(false);
-      }
-    },
-    [isTrashViewOpen, snapshot.project.documents, visibleWorkspaceTree]
-  );
 
   const handleActivateWorkspaceNode = useCallback(
     (
@@ -2848,32 +2849,6 @@ export function App() {
     }, 0);
   }, []);
 
-  const handleGraphRenderModeChange = useCallback((mode: GraphAsset["renderMode"]) => {
-    setSnapshot((currentSnapshot) =>
-      updateGraph(currentSnapshot, (graphAsset) => ({
-        ...graphAsset,
-        renderMode: mode
-      }))
-    );
-  }, []);
-
-  const handleGraphProviderChange = useCallback((provider: GraphProvider) => {
-    setSnapshot((currentSnapshot) => {
-      const updated = updateGraphProviderPreference(currentSnapshot, provider);
-      const currentGraph = updated.project.graph ?? createDefaultGraph(provider);
-      const defaultGraph = createDefaultGraph(provider);
-      const nextGraph = {
-        ...defaultGraph,
-        id: currentGraph.id,
-        name: normalizeGraphFileNameForContentType(currentGraph.name, defaultGraph.contentType),
-        source: getDefaultGraphSource(provider),
-        updatedAt: new Date().toISOString()
-      };
-
-      return updateGraph(updated, () => nextGraph);
-    });
-  }, []);
-
   const handleDownloadDiagramSvg = useCallback((svgMarkup: string) => {
     const baseName = diagram.name.replace(/\.svg$/i, "");
     const svgName = `${baseName || diagram.name}.svg`;
@@ -3466,6 +3441,36 @@ export function App() {
     });
   }
 
+  function expandGraphPaneForward() {
+    setWorkspaceMode("split");
+    setIsSidebarCollapsed(false);
+    setGraphPaneMode((currentMode) => {
+      if (currentMode === "sidebar") {
+        return "source";
+      }
+
+      if (currentMode === "source") {
+        return "preview";
+      }
+
+      return currentMode;
+    });
+  }
+
+  function expandGraphPaneBackward() {
+    setGraphPaneMode((currentMode) => {
+      if (currentMode === "preview") {
+        return "source";
+      }
+
+      if (currentMode === "source") {
+        return "sidebar";
+      }
+
+      return currentMode;
+    });
+  }
+
   function cycleSidebarTool(direction: -1 | 1) {
     setIsSidebarCollapsed(false);
     setActiveSidebarTool((currentTool) => {
@@ -3656,9 +3661,16 @@ export function App() {
     workspaceMode === "split" &&
     activeSidebarTool === "diagram" &&
     diagramPaneMode !== "sidebar";
+  const isGraphInlineExpanded =
+    showDesktopSidebar &&
+    workspaceMode === "split" &&
+    activeSidebarTool === "graph" &&
+    graphPaneMode !== "sidebar";
   const isDiagramPreviewExpanded = isDiagramInlineExpanded && diagramPaneMode === "preview";
-  const showSourcePane = !isDiagramInlineExpanded && isSourceFileEditable;
-  const showPreviewPane = !isDiagramPreviewExpanded;
+  const isGraphPreviewExpanded = isGraphInlineExpanded && graphPaneMode === "preview";
+  const isSidebarInlineExpanded = isDiagramInlineExpanded || isGraphInlineExpanded;
+  const showSourcePane = !isSidebarInlineExpanded && isSourceFileEditable;
+  const showPreviewPane = !isDiagramPreviewExpanded && !isGraphPreviewExpanded;
   const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
   const baseSidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
   const basePreviewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
@@ -3666,7 +3678,7 @@ export function App() {
   const sidebarPreviewGapWidth = showDesktopSidebar && !showSourcePane ? PANEL_HANDLE_WIDTH : 0;
   const previewPaneWidth = isPreviewCollapsed
     ? PANEL_COLLAPSED_WIDTH
-    : showSourcePane
+    : showSourcePane || isSidebarInlineExpanded
     ? getPreviewPaneWidth(
         effectiveWorkspaceWidth,
         sidebarPaneWidth,
@@ -3684,7 +3696,7 @@ export function App() {
           effectiveWorkspaceWidth - sidebarPaneWidth - previewPaneWidth - handleWidthTotal
         )
       : 0;
-  const expandedSidebarPaneWidth = isDiagramInlineExpanded
+  const expandedSidebarPaneWidth = isSidebarInlineExpanded
     ? Math.max(0, effectiveWorkspaceWidth - previewPaneWidth - previewHandleWidth)
     : sidebarPaneWidth;
   const workspaceGridStyle: CSSProperties =
@@ -3693,11 +3705,11 @@ export function App() {
           display: "flex",
           flexDirection: "column"
         }
-      : workspaceMode === "split" && isDiagramPreviewExpanded
+      : workspaceMode === "split" && (isDiagramPreviewExpanded || isGraphPreviewExpanded)
       ? {
           gridTemplateColumns: "minmax(0, 1fr)"
         }
-      : workspaceMode === "split" && isDiagramInlineExpanded
+      : workspaceMode === "split" && isSidebarInlineExpanded
       ? {
           gridTemplateColumns: `${expandedSidebarPaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
         }
@@ -3747,6 +3759,19 @@ export function App() {
     setDiagramPaneMode("sidebar");
   }, [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
 
+  useEffect(() => {
+    if (
+      !isMobileWorkspace &&
+      workspaceMode === "split" &&
+      activeSidebarTool === "graph" &&
+      !isSidebarCollapsed
+    ) {
+      return;
+    }
+
+    setGraphPaneMode("sidebar");
+  }, [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
+
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
       const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
@@ -3768,6 +3793,10 @@ export function App() {
         setDiagramPaneMode("sidebar");
       }
 
+      if (tool !== "graph") {
+        setGraphPaneMode("sidebar");
+      }
+
       if (shouldOpenSearchPane) {
         window.requestAnimationFrame(() => {
           openSearchPane();
@@ -3784,6 +3813,7 @@ export function App() {
       }
 
       setWorkspaceContextMenu(null);
+      setInspectedWorkspacePath(null);
       const sourceDocument = snapshot.project.documents.find(
         (document) => typeof document.content === "string" && document.content.includes(node.path)
       );
@@ -3838,6 +3868,141 @@ export function App() {
       }
     },
     [isMobileWorkspace, snapshot.project.documents]
+  );
+
+  const handleOpenWorkspaceGraph = useCallback(
+    (node: WorkspaceTreeNode) => {
+      if (node.source.kind !== "graph") {
+        return;
+      }
+
+      setWorkspaceContextMenu(null);
+      setInspectedWorkspacePath(null);
+      const sourceDocument = snapshot.project.documents.find(
+        (document) => typeof document.content === "string" && document.content.includes(node.path)
+      );
+
+      setSnapshot((currentSnapshot) => {
+        const savedSnapshot = saveCurrentGraph(currentSnapshot);
+        const targetGraph = savedSnapshot.project.graphs.find((graphEntry) => graphEntry.id === node.source.id);
+
+        if (!targetGraph) {
+          return savedSnapshot;
+        }
+
+        const withActiveDocument = sourceDocument
+          ? setActiveDocument(savedSnapshot, sourceDocument.id)
+          : savedSnapshot;
+
+        return {
+          ...withActiveDocument,
+          project: {
+            ...withActiveDocument.project,
+            graph: targetGraph,
+            updatedAt: new Date().toISOString()
+          }
+        };
+      });
+
+      if (sourceDocument) {
+        const selectedPath = normalizeWorkspacePath(sourceDocument.name);
+        setSelectedWorkspacePath(selectedPath);
+        setSelectedWorkspacePaths([selectedPath]);
+        setWorkspaceSelectionAnchorPath(selectedPath);
+      } else {
+        setSelectedWorkspacePath(node.path);
+        setSelectedWorkspacePaths([node.path]);
+        setWorkspaceSelectionAnchorPath(node.path);
+      }
+
+      if (sourceDocument) {
+        setWorkspaceMode("split");
+        setGraphPaneMode("sidebar");
+        if (isMobileWorkspace) {
+          setMobileWorkspaceTab("editor");
+        }
+      }
+
+      setActiveSidebarTool("graph");
+      setIsSidebarCollapsed(false);
+      setWorkspaceMode("split");
+      setGraphPaneMode("sidebar");
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("files");
+      }
+    },
+    [isMobileWorkspace, snapshot.project.documents]
+  );
+
+  const handleInspectWorkspaceGraph = useCallback(
+    (node: WorkspaceTreeNode) => {
+      if (node.source.kind !== "graph") {
+        return;
+      }
+
+      setWorkspaceContextMenu(null);
+      setSelectedWorkspacePath(node.path);
+      setSelectedWorkspacePaths([node.path]);
+      setWorkspaceSelectionAnchorPath(node.path);
+      setInspectedWorkspacePath(normalizeWorkspacePath(node.path));
+      setWorkspaceMode("split");
+      setIsPreviewCollapsed(false);
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("editor");
+      }
+    },
+    [isMobileWorkspace]
+  );
+
+  const handleOpenWorkspaceFile = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+      setSelectedWorkspacePath(normalizedPath);
+      setSelectedWorkspacePaths([normalizedPath]);
+      setWorkspaceSelectionAnchorPath(normalizedPath);
+      setWorkspaceContextMenu(null);
+
+      if (isTrashViewOpen) {
+        return;
+      }
+
+      const matchingDocument = snapshot.project.documents.find(
+        (document) =>
+          normalizeWorkspacePath(document.name) === normalizedPath &&
+          isTextWorkspaceFile(document.name)
+      );
+
+      if (matchingDocument) {
+        setInspectedWorkspacePath(null);
+        handleSelectDocument(matchingDocument.id);
+        return;
+      }
+
+      const matchingNode = findWorkspaceNodeByPath(visibleWorkspaceTree, normalizedPath);
+
+      if (matchingNode && matchingNode.kind === "file") {
+        if (matchingNode.source.kind === "diagram") {
+          handleOpenWorkspaceDiagram(matchingNode);
+          return;
+        }
+
+        if (matchingNode.source.kind === "graph") {
+          handleOpenWorkspaceGraph(matchingNode);
+          return;
+        }
+
+        setInspectedWorkspacePath(null);
+        setWorkspaceMode("split");
+        setIsPreviewCollapsed(false);
+      }
+    },
+    [
+      handleOpenWorkspaceDiagram,
+      handleOpenWorkspaceGraph,
+      isTrashViewOpen,
+      snapshot.project.documents,
+      visibleWorkspaceTree
+    ]
   );
 
   const handleToggleTrashView = useCallback(() => {
@@ -4294,6 +4459,16 @@ export function App() {
                         </button>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
+                      workspaceContextMenu.node.source.kind === "graph" ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={() => handleInspectWorkspaceGraph(workspaceContextMenu.node)}
+                          type="button"
+                        >
+                          Inspect
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
                         workspaceContextMenu.node.source.kind === "diagram" ||
                         workspaceContextMenu.node.source.kind === "graph") ? (
@@ -4302,11 +4477,13 @@ export function App() {
                           onClick={() =>
                             workspaceContextMenu.node.source.kind === "diagram"
                               ? handleOpenWorkspaceDiagram(workspaceContextMenu.node)
+                              : workspaceContextMenu.node.source.kind === "graph"
+                                ? handleOpenWorkspaceGraph(workspaceContextMenu.node)
                               : handleOpenWorkspaceFile(workspaceContextMenu.node.path)
                           }
                           type="button"
                         >
-                          {workspaceContextMenu.node.source.kind === "diagram" ? "Edit" : "Open"}
+                          {workspaceContextMenu.node.source.kind === "document" ? "Open" : "Edit"}
                         </button>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
@@ -4520,8 +4697,8 @@ export function App() {
 
               {activeSidebarTool === "diagram" ? (
                 <section
-                  className={`sidebar-section sidebar-section--scrollable sidebar-section--diagram ${
-                    isDiagramInlineExpanded ? "sidebar-section--diagram-expanded" : ""
+                  className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
+                    isDiagramInlineExpanded ? "sidebar-section--pane-expanded" : ""
                   }`}
                 >
                   <DiagramEditorErrorBoundary>
@@ -4569,20 +4746,29 @@ export function App() {
               ) : null}
 
               {activeSidebarTool === "graph" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
+                    isGraphInlineExpanded ? "sidebar-section--pane-expanded" : ""
+                  }`}
+                >
                   <GraphEditorErrorBoundary>
                     <GraphEditor
-                      apiKey={desmosApiKey}
                       graph={graph}
-                      isExpanded={false}
-                      onExpand={openGraphExpanded}
+                      isExpanded={isGraphInlineExpanded}
+                      previewLayoutKey={graphPaneMode}
+                      onExpandLeft={
+                        isGraphInlineExpanded ? expandGraphPaneBackward : undefined
+                      }
+                      onExpandRight={
+                        !isMobileWorkspace && graphPaneMode !== "preview"
+                          ? expandGraphPaneForward
+                          : undefined
+                      }
                       onInsertIntoDocument={handleInsertGraphIntoDocument}
                       onDownloadGraph={handleDownloadGraph}
                       onNew={handleNewGraph}
                       onRename={handleRenameGraph}
                       onSave={handleSaveGraph}
-                      onProviderChange={handleGraphProviderChange}
-                      onRenderModeChange={handleGraphRenderModeChange}
                       paperView={isPaperView}
                     />
                   </GraphEditorErrorBoundary>
@@ -5151,24 +5337,31 @@ export function App() {
             </div>
           ) : null}
           {isSourceFileEditable ? (
-            <TypstEditor
-              ref={editorRef}
-              diagnostics={editorDiagnostics}
-              highlightErrors={isErrorSettled}
-              snippets={allSnippets}
-              onCompileRequested={handleCompile}
-              onSearchRequested={openSearchPane}
-              onSelectionChange={setCurrentEditorLineNumber}
-              value={activeDocumentTextContent}
-              vimMode={snapshot.preferences.vimMode}
-              editorFontSize={snapshot.preferences.editorFontSize}
-              keybindings={keybindings}
-              relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
-              cursorSmooth={snapshot.preferences.cursorSmooth}
-              cursorSmear={snapshot.preferences.cursorSmear}
-              theme={theme}
-              onChange={handleDocumentChange}
-            />
+            <>
+              {showGraphInspectWarning ? (
+                <div className="source-inline-status source-inline-status--warning">
+                  Editing this graph file changes the saved Typst source, but it will no longer round-trip through the graph editor tab.
+                </div>
+              ) : null}
+              <TypstEditor
+                ref={editorRef}
+                diagnostics={editorDiagnostics}
+                highlightErrors={isErrorSettled}
+                snippets={allSnippets}
+                onCompileRequested={handleCompile}
+                onSearchRequested={openSearchPane}
+                onSelectionChange={setCurrentEditorLineNumber}
+                value={sourceEditorValue}
+                vimMode={snapshot.preferences.vimMode}
+                editorFontSize={snapshot.preferences.editorFontSize}
+                keybindings={keybindings}
+                relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
+                cursorSmooth={snapshot.preferences.cursorSmooth}
+                cursorSmear={snapshot.preferences.cursorSmear}
+                theme={theme}
+                onChange={handleDocumentChange}
+              />
+            </>
           ) : (
             <div className="source-empty-state">
               <div className="source-empty-state__title">cannot open this filetype</div>
@@ -5313,46 +5506,6 @@ export function App() {
               workspacePreview={selectedWorkspacePreview}
               zoom={previewZoom}
             />
-          </section>
-        </div>
-      ) : null}
-
-      {isGraphExpanded ? (
-        <div
-          className="sheet-backdrop diagram-popup-backdrop"
-          onClick={closeGraphExpanded}
-          role="presentation"
-        >
-          <section
-            aria-label="Expanded graph editor"
-            className="diagram-popup graph-popup"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="diagram-popup__header">
-              <div>
-                <h2>Graph</h2>
-              </div>
-              <button className="pane__button" onClick={closeGraphExpanded} type="button">
-                Close
-              </button>
-            </div>
-            <div className="diagram-popup__body">
-              <GraphEditorErrorBoundary>
-                <GraphEditor
-                  apiKey={desmosApiKey}
-                  graph={graph}
-                  isExpanded
-                  onDownloadGraph={handleDownloadGraph}
-                  onInsertIntoDocument={handleInsertGraphIntoDocument}
-                  onNew={handleNewGraph}
-                  onRename={handleRenameGraph}
-                  onSave={handleSaveGraph}
-                  onProviderChange={handleGraphProviderChange}
-                  onRenderModeChange={handleGraphRenderModeChange}
-                  paperView={isPaperView}
-                />
-              </GraphEditorErrorBoundary>
-            </div>
           </section>
         </div>
       ) : null}
@@ -6165,84 +6318,13 @@ export function App() {
                 <div className="settings-panel" role="tabpanel">
                   <div className="settings-section">
                     <div className="settings-section__header">
-                      <h3>Graph default</h3>
-                      <span className="pane__meta">
-                        {getGraphProviderLabel(snapshot.preferences.graphProvider)}
-                      </span>
-                    </div>
-                    <div className="sync-field">
-                      <span>Graph engine</span>
-                      <div
-                        className={`menu-dropdown settings-graph-provider ${
-                          isGraphProviderMenuOpen ? "menu-dropdown--open" : ""
-                        }`}
-                        onMouseEnter={() => setIsGraphProviderMenuOpen(true)}
-                        onMouseLeave={() => setIsGraphProviderMenuOpen(false)}
-                      >
-                        <button
-                          aria-expanded={isGraphProviderMenuOpen}
-                          aria-haspopup="menu"
-                          className="menu-dropdown__trigger settings-graph-provider__trigger"
-                          onClick={() =>
-                            setIsGraphProviderMenuOpen((current) => !current)
-                          }
-                          type="button"
-                        >
-                          <span>{getGraphProviderLabel(snapshot.preferences.graphProvider)}</span>
-                          <span aria-hidden="true" className="settings-graph-provider__chevron">
-                            ▾
-                          </span>
-                        </button>
-                        {isGraphProviderMenuOpen ? (
-                          <div className="menu-dropdown__panel settings-graph-provider__panel" role="menu">
-                            {(["desmos", "plotly", "gnuplot"] as const).map((provider) => (
-                              <button
-                                className="menu-action"
-                                key={provider}
-                                onClick={() => {
-                                  handleGraphProviderChange(provider);
-                                  setIsGraphProviderMenuOpen(false);
-                                }}
-                                role="menuitem"
-                                type="button"
-                              >
-                                {getGraphProviderLabel(provider)}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
+                      <h3>Graphing</h3>
+                      <span className="pane__meta">simple-plot</span>
                     </div>
                     <div className="sidebar-card">
                       <p className="sidebar-card__copy">
-                        New graphs will start in the selected provider. Existing graphs keep the
-                        provider they were created with.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="settings-section">
-                    <div className="settings-section__header">
-                      <h3>Desmos</h3>
-                      <span className="pane__meta">
-                        {desmosApiKey.trim() ? "Configured" : "Required"}
-                      </span>
-                    </div>
-                    <label className="sync-field">
-                      <span>API key</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) => setDesmosApiKey(event.target.value)}
-                        placeholder="desmos_api_key..."
-                        type="password"
-                        value={desmosApiKey}
-                      />
-                    </label>
-                    <div className="sidebar-card">
-                      <p className="sidebar-card__copy">
-                        The key is stored locally so the graph editor can load Desmos and render
-                        graph exports.
+                        Graphs now use a Typst `simple-plot` prototype with a Desmos-style
+                        function list, a TI-84 style window editor, and direct Typst insertion.
                       </p>
                     </div>
                   </div>

@@ -10,19 +10,30 @@ import {
   normalizeGraphFileName,
   normalizeGraphFileNameForContentType
 } from "../graph/graphFiles";
+import {
+  createSimplePlotGraphAssetContent,
+  createDefaultSimplePlotSource,
+  parseSimplePlotGraphDocument,
+  serializeSimplePlotGraphDocument
+} from "../graph/simplePlotGraph";
 import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from "./keybindings";
 
 export type ThemePreference = string;
-export type GraphProvider = "desmos" | "plotly" | "gnuplot";
-export type GraphContentType = "png" | "svg";
+export type GraphProvider = "simple-plot";
+export type GraphContentType = "typ";
 
 export interface GraphStyle {
   width: number;
   height: number;
+  lockAspectRatio: boolean;
   strokeWidth: number;
   xAxisLabel: string;
   yAxisLabel: string;
   axisArrows: boolean;
+  xTickStep: number;
+  yTickStep: number;
+  showGrid: boolean;
+  showOnlyGreatestTickLabel: boolean;
 }
 
 export interface TypstDocumentFile {
@@ -282,30 +293,22 @@ function createId(prefix: string): string {
 }
 
 export function getDefaultGraphSource(provider: GraphProvider): string {
-  if (provider === "plotly") {
-    return `y = x^2
-domain: -10..10
-samples: 200`;
-  }
-
-  if (provider === "gnuplot") {
-    return `set samples 400
-set grid
-set key left top
-plot [-10:10] x**2 title "y = x^2" with lines lc rgb "#000000"`;
-  }
-
-  return "";
+  return createDefaultSimplePlotSource();
 }
 
 export function createDefaultGraphStyle(): GraphStyle {
   return {
-    width: 720,
-    height: 480,
-    strokeWidth: 2.5,
-    xAxisLabel: "x",
-    yAxisLabel: "y",
-    axisArrows: true
+    width: 6.8,
+    height: 4.8,
+    lockAspectRatio: false,
+    strokeWidth: 1.5,
+    xAxisLabel: "$x$",
+    yAxisLabel: "$y$",
+    axisArrows: true,
+    xTickStep: 1,
+    yTickStep: 1,
+    showGrid: true,
+    showOnlyGreatestTickLabel: false
   };
 }
 
@@ -322,23 +325,24 @@ export function createDefaultDiagram(): DiagramAsset {
   };
 }
 
-export function createDefaultGraph(provider: GraphProvider = "desmos"): GraphAsset {
+export function createDefaultGraph(provider: GraphProvider = "simple-plot"): GraphAsset {
   const now = new Date().toISOString();
-  const isSvgProvider = provider !== "desmos";
+  const source = getDefaultGraphSource(provider);
+  const style = createDefaultGraphStyle();
 
   return {
     id: createId("graph"),
-    name: isSvgProvider ? DEFAULT_GRAPH_FILE_NAME.replace(/\.png$/i, ".svg") : DEFAULT_GRAPH_FILE_NAME,
+    name: DEFAULT_GRAPH_FILE_NAME,
     provider,
     updatedAt: now,
-    source: isSvgProvider ? getDefaultGraphSource(provider) : "",
-    style: createDefaultGraphStyle(),
+    source,
+    style,
     state: "",
     expressions: "[]",
     viewport: null,
-    renderMode: "auto",
-    contentType: isSvgProvider ? "svg" : "png",
-    content: new Uint8Array()
+    renderMode: "typst",
+    contentType: "typ",
+    content: createSimplePlotGraphAssetContent(parseSimplePlotGraphDocument(source), style)
   };
 }
 
@@ -374,7 +378,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
-      graphProvider: "desmos",
+      graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE
     }
@@ -533,6 +537,7 @@ function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
 }
 
 function normalizeGraphAsset(graph: GraphAsset): GraphAsset {
+  const rawContentType = (graph as GraphAsset & { contentType?: GraphContentType | "png" | "svg" }).contentType;
   const normalizedProvider = normalizeGraphProvider(
     (graph as GraphAsset & { provider?: GraphProvider }).provider
   );
@@ -550,6 +555,13 @@ function normalizeGraphAsset(graph: GraphAsset): GraphAsset {
     graph.name ?? DEFAULT_GRAPH_FILE_NAME,
     normalizedContentType
   );
+  const normalizedSource = serializeSimplePlotGraphDocument(
+    parseSimplePlotGraphDocument(
+      typeof (graph as GraphAsset & { source?: string }).source === "string"
+        ? (graph as GraphAsset & { source?: string }).source
+        : createDefaultSimplePlotSource()
+    )
+  );
 
   return {
     ...graph,
@@ -557,47 +569,70 @@ function normalizeGraphAsset(graph: GraphAsset): GraphAsset {
     name: normalizedName,
     provider: normalizedProvider,
     updatedAt: graph.updatedAt ?? new Date().toISOString(),
-    source: typeof (graph as GraphAsset & { source?: string }).source === "string"
-      ? (graph as GraphAsset & { source?: string }).source
-      : "",
+    source: normalizedSource,
     style: normalizeGraphStyle((graph as GraphAsset & { style?: Partial<GraphStyle> }).style),
     state: typeof graph.state === "string" ? graph.state : "",
     expressions: typeof graph.expressions === "string" ? graph.expressions : "[]",
     viewport: normalizedViewport,
     renderMode: normalizedRenderMode,
     contentType: normalizedContentType,
-    content: graph.content instanceof Uint8Array ? graph.content : new Uint8Array()
+    content:
+      rawContentType === "typ" && graph.content instanceof Uint8Array && graph.content.length > 0
+        ? graph.content
+        : createSimplePlotGraphAssetContent(
+            parseSimplePlotGraphDocument(normalizedSource),
+            normalizeGraphStyle((graph as GraphAsset & { style?: Partial<GraphStyle> }).style)
+          )
   };
 }
 
 function normalizeGraphProvider(value: GraphProvider | undefined): GraphProvider {
-  return value === "plotly" || value === "gnuplot" ? value : "desmos";
+  return "simple-plot";
 }
 
 function normalizeGraphContentType(
   value: GraphContentType | undefined,
   provider: GraphProvider
 ): GraphContentType {
-  if (value === "png" || value === "svg") {
+  if (value === "typ") {
     return value;
   }
 
-  return provider === "desmos" ? "png" : "svg";
+  return "typ";
 }
 
 function normalizeGraphStyle(style: Partial<GraphStyle> | undefined): GraphStyle {
   const defaultStyle = createDefaultGraphStyle();
+  const legacyWidth = typeof style?.width === "number" && style.width > 50 ? style.width / 96 * 2.54 : style?.width;
+  const legacyHeight = typeof style?.height === "number" && style.height > 50 ? style.height / 96 * 2.54 : style?.height;
   return {
-    width: typeof style?.width === "number" && style.width > 0 ? style.width : defaultStyle.width,
+    width: typeof legacyWidth === "number" && legacyWidth > 0 ? legacyWidth : defaultStyle.width,
     height:
-      typeof style?.height === "number" && style.height > 0 ? style.height : defaultStyle.height,
+      typeof legacyHeight === "number" && legacyHeight > 0 ? legacyHeight : defaultStyle.height,
+    lockAspectRatio:
+      typeof style?.lockAspectRatio === "boolean"
+        ? style.lockAspectRatio
+        : defaultStyle.lockAspectRatio,
     strokeWidth:
       typeof style?.strokeWidth === "number" && style.strokeWidth > 0
         ? style.strokeWidth
         : defaultStyle.strokeWidth,
     xAxisLabel: typeof style?.xAxisLabel === "string" ? style.xAxisLabel : defaultStyle.xAxisLabel,
     yAxisLabel: typeof style?.yAxisLabel === "string" ? style.yAxisLabel : defaultStyle.yAxisLabel,
-    axisArrows: typeof style?.axisArrows === "boolean" ? style.axisArrows : defaultStyle.axisArrows
+    axisArrows: typeof style?.axisArrows === "boolean" ? style.axisArrows : defaultStyle.axisArrows,
+    xTickStep:
+      typeof style?.xTickStep === "number" && style.xTickStep > 0
+        ? style.xTickStep
+        : defaultStyle.xTickStep,
+    yTickStep:
+      typeof style?.yTickStep === "number" && style.yTickStep > 0
+        ? style.yTickStep
+        : defaultStyle.yTickStep,
+    showGrid: typeof style?.showGrid === "boolean" ? style.showGrid : defaultStyle.showGrid,
+    showOnlyGreatestTickLabel:
+      typeof style?.showOnlyGreatestTickLabel === "boolean"
+        ? style.showOnlyGreatestTickLabel
+        : defaultStyle.showOnlyGreatestTickLabel
   };
 }
 
@@ -1216,7 +1251,7 @@ export function renameGraphById(snapshot: AppSnapshot, graphId: string, name: st
   let finalName = nextName;
   let suffix = 2;
   while (existingNames.has(finalName)) {
-    const baseName = nextName.replace(/\.(png|svg)$/i, "");
+    const baseName = nextName.replace(/\.(png|svg|typ)$/i, "");
     finalName = `${baseName}-${suffix}.${currentGraph.contentType}`;
     suffix += 1;
   }
@@ -1814,11 +1849,10 @@ function createNextDiagramName(currentName: string): string {
 }
 
 function createNextGraphName(currentName: string, provider: GraphProvider): string {
-  const baseName = normalizeGraphFileName(currentName, provider).replace(/\.(png|svg)$/i, "");
+  const baseName = normalizeGraphFileName(currentName, provider).replace(/\.(png|svg|typ)$/i, "");
   const match = /^graph(?:\s+(\d+))?$/i.exec(baseName);
   const nextIndex = match ? Number(match[1] ?? "1") + 1 : 1;
-  const extension = provider === "desmos" ? "png" : "svg";
-  return `graph ${nextIndex}.${extension}`;
+  return `graph ${nextIndex}.typ`;
 }
 
 function normalizeWorkspaceFolderPath(path: string | null): string | null {
@@ -1902,7 +1936,7 @@ function createMovedGraphName(
   destinationFolderPath: string | null,
   graphs: GraphAsset[],
   graphId: string,
-  contentType: "png" | "svg"
+  contentType: "typ"
 ): string {
   const baseName = getWorkspaceBaseName(currentName);
   const requestedName = joinWorkspacePath(destinationFolderPath, baseName);
@@ -1937,7 +1971,7 @@ function createUniqueGraphName(
   requestedName: string,
   graphs: GraphAsset[],
   currentGraphName: string | null = null,
-  contentType: "png" | "svg" = "png"
+  contentType: "typ" = "typ"
 ): string {
   const nextName = normalizeGraphFileNameForContentType(requestedName, contentType);
   const existingNames = new Set(graphs.map((graph) => graph.name));
@@ -1950,7 +1984,7 @@ function createUniqueGraphName(
   let suffix = 2;
 
   while (existingNames.has(finalName)) {
-    const baseName = nextName.replace(/\.(png|svg)$/i, "");
+    const baseName = nextName.replace(/\.(png|svg|typ)$/i, "");
     finalName = `${baseName}-${suffix}.${contentType}`;
     suffix += 1;
   }
