@@ -1,3 +1,11 @@
+import type { AppSnapshot } from "../app/appState";
+import {
+  joinRelativePaths,
+  normalizeRelativePath,
+  shouldIgnorePath,
+  stripPathPrefix
+} from "../git/pathFilters";
+
 export interface GitHubRemoteConfig {
   owner: string;
   repo: string;
@@ -23,6 +31,46 @@ export interface GitHubSyncResult {
   documents?: GitHubSyncDocument[];
   projectName?: string;
 }
+
+export interface GitHubBranchSummary {
+  name: string;
+  sha: string;
+  protected: boolean;
+  current: boolean;
+}
+
+export interface GitHubCommitSummary {
+  sha: string;
+  message: string;
+  authoredAt: string;
+  authorName: string;
+  branchNames: string[];
+}
+
+export interface GitHubProjectFileStatus {
+  path: string;
+  state: "in-sync" | "local-only" | "remote-only" | "diverged";
+}
+
+export interface GitHubProjectStatusResult {
+  ok: boolean;
+  message: string;
+  branches: GitHubBranchSummary[];
+  commits: GitHubCommitSummary[];
+  files: GitHubProjectFileStatus[];
+  remoteUrl: string;
+}
+
+export interface ScopedLocalGitHubDocument {
+  id: string;
+  name: string;
+  relativePath: string;
+  content: string | Uint8Array;
+  updatedAt: string;
+}
+
+const LEGACY_PROJECT_METADATA_FILE_NAME = "typr-project.json";
+const PROJECT_METADATA_FILE_NAME = ".typr-project.json";
 
 interface PutFileOptions {
   branch: string;
@@ -79,7 +127,7 @@ export async function pushProjectToGitHub(
       content: document.content
     })),
     {
-      path: `${normalizedDirectory}/typr-project.json`,
+      path: `${normalizedDirectory}/${PROJECT_METADATA_FILE_NAME}`,
       content: JSON.stringify(
         {
           name: target.projectName,
@@ -93,7 +141,7 @@ export async function pushProjectToGitHub(
   ];
 
   try {
-    for (const file of files) {
+    for (const file of dedupeFilesByPath(files)) {
       const existingSha = await fetchContentSha(config, file.path);
       await putFileContent(config, {
         branch: config.branch.trim(),
@@ -132,28 +180,32 @@ export async function pullProjectFromGitHub(
 
   try {
     const remoteFiles = await listDirectoryContents(config, normalizedDirectory, branch);
-    const typstFiles = remoteFiles.filter((file) => file.type === "file");
+    const projectFiles = remoteFiles.filter(
+      (file) => file.type === "file" && !isProjectMetadataPath(file.path)
+    );
 
-    if (typstFiles.length === 0) {
+    if (projectFiles.length === 0) {
       return {
         ok: false,
-        message: `No .typ files found in ${config.owner}/${config.repo}/${normalizedDirectory}.`
+        message: `No synced files found in ${config.owner}/${config.repo}/${normalizedDirectory}.`
       };
     }
 
     const documents: GitHubSyncDocument[] = [];
-    for (const file of typstFiles) {
+    for (const file of projectFiles) {
       const content = await fetchFileContent(config, file.path, branch);
       if (content !== null) {
         documents.push({
-          name: file.name.replace(/\.typ$/, ""),
+          name: file.name,
           content
         });
       }
     }
 
     let projectName = _target.projectName;
-    const projectFile = remoteFiles.find((f) => f.name === "typr-project.json" && f.type === "file");
+    const projectFile = remoteFiles.find(
+      (file) => file.type === "file" && isProjectMetadataPath(file.path)
+    );
     if (projectFile) {
       const projectContent = await fetchFileContent(config, projectFile.path, branch);
       if (typeof projectContent === "string" && projectContent) {
@@ -311,6 +363,22 @@ function sanitizeDocumentName(name: string): string {
   );
 }
 
+function dedupeFilesByPath(files: Array<{ path: string; content: string | Uint8Array }>) {
+  const byPath = new Map<string, { path: string; content: string | Uint8Array }>();
+  for (const file of files) {
+    byPath.set(file.path, file);
+  }
+  return [...byPath.values()];
+}
+
+function isProjectMetadataPath(path: string): boolean {
+  const fileName = path.split("/").pop() ?? path;
+  return (
+    fileName === PROJECT_METADATA_FILE_NAME ||
+    fileName === LEGACY_PROJECT_METADATA_FILE_NAME
+  );
+}
+
 interface DirectoryEntry {
   name: string;
   path: string;
@@ -406,4 +474,251 @@ async function fetchFileContent(
 
 function isBinaryGitHubPath(path: string): boolean {
   return /\.(png|jpe?g|gif|webp|avif|pdf|svg)$/i.test(path);
+}
+
+export function buildGitHubSyncDocumentsFromSnapshot(options: {
+  snapshot: AppSnapshot;
+  workspacePath: string;
+  ignorePatterns: string[];
+}): Array<GitHubSyncDocument & { updatedAt: string }> {
+  return listScopedLocalGitHubDocuments(options.snapshot, options.workspacePath, options.ignorePatterns).map(
+    (document) => ({
+      name: document.relativePath,
+      content: document.content,
+      updatedAt: document.updatedAt
+    })
+  );
+}
+
+export function listScopedLocalGitHubDocuments(
+  snapshot: AppSnapshot,
+  workspacePath: string,
+  ignorePatterns: string[]
+): ScopedLocalGitHubDocument[] {
+  const normalizedWorkspacePath = normalizeRelativePath(workspacePath);
+
+  return snapshot.project.documents
+    .map((document) => {
+      const relativePath = stripPathPrefix(document.name, normalizedWorkspacePath);
+      if (relativePath === null || !relativePath) {
+        return null;
+      }
+      if (isProjectMetadataPath(relativePath)) {
+        return null;
+      }
+      if (shouldIgnorePath(relativePath, ignorePatterns)) {
+        return null;
+      }
+      return {
+        id: document.id,
+        name: document.name,
+        relativePath,
+        content: document.content,
+        updatedAt: document.updatedAt
+      };
+    })
+    .filter((document): document is ScopedLocalGitHubDocument => document !== null);
+}
+
+export function mapPulledDocumentsToWorkspace(
+  documents: GitHubSyncDocument[],
+  workspacePath: string
+): GitHubSyncDocument[] {
+  return documents.map((document) => ({
+    ...document,
+    name: joinRelativePaths(workspacePath, document.name)
+  }));
+}
+
+export async function listGitHubBranches(
+  config: GitHubRemoteConfig
+): Promise<GitHubBranchSummary[]> {
+  if (!hasRequiredConfig(config)) {
+    return [];
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${encodeURIComponent(config.owner.trim())}/${encodeURIComponent(
+      config.repo.trim()
+    )}/branches?per_page=100`,
+    {
+      headers: createGitHubHeaders(config.token)
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(await formatGitHubError(response, "Unable to load GitHub branches."));
+  }
+
+  const payload = (await response.json()) as Array<{
+    name?: string;
+    protected?: boolean;
+    commit?: { sha?: string };
+  }>;
+
+  const currentBranch = config.branch.trim();
+
+  return payload.map((branch) => ({
+    name: branch.name ?? "",
+    sha: branch.commit?.sha ?? "",
+    protected: Boolean(branch.protected),
+    current: branch.name === currentBranch
+  }));
+}
+
+export async function fetchGitHubCommitLog(
+  config: GitHubRemoteConfig,
+  directory: string
+): Promise<GitHubCommitSummary[]> {
+  if (!hasRequiredConfig(config)) {
+    return [];
+  }
+
+  const pathQuery = normalizeDirectory(directory);
+  const search = new URLSearchParams({
+    sha: config.branch.trim(),
+    per_page: "20"
+  });
+  if (pathQuery) {
+    search.set("path", pathQuery);
+  }
+
+  const response = await fetch(
+    `https://api.github.com/repos/${encodeURIComponent(config.owner.trim())}/${encodeURIComponent(
+      config.repo.trim()
+    )}/commits?${search.toString()}`,
+    {
+      headers: createGitHubHeaders(config.token)
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(await formatGitHubError(response, "Unable to load GitHub commit log."));
+  }
+
+  const payload = (await response.json()) as Array<{
+    sha?: string;
+    commit?: {
+      message?: string;
+      author?: {
+        name?: string;
+        date?: string;
+      };
+    };
+  }>;
+
+  return payload.map((commit) => ({
+    sha: commit.sha ?? "",
+    message: commit.commit?.message?.trim() || "Commit",
+    authoredAt: commit.commit?.author?.date ?? "",
+    authorName: commit.commit?.author?.name ?? "Unknown",
+    branchNames: []
+  }));
+}
+
+export async function fetchGitHubProjectStatus(options: {
+  config: GitHubRemoteConfig;
+  projectName: string;
+  localDocuments: Array<GitHubSyncDocument & { updatedAt: string }>;
+}): Promise<GitHubProjectStatusResult> {
+  if (!hasRequiredConfig(options.config)) {
+    return {
+      ok: false,
+      message: "Fill in the GitHub owner, repo, branch, and token first.",
+      branches: [],
+      commits: [],
+      files: [],
+      remoteUrl: ""
+    };
+  }
+
+  const directory = resolveSyncDirectory(options.config.directory, options.projectName);
+
+  try {
+    const [branches, commits, pullResult] = await Promise.all([
+      listGitHubBranches(options.config),
+      fetchGitHubCommitLog(options.config, directory),
+      pullProjectFromGitHub(options.config, { projectName: options.projectName })
+    ]);
+    const remoteDocuments = pullResult.documents ?? [];
+    const files = buildProjectFileStatuses(options.localDocuments, remoteDocuments);
+    const branchBySha = new Map(
+      branches.filter((branch) => branch.sha).map((branch) => [branch.sha, branch])
+    );
+
+    return {
+      ok: true,
+      message: pullResult.ok ? pullResult.message : "Loaded GitHub project status.",
+      branches,
+      commits: commits.map((commit) => ({
+        ...commit,
+        branchNames: branchBySha.has(commit.sha) ? [branchBySha.get(commit.sha)?.name ?? ""] : []
+      })),
+      files,
+      remoteUrl: `https://github.com/${options.config.owner.trim()}/${options.config.repo.trim()}`
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Unable to load GitHub project status.",
+      branches: [],
+      commits: [],
+      files: [],
+      remoteUrl: `https://github.com/${options.config.owner.trim()}/${options.config.repo.trim()}`
+    };
+  }
+}
+
+function buildProjectFileStatuses(
+  localDocuments: Array<GitHubSyncDocument & { updatedAt: string }>,
+  remoteDocuments: GitHubSyncDocument[]
+): GitHubProjectFileStatus[] {
+  const localMap = new Map(localDocuments.map((document) => [document.name, document]));
+  const remoteMap = new Map(remoteDocuments.map((document) => [document.name, document]));
+  const paths = new Set([...localMap.keys(), ...remoteMap.keys()]);
+
+  return [...paths]
+    .sort((left, right) => left.localeCompare(right))
+    .map((path) => {
+      const localDocument = localMap.get(path);
+      const remoteDocument = remoteMap.get(path);
+
+      if (localDocument && !remoteDocument) {
+        return { path, state: "local-only" as const };
+      }
+
+      if (!localDocument && remoteDocument) {
+        return { path, state: "remote-only" as const };
+      }
+
+      if (
+        localDocument &&
+        remoteDocument &&
+        compareSyncContent(localDocument.content, remoteDocument.content)
+      ) {
+        return { path, state: "in-sync" as const };
+      }
+
+      return { path, state: "diverged" as const };
+    });
+}
+
+function compareSyncContent(left: string | Uint8Array, right: string | Uint8Array): boolean {
+  if (typeof left === "string" && typeof right === "string") {
+    return left === right;
+  }
+
+  if (left instanceof Uint8Array && right instanceof Uint8Array) {
+    if (left.length !== right.length) {
+      return false;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return false;
 }

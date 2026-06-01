@@ -1,5 +1,6 @@
 import { openDB } from "idb";
 import type { AppSnapshot } from "../app/appState";
+import type { GitWorkspaceState } from "../git/gitState";
 import type { GitHubRemoteConfig } from "../github/githubSync";
 import type { ThemeDefinition } from "../theme/themes";
 import type { TypstSnippet } from "../snippets/snippets";
@@ -9,6 +10,7 @@ const DATABASE_VERSION = 1;
 const STORE_NAME = "app";
 const SNAPSHOT_KEY = "snapshot";
 const GITHUB_CONFIG_KEY = "github-config";
+const GIT_WORKSPACE_KEY = "git-workspace";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
 const DESMOS_API_KEY_KEY = "desmos-api-key";
@@ -41,6 +43,16 @@ export async function loadGitHubConfig(): Promise<GitHubRemoteConfig | null> {
 export async function saveGitHubConfig(config: GitHubRemoteConfig): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, config, GITHUB_CONFIG_KEY);
+}
+
+export async function loadGitWorkspace(): Promise<GitWorkspaceState | null> {
+  const database = await getDatabase();
+  return (await database.get(STORE_NAME, GIT_WORKSPACE_KEY)) ?? null;
+}
+
+export async function saveGitWorkspace(workspace: GitWorkspaceState): Promise<void> {
+  const database = await getDatabase();
+  await database.put(STORE_NAME, workspace, GIT_WORKSPACE_KEY);
 }
 
 export async function loadCustomThemes(): Promise<ThemeDefinition[] | null> {
