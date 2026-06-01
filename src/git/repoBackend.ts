@@ -1,0 +1,1080 @@
+import { unzlibSync, zlibSync } from "fflate";
+import {
+  deleteProjectPath,
+  ensureProjectFolder,
+  isReservedGitPath,
+  listProjectEntries,
+  listProjectFiles,
+  normalizeProjectPath,
+  readProjectFileBytes,
+  writeProjectFile,
+  type ProjectFileContent,
+  type ProjectFilesystemEntry,
+  type TyprProjectRepository
+} from "../project/projectState";
+import {
+  deleteProjectGitFile,
+  listProjectGitFiles,
+  readProjectGitFile,
+  writeProjectGitFile
+} from "../storage/indexedDbStorage";
+
+const DEFAULT_BRANCH = "main";
+const DEFAULT_AUTHOR: RepoAuthor = {
+  name: "Typr Local",
+  email: "typr-local@example.invalid"
+};
+const TEXT_EXTENSIONS = new Set(["typ", "tex", "txt", "md", "json", "yaml", "yml", "csv"]);
+
+const ENGINE_NOTE = [
+  "Typr browser git backend",
+  "",
+  "This repository is stored in browser-managed IndexedDB under the owning Typr project.",
+  "The working tree is the project filesystem and .git is a hidden reserved namespace.",
+  "The backend writes Git-compatible HEAD, refs, a binary index, and compressed loose objects.",
+  "Remote transport and merge conflict application are intentionally outside this local phase.",
+  "File modes are normalized to 100644; symlinks and executable bits are not supported."
+].join("\n");
+
+export type RepoResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: RepoError };
+
+export interface RepoError {
+  code:
+    | "not-found"
+    | "not-initialized"
+    | "invalid-path"
+    | "invalid-ref"
+    | "unsafe-worktree"
+    | "nothing-to-commit"
+    | "invalid-author"
+    | "invalid-message"
+    | "unsupported"
+    | "corrupt-repository"
+    | "storage-error";
+  message: string;
+  recoverable: boolean;
+}
+
+export interface RepoAuthor {
+  name: string;
+  email: string;
+}
+
+export interface RepoStatusEntry {
+  path: string;
+  staged: "added" | "modified" | "deleted" | null;
+  worktree: "modified" | "deleted" | "untracked" | null;
+}
+
+export interface RepoStatus {
+  branch: string;
+  headSha: string | null;
+  entries: RepoStatusEntry[];
+}
+
+export interface RepoBranch {
+  name: string;
+  sha: string | null;
+  current: boolean;
+}
+
+export interface RepoCommit {
+  sha: string;
+  shortSha: string;
+  message: string;
+  authorName: string;
+  authorEmail: string;
+  authoredAt: string;
+  parentShas: string[];
+}
+
+export interface RepoTrackedFile {
+  path: string;
+  content: ProjectFileContent;
+}
+
+export interface GitFileStorage {
+  readFile(projectId: string, path: string): Promise<Uint8Array | null>;
+  writeFile(projectId: string, path: string, content: Uint8Array): Promise<void>;
+  deleteFile(projectId: string, path: string): Promise<void>;
+  listFiles(projectId: string, prefix?: string): Promise<string[]>;
+}
+
+export interface RepoBackend {
+  initRepository(project: TyprProjectRepository): Promise<RepoResult<TyprProjectRepository>>;
+  openRepository(project: TyprProjectRepository): Promise<RepoResult<RepoStatus>>;
+  getCurrentBranch(project: TyprProjectRepository): Promise<RepoResult<string>>;
+  status(project: TyprProjectRepository): Promise<RepoResult<RepoStatus>>;
+  stagePaths(project: TyprProjectRepository, paths: string[]): Promise<RepoResult<RepoStatus>>;
+  resetIndex(project: TyprProjectRepository, paths?: string[]): Promise<RepoResult<RepoStatus>>;
+  commit(
+    project: TyprProjectRepository,
+    options: { message: string; author?: Partial<RepoAuthor> }
+  ): Promise<RepoResult<RepoCommit>>;
+  listBranches(project: TyprProjectRepository): Promise<RepoResult<RepoBranch[]>>;
+  createBranch(project: TyprProjectRepository, name: string): Promise<RepoResult<RepoBranch>>;
+  switchBranch(
+    project: TyprProjectRepository,
+    name: string
+  ): Promise<RepoResult<{ project: TyprProjectRepository; branch: RepoBranch }>>;
+  log(project: TyprProjectRepository, limit?: number): Promise<RepoResult<RepoCommit[]>>;
+  readTrackedFiles(project: TyprProjectRepository): Promise<RepoResult<RepoTrackedFile[]>>;
+}
+
+export function createRepoBackend(storage: GitFileStorage = createIndexedDbGitFileStorage()): RepoBackend {
+  return {
+    initRepository: (project) => asResult(() => initRepository(storage, project)),
+    openRepository: (project) => asResult(() => openRepository(storage, project)),
+    getCurrentBranch: (project) => asResult(() => getCurrentBranch(storage, project)),
+    status: (project) => asResult(() => getStatus(storage, project)),
+    stagePaths: (project, paths) => asResult(() => stagePaths(storage, project, paths)),
+    resetIndex: (project, paths) => asResult(() => resetIndex(storage, project, paths)),
+    commit: (project, options) => asResult(() => commit(storage, project, options)),
+    listBranches: (project) => asResult(() => listBranches(storage, project)),
+    createBranch: (project, name) => asResult(() => createBranch(storage, project, name)),
+    switchBranch: (project, name) => asResult(() => switchBranch(storage, project, name)),
+    log: (project, limit) => asResult(() => getLog(storage, project, limit)),
+    readTrackedFiles: (project) => asResult(() => readTrackedFiles(storage, project))
+  };
+}
+
+export function createMemoryGitFileStorage(): GitFileStorage {
+  const files = new Map<string, Uint8Array>();
+  const key = (projectId: string, path: string) => `${projectId}/${normalizeGitStoragePath(path)}`;
+
+  return {
+    async readFile(projectId, path) {
+      return files.get(key(projectId, path)) ?? null;
+    },
+    async writeFile(projectId, path, content) {
+      files.set(key(projectId, path), new Uint8Array(content));
+    },
+    async deleteFile(projectId, path) {
+      files.delete(key(projectId, path));
+    },
+    async listFiles(projectId, prefix = "") {
+      const keyPrefix = key(projectId, prefix);
+      const projectPrefix = key(projectId, "");
+      return [...files.keys()]
+        .filter((fileKey) => fileKey.startsWith(keyPrefix))
+        .map((fileKey) => fileKey.slice(projectPrefix.length))
+        .sort((left, right) => left.localeCompare(right));
+    }
+  };
+}
+
+export function createIndexedDbGitFileStorage(): GitFileStorage {
+  return {
+    readFile: readProjectGitFile,
+    writeFile: writeProjectGitFile,
+    deleteFile: deleteProjectGitFile,
+    listFiles: listProjectGitFiles
+  };
+}
+
+export function formatRepoError(error: RepoError): string {
+  return error.message;
+}
+
+async function initRepository(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<TyprProjectRepository> {
+  const existingHead = await readTextFile(storage, project.id, "HEAD");
+  if (existingHead !== null) {
+    await recoverRepositoryFiles(storage, project.id);
+    return markProjectReady(project, await getCurrentBranchName(storage, project.id));
+  }
+
+  await recoverRepositoryFiles(storage, project.id);
+  await writeTextFile(storage, project.id, "HEAD", `ref: refs/heads/${DEFAULT_BRANCH}\n`);
+  await writeTextFile(storage, project.id, "config", [
+    "[core]",
+    "\trepositoryformatversion = 0",
+    "\tfilemode = false",
+    "\tbare = false",
+    "\tlogallrefupdates = true",
+    "[user]",
+    `\tname = ${DEFAULT_AUTHOR.name}`,
+    `\temail = ${DEFAULT_AUTHOR.email}`,
+    ""
+  ].join("\n"));
+  await writeTextFile(storage, project.id, "ENGINE.md", ENGINE_NOTE);
+  await writeIndex(storage, project.id, []);
+
+  return markProjectReady(project, DEFAULT_BRANCH);
+}
+
+async function openRepository(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<RepoStatus> {
+  await assertRepositoryExists(storage, project.id);
+  return getStatus(storage, project);
+}
+
+async function recoverRepositoryFiles(storage: GitFileStorage, projectId: string): Promise<void> {
+  const head = await readTextFile(storage, projectId, "HEAD");
+  const index = await storage.readFile(projectId, "index");
+  if (head === null) {
+    await writeTextFile(storage, projectId, "HEAD", `ref: refs/heads/${DEFAULT_BRANCH}\n`);
+  }
+  if (index === null) {
+    await writeIndex(storage, projectId, []);
+  } else {
+    try {
+      parseIndex(index);
+    } catch {
+      await writeIndex(storage, projectId, []);
+    }
+  }
+  if ((await readTextFile(storage, projectId, "ENGINE.md")) === null) {
+    await writeTextFile(storage, projectId, "ENGINE.md", ENGINE_NOTE);
+  }
+}
+
+async function getCurrentBranch(storage: GitFileStorage, project: TyprProjectRepository): Promise<string> {
+  await assertRepositoryExists(storage, project.id);
+  return getCurrentBranchName(storage, project.id);
+}
+
+async function getStatus(storage: GitFileStorage, project: TyprProjectRepository): Promise<RepoStatus> {
+  await assertRepositoryExists(storage, project.id);
+  const branch = await getCurrentBranchName(storage, project.id);
+  const headSha = await getHeadSha(storage, project.id);
+  const headFiles = headSha ? await readCommitTreeFiles(storage, project.id, headSha) : new Map<string, IndexEntry>();
+  const index = await readIndex(storage, project.id);
+  const workingFiles = await buildWorkingFileMap(storage, project);
+  const paths = new Set([...headFiles.keys(), ...index.map((entry) => entry.path), ...workingFiles.keys()]);
+  const entries: RepoStatusEntry[] = [];
+
+  for (const path of [...paths].sort((left, right) => left.localeCompare(right))) {
+    const headEntry = headFiles.get(path) ?? null;
+    const indexEntry = index.find((entry) => entry.path === path) ?? null;
+    const workEntry = workingFiles.get(path) ?? null;
+    const staged = compareIndexEntries(indexEntry, headEntry) ? null : classifyChange(indexEntry, headEntry);
+    const worktree = compareIndexEntries(workEntry, indexEntry) ? null : classifyWorktreeChange(workEntry, indexEntry);
+
+    if (staged || worktree) {
+      entries.push({ path, staged, worktree });
+    }
+  }
+
+  return { branch, headSha, entries };
+}
+
+async function stagePaths(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  paths: string[]
+): Promise<RepoStatus> {
+  await assertRepositoryExists(storage, project.id);
+  const requestedPaths = normalizeRequestedPaths(paths);
+  const status = await getStatus(storage, project);
+  const changedPaths =
+    requestedPaths.includes(".") || requestedPaths.length === 0
+      ? status.entries.map((entry) => entry.path)
+      : expandRequestedPaths(project, requestedPaths, true).filter((path) =>
+          status.entries.some((entry) => entry.path === path)
+        );
+  const index = await readIndex(storage, project.id);
+  const indexByPath = new Map(index.map((entry) => [entry.path, entry]));
+
+  for (const path of changedPaths) {
+    assertRepositoryPath(path);
+    const bytes = readProjectFileBytes(project, path);
+    if (bytes === null) {
+      indexByPath.delete(path);
+      continue;
+    }
+    const oid = await writeObject(storage, project.id, "blob", bytes);
+    indexByPath.set(path, {
+      path,
+      oid,
+      mode: "100644",
+      size: bytes.byteLength
+    });
+  }
+
+  await writeIndex(storage, project.id, [...indexByPath.values()].sort(comparePathEntries));
+  return getStatus(storage, project);
+}
+
+async function resetIndex(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  paths: string[] = []
+): Promise<RepoStatus> {
+  await assertRepositoryExists(storage, project.id);
+  const requestedPaths = normalizeRequestedPaths(paths);
+  const headSha = await getHeadSha(storage, project.id);
+  const headFiles = headSha ? await readCommitTreeFiles(storage, project.id, headSha) : new Map<string, IndexEntry>();
+  const index = await readIndex(storage, project.id);
+
+  if (requestedPaths.length === 0 || requestedPaths.includes(".")) {
+    await writeIndex(storage, project.id, [...headFiles.values()].sort(comparePathEntries));
+    return getStatus(storage, project);
+  }
+
+  const indexByPath = new Map(index.map((entry) => [entry.path, entry]));
+  for (const path of expandRequestedPaths(project, requestedPaths, true)) {
+    const headEntry = headFiles.get(path);
+    if (headEntry) {
+      indexByPath.set(path, headEntry);
+    } else {
+      indexByPath.delete(path);
+    }
+  }
+
+  await writeIndex(storage, project.id, [...indexByPath.values()].sort(comparePathEntries));
+  return getStatus(storage, project);
+}
+
+async function commit(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  options: { message: string; author?: Partial<RepoAuthor> }
+): Promise<RepoCommit> {
+  await assertRepositoryExists(storage, project.id);
+  const message = validateCommitMessage(options.message);
+  const author = validateAuthor(options.author);
+  const status = await getStatus(storage, project);
+  if (!status.entries.some((entry) => entry.staged !== null)) {
+    throw repoFailure("nothing-to-commit", "git commit: nothing staged.", true);
+  }
+
+  const index = await readIndex(storage, project.id);
+  const treeSha = await writeTreeFromIndex(storage, project.id, index);
+  const parentSha = await getHeadSha(storage, project.id);
+  const now = Math.floor(Date.now() / 1000);
+  const timezone = formatTimezoneOffset(new Date());
+  const header = [
+    `tree ${treeSha}`,
+    parentSha ? `parent ${parentSha}` : null,
+    `author ${author.name} <${author.email}> ${now} ${timezone}`,
+    `committer ${author.name} <${author.email}> ${now} ${timezone}`,
+    ""
+  ].filter((line): line is string => line !== null);
+  const sha = await writeObject(storage, project.id, "commit", encodeUtf8(`${header.join("\n")}\n${message}\n`));
+  const branch = await getCurrentBranchName(storage, project.id);
+  await writeTextFile(storage, project.id, `refs/heads/${branch}`, `${sha}\n`);
+
+  return {
+    sha,
+    shortSha: sha.slice(0, 7),
+    message,
+    authorName: author.name,
+    authorEmail: author.email,
+    authoredAt: new Date(now * 1000).toISOString(),
+    parentShas: parentSha ? [parentSha] : []
+  };
+}
+
+async function listBranches(storage: GitFileStorage, project: TyprProjectRepository): Promise<RepoBranch[]> {
+  await assertRepositoryExists(storage, project.id);
+  const current = await getCurrentBranchName(storage, project.id);
+  const files = await storage.listFiles(project.id, "refs/heads/");
+  const branches: RepoBranch[] = [];
+
+  for (const file of files) {
+    const name = file.slice("refs/heads/".length);
+    if (!name) {
+      continue;
+    }
+    branches.push({
+      name,
+      sha: (await readTextFile(storage, project.id, file))?.trim() || null,
+      current: name === current
+    });
+  }
+
+  if (!branches.some((branch) => branch.name === current)) {
+    branches.push({
+      name: current,
+      sha: await getHeadSha(storage, project.id),
+      current: true
+    });
+  }
+
+  return branches.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function createBranch(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  name: string
+): Promise<RepoBranch> {
+  await assertRepositoryExists(storage, project.id);
+  const branchName = validateBranchName(name);
+  const existing = await readTextFile(storage, project.id, `refs/heads/${branchName}`);
+  if (existing !== null) {
+    throw repoFailure("invalid-ref", `git branch: branch '${branchName}' already exists.`, true);
+  }
+  const sha = await getHeadSha(storage, project.id);
+  await writeTextFile(storage, project.id, `refs/heads/${branchName}`, sha ? `${sha}\n` : "");
+  return { name: branchName, sha, current: false };
+}
+
+async function switchBranch(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  name: string
+): Promise<{ project: TyprProjectRepository; branch: RepoBranch }> {
+  await assertRepositoryExists(storage, project.id);
+  const branchName = validateBranchName(name);
+  const branchSha = (await readTextFile(storage, project.id, `refs/heads/${branchName}`))?.trim() ?? null;
+  if (branchSha === null) {
+    throw repoFailure("not-found", `git switch: branch '${branchName}' does not exist.`, true);
+  }
+
+  const status = await getStatus(storage, project);
+  if (status.entries.length > 0) {
+    throw repoFailure(
+      "unsafe-worktree",
+      "git switch: commit or reset local changes before switching branches.",
+      true
+    );
+  }
+
+  await writeTextFile(storage, project.id, "HEAD", `ref: refs/heads/${branchName}\n`);
+  const files = branchSha ? await readCommitTreeFiles(storage, project.id, branchSha) : new Map<string, IndexEntry>();
+  await writeIndex(storage, project.id, [...files.values()].sort(comparePathEntries));
+  const nextProject = await applyTrackedFilesToProject(storage, project, files);
+
+  return {
+    project: markProjectReady(nextProject, branchName),
+    branch: { name: branchName, sha: branchSha || null, current: true }
+  };
+}
+
+async function getLog(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  limit = 20
+): Promise<RepoCommit[]> {
+  await assertRepositoryExists(storage, project.id);
+  const commits: RepoCommit[] = [];
+  let sha = await getHeadSha(storage, project.id);
+
+  while (sha && commits.length < limit) {
+    const parsed = await readCommit(storage, project.id, sha);
+    commits.push(parsed);
+    sha = parsed.parentShas[0] ?? null;
+  }
+
+  return commits;
+}
+
+async function readTrackedFiles(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<RepoTrackedFile[]> {
+  await assertRepositoryExists(storage, project.id);
+  const headSha = await getHeadSha(storage, project.id);
+  if (!headSha) {
+    return [];
+  }
+  const files = await readCommitTreeFiles(storage, project.id, headSha);
+  const tracked: RepoTrackedFile[] = [];
+
+  for (const entry of [...files.values()].sort(comparePathEntries)) {
+    const bytes = await readObject(storage, project.id, entry.oid, "blob");
+    tracked.push({
+      path: entry.path,
+      content: decodeProjectContent(entry.path, bytes)
+    });
+  }
+
+  return tracked;
+}
+
+async function buildWorkingFileMap(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<Map<string, IndexEntry>> {
+  const result = new Map<string, IndexEntry>();
+  for (const file of listProjectFiles(project)) {
+    assertRepositoryPath(file.path);
+    const bytes = typeof file.content === "string" ? encodeUtf8(file.content) : file.content;
+    const oid = await writeObject(storage, project.id, "blob", bytes);
+    result.set(file.path, {
+      path: file.path,
+      oid,
+      mode: "100644",
+      size: bytes.byteLength
+    });
+  }
+  return result;
+}
+
+async function applyTrackedFilesToProject(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  files: Map<string, IndexEntry>
+): Promise<TyprProjectRepository> {
+  let nextProject = project;
+  const nextPaths = new Set(files.keys());
+  const previousEntries = new Map(listProjectEntries(project).map((entry) => [entry.path, entry]));
+
+  for (const entry of listProjectEntries(project)) {
+    if (!nextPaths.has(entry.path)) {
+      nextProject = deleteProjectPath(nextProject, entry.path);
+    }
+  }
+
+  for (const path of nextPaths) {
+    const parentPaths = getParentPaths(path);
+    for (const parentPath of parentPaths) {
+      nextProject = ensureProjectFolder(
+        nextProject,
+        parentPath,
+        previousEntries.get(parentPath)?.source
+      );
+    }
+    const entry = files.get(path);
+    if (!entry) {
+      continue;
+    }
+    const bytes = await readObject(storage, project.id, entry.oid, "blob");
+    nextProject = writeProjectFile(
+      nextProject,
+      path,
+      decodeProjectContent(path, bytes, previousEntries.get(path)),
+      previousEntries.get(path)?.source
+    );
+  }
+
+  return nextProject;
+}
+
+async function writeTreeFromIndex(
+  storage: GitFileStorage,
+  projectId: string,
+  entries: IndexEntry[]
+): Promise<string> {
+  return writeTreeNode(storage, projectId, buildTreeNode(entries));
+}
+
+async function writeTreeNode(
+  storage: GitFileStorage,
+  projectId: string,
+  node: TreeNode
+): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  const children = [...node.children.entries()].sort(([left], [right]) => left.localeCompare(right));
+
+  for (const [name, child] of children) {
+    if (child.kind === "file") {
+      chunks.push(encodeUtf8(`${child.entry.mode} ${name}\0`), hexToBytes(child.entry.oid));
+      continue;
+    }
+    const treeSha = await writeTreeNode(storage, projectId, child.node);
+    chunks.push(encodeUtf8(`40000 ${name}\0`), hexToBytes(treeSha));
+  }
+
+  return writeObject(storage, projectId, "tree", concatBytes(chunks));
+}
+
+function buildTreeNode(entries: IndexEntry[]): TreeNode {
+  const root: TreeNode = { children: new Map() };
+  for (const entry of entries.sort(comparePathEntries)) {
+    const segments = entry.path.split("/");
+    const fileName = segments.pop();
+    if (!fileName) {
+      continue;
+    }
+    let node = root;
+    for (const segment of segments) {
+      const existing = node.children.get(segment);
+      if (existing?.kind === "tree") {
+        node = existing.node;
+        continue;
+      }
+      const child: TreeNode = { children: new Map() };
+      node.children.set(segment, { kind: "tree", node: child });
+      node = child;
+    }
+    node.children.set(fileName, { kind: "file", entry });
+  }
+  return root;
+}
+
+async function readCommitTreeFiles(
+  storage: GitFileStorage,
+  projectId: string,
+  commitSha: string
+): Promise<Map<string, IndexEntry>> {
+  const commit = parseCommitText(decodeUtf8(await readObject(storage, projectId, commitSha, "commit")), commitSha);
+  const treeSha = commit.treeSha;
+  const result = new Map<string, IndexEntry>();
+  await collectTreeFiles(storage, projectId, treeSha, "", result);
+  return result;
+}
+
+async function collectTreeFiles(
+  storage: GitFileStorage,
+  projectId: string,
+  treeSha: string,
+  prefix: string,
+  result: Map<string, IndexEntry>
+): Promise<void> {
+  const tree = await readObject(storage, projectId, treeSha, "tree");
+  let offset = 0;
+  while (offset < tree.length) {
+    const modeEnd = indexOfByte(tree, 0x20, offset);
+    const nameEnd = indexOfByte(tree, 0x00, modeEnd + 1);
+    const mode = decodeUtf8(tree.slice(offset, modeEnd));
+    const name = decodeUtf8(tree.slice(modeEnd + 1, nameEnd));
+    const oid = bytesToHex(tree.slice(nameEnd + 1, nameEnd + 21));
+    const path = prefix ? `${prefix}/${name}` : name;
+    offset = nameEnd + 21;
+
+    if (mode === "40000") {
+      await collectTreeFiles(storage, projectId, oid, path, result);
+    } else {
+      const bytes = await readObject(storage, projectId, oid, "blob");
+      result.set(path, {
+        path,
+        oid,
+        mode: "100644",
+        size: bytes.byteLength
+      });
+    }
+  }
+}
+
+async function readCommit(
+  storage: GitFileStorage,
+  projectId: string,
+  sha: string
+): Promise<RepoCommit> {
+  return parseCommitText(decodeUtf8(await readObject(storage, projectId, sha, "commit")), sha);
+}
+
+function parseCommitText(text: string, sha: string): RepoCommit & { treeSha: string } {
+  const [rawHeaders, ...messageParts] = text.split("\n\n");
+  const headers = rawHeaders.split("\n");
+  const treeSha = headers.find((line) => line.startsWith("tree "))?.slice(5).trim() ?? "";
+  const parentShas = headers.filter((line) => line.startsWith("parent ")).map((line) => line.slice(7).trim());
+  const authorLine = headers.find((line) => line.startsWith("author ")) ?? "";
+  const authorMatch = /^author (.*) <([^>]*)> (\d+) [+-]\d{4}$/.exec(authorLine);
+  const message = messageParts.join("\n\n").trim();
+
+  if (!treeSha) {
+    throw repoFailure("corrupt-repository", `Commit ${sha.slice(0, 7)} is missing a tree.`, true);
+  }
+
+  return {
+    sha,
+    shortSha: sha.slice(0, 7),
+    treeSha,
+    message,
+    authorName: authorMatch?.[1] ?? "Unknown",
+    authorEmail: authorMatch?.[2] ?? "",
+    authoredAt: authorMatch ? new Date(Number(authorMatch[3]) * 1000).toISOString() : "",
+    parentShas
+  };
+}
+
+async function writeObject(
+  storage: GitFileStorage,
+  projectId: string,
+  type: "blob" | "tree" | "commit",
+  content: Uint8Array
+): Promise<string> {
+  const payload = concatBytes([encodeUtf8(`${type} ${content.byteLength}\0`), content]);
+  const sha = await sha1Hex(payload);
+  const path = `objects/${sha.slice(0, 2)}/${sha.slice(2)}`;
+  if ((await storage.readFile(projectId, path)) === null) {
+    await storage.writeFile(projectId, path, zlibSync(payload));
+  }
+  return sha;
+}
+
+async function readObject(
+  storage: GitFileStorage,
+  projectId: string,
+  sha: string,
+  expectedType: "blob" | "tree" | "commit"
+): Promise<Uint8Array> {
+  const compressed = await storage.readFile(projectId, `objects/${sha.slice(0, 2)}/${sha.slice(2)}`);
+  if (!compressed) {
+    throw repoFailure("corrupt-repository", `Missing git object ${sha}.`, true);
+  }
+
+  const payload = unzlibSync(compressed);
+  const headerEnd = indexOfByte(payload, 0x00, 0);
+  const header = decodeUtf8(payload.slice(0, headerEnd));
+  const [type, sizeText] = header.split(" ");
+  if (type !== expectedType) {
+    throw repoFailure("corrupt-repository", `Expected ${expectedType} object ${sha}, found ${type}.`, true);
+  }
+  const content = payload.slice(headerEnd + 1);
+  if (content.byteLength !== Number(sizeText)) {
+    throw repoFailure("corrupt-repository", `Git object ${sha} has an invalid size.`, true);
+  }
+  return content;
+}
+
+async function readIndex(storage: GitFileStorage, projectId: string): Promise<IndexEntry[]> {
+  const bytes = await storage.readFile(projectId, "index");
+  return bytes ? parseIndex(bytes) : [];
+}
+
+async function writeIndex(
+  storage: GitFileStorage,
+  projectId: string,
+  entries: IndexEntry[]
+): Promise<void> {
+  const bodyChunks: Uint8Array[] = [encodeUtf8("DIRC"), uint32be(2), uint32be(entries.length)];
+  for (const entry of entries.sort(comparePathEntries)) {
+    const pathBytes = encodeUtf8(entry.path);
+    const fixed = new Uint8Array(62);
+    const view = new DataView(fixed.buffer);
+    view.setUint32(24, parseInt(entry.mode, 8));
+    view.setUint32(36, entry.size);
+    fixed.set(hexToBytes(entry.oid), 40);
+    view.setUint16(60, Math.min(pathBytes.byteLength, 0xfff));
+    const withoutPadding = concatBytes([fixed, pathBytes, new Uint8Array([0])]);
+    const paddingLength = (8 - (withoutPadding.byteLength % 8)) % 8;
+    bodyChunks.push(withoutPadding, new Uint8Array(paddingLength));
+  }
+  const body = concatBytes(bodyChunks);
+  const checksum = hexToBytes(await sha1Hex(body));
+  await storage.writeFile(projectId, "index", concatBytes([body, checksum]));
+}
+
+function parseIndex(bytes: Uint8Array): IndexEntry[] {
+  if (decodeUtf8(bytes.slice(0, 4)) !== "DIRC") {
+    throw repoFailure("corrupt-repository", "The git index is not a DIRC index.", true);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint32(4);
+  if (version !== 2) {
+    throw repoFailure("unsupported", `Git index version ${version} is not supported.`, true);
+  }
+  const count = view.getUint32(8);
+  const entries: IndexEntry[] = [];
+  let offset = 12;
+  for (let index = 0; index < count; index += 1) {
+    const mode = view.getUint32(offset + 24).toString(8);
+    const size = view.getUint32(offset + 36);
+    const oid = bytesToHex(bytes.slice(offset + 40, offset + 60));
+    const flags = view.getUint16(offset + 60);
+    const pathLength = flags & 0xfff;
+    const pathStart = offset + 62;
+    const path = decodeUtf8(bytes.slice(pathStart, pathStart + pathLength));
+    const entryLength = 62 + pathLength + 1;
+    offset += entryLength + ((8 - (entryLength % 8)) % 8);
+    entries.push({ path, oid, mode: mode === "100755" ? "100755" : "100644", size });
+  }
+  return entries.sort(comparePathEntries);
+}
+
+async function getHeadSha(storage: GitFileStorage, projectId: string): Promise<string | null> {
+  const branch = await getCurrentBranchName(storage, projectId);
+  return (await readTextFile(storage, projectId, `refs/heads/${branch}`))?.trim() || null;
+}
+
+async function getCurrentBranchName(storage: GitFileStorage, projectId: string): Promise<string> {
+  const head = await readTextFile(storage, projectId, "HEAD");
+  if (!head) {
+    throw repoFailure("not-initialized", "This project does not have an initialized local git repository.", true);
+  }
+  const match = /^ref: refs\/heads\/(.+)\s*$/.exec(head);
+  if (!match) {
+    throw repoFailure("unsupported", "Detached HEAD is not supported by the Typr browser git backend.", true);
+  }
+  return match[1];
+}
+
+async function assertRepositoryExists(storage: GitFileStorage, projectId: string): Promise<void> {
+  if ((await readTextFile(storage, projectId, "HEAD")) === null) {
+    throw repoFailure("not-initialized", "This project does not have an initialized local git repository.", true);
+  }
+}
+
+function markProjectReady(project: TyprProjectRepository, branch: string): TyprProjectRepository {
+  if (
+    project.git.backend === "browser-git" &&
+    project.git.status === "ready" &&
+    project.git.headRef === `refs/heads/${branch}` &&
+    project.git.initializedAt
+  ) {
+    return project;
+  }
+
+  const now = new Date().toISOString();
+  return {
+    ...project,
+    git: {
+      ...project.git,
+      backend: "browser-git",
+      status: "ready",
+      headRef: `refs/heads/${branch}`,
+      defaultBranch: project.git.defaultBranch ?? DEFAULT_BRANCH,
+      initializedAt: project.git.initializedAt ?? now,
+      recoveryMessage: null
+    },
+    updatedAt: now
+  };
+}
+
+function normalizeRequestedPaths(paths: string[]): string[] {
+  return paths.map((path) => path.trim()).filter(Boolean).map((path) => (path === "." ? "." : assertRepositoryPath(path)));
+}
+
+function expandRequestedPaths(
+  project: TyprProjectRepository,
+  paths: string[],
+  includeMissing = false
+): string[] {
+  const files = listProjectFiles(project).map((file) => file.path);
+  const expanded = new Set<string>();
+  for (const requested of paths) {
+    if (requested === ".") {
+      files.forEach((path) => expanded.add(path));
+      continue;
+    }
+    const matchingFiles = files.filter((path) => path === requested || path.startsWith(`${requested}/`));
+    matchingFiles.forEach((path) => expanded.add(path));
+    if (includeMissing && matchingFiles.length === 0) {
+      expanded.add(requested);
+    }
+  }
+  return [...expanded].sort((left, right) => left.localeCompare(right));
+}
+
+function assertRepositoryPath(path: string): string {
+  const normalizedPath = normalizeProjectPath(path);
+  if (!normalizedPath || isReservedGitPath(normalizedPath)) {
+    throw repoFailure("invalid-path", "Direct access to .git internals is reserved for Typr git storage.", true);
+  }
+  return normalizedPath;
+}
+
+function normalizeGitStoragePath(path: string): string {
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+function classifyChange(
+  nextEntry: IndexEntry | null,
+  previousEntry: IndexEntry | null
+): "added" | "modified" | "deleted" {
+  if (nextEntry && !previousEntry) {
+    return "added";
+  }
+  if (!nextEntry && previousEntry) {
+    return "deleted";
+  }
+  return "modified";
+}
+
+function classifyWorktreeChange(
+  nextEntry: IndexEntry | null,
+  previousEntry: IndexEntry | null
+): "modified" | "deleted" | "untracked" {
+  if (nextEntry && !previousEntry) {
+    return "untracked";
+  }
+  if (!nextEntry && previousEntry) {
+    return "deleted";
+  }
+  return "modified";
+}
+
+function compareIndexEntries(left: IndexEntry | null, right: IndexEntry | null): boolean {
+  if (!left && !right) {
+    return true;
+  }
+  return Boolean(left && right && left.oid === right.oid && left.mode === right.mode);
+}
+
+function comparePathEntries(left: { path: string }, right: { path: string }): number {
+  return left.path.localeCompare(right.path);
+}
+
+function validateCommitMessage(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    throw repoFailure("invalid-message", "git commit: use -m with a non-empty commit message.", true);
+  }
+  return trimmed;
+}
+
+function validateAuthor(author: Partial<RepoAuthor> | undefined): RepoAuthor {
+  const nextAuthor = {
+    name: author?.name?.trim() || DEFAULT_AUTHOR.name,
+    email: author?.email?.trim() || DEFAULT_AUTHOR.email
+  };
+  if (!nextAuthor.name || /[<>\n]/.test(nextAuthor.name) || !/^[^@\s<>]+@[^@\s<>]+$/.test(nextAuthor.email)) {
+    throw repoFailure("invalid-author", "Local commits need a valid author name and email.", true);
+  }
+  return nextAuthor;
+}
+
+function validateBranchName(name: string): string {
+  const branchName = name.trim();
+  if (
+    !branchName ||
+    branchName.startsWith("/") ||
+    branchName.endsWith("/") ||
+    branchName.includes("..") ||
+    branchName.includes("//") ||
+    branchName.endsWith(".lock") ||
+    /[\s~^:?*[\\\]\0]/.test(branchName) ||
+    branchName.split("/").some((segment) => segment.startsWith(".") || segment.endsWith("."))
+  ) {
+    throw repoFailure("invalid-ref", `Unsafe branch name '${name}'.`, true);
+  }
+  return branchName;
+}
+
+function decodeProjectContent(
+  path: string,
+  bytes: Uint8Array,
+  previousEntry?: ProjectFilesystemEntry
+): ProjectFileContent {
+  if (previousEntry?.kind === "file" && typeof previousEntry.content === "string") {
+    return decodeUtf8(bytes);
+  }
+  const extension = path.includes(".") ? path.split(".").at(-1)?.toLowerCase() : null;
+  if (extension && TEXT_EXTENSIONS.has(extension)) {
+    return decodeUtf8(bytes);
+  }
+  return bytes;
+}
+
+function getParentPaths(path: string): string[] {
+  const segments = path.split("/");
+  segments.pop();
+  return segments.map((_, index) => segments.slice(0, index + 1).join("/"));
+}
+
+function repoFailure(code: RepoError["code"], message: string, recoverable: boolean): RepoError {
+  return { code, message, recoverable };
+}
+
+async function asResult<T>(operation: () => Promise<T>): Promise<RepoResult<T>> {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    if (isRepoError(error)) {
+      return { ok: false, error };
+    }
+    return {
+      ok: false,
+      error: {
+        code: "storage-error",
+        message: error instanceof Error ? error.message : "Git storage operation failed.",
+        recoverable: true
+      }
+    };
+  }
+}
+
+function isRepoError(error: unknown): error is RepoError {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      "message" in error &&
+      "recoverable" in error
+  );
+}
+
+async function readTextFile(
+  storage: GitFileStorage,
+  projectId: string,
+  path: string
+): Promise<string | null> {
+  const bytes = await storage.readFile(projectId, path);
+  return bytes ? decodeUtf8(bytes) : null;
+}
+
+function writeTextFile(
+  storage: GitFileStorage,
+  projectId: string,
+  path: string,
+  text: string
+): Promise<void> {
+  return storage.writeFile(projectId, path, encodeUtf8(text));
+}
+
+async function sha1Hex(bytes: Uint8Array): Promise<string> {
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const digest = await crypto.subtle.digest("SHA-1", buffer);
+  return bytesToHex(new Uint8Array(digest));
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+function uint32be(value: number): Uint8Array {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, value);
+  return bytes;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function encodeUtf8(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
+function decodeUtf8(bytes: Uint8Array): string {
+  return new TextDecoder().decode(bytes);
+}
+
+function indexOfByte(bytes: Uint8Array, byte: number, from: number): number {
+  const index = bytes.indexOf(byte, from);
+  if (index < 0) {
+    throw repoFailure("corrupt-repository", "Git object data is truncated.", true);
+  }
+  return index;
+}
+
+function formatTimezoneOffset(date: Date): string {
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const absolute = Math.abs(offset);
+  const hours = Math.floor(absolute / 60).toString().padStart(2, "0");
+  const minutes = (absolute % 60).toString().padStart(2, "0");
+  return `${sign}${hours}${minutes}`;
+}
+
+interface IndexEntry {
+  path: string;
+  oid: string;
+  mode: "100644" | "100755";
+  size: number;
+}
+
+interface TreeNode {
+  children: Map<string, { kind: "file"; entry: IndexEntry } | { kind: "tree"; node: TreeNode }>;
+}

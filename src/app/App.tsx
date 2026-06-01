@@ -105,7 +105,6 @@ import { TerminalDrawer } from "../terminal/TerminalDrawer";
 import { isTerminalToggleShortcut } from "../terminal/terminalHotkey";
 import {
   createEmptyGitHubRemoteConfig,
-  fetchGitHubProjectStatus,
   getDefaultGitHubDirectory,
   listScopedLocalGitHubDocuments,
   hasRequiredConfig,
@@ -193,16 +192,14 @@ import {
   type GitWorkspaceState
 } from "../git/gitState";
 import {
-  applyLocalCommit,
-  buildCommittedDocumentsFromRemote,
-  convertCommittedDocumentsToSyncDocuments,
-  hasUncommittedChanges,
-  listChangedPaths,
-  listWorkingTreeEntries,
-  markLocalCommitsPushed,
-  type GitLocalCommit,
-  type GitWorkingTreeEntry
-} from "../git/localCommit";
+  createRepoBackend,
+  formatRepoError,
+  type RepoBranch,
+  type RepoCommit,
+  type RepoStatus,
+  type RepoStatusEntry,
+  type RepoTrackedFile
+} from "../git/repoBackend";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
 import {
@@ -534,6 +531,16 @@ function formatByteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatRepoStatusEntry(entry: RepoStatusEntry): string {
+  const parts = [entry.staged ? `staged ${entry.staged}` : null, entry.worktree]
+    .filter((part): part is string => Boolean(part));
+  return parts.join(", ") || "clean";
+}
+
+function hasRepoChanges(status: RepoStatus | null): boolean {
+  return Boolean(status?.entries.length);
+}
+
 function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
   const assets = new Map<string, CompileAssetFile>();
 
@@ -806,9 +813,15 @@ export function App() {
   const [gitCommitHistory, setGitCommitHistory] = useState<GitHubCommitSummary[]>([]);
   const [gitFileStatuses, setGitFileStatuses] = useState<GitHubProjectFileStatus[]>([]);
   const [gitBranches, setGitBranches] = useState<
-    Array<{ name: string; sha: string; protected: boolean; current: boolean }>
+    Array<{ name: string; sha: string | null; protected?: boolean; current: boolean }>
   >([]);
   const [isGitStatusLoading, setIsGitStatusLoading] = useState(false);
+  const repoBackend = useMemo(() => createRepoBackend(), []);
+  const [localRepoStatus, setLocalRepoStatus] = useState<RepoStatus | null>(null);
+  const [localRepoCommits, setLocalRepoCommits] = useState<RepoCommit[]>([]);
+  const [localRepoBranches, setLocalRepoBranches] = useState<RepoBranch[]>([]);
+  const [localRepoTrackedFiles, setLocalRepoTrackedFiles] = useState<RepoTrackedFile[]>([]);
+  const [gitRefreshToken, setGitRefreshToken] = useState(0);
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
@@ -955,30 +968,28 @@ export function App() {
   const selectedCommittedDocuments = useMemo(
     () =>
       selectedGitProject
-        ? convertCommittedDocumentsToSyncDocuments(selectedGitProject.committedDocuments).filter(
-            (document) => !shouldIgnorePath(document.name, selectedGitProject.ignorePatterns)
-          )
+        ? localRepoTrackedFiles
+            .filter((file) => !shouldIgnorePath(file.path, selectedGitProject.ignorePatterns))
+            .map((file) => ({
+              name: file.path,
+              content: file.content,
+              updatedAt: new Date().toISOString()
+            }))
         : [],
-    [selectedGitProject]
+    [localRepoTrackedFiles, selectedGitProject]
   );
-  const gitWorkingTreeEntries = useMemo<GitWorkingTreeEntry[]>(
+  const gitWorkingTreeEntries = useMemo<RepoStatusEntry[]>(
     () =>
       selectedGitProject
-        ? listWorkingTreeEntries({
-            committedDocuments: Object.fromEntries(
-              Object.entries(selectedGitProject.committedDocuments).filter(
-                ([path]) => !shouldIgnorePath(path, selectedGitProject.ignorePatterns)
-              )
-            ),
-            scopedDocuments: selectedScopedDocuments,
-            stagedPaths: selectedGitProject.stagedPaths
-          })
+        ? (localRepoStatus?.entries ?? []).filter(
+            (entry) => !shouldIgnorePath(entry.path, selectedGitProject.ignorePatterns)
+          )
         : [],
-    [selectedGitProject, selectedScopedDocuments]
+    [localRepoStatus, selectedGitProject]
   );
-  const localGitCommits = useMemo<GitLocalCommit[]>(
-    () => selectedGitProject?.localCommits ?? [],
-    [selectedGitProject]
+  const localGitCommits = useMemo<RepoCommit[]>(
+    () => (selectedGitProject ? localRepoCommits : []),
+    [localRepoCommits, selectedGitProject]
   );
   const updateGitManagedProject = useCallback(
     (projectId: string, updater: (project: GitManagedProject) => GitManagedProject) => {
@@ -1251,6 +1262,101 @@ export function App() {
       window.clearTimeout(handle);
     };
   }, [isHydrated, selectedProjectRepository, snapshot]);
+
+  const refreshLocalRepoState = useCallback(
+    async (project: TyprProjectRepository | null = selectedProjectRepository) => {
+      if (!project) {
+        setLocalRepoStatus(null);
+        setLocalRepoCommits([]);
+        setLocalRepoBranches([]);
+        setLocalRepoTrackedFiles([]);
+        return;
+      }
+
+      setIsGitStatusLoading(true);
+      const initResult = await repoBackend.initRepository(project);
+      if (!initResult.ok) {
+        setIsGitStatusLoading(false);
+        setSyncFeedback({
+          tone: "error",
+          text: formatRepoError(initResult.error)
+        });
+        return;
+      }
+
+      if (initResult.value !== project) {
+        setProjectRepository((currentProject) =>
+          currentProject.id === initResult.value.id ? initResult.value : currentProject
+        );
+      }
+
+      const initializedProject = initResult.value;
+      const [statusResult, branchesResult, commitsResult, trackedResult] = await Promise.all([
+        repoBackend.status(initializedProject),
+        repoBackend.listBranches(initializedProject),
+        repoBackend.log(initializedProject, 30),
+        repoBackend.readTrackedFiles(initializedProject)
+      ]);
+
+      setIsGitStatusLoading(false);
+      if (!statusResult.ok) {
+        setSyncFeedback({
+          tone: "error",
+          text: formatRepoError(statusResult.error)
+        });
+        return;
+      }
+
+      setLocalRepoStatus(statusResult.value);
+      setLocalRepoBranches(branchesResult.ok ? branchesResult.value : []);
+      setLocalRepoCommits(commitsResult.ok ? commitsResult.value : []);
+      setLocalRepoTrackedFiles(trackedResult.ok ? trackedResult.value : []);
+      setGitBranches(branchesResult.ok ? branchesResult.value : []);
+      setGitCommitHistory(
+        commitsResult.ok
+          ? commitsResult.value.map((commit) => ({
+              sha: commit.sha,
+              message: commit.message,
+              authoredAt: commit.authoredAt,
+              authorName: commit.authorName,
+              branchNames: [statusResult.value.branch]
+            }))
+          : []
+      );
+      setGitFileStatuses(
+        statusResult.value.entries.map((entry) => ({
+          path: entry.path,
+          state: entry.staged || entry.worktree ? "diverged" : "in-sync"
+        }))
+      );
+    },
+    [repoBackend, selectedProjectRepository, setProjectRepository]
+  );
+
+  useEffect(() => {
+    if (!isHydrated || !selectedProjectRepository) {
+      return;
+    }
+
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      if (!cancelled) {
+        void refreshLocalRepoState(selectedProjectRepository);
+      }
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [
+    gitRefreshToken,
+    isHydrated,
+    refreshLocalRepoState,
+    selectedProjectRepository?.filesystem.updatedAt,
+    selectedProjectRepository?.git.headRef,
+    selectedProjectRepository?.id
+  ]);
 
   useEffect(() => {
     setSelectedWorkspacePath((currentPath) => {
@@ -1766,76 +1872,32 @@ export function App() {
       setGitBranches([]);
       setGitCommitHistory([]);
       setGitFileStatuses([]);
-      setIsGitStatusLoading(false);
       return;
     }
 
-    if (selectedGitProject.backendId !== "browser") {
-      setGitBranches([]);
-      setGitCommitHistory([]);
-      setGitFileStatuses(
-        selectedScopedDocuments.map((document) => ({
-          path: document.relativePath,
-          state: "local-only"
-        }))
-      );
-      setIsGitStatusLoading(false);
-      return;
-    }
-
-    if (!hasRequiredConfig(githubConfig) || !isOnline) {
-      setGitBranches([]);
-      setGitCommitHistory([]);
-      setGitFileStatuses(
-        selectedScopedDocuments.map((document) => ({
-          path: document.relativePath,
-          state: "local-only"
-        }))
-      );
-      setIsGitStatusLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setIsGitStatusLoading(true);
-
-    void fetchGitHubProjectStatus({
-      config: githubConfig,
-      projectName: selectedGitProject.name,
-      localDocuments: selectedScopedDocuments.map((document) => ({
-        name: document.relativePath,
-        content: document.content,
-        updatedAt: document.updatedAt
+    setGitBranches(localRepoBranches);
+    setGitCommitHistory(
+      localRepoCommits.map((commit) => ({
+        sha: commit.sha,
+        message: commit.message,
+        authoredAt: commit.authoredAt,
+        authorName: commit.authorName,
+        branchNames: localRepoStatus ? [localRepoStatus.branch] : []
       }))
-    })
-      .then((status) => {
-        if (cancelled) {
-          return;
-        }
-
-        setGitBranches(status.branches);
-        setGitCommitHistory(status.commits);
-        setGitFileStatuses(status.files);
-      })
-      .catch(() => {
-        if (cancelled) {
-          return;
-        }
-
-        setGitBranches([]);
-        setGitCommitHistory([]);
-        setGitFileStatuses([]);
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsGitStatusLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [githubConfig, isOnline, selectedGitProject, selectedScopedDocuments]);
+    );
+    setGitFileStatuses(
+      gitWorkingTreeEntries.map((entry) => ({
+        path: entry.path,
+        state: entry.staged || entry.worktree ? "diverged" : "in-sync"
+      }))
+    );
+  }, [
+    gitWorkingTreeEntries,
+    localRepoBranches,
+    localRepoCommits,
+    localRepoStatus,
+    selectedGitProject
+  ]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -2719,36 +2781,41 @@ export function App() {
   );
 
   const handleStageGitPaths = useCallback(
-    (paths: string[]) => {
-      const normalizedPaths = paths
-        .map((path) => path.trim())
-        .filter(Boolean);
-      if (normalizedPaths.length === 0) {
+    async (paths: string[]) => {
+      if (!selectedProjectRepository) {
         return;
       }
 
-      updateSelectedGitProject((currentProject) => ({
-        ...currentProject,
-        stagedPaths: Array.from(new Set([...currentProject.stagedPaths, ...normalizedPaths])).sort(
-          (left, right) => left.localeCompare(right)
-        )
-      }));
+      const result = await repoBackend.stagePaths(selectedProjectRepository, paths);
+      if (!result.ok) {
+        setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
+        return;
+      }
+      setLocalRepoStatus(result.value);
+      setGitRefreshToken((token) => token + 1);
     },
-    [updateSelectedGitProject]
+    [repoBackend, selectedProjectRepository]
   );
 
   const handleUnstageGitPath = useCallback(
-    (path: string) => {
-      updateSelectedGitProject((currentProject) => ({
-        ...currentProject,
-        stagedPaths: currentProject.stagedPaths.filter((candidate) => candidate !== path)
-      }));
+    async (path: string) => {
+      if (!selectedProjectRepository) {
+        return;
+      }
+
+      const result = await repoBackend.resetIndex(selectedProjectRepository, [path]);
+      if (!result.ok) {
+        setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
+        return;
+      }
+      setLocalRepoStatus(result.value);
+      setGitRefreshToken((token) => token + 1);
     },
-    [updateSelectedGitProject]
+    [repoBackend, selectedProjectRepository]
   );
 
   const handleStageAllGitChanges = useCallback(() => {
-    const changedPaths = listChangedPaths(gitWorkingTreeEntries);
+    const changedPaths = gitWorkingTreeEntries.map((entry) => entry.path);
     if (changedPaths.length === 0) {
       setSyncFeedback({
         tone: "neutral",
@@ -2757,15 +2824,15 @@ export function App() {
       return;
     }
 
-    handleStageGitPaths(changedPaths);
+    void handleStageGitPaths(changedPaths);
     setSyncFeedback({
       tone: "success",
       text: `Staged ${changedPaths.length} path${changedPaths.length === 1 ? "" : "s"}.`
     });
   }, [gitWorkingTreeEntries, handleStageGitPaths]);
 
-  const handleCommitGitChanges = useCallback(() => {
-    if (!selectedGitProject) {
+  const handleCommitGitChanges = useCallback(async () => {
+    if (!selectedGitProject || !selectedProjectRepository) {
       setSyncFeedback({
         tone: "error",
         text: "Create or select a managed GitHub project first."
@@ -2773,7 +2840,7 @@ export function App() {
       return;
     }
 
-    if (selectedGitProject.stagedPaths.length === 0) {
+    if (!localRepoStatus?.entries.some((entry) => entry.staged !== null)) {
       setSyncFeedback({
         tone: "error",
         text: "Stage one or more files before committing."
@@ -2790,33 +2857,32 @@ export function App() {
       return;
     }
 
-    const commitResult = applyLocalCommit({
-      committedDocuments: selectedGitProject.committedDocuments,
-      scopedDocuments: selectedScopedDocuments.map((document) => ({
-        id: document.id,
-        relativePath: document.relativePath,
-        content: document.content,
-        updatedAt: document.updatedAt
-      })),
-      stagedPaths: selectedGitProject.stagedPaths,
-      message
-    });
+    const commitResult = await repoBackend.commit(selectedProjectRepository, { message });
+    if (!commitResult.ok) {
+      setSyncFeedback({
+        tone: "error",
+        text: formatRepoError(commitResult.error)
+      });
+      return;
+    }
 
     updateGitManagedProject(selectedGitProject.id, (currentProject) => ({
       ...currentProject,
-      committedDocuments: commitResult.committedDocuments,
-      localCommits: [commitResult.commit, ...currentProject.localCommits],
-      stagedPaths: [],
       draftCommitMessage: "",
       commitMessageTemplate: message
     }));
+    setGitRefreshToken((token) => token + 1);
     setSyncFeedback({
       tone: "success",
-      text: `Committed ${commitResult.commit.paths.length} path${
-        commitResult.commit.paths.length === 1 ? "" : "s"
-      }: ${commitResult.commit.message}`
+      text: `Committed ${commitResult.value.shortSha}: ${commitResult.value.message}`
     });
-  }, [selectedGitProject, selectedScopedDocuments, updateGitManagedProject]);
+  }, [
+    localRepoStatus,
+    repoBackend,
+    selectedGitProject,
+    selectedProjectRepository,
+    updateGitManagedProject
+  ]);
 
   const handleAddGitProject = useCallback(() => {
     const nextProject = createEmptyGitManagedProject({
@@ -3688,7 +3754,6 @@ export function App() {
       );
       updateGitManagedProject(selectedGitProject.id, (project) => ({
         ...project,
-        localCommits: markLocalCommitsPushed(project.localCommits),
         lastPushedAt: new Date().toISOString()
       }));
     }
@@ -3736,7 +3801,7 @@ export function App() {
       return { ok: false as const, message: "Fill in owner, repo, branch, and token first." };
     }
 
-    if (hasUncommittedChanges(gitWorkingTreeEntries)) {
+    if (hasRepoChanges(localRepoStatus)) {
       setSyncFeedback({
         tone: "error",
         text: "Commit or unstage your local changes before pulling."
@@ -3852,20 +3917,9 @@ export function App() {
     );
     updateGitManagedProject(selectedGitProject.id, (project) => ({
       ...project,
-      committedDocuments: buildCommittedDocumentsFromRemote(remoteDocuments),
-      stagedPaths: [],
-      localCommits: [
-        {
-          id: `git-commit-${crypto.randomUUID()}`,
-          message: projectName ? `Pull ${projectName} from GitHub` : "Pull from GitHub",
-          createdAt: new Date().toISOString(),
-          paths: remoteDocuments.map((document) => document.name).sort((left, right) => left.localeCompare(right)),
-          pushedAt: new Date().toISOString()
-        },
-        ...project.localCommits
-      ],
       lastPulledAt: new Date().toISOString()
     }));
+    setGitRefreshToken((token) => token + 1);
 
     const totalAdded = conflicts.addedRemotely.length;
     const totalAuto = conflicts.autoResolved.length;
@@ -3905,27 +3959,9 @@ export function App() {
       }))
     );
     updateGitManagedProject(selectedGitProject.id, (project) => ({
-      ...project,
-      committedDocuments: buildCommittedDocumentsFromRemote(
-        merged.map((document) => ({
-          name: document.name,
-          content: document.content
-        }))
-      ),
-      stagedPaths: [],
-      localCommits: [
-        {
-          id: `git-commit-${crypto.randomUUID()}`,
-          message: pendingRemoteProjectName
-            ? `Resolve pull for ${pendingRemoteProjectName}`
-            : "Resolve pull from GitHub",
-          createdAt: new Date().toISOString(),
-          paths: merged.map((document) => document.name).sort((left, right) => left.localeCompare(right)),
-          pushedAt: new Date().toISOString()
-        },
-        ...project.localCommits
-      ]
+      ...project
     }));
+    setGitRefreshToken((token) => token + 1);
     setConflictSet(null);
     setPendingRemoteDocuments(null);
     setPendingRemoteProjectName(null);
@@ -3977,7 +4013,7 @@ export function App() {
       return { ok: false as const, message: "Fill in owner, repo, branch, and token first." };
     }
 
-    if (hasUncommittedChanges(gitWorkingTreeEntries)) {
+    if (hasRepoChanges(localRepoStatus)) {
       setSyncFeedback({
         tone: "error",
         text: "Commit or unstage your local changes before syncing."
@@ -4080,7 +4116,6 @@ export function App() {
     );
     updateGitManagedProject(selectedGitProject.id, (project) => ({
       ...project,
-      localCommits: markLocalCommitsPushed(project.localCommits),
       lastPushedAt: new Date().toISOString()
     }));
     applyPullResult(conflicts, filteredRemoteDocuments, pullResult.projectName ?? null);
@@ -4154,6 +4189,14 @@ export function App() {
           };
         }
 
+        if (!selectedProjectRepository) {
+          return {
+            stdout: "",
+            stderr: "No Typr project repository is open.\n",
+            exitCode: 1
+          };
+        }
+
         if (subcommand === "help") {
           return {
             stdout:
@@ -4198,7 +4241,8 @@ export function App() {
         }
 
         if (subcommand === "switch") {
-          const branch = args[1]?.trim();
+          const createIndex = args.findIndex((argument) => argument === "-c");
+          const branch = (createIndex >= 0 ? args[createIndex + 1] : args[1])?.trim();
           if (!branch) {
             return {
               stdout: "",
@@ -4207,12 +4251,24 @@ export function App() {
             };
           }
 
-          updateSelectedGitProject((project) => ({
-            ...project,
-            branch
-          }));
+          if (createIndex >= 0) {
+            const createResult = await repoBackend.createBranch(selectedProjectRepository, branch);
+            if (!createResult.ok) {
+              return { stdout: "", stderr: `${formatRepoError(createResult.error)}\n`, exitCode: 1 };
+            }
+          }
+
+          const result = await repoBackend.switchBranch(selectedProjectRepository, branch);
+          if (!result.ok) {
+            return { stdout: "", stderr: `${formatRepoError(result.error)}\n`, exitCode: 1 };
+          }
+          setProjectRepository((project) =>
+            project.id === result.value.project.id ? result.value.project : project
+          );
+          updateSelectedGitProject((project) => ({ ...project, branch }));
+          setGitRefreshToken((token) => token + 1);
           return {
-            stdout: `Switched managed branch to ${branch}.\n`,
+            stdout: `Switched to branch '${branch}'.\n`,
             stderr: "",
             exitCode: 0
           };
@@ -4238,23 +4294,19 @@ export function App() {
             };
           }
 
-          const changedPaths = listChangedPaths(gitWorkingTreeEntries);
-          const pathsToStage =
-            requestedPath === "."
-              ? changedPaths
-              : changedPaths.filter((path) => path === requestedPath);
-
-          if (pathsToStage.length === 0) {
+          const result = await repoBackend.stagePaths(selectedProjectRepository, [requestedPath]);
+          if (!result.ok) {
             return {
               stdout: "",
-              stderr: `git add: no changed file matches '${requestedPath}'.\n`,
+              stderr: `${formatRepoError(result.error)}\n`,
               exitCode: 1
             };
           }
 
-          handleStageGitPaths(pathsToStage);
+          setLocalRepoStatus(result.value);
+          setGitRefreshToken((token) => token + 1);
           return {
-            stdout: `Staged ${pathsToStage.length} path${pathsToStage.length === 1 ? "" : "s"}.\n`,
+            stdout: `Staged ${requestedPath}.\n`,
             stderr: "",
             exitCode: 0
           };
@@ -4262,25 +4314,17 @@ export function App() {
 
         if (subcommand === "reset") {
           const requestedPath = args[1]?.trim();
-          if (!requestedPath) {
-            return {
-              stdout: "",
-              stderr: "git reset: provide a staged path.\n",
-              exitCode: 1
-            };
+          const result = await repoBackend.resetIndex(
+            selectedProjectRepository,
+            requestedPath ? [requestedPath] : []
+          );
+          if (!result.ok) {
+            return { stdout: "", stderr: `${formatRepoError(result.error)}\n`, exitCode: 1 };
           }
-
-          if (!selectedGitProject.stagedPaths.includes(requestedPath)) {
-            return {
-              stdout: "",
-              stderr: `git reset: '${requestedPath}' is not staged.\n`,
-              exitCode: 1
-            };
-          }
-
-          handleUnstageGitPath(requestedPath);
+          setLocalRepoStatus(result.value);
+          setGitRefreshToken((token) => token + 1);
           return {
-            stdout: `Unstaged ${requestedPath}.\n`,
+            stdout: requestedPath ? `Unstaged ${requestedPath}.\n` : "Reset index to HEAD.\n",
             stderr: "",
             exitCode: 0
           };
@@ -4299,38 +4343,21 @@ export function App() {
             };
           }
 
-          if (selectedGitProject.stagedPaths.length === 0) {
-            return {
-              stdout: "",
-              stderr: "git commit: nothing staged.\n",
-              exitCode: 1
-            };
+          const commitResult = await repoBackend.commit(selectedProjectRepository, { message });
+          if (!commitResult.ok) {
+            return { stdout: "", stderr: `${formatRepoError(commitResult.error)}\n`, exitCode: 1 };
           }
-
-          const commitResult = applyLocalCommit({
-            committedDocuments: selectedGitProject.committedDocuments,
-            scopedDocuments: selectedScopedDocuments.map((document) => ({
-              id: document.id,
-              relativePath: document.relativePath,
-              content: document.content,
-              updatedAt: document.updatedAt
-            })),
-            stagedPaths: selectedGitProject.stagedPaths,
-            message
-          });
 
           updateGitManagedProject(selectedGitProject.id, (project) => ({
             ...project,
-            committedDocuments: commitResult.committedDocuments,
-            localCommits: [commitResult.commit, ...project.localCommits],
-            stagedPaths: [],
             draftCommitMessage: "",
             commitMessageTemplate: message
           }));
+          setGitRefreshToken((token) => token + 1);
 
           return {
             stdout:
-              `[${selectedGitProject.branch} ${commitResult.commit.id.slice(-7)}] ${commitResult.commit.message}\n`,
+              `[${localRepoStatus?.branch ?? "main"} ${commitResult.value.shortSha}] ${commitResult.value.message}\n`,
             stderr: "",
             exitCode: 0
           };
@@ -4338,21 +4365,19 @@ export function App() {
 
         if (subcommand === "status" || subcommand === "branch" || subcommand === "log") {
           if (subcommand === "branch") {
-            const remoteBranches =
-              hasRequiredConfig(githubConfig) && isOnline
-                ? await fetchGitHubProjectStatus({
-                    config: githubConfig,
-                    projectName: selectedGitProject.name,
-                    localDocuments: selectedScopedDocuments.map((document) => ({
-                      name: document.relativePath,
-                      content: document.content,
-                      updatedAt: document.updatedAt
-                    }))
-                  }).then((status) => (status.ok ? status.branches : []))
-                : [];
-            const branchNames = remoteBranches.length > 0
-              ? remoteBranches.map((branch) => `${branch.current ? "*" : " "} ${branch.name}`)
-              : [`* ${selectedGitProject.branch}`];
+            if (args[1] && args[1] !== "--list") {
+              const createResult = await repoBackend.createBranch(selectedProjectRepository, args[1]);
+              if (!createResult.ok) {
+                return { stdout: "", stderr: `${formatRepoError(createResult.error)}\n`, exitCode: 1 };
+              }
+              setGitRefreshToken((token) => token + 1);
+              return { stdout: "", stderr: "", exitCode: 0 };
+            }
+            const branchesResult = await repoBackend.listBranches(selectedProjectRepository);
+            if (!branchesResult.ok) {
+              return { stdout: "", stderr: `${formatRepoError(branchesResult.error)}\n`, exitCode: 1 };
+            }
+            const branchNames = branchesResult.value.map((branch) => `${branch.current ? "*" : " "} ${branch.name}`);
             return {
               stdout: branchNames.join("\n") + "\n",
               stderr: "",
@@ -4361,7 +4386,11 @@ export function App() {
           }
 
           if (subcommand === "log") {
-            if (localGitCommits.length === 0) {
+            const logResult = await repoBackend.log(selectedProjectRepository, 20);
+            if (!logResult.ok) {
+              return { stdout: "", stderr: `${formatRepoError(logResult.error)}\n`, exitCode: 1 };
+            }
+            if (logResult.value.length === 0) {
               return {
                 stdout: "",
                 stderr: "No local commits yet.\n",
@@ -4370,12 +4399,10 @@ export function App() {
             }
             return {
               stdout:
-                localGitCommits
+                logResult.value
                   .map(
                     (commit) =>
-                      `${commit.id.slice(-7)} ${commit.createdAt} ${commit.message}${
-                        commit.pushedAt ? " [pushed]" : ""
-                      }`
+                      `${commit.shortSha} ${commit.authoredAt} ${commit.message}`
                   )
                   .join("\n") + "\n",
               stderr: "",
@@ -4383,16 +4410,20 @@ export function App() {
             };
           }
 
+          const statusResult = await repoBackend.status(selectedProjectRepository);
+          if (!statusResult.ok) {
+            return { stdout: "", stderr: `${formatRepoError(statusResult.error)}\n`, exitCode: 1 };
+          }
+          setLocalRepoStatus(statusResult.value);
           return {
             stdout:
               [
-                `Managed repo: ${selectedGitProject.name}`,
-                `Branch: ${selectedGitProject.branch}`,
-                `Backend: ${selectedGitProject.backendId}`,
-                `Workspace path: ${selectedGitProject.workspacePath || "/"}`,
-                `Repo path: ${selectedGitProject.repositoryPath || "/"}`,
-                `Staged: ${selectedGitProject.stagedPaths.length}`,
-                ...gitWorkingTreeEntries.map((entry) => `${entry.status.padEnd(10)} ${entry.path}`)
+                `On branch ${statusResult.value.branch}`,
+                statusResult.value.headSha ? `HEAD ${statusResult.value.headSha.slice(0, 7)}` : "No commits yet",
+                statusResult.value.entries.length === 0 ? "nothing to commit, working tree clean" : "",
+                ...statusResult.value.entries.map(
+                  (entry) => `${formatRepoStatusEntry(entry).padEnd(18)} ${entry.path}`
+                )
               ].join("\n") + "\n",
             stderr: "",
             exitCode: 0
@@ -4420,7 +4451,8 @@ export function App() {
       handleUnstageGitPath,
       gitWorkingTreeEntries,
       isOnline,
-      localGitCommits,
+      localRepoStatus,
+      repoBackend,
       runCompile,
       selectedGitProject,
       selectedCommittedDocuments,
@@ -4702,7 +4734,7 @@ export function App() {
     Boolean(selectedGitProject) &&
     selectedGitProject?.backendId === "browser" &&
     hasRequiredConfig(githubConfig) &&
-    !hasUncommittedChanges(gitWorkingTreeEntries) &&
+    !hasRepoChanges(localRepoStatus) &&
     !isSyncing;
   const canPushToGitHub =
     isOnline &&
@@ -4711,7 +4743,7 @@ export function App() {
     selectedCommittedDocuments.length > 0 &&
     hasRequiredConfig(githubConfig) &&
     !isSyncing;
-  const canSyncGitHub = canPushToGitHub && !hasUncommittedChanges(gitWorkingTreeEntries);
+  const canSyncGitHub = canPushToGitHub && !hasRepoChanges(localRepoStatus);
   const editorDiagnostics =
     compileResult === null
       ? []
@@ -5989,7 +6021,7 @@ export function App() {
                         <span>Working tree</span>
                         <span className="pane__meta">
                           {gitWorkingTreeEntries.length > 0
-                            ? `${gitWorkingTreeEntries.filter((entry) => entry.status !== "committed").length} changed`
+                            ? `${gitWorkingTreeEntries.length} changed`
                             : "Empty"}
                         </span>
                       </div>
@@ -6005,10 +6037,12 @@ export function App() {
                           className="pane__button pane__button--compact"
                           disabled={
                             !selectedGitProject ||
-                            selectedGitProject.stagedPaths.length === 0 ||
+                            !localRepoStatus?.entries.some((entry) => entry.staged !== null) ||
                             !selectedGitProject.draftCommitMessage.trim()
                           }
-                          onClick={handleCommitGitChanges}
+                          onClick={() => {
+                            void handleCommitGitChanges();
+                          }}
                           type="button"
                         >
                           Commit
@@ -6032,20 +6066,18 @@ export function App() {
                           {gitWorkingTreeEntries.slice(0, 16).map((entry) => (
                             <div key={entry.path} className="sidebar-card__row">
                               <span>{entry.path}</span>
-                              <span className="pane__meta">{entry.status}</span>
-                              {entry.status !== "committed" ? (
-                                <button
-                                  className="pane__button pane__button--compact"
-                                  onClick={() =>
-                                    entry.staged
-                                      ? handleUnstageGitPath(entry.path)
-                                      : handleStageGitPaths([entry.path])
-                                  }
-                                  type="button"
-                                >
-                                  {entry.staged ? "Unstage" : "Stage"}
-                                </button>
-                              ) : null}
+                              <span className="pane__meta">{formatRepoStatusEntry(entry)}</span>
+                              <button
+                                className="pane__button pane__button--compact"
+                                onClick={() => {
+                                  void (entry.staged
+                                    ? handleUnstageGitPath(entry.path)
+                                    : handleStageGitPaths([entry.path]));
+                                }}
+                                type="button"
+                              >
+                                {entry.staged ? "Unstage" : "Stage"}
+                              </button>
                             </div>
                           ))}
                         </div>
@@ -6066,10 +6098,10 @@ export function App() {
                       {localGitCommits.length > 0 ? (
                         <div className="outline-list" role="list">
                           {localGitCommits.slice(0, 8).map((commit) => (
-                            <div key={commit.id} className="sidebar-card__row">
+                            <div key={commit.sha} className="sidebar-card__row">
                               <span>{commit.message}</span>
                               <span className="pane__meta">
-                                {commit.pushedAt ? "pushed" : "local"} · {commit.paths.length}
+                                {commit.shortSha} · {new Date(commit.authoredAt).toLocaleDateString()}
                               </span>
                             </div>
                           ))}
@@ -6097,7 +6129,7 @@ export function App() {
                           {gitBranches.map((branch) => (
                             <div key={branch.name} className="sidebar-card__row">
                               <span>{branch.current ? `* ${branch.name}` : branch.name}</span>
-                              <span className="pane__meta">{branch.sha.slice(0, 7)}</span>
+                              <span className="pane__meta">{branch.sha?.slice(0, 7) ?? "unborn"}</span>
                             </div>
                           ))}
                         </div>

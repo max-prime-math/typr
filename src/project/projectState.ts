@@ -51,12 +51,13 @@ export interface ProjectFilesystemTree {
 }
 
 export interface ProjectRepoMetadata {
-  // Phase 1 intentionally stores only non-secret repo identity/status placeholders.
   // Tokens and credentials remain in the existing sync configuration paths.
-  backend: "browser-placeholder";
-  status: "not-initialized";
+  backend: "browser-placeholder" | "browser-git";
+  status: "not-initialized" | "ready" | "needs-recovery";
   headRef: string | null;
   defaultBranch: string | null;
+  initializedAt?: string | null;
+  recoveryMessage?: string | null;
   remotes: Array<{
     name: string;
     url: string;
@@ -618,13 +619,7 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
       entries,
       updatedAt: project.filesystem?.updatedAt ?? project.updatedAt ?? now
     },
-    git: {
-      backend: "browser-placeholder",
-      status: "not-initialized",
-      headRef: project.git?.headRef ?? null,
-      defaultBranch: project.git?.defaultBranch ?? null,
-      remotes: Array.isArray(project.git?.remotes) ? project.git.remotes : []
-    },
+    git: normalizeRepoMetadata(project.git),
     selection: {
       activeFilePath: project.selection?.activeFilePath
         ? normalizeProjectPath(project.selection.activeFilePath)
@@ -638,6 +633,26 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
     },
     legacyRecovery: project.legacyRecovery,
     updatedAt: project.updatedAt ?? now
+  };
+}
+
+function normalizeRepoMetadata(
+  metadata: Partial<ProjectRepoMetadata> | null | undefined
+): ProjectRepoMetadata {
+  const backend = metadata?.backend === "browser-git" ? "browser-git" : "browser-placeholder";
+  const status =
+    metadata?.status === "ready" || metadata?.status === "needs-recovery"
+      ? metadata.status
+      : "not-initialized";
+
+  return {
+    backend,
+    status,
+    headRef: metadata?.headRef ?? null,
+    defaultBranch: metadata?.defaultBranch ?? null,
+    initializedAt: metadata?.initializedAt ?? null,
+    recoveryMessage: metadata?.recoveryMessage ?? null,
+    remotes: Array.isArray(metadata?.remotes) ? metadata.remotes : []
   };
 }
 

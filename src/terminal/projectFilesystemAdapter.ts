@@ -157,17 +157,21 @@ class ProjectFsAdapter implements IFileSystem {
   }
 
   chmod(path: string, mode: number): Promise<void> {
-    return this.inner.chmod(path, mode);
+    void path;
+    void mode;
+    throw new Error("Browser Shell git backend does not support file mode changes.");
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
-    this.assertWritablePath(linkPath);
-    return this.inner.symlink(target, linkPath);
+    void target;
+    void linkPath;
+    throw new Error("Browser Shell git backend does not support symbolic links.");
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
-    this.assertWritablePath(newPath);
-    return this.inner.link(existingPath, newPath);
+    void existingPath;
+    void newPath;
+    throw new Error("Browser Shell git backend does not support hard links.");
   }
 
   readlink(path: string): Promise<string> {

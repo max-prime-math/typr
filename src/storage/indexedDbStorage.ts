@@ -7,8 +7,9 @@ import type { ThemeDefinition } from "../theme/themes";
 import type { TypstSnippet } from "../snippets/snippets";
 
 const DATABASE_NAME = "wrytr";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STORE_NAME = "app";
+const GIT_FILE_STORE_NAME = "git-files";
 const SNAPSHOT_KEY = "snapshot";
 const PROJECT_STORAGE_KEY = "project-storage";
 const PROJECT_STORAGE_METADATA_KEY = "project-storage-metadata";
@@ -23,6 +24,9 @@ async function getDatabase() {
     upgrade(database) {
       if (!database.objectStoreNames.contains(STORE_NAME)) {
         database.createObjectStore(STORE_NAME);
+      }
+      if (!database.objectStoreNames.contains(GIT_FILE_STORE_NAME)) {
+        database.createObjectStore(GIT_FILE_STORE_NAME);
       }
     }
   });
@@ -79,6 +83,54 @@ export async function loadGitWorkspace(): Promise<GitWorkspaceState | null> {
 export async function saveGitWorkspace(workspace: GitWorkspaceState): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, workspace, GIT_WORKSPACE_KEY);
+}
+
+export async function readProjectGitFile(
+  projectId: string,
+  path: string
+): Promise<Uint8Array | null> {
+  const database = await getDatabase();
+  return (await database.get(GIT_FILE_STORE_NAME, getProjectGitFileKey(projectId, path))) ?? null;
+}
+
+export async function writeProjectGitFile(
+  projectId: string,
+  path: string,
+  content: Uint8Array
+): Promise<void> {
+  const database = await getDatabase();
+  await database.put(GIT_FILE_STORE_NAME, content, getProjectGitFileKey(projectId, path));
+}
+
+export async function deleteProjectGitFile(projectId: string, path: string): Promise<void> {
+  const database = await getDatabase();
+  await database.delete(GIT_FILE_STORE_NAME, getProjectGitFileKey(projectId, path));
+}
+
+export async function listProjectGitFiles(projectId: string, prefix = ""): Promise<string[]> {
+  const database = await getDatabase();
+  const keyPrefix = getProjectGitFileKey(projectId, prefix);
+  const projectPrefix = getProjectGitFileKey(projectId, "");
+  const keys = await database.getAllKeys(GIT_FILE_STORE_NAME);
+
+  return keys
+    .filter((key): key is string => typeof key === "string")
+    .filter((key) => key.startsWith(keyPrefix))
+    .map((key) => key.slice(projectPrefix.length))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function getProjectGitFileKey(projectId: string, path: string): string {
+  return `${projectId}/${normalizeGitFilePath(path)}`;
+}
+
+function normalizeGitFilePath(path: string): string {
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join("/");
 }
 
 export async function loadCustomThemes(): Promise<ThemeDefinition[] | null> {

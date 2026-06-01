@@ -1,11 +1,4 @@
 import type { SyncSnapshot } from "../github/conflict";
-import {
-  normalizeCommittedDocuments,
-  normalizeLocalCommits,
-  normalizeStagedPaths,
-  type GitCommittedDocument,
-  type GitLocalCommit
-} from "./localCommit";
 import type { TerminalBackendId } from "../terminal/types";
 
 export const GIT_STATE_VERSION = 2;
@@ -25,9 +18,6 @@ export interface GitManagedProject {
   ignorePatterns: string[];
   commitMessageTemplate: string;
   draftCommitMessage: string;
-  stagedPaths: string[];
-  committedDocuments: Record<string, GitCommittedDocument>;
-  localCommits: GitLocalCommit[];
   lastPulledAt: string | null;
   lastPushedAt: string | null;
 }
@@ -59,9 +49,6 @@ export function createEmptyGitManagedProject(options: {
     ignorePatterns: [],
     commitMessageTemplate: `Sync ${options.projectName} from typr`,
     draftCommitMessage: "",
-    stagedPaths: [],
-    committedDocuments: {},
-    localCommits: [],
     lastPulledAt: null,
     lastPushedAt: null
   };
@@ -127,9 +114,6 @@ export function normalizeManagedProject(
     commitMessageTemplate:
       project.commitMessageTemplate?.trim() || `Sync ${fallbackProjectName} from typr`,
     draftCommitMessage: project.draftCommitMessage?.trim() || "",
-    stagedPaths: normalizeStagedPaths(project.stagedPaths),
-    committedDocuments: normalizeCommittedDocuments(project.committedDocuments),
-    localCommits: normalizeLocalCommits(project.localCommits),
     lastPulledAt: project.lastPulledAt ?? null,
     lastPushedAt: project.lastPushedAt ?? null
   };
