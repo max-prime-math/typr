@@ -1,0 +1,155 @@
+You are working in the Typr repository at the repo root.
+
+Goal of this phase:
+Lay the architectural foundation for "one Typr project = one real git repo" without trying to finish git behavior yet. Replace the current app-centric single `snapshot.project` mental model with a repo-centric project storage model that can support a true working tree and `.git` data later.
+
+Read the codebase carefully before editing. In particular, study these files and preserve their useful behavior where possible:
+
+- `src/app/appState.ts`
+- `src/app/App.tsx`
+- `src/storage/indexedDbStorage.ts`
+- `src/workspace/workspaceTree.ts`
+- `src/workspace/opfsWorkspace.ts`
+- `src/terminal/projectFilesystemAdapter.ts`
+- `src/terminal/browserBackend.ts`
+- `src/terminal/types.ts`
+- `src/github/githubSync.ts`
+- `src/diagram/diagramFiles.ts`
+- `src/graph/graphFiles.ts`
+
+Current reality you must account for:
+
+1. Typr currently persists one large `AppSnapshot` in IndexedDB under `snapshot`.
+2. `AppSnapshot.project` is not a real repo. It is an app object containing:
+   - `documents`
+   - `folders`
+   - `trash`
+   - `diagram` and `figures`
+   - `graph` and `graphs`
+3. The visible workspace tree is synthesized from those app objects in `buildProjectWorkspaceEntries(...)`.
+4. The browser shell uses `createProjectFsAdapter(...)` to project that synthetic workspace into an in-memory shell filesystem and writes changes back into `snapshot.project.documents` and `snapshot.project.folders`.
+5. Git sync is still GitHub Contents API based, not real git.
+6. Diagrams and graphs are currently special app objects with exported file projections, not normal filesystem-first assets.
+
+What to implement in this phase:
+
+A. Introduce a repo-centric project storage model
+
+- Add a new module, for example `src/project/projectState.ts` or similar, that defines a new top-level project/repository model.
+- The new model should support multiple Typr projects eventually, even if the UI still focuses on one selected project for now.
+- Each project must have:
+  - stable project id
+  - display name
+  - workspace root path / repo root identity
+  - filesystem-backed tree metadata
+  - placeholder for git repo metadata and backend status
+  - active/open file selection state
+  - per-project editor/preview state only where necessary
+- Do not keep the old assumption that "the project is just a bag of `documents` plus special arrays".
+
+B. Introduce a canonical filesystem-first workspace representation
+
+- Create a canonical in-memory representation of a project tree that treats source files, diagrams, graphs, and folders as regular paths first.
+- Existing app concepts may still exist, but they must derive from files, not be the source of truth.
+- Add conversion helpers from the legacy snapshot shape to the new filesystem-first project model.
+- Add conversion helpers from the filesystem-first project model back into any legacy structures still temporarily needed by unchanged UI components.
+
+C. Migrate persistence scaffolding
+
+- Extend IndexedDB persistence so the new project/repo model is stored separately from, or replaces, the current monolithic `snapshot`.
+- Keep migration logic. Existing users with a legacy `snapshot` must still load successfully.
+- Do not delete legacy load paths yet; instead migrate them on hydration into the new model.
+- Preserve themes, snippets, and unrelated settings behavior.
+- Add a storage version and migration metadata for the new project/repo model.
+- Keep enough legacy data to recover if the new model fails to hydrate.
+- Do not use destructive OPFS mirroring as the long-term storage path. The current `syncSnapshotToOpfs(...)` clears `workspace-v1`; refactor this seam so a future `.git` directory cannot be deleted by a snapshot refresh.
+- Use project-scoped storage roots, for example by stable project id, rather than one global workspace directory.
+
+D. Move diagrams and graphs toward file-backed ownership
+
+- Keep current editors working, but make the underlying source of truth file-backed.
+- At minimum:
+  - diagram assets must map consistently to files under `figures/*.svg`
+  - graph assets must map consistently to files under `figures/*.typ`
+- Reduce the number of places where diagram/graph state is stored independently from file content.
+- Preserve current UX as much as possible in this phase.
+
+E. Update workspace projection seams
+
+- Refactor `workspaceTree.ts` and `projectFilesystemAdapter.ts` so they operate on the new filesystem-first project model rather than directly on `snapshot.project.documents` / `folders`.
+- The browser shell should still work after this phase.
+- File edits from the shell must update the canonical project tree, not legacy-only arrays.
+- The terminal filesystem must reject path traversal, absolute-path escapes, NUL bytes, and direct writes to reserved git internals such as `.git`, even before real git is implemented.
+- Avoid rebuilding or rewriting the whole project tree on every keystroke; keep file updates targeted and debounced where persistence is involved.
+
+F. Define git-readiness contracts without implementing git
+
+- Document the exact project storage APIs Phase 2 should use for:
+  - listing files
+  - reading file bytes
+  - writing file bytes
+  - deleting/renaming files
+  - subscribing to changes
+  - locating the project root
+- Add explicit placeholders for repo metadata that do not store secrets.
+- Keep token or credential fields out of the project/repo model introduced here.
+
+Non-goals for this phase:
+
+- Do not implement real git commands yet.
+- Do not implement `.git` object storage yet.
+- Do not remove the current GitHub sync layer yet.
+- Do not redesign the entire UI.
+
+Important constraints:
+
+- Prefer incremental, reviewable refactors.
+- Preserve current app startup behavior.
+- Preserve current compile and preview behavior.
+- Preserve current tests where sensible; update/add tests where the architecture changes.
+- Keep the code ASCII unless a file already requires otherwise.
+- Use `apply_patch` for edits.
+- Do not introduce a git library in this phase.
+- Do not move expensive filesystem normalization or tree scans into React render/memo paths where they can run on every edit.
+
+Definition of done for this phase:
+
+1. The app hydrates legacy saved data into the new project model.
+2. The browser shell still edits files successfully.
+3. The visible workspace still shows files/folders correctly.
+4. Diagrams and graphs still appear and continue to round-trip through their editors.
+5. Persistence writes the new model cleanly.
+6. Reserved paths and path traversal are rejected by the filesystem adapter.
+7. The OPFS workspace path is project-scoped and cannot wipe a future `.git`.
+8. Typecheck and tests pass.
+
+Required automated verification before you stop:
+
+- `npm run typecheck`
+- `npm test`
+
+Required QA instructions for the human user:
+
+After you finish and before declaring the phase complete, tell the user to test exactly this:
+
+1. Open the app with an existing saved project and confirm it still loads.
+2. Edit `main.typ`, reload the app, and confirm the edit persists.
+3. Create a nested folder and a new file from the UI or terminal, reload, and confirm both persist.
+4. Open the browser shell and run:
+   - `pwd`
+   - `mkdir notes`
+   - `touch notes/check.typ`
+   - `ls notes`
+   Confirm the file appears in the Files pane.
+5. Create or edit a diagram and save it, then reload and confirm it still exists.
+6. Create or edit a graph and save it, then reload and confirm it still exists.
+7. Compile a document and confirm preview still works.
+8. In the browser shell, try to write `.git/config` and `../escape.typ`; confirm both are rejected.
+
+When you report completion, include:
+
+- a concise summary of the architectural changes
+- any migration assumptions
+- exactly what legacy data remains available for recovery
+- the storage root layout that Phase 2 should use for `.git`
+- any remaining risks that Phase 2 must address

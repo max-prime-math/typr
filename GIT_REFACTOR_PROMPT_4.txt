@@ -1,0 +1,119 @@
+You are working in the Typr repository at the repo root.
+
+Goal of this phase:
+Finish the refactor into a polished, reliable repo-backed git UX. Focus on merge/conflict handling, repo-per-project behavior across the full app, cleanup of temporary compatibility code, and test coverage.
+
+Before editing, read carefully:
+
+- the final project/repo model
+- all `src/git/*` modules
+- `src/app/App.tsx`
+- `src/workspace/*`
+- `src/terminal/*`
+- `src/storage/indexedDbStorage.ts`
+- tests in `src/terminal/*.test.ts` and any git-related tests added in previous phases
+
+What to implement:
+
+A. Complete the repo-per-project contract everywhere
+
+- Audit the codebase for any remaining assumptions that there is one implicit global project or one global git config.
+- Ensure each Typr project owns:
+  - working tree
+  - `.git`
+  - remote config
+  - git UI state
+  - active repo selection if multiple projects are exposed
+
+B. Replace temporary compatibility layers
+
+- Remove leftover migration-only or fake-git code that is no longer needed.
+- Remove contents-API-specific logic if it is no longer part of the final design.
+- Remove legacy project metadata sync hacks if Phase 3 made them obsolete.
+
+C. Improve merge/conflict behavior
+
+- Implement sensible conflict detection and user-facing conflict handling for the real repo workflow.
+- Avoid pretending that app-level file replacement is a real merge if it is not.
+- If full merge tooling is not feasible, provide an honest and safe conflict flow.
+- Conflict handling must preserve local, remote, and base versions until the user resolves or aborts.
+- Abort/continue behavior must be explicit and recoverable after reload.
+- The app must never auto-resolve by timestamp alone when both sides changed content.
+
+D. Improve tests
+
+- Add unit tests for repo operations where feasible.
+- Add integration-style tests around:
+  - working tree status
+  - staging
+  - committing
+  - branch switching
+  - remote config
+  - pull/push error handling
+- Add migration/recovery tests for:
+  - legacy snapshot hydration
+  - repo init interrupted midway
+  - reload with staged changes
+  - reload during unresolved conflicts
+  - blocked `.git` and path traversal shell operations
+- Update terminal tests to reflect the final command surface.
+
+E. Improve docs
+
+- Update `README.md` to match the actual repo-backed architecture.
+- Document the current git capabilities and limitations accurately.
+
+F. Keep the UI coherent
+
+- Make sure the Git pane, Settings, and Browser Shell all describe the same model.
+- Remove misleading labels from the old sync-centered design.
+- Prefer precise git terms where the backend is now truly git.
+- Keep status refreshes debounced and cancellable so typing, cursor motion, preview updates, and pane resizing stay responsive.
+- Show background git operation progress without blocking unrelated editor interactions.
+- Any unsupported git feature must fail with a specific message, not a generic crash or silent no-op.
+
+G. Final security and data-safety audit
+
+- Confirm tokens are stored only in the credential module and are redacted from UI, terminal, logs, errors, and exported state.
+- Confirm no normal workspace operation can edit/delete/stage `.git` internals.
+- Confirm project deletion, repo reset, or remote reconfiguration has explicit user confirmation and cannot run accidentally from a render/effect loop.
+- Confirm no remote operation depends on an untrusted CORS proxy.
+- Confirm backups or legacy recovery data are either retained intentionally or removed only after a verified migration path.
+
+Definition of done:
+
+1. There is no longer any major architectural contradiction between the app state model and repo-backed git.
+2. Temporary fake-git scaffolding is gone or clearly quarantined as migration-only.
+3. Repo-per-project behavior is consistent across UI, persistence, terminal, and storage.
+4. Conflict behavior is safe and understandable.
+5. Docs are updated.
+6. Security and data-safety audit items are satisfied.
+7. Typecheck and tests pass.
+
+Required automated verification before you stop:
+
+- `npm run typecheck`
+- `npm test`
+
+Required QA instructions for the human user:
+
+After you finish and before declaring the phase complete, tell the user to test exactly this:
+
+1. Open an existing migrated project and a newly created project, and confirm each behaves like its own repo.
+2. In each project, create a commit and verify logs are separate.
+3. Switch branches in one project and confirm the other project is unaffected.
+4. Make local changes, stage, unstage, and commit them from both the UI and browser shell.
+5. Push and pull in at least one project and confirm status/ahead-behind info makes sense afterward.
+6. Trigger a conflict scenario if your implementation supports it and confirm the UX is understandable and safe.
+7. Reload the app and confirm repo state survives.
+8. Read the README git section and confirm it matches the actual behavior you just observed.
+9. During a status refresh or remote operation, keep typing in the editor and confirm the UI remains responsive.
+10. Confirm `.git` is not visible/editable as a normal project folder and tokens are not visible in command output.
+
+When you report completion, include:
+
+- a short architectural summary of the final design
+- any deliberate limitations still present
+- the result of the security/data-safety audit
+- the result of UI responsiveness checks
+- any follow-up work that would be needed for a local-agent or native app future
