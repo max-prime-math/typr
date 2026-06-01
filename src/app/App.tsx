@@ -101,13 +101,19 @@ import {
   type TypstEditorHandle,
   type TypstSearchQueryState
 } from "../editor/TypstEditor";
+import { TerminalDrawer } from "../terminal/TerminalDrawer";
+import { isTerminalToggleShortcut } from "../terminal/terminalHotkey";
 import {
   createEmptyGitHubRemoteConfig,
+  fetchGitHubProjectStatus,
   getDefaultGitHubDirectory,
+  listScopedLocalGitHubDocuments,
   hasRequiredConfig,
   pushProjectToGitHub,
   pullProjectFromGitHub,
+  type GitHubCommitSummary,
   type GitHubRemoteConfig,
+  type GitHubProjectFileStatus,
   type GitHubSyncDocument
 } from "../github/githubSync";
 import {
@@ -157,13 +163,34 @@ import {
 } from "../preview/PreviewPane";
 import packageJson from "../../package.json";
 import {
+  loadGitWorkspace,
   loadGitHubConfig,
   loadSnapshot,
   loadCustomSnippets,
+  saveGitWorkspace,
   saveGitHubConfig,
   saveSnapshot,
   saveCustomSnippets
 } from "../storage/indexedDbStorage";
+import {
+  createEmptyGitManagedProject,
+  normalizeGitWorkspaceState,
+  parseIgnorePatternsInput,
+  stringifyIgnorePatterns,
+  type GitManagedProject,
+  type GitWorkspaceState
+} from "../git/gitState";
+import {
+  applyLocalCommit,
+  buildCommittedDocumentsFromRemote,
+  convertCommittedDocumentsToSyncDocuments,
+  hasUncommittedChanges,
+  listChangedPaths,
+  listWorkingTreeEntries,
+  markLocalCommitsPushed,
+  type GitLocalCommit,
+  type GitWorkingTreeEntry
+} from "../git/localCommit";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
 import {
@@ -192,6 +219,7 @@ import {
   isTextWorkspaceFile,
   type WorkspaceTreeNode
 } from "../workspace/workspaceTree";
+import { shouldIgnorePath, stripPathPrefix } from "../git/pathFilters";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
@@ -206,7 +234,6 @@ const SIDEBAR_MAX_WIDTH = 460;
 const PREVIEW_MIN_WIDTH = 320;
 const PANEL_COLLAPSED_WIDTH = 56;
 const PANEL_HANDLE_WIDTH = 8;
-const SYNC_SNAPSHOT_KEY = "typr.sync-snapshot";
 const EDITOR_MIN_WIDTH = 420;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
@@ -311,7 +338,7 @@ type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
 type DiagramPaneMode = "sidebar" | "source" | "preview";
 type GraphPaneMode = "sidebar" | "source" | "preview";
-type SettingsTab = "github" | "themes" | "keybindings" | "snippets" | "packages" | "graphs";
+type SettingsTab = "git" | "themes" | "keybindings" | "snippets" | "packages" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
 type TableGutter = "none" | "small" | "medium";
@@ -560,7 +587,7 @@ export function App() {
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("github");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("git");
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>("files");
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
     search: "",
@@ -595,6 +622,7 @@ export function App() {
   const [graphPaneMode, setGraphPaneMode] = useState<GraphPaneMode>("sidebar");
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isPaperView, setIsPaperView] = useState(false);
   const [recordingKeybindingId, setRecordingKeybindingId] =
     useState<KeybindingCommandId | null>(null);
@@ -689,9 +717,12 @@ export function App() {
     []
   );
   const [snapshot, setSnapshot] = useState<AppSnapshot>(createDefaultSnapshot);
-  const [githubConfig, setGitHubConfig] = useState<GitHubRemoteConfig>(
-    createEmptyGitHubRemoteConfig
-  );
+  const [gitWorkspace, setGitWorkspace] = useState<GitWorkspaceState>({
+    version: 1,
+    selectedProjectId: null,
+    projects: [],
+    syncSnapshots: {}
+  });
   const [isHydrated, setIsHydrated] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
@@ -706,11 +737,17 @@ export function App() {
   );
   const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>({
     tone: "neutral",
-    text: "Documents stay on this device. Pull, push, or sync with GitHub when you are online."
+    text: "Documents stay on this device. Pull, push, or sync a managed GitHub project when you are online."
   });
   const [conflictSet, setConflictSet] = useState<ConflictSet | null>(null);
   const [pendingRemoteDocuments, setPendingRemoteDocuments] = useState<GitHubSyncDocument[] | null>(null);
   const [pendingRemoteProjectName, setPendingRemoteProjectName] = useState<string | null>(null);
+  const [gitCommitHistory, setGitCommitHistory] = useState<GitHubCommitSummary[]>([]);
+  const [gitFileStatuses, setGitFileStatuses] = useState<GitHubProjectFileStatus[]>([]);
+  const [gitBranches, setGitBranches] = useState<
+    Array<{ name: string; sha: string; protected: boolean; current: boolean }>
+  >([]);
+  const [isGitStatusLoading, setIsGitStatusLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
@@ -824,6 +861,85 @@ export function App() {
   const defaultGitHubDirectory = useMemo(
     () => getDefaultGitHubDirectory(snapshot.project.name),
     [snapshot.project.name]
+  );
+  const selectedGitProject = useMemo(
+    () =>
+      gitWorkspace.projects.find((project) => project.id === gitWorkspace.selectedProjectId) ?? null,
+    [gitWorkspace.projects, gitWorkspace.selectedProjectId]
+  );
+  const githubConfig = useMemo<GitHubRemoteConfig>(
+    () =>
+      selectedGitProject
+        ? {
+            owner: selectedGitProject.owner,
+            repo: selectedGitProject.repo,
+            branch: selectedGitProject.branch,
+            directory: selectedGitProject.repositoryPath,
+            token: selectedGitProject.token
+          }
+        : createEmptyGitHubRemoteConfig(),
+    [selectedGitProject]
+  );
+  const selectedScopedDocuments = useMemo(
+    () =>
+      selectedGitProject
+        ? listScopedLocalGitHubDocuments(
+            snapshot,
+            selectedGitProject.workspacePath,
+            selectedGitProject.ignorePatterns
+          )
+        : [],
+    [selectedGitProject, snapshot]
+  );
+  const selectedCommittedDocuments = useMemo(
+    () =>
+      selectedGitProject
+        ? convertCommittedDocumentsToSyncDocuments(selectedGitProject.committedDocuments).filter(
+            (document) => !shouldIgnorePath(document.name, selectedGitProject.ignorePatterns)
+          )
+        : [],
+    [selectedGitProject]
+  );
+  const gitWorkingTreeEntries = useMemo<GitWorkingTreeEntry[]>(
+    () =>
+      selectedGitProject
+        ? listWorkingTreeEntries({
+            committedDocuments: Object.fromEntries(
+              Object.entries(selectedGitProject.committedDocuments).filter(
+                ([path]) => !shouldIgnorePath(path, selectedGitProject.ignorePatterns)
+              )
+            ),
+            scopedDocuments: selectedScopedDocuments,
+            stagedPaths: selectedGitProject.stagedPaths
+          })
+        : [],
+    [selectedGitProject, selectedScopedDocuments]
+  );
+  const localGitCommits = useMemo<GitLocalCommit[]>(
+    () => selectedGitProject?.localCommits ?? [],
+    [selectedGitProject]
+  );
+  const updateGitManagedProject = useCallback(
+    (projectId: string, updater: (project: GitManagedProject) => GitManagedProject) => {
+      setGitWorkspace((currentWorkspace) => ({
+        ...currentWorkspace,
+        projects: currentWorkspace.projects.map((project) =>
+          project.id === projectId ? updater(project) : project
+        )
+      }));
+    },
+    []
+  );
+  const updateSelectedGitProject = useCallback(
+    (updater: (project: GitManagedProject) => GitManagedProject) => {
+      setGitWorkspace((currentWorkspace) => ({
+        ...currentWorkspace,
+        projects: currentWorkspace.projects.map((project) =>
+          project.id === currentWorkspace.selectedProjectId ? updater(project) : project
+        )
+      }));
+    },
+    []
   );
   const trashWorkspaceTree = useMemo(
     () => buildWorkspaceTree(buildTrashWorkspaceEntries(snapshot.project.trash ?? [])),
@@ -1216,8 +1332,9 @@ export function App() {
     let cancelled = false;
 
     async function hydrate() {
-      const [storedSnapshot, storedGitHubConfig] = await Promise.all([
+      const [storedSnapshot, storedGitWorkspace, storedGitHubConfig] = await Promise.all([
         loadSnapshot(),
+        loadGitWorkspace(),
         loadGitHubConfig()
       ]);
       const storedSnippets = await loadCustomSnippets();
@@ -1229,9 +1346,39 @@ export function App() {
       const nextSnapshot = storedSnapshot
         ? normalizeSnapshot(storedSnapshot)
         : createDefaultSnapshot();
+      const migratedWorkspace = normalizeGitWorkspaceState(
+        storedGitWorkspace ?? {
+          version: 1,
+          selectedProjectId: null,
+          projects: storedGitHubConfig
+            ? [
+                {
+                  ...createEmptyGitManagedProject({
+                    projectId: nextSnapshot.project.id,
+                    projectName: nextSnapshot.project.name,
+                    repositoryPath:
+                      storedGitHubConfig.directory || getDefaultGitHubDirectory(nextSnapshot.project.name)
+                  }),
+                  owner: storedGitHubConfig.owner,
+                  repo: storedGitHubConfig.repo,
+                  branch: storedGitHubConfig.branch || "main",
+                  repositoryPath:
+                    storedGitHubConfig.directory || getDefaultGitHubDirectory(nextSnapshot.project.name),
+                  token: storedGitHubConfig.token
+                }
+              ]
+            : [],
+          syncSnapshots: {}
+        },
+        {
+          projectId: nextSnapshot.project.id,
+          projectName: nextSnapshot.project.name,
+          repositoryPath: getDefaultGitHubDirectory(nextSnapshot.project.name)
+        }
+      );
       setSnapshot(nextSnapshot);
       setTheme(nextSnapshot.preferences.theme);
-      setGitHubConfig(storedGitHubConfig ?? createEmptyGitHubRemoteConfig());
+      setGitWorkspace(migratedWorkspace);
       setCustomSnippets(storedSnippets ?? []);
       setIsHydrated(true);
     }
@@ -1462,6 +1609,12 @@ export function App() {
     }
 
     function handleKeyDown(event: KeyboardEvent) {
+      if (isTerminalToggleShortcut(event)) {
+        event.preventDefault();
+        setIsTerminalOpen((current) => !current);
+        return;
+      }
+
       if (recordingKeybindingId) {
         return;
       }
@@ -1521,8 +1674,84 @@ export function App() {
     isAppleShortcutPlatform,
     recordingKeybindingId,
     runAppKeybindingCommand,
-    snapshot.preferences.keybindings
+      snapshot.preferences.keybindings
   ]);
+
+  useEffect(() => {
+    if (!selectedGitProject) {
+      setGitBranches([]);
+      setGitCommitHistory([]);
+      setGitFileStatuses([]);
+      setIsGitStatusLoading(false);
+      return;
+    }
+
+    if (selectedGitProject.backendId !== "browser") {
+      setGitBranches([]);
+      setGitCommitHistory([]);
+      setGitFileStatuses(
+        selectedScopedDocuments.map((document) => ({
+          path: document.relativePath,
+          state: "local-only"
+        }))
+      );
+      setIsGitStatusLoading(false);
+      return;
+    }
+
+    if (!hasRequiredConfig(githubConfig) || !isOnline) {
+      setGitBranches([]);
+      setGitCommitHistory([]);
+      setGitFileStatuses(
+        selectedScopedDocuments.map((document) => ({
+          path: document.relativePath,
+          state: "local-only"
+        }))
+      );
+      setIsGitStatusLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsGitStatusLoading(true);
+
+    void fetchGitHubProjectStatus({
+      config: githubConfig,
+      projectName: selectedGitProject.name,
+      localDocuments: selectedScopedDocuments.map((document) => ({
+        name: document.relativePath,
+        content: document.content,
+        updatedAt: document.updatedAt
+      }))
+    })
+      .then((status) => {
+        if (cancelled) {
+          return;
+        }
+
+        setGitBranches(status.branches);
+        setGitCommitHistory(status.commits);
+        setGitFileStatuses(status.files);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setGitBranches([]);
+        setGitCommitHistory([]);
+        setGitFileStatuses([]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsGitStatusLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [githubConfig, isOnline, selectedGitProject, selectedScopedDocuments]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -1545,7 +1774,20 @@ export function App() {
     }
 
     const handle = window.setTimeout(() => {
-      void saveGitHubConfig(githubConfig).catch(() => {
+      const selectedProjectConfig = selectedGitProject
+        ? {
+            owner: selectedGitProject.owner,
+            repo: selectedGitProject.repo,
+            branch: selectedGitProject.branch,
+            directory: selectedGitProject.repositoryPath,
+            token: selectedGitProject.token
+          }
+        : createEmptyGitHubRemoteConfig();
+
+      void Promise.all([
+        saveGitWorkspace(gitWorkspace),
+        saveGitHubConfig(selectedProjectConfig)
+      ]).catch(() => {
         setSyncFeedback({
           tone: "error",
           text: "Unable to save GitHub sync settings locally."
@@ -1554,7 +1796,7 @@ export function App() {
     }, SAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(handle);
-  }, [githubConfig, isHydrated]);
+  }, [gitWorkspace, isHydrated, selectedGitProject]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -2356,11 +2598,184 @@ export function App() {
     field: keyof GitHubRemoteConfig,
     value: string
   ) => {
-    setGitHubConfig((currentConfig) => ({
-      ...currentConfig,
-      [field]: value
+    updateSelectedGitProject((currentProject) => ({
+      ...currentProject,
+      [field === "directory" ? "repositoryPath" : field]: value
     }));
   };
+
+  const handleGitProjectFieldChange = useCallback(
+    (field: keyof GitManagedProject, value: string) => {
+      updateSelectedGitProject((currentProject) => ({
+        ...currentProject,
+        [field]: value
+      }));
+    },
+    [updateSelectedGitProject]
+  );
+
+  const handleGitProjectBackendChange = useCallback(
+    (backendId: GitManagedProject["backendId"]) => {
+      updateSelectedGitProject((currentProject) => ({
+        ...currentProject,
+        backendId
+      }));
+    },
+    [updateSelectedGitProject]
+  );
+
+  const handleGitIgnorePatternsChange = useCallback(
+    (value: string) => {
+      updateSelectedGitProject((currentProject) => ({
+        ...currentProject,
+        ignorePatterns: parseIgnorePatternsInput(value)
+      }));
+    },
+    [updateSelectedGitProject]
+  );
+
+  const handleStageGitPaths = useCallback(
+    (paths: string[]) => {
+      const normalizedPaths = paths
+        .map((path) => path.trim())
+        .filter(Boolean);
+      if (normalizedPaths.length === 0) {
+        return;
+      }
+
+      updateSelectedGitProject((currentProject) => ({
+        ...currentProject,
+        stagedPaths: Array.from(new Set([...currentProject.stagedPaths, ...normalizedPaths])).sort(
+          (left, right) => left.localeCompare(right)
+        )
+      }));
+    },
+    [updateSelectedGitProject]
+  );
+
+  const handleUnstageGitPath = useCallback(
+    (path: string) => {
+      updateSelectedGitProject((currentProject) => ({
+        ...currentProject,
+        stagedPaths: currentProject.stagedPaths.filter((candidate) => candidate !== path)
+      }));
+    },
+    [updateSelectedGitProject]
+  );
+
+  const handleStageAllGitChanges = useCallback(() => {
+    const changedPaths = listChangedPaths(gitWorkingTreeEntries);
+    if (changedPaths.length === 0) {
+      setSyncFeedback({
+        tone: "neutral",
+        text: "No local changes to stage."
+      });
+      return;
+    }
+
+    handleStageGitPaths(changedPaths);
+    setSyncFeedback({
+      tone: "success",
+      text: `Staged ${changedPaths.length} path${changedPaths.length === 1 ? "" : "s"}.`
+    });
+  }, [gitWorkingTreeEntries, handleStageGitPaths]);
+
+  const handleCommitGitChanges = useCallback(() => {
+    if (!selectedGitProject) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Create or select a managed GitHub project first."
+      });
+      return;
+    }
+
+    if (selectedGitProject.stagedPaths.length === 0) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Stage one or more files before committing."
+      });
+      return;
+    }
+
+    const message = selectedGitProject.draftCommitMessage.trim();
+    if (!message) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Enter a commit message first."
+      });
+      return;
+    }
+
+    const commitResult = applyLocalCommit({
+      committedDocuments: selectedGitProject.committedDocuments,
+      scopedDocuments: selectedScopedDocuments.map((document) => ({
+        id: document.id,
+        relativePath: document.relativePath,
+        content: document.content,
+        updatedAt: document.updatedAt
+      })),
+      stagedPaths: selectedGitProject.stagedPaths,
+      message
+    });
+
+    updateGitManagedProject(selectedGitProject.id, (currentProject) => ({
+      ...currentProject,
+      committedDocuments: commitResult.committedDocuments,
+      localCommits: [commitResult.commit, ...currentProject.localCommits],
+      stagedPaths: [],
+      draftCommitMessage: "",
+      commitMessageTemplate: message
+    }));
+    setSyncFeedback({
+      tone: "success",
+      text: `Committed ${commitResult.commit.paths.length} path${
+        commitResult.commit.paths.length === 1 ? "" : "s"
+      }: ${commitResult.commit.message}`
+    });
+  }, [selectedGitProject, selectedScopedDocuments, updateGitManagedProject]);
+
+  const handleAddGitProject = useCallback(() => {
+    const nextProject = createEmptyGitManagedProject({
+      projectId: snapshot.project.id,
+      projectName: `${snapshot.project.name} repo`,
+      repositoryPath: defaultGitHubDirectory
+    });
+
+    setGitWorkspace((currentWorkspace) => ({
+      ...currentWorkspace,
+      selectedProjectId: nextProject.id,
+      projects: [...currentWorkspace.projects, nextProject]
+    }));
+  }, [defaultGitHubDirectory, snapshot.project.id, snapshot.project.name]);
+
+  const handleRemoveSelectedGitProject = useCallback(() => {
+    if (!selectedGitProject) {
+      return;
+    }
+
+    setGitWorkspace((currentWorkspace) => {
+      const remainingProjects = currentWorkspace.projects.filter(
+        (project) => project.id !== selectedGitProject.id
+      );
+      return normalizeGitWorkspaceState(
+        {
+          ...currentWorkspace,
+          selectedProjectId: remainingProjects[0]?.id ?? null,
+          projects: remainingProjects
+        },
+        {
+          projectId: snapshot.project.id,
+          projectName: snapshot.project.name,
+          repositoryPath: defaultGitHubDirectory
+        }
+      );
+    });
+  }, [
+    defaultGitHubDirectory,
+    selectedGitProject,
+    snapshot.project.id,
+    snapshot.project.name
+  ]);
 
   const handleThemeImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -3004,7 +3419,7 @@ export function App() {
 
   const handleShowTutorial = () => {
     window.alert(
-      "Tutorial: open Files to switch documents, type in Source, use View for layout controls, and use GitHub settings when you want to sync."
+      "Tutorial: open Files to switch documents, type in Source, use View for layout controls, and use Git settings when you want to sync."
     );
   };
 
@@ -3013,7 +3428,7 @@ export function App() {
   };
 
   const handleOpenGitHubHelp = () => {
-    setSettingsTab("github");
+    setSettingsTab("git");
     setIsSettingsOpen(true);
   };
 
@@ -3025,61 +3440,152 @@ export function App() {
     }
   };
 
-  const saveSyncSnapshot = useCallback(() => {
-    const snap = buildSyncSnapshot(snapshot.project.documents);
-    try {
-      localStorage.setItem(SYNC_SNAPSHOT_KEY, JSON.stringify(snap));
-    } catch {
-      // storage full or unavailable
-    }
-  }, [snapshot.project.documents]);
+  const saveSyncSnapshot = useCallback(
+    (
+      projectId: string,
+      documents: Array<{ name: string; updatedAt: string }>
+    ) => {
+      setGitWorkspace((currentWorkspace) => ({
+        ...currentWorkspace,
+        syncSnapshots: {
+          ...currentWorkspace.syncSnapshots,
+          [projectId]: buildSyncSnapshot(documents)
+        }
+      }));
+    },
+    []
+  );
 
-  const loadSyncSnapshot = useCallback((): Record<string, string> => {
-    try {
-      const raw = localStorage.getItem(SYNC_SNAPSHOT_KEY);
-      if (raw) {
-        return JSON.parse(raw) as Record<string, string>;
+  const loadSyncSnapshot = useCallback(
+    (projectId: string): Record<string, string> => gitWorkspace.syncSnapshots[projectId] ?? {},
+    [gitWorkspace.syncSnapshots]
+  );
+
+  const replaceManagedProjectDocuments = useCallback(
+    (
+      mergedRelativeDocuments: Array<{
+        id: string;
+        name: string;
+        content: string | Uint8Array;
+        updatedAt: string;
+      }>,
+      projectName: string | null
+    ) => {
+      if (!selectedGitProject) {
+        return;
       }
-    } catch {
-      // corrupted or unavailable
-    }
-    return {};
-  }, []);
+
+      const managedWorkspacePath = selectedGitProject.workspacePath;
+      const managedIgnorePatterns = selectedGitProject.ignorePatterns;
+
+      setSnapshot((current) => {
+        const untouchedDocuments = current.project.documents.filter((document) => {
+          const relativePath = stripPathPrefix(document.name, managedWorkspacePath);
+          return (
+            relativePath === null ||
+            !relativePath ||
+            shouldIgnorePath(relativePath, managedIgnorePatterns)
+          );
+        });
+        const mergedDocuments = mergedRelativeDocuments.map((document) => ({
+          id: document.id,
+          name: managedWorkspacePath
+            ? `${managedWorkspacePath}/${document.name}`
+            : document.name,
+          content: document.content,
+          updatedAt: document.updatedAt
+        }));
+        const nextDocuments = [...untouchedDocuments, ...mergedDocuments].sort((left, right) =>
+          left.name.localeCompare(right.name)
+        );
+        const activeDocumentExists = nextDocuments.some(
+          (document) => document.id === current.project.activeDocumentId
+        );
+
+        return {
+          ...current,
+          project: {
+            ...current.project,
+            name: projectName ?? current.project.name,
+            documents: nextDocuments,
+            activeDocumentId: activeDocumentExists
+              ? current.project.activeDocumentId
+              : (nextDocuments[0]?.id ?? current.project.activeDocumentId),
+            updatedAt: new Date().toISOString()
+          }
+        };
+      });
+    },
+    [selectedGitProject]
+  );
 
   const handlePushToGitHub = async () => {
+    if (!selectedGitProject) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Create or select a managed GitHub project first."
+      });
+      setSettingsTab("git");
+      setIsSettingsOpen(true);
+      return { ok: false as const, message: "Create or select a managed GitHub project first." };
+    }
+
+    if (selectedGitProject.backendId !== "browser") {
+      setSyncFeedback({
+        tone: "error",
+        text: "Local Agent and Cloud Container git transports are not connected in this build yet."
+      });
+      return {
+        ok: false as const,
+        message: "Local Agent and Cloud Container git transports are not connected in this build yet."
+      };
+    }
+
     if (!isOnline) {
       setSyncFeedback({
         tone: "error",
         text: "This device is offline. Local documents are still available."
       });
-      return;
+      return { ok: false as const, message: "This device is offline. Local documents are still available." };
     }
 
     if (!hasRequiredConfig(githubConfig)) {
       setSyncFeedback({
         tone: "error",
-        text: "Fill in owner, repo, branch, and token first. Leave directory blank to use the project name."
+        text: "Fill in owner, repo, branch, and token first."
       });
-      setSettingsTab("github");
+      setSettingsTab("git");
       setIsSettingsOpen(true);
-      return;
+      return { ok: false as const, message: "Fill in owner, repo, branch, and token first." };
+    }
+
+    const syncDocuments = selectedCommittedDocuments;
+    if (syncDocuments.length === 0) {
+      setSyncFeedback({
+        tone: "error",
+        text: "There is no committed snapshot to push yet. Stage files and commit them first."
+      });
+      return {
+        ok: false as const,
+        message: "There is no committed snapshot to push yet. Stage files and commit them first."
+      };
     }
 
     setIsSyncing(true);
     setSyncFeedback({
       tone: "neutral",
-      text: `Pushing ${snapshot.project.documents.length} document${
-        snapshot.project.documents.length === 1 ? "" : "s"
+      text: `Pushing ${syncDocuments.length} file${
+        syncDocuments.length === 1 ? "" : "s"
       } to GitHub...`
     });
 
     const result = await pushProjectToGitHub(githubConfig, {
-      projectName: snapshot.project.name,
-      documents: snapshot.project.documents.map((document) => ({
+      projectName: selectedGitProject.name,
+      documents: syncDocuments.map((document) => ({
         name: document.name,
         content: document.content
       })),
-      commitMessage: `Sync ${snapshot.project.name} from typr`
+      commitMessage: selectedGitProject.commitMessageTemplate
     });
 
     setIsSyncing(false);
@@ -3089,27 +3595,72 @@ export function App() {
     });
 
     if (result.ok) {
-      saveSyncSnapshot();
+      saveSyncSnapshot(
+        selectedGitProject.id,
+        syncDocuments.map((document) => ({
+          name: document.name,
+          updatedAt: document.updatedAt
+        }))
+      );
+      updateGitManagedProject(selectedGitProject.id, (project) => ({
+        ...project,
+        localCommits: markLocalCommitsPushed(project.localCommits),
+        lastPushedAt: new Date().toISOString()
+      }));
     }
+
+    return { ok: result.ok as true | false, message: result.message };
   };
 
   const handlePullFromGitHub = async () => {
+    if (!selectedGitProject) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Create or select a managed GitHub project first."
+      });
+      setSettingsTab("git");
+      setIsSettingsOpen(true);
+      return { ok: false as const, message: "Create or select a managed GitHub project first." };
+    }
+
+    if (selectedGitProject.backendId !== "browser") {
+      setSyncFeedback({
+        tone: "error",
+        text: "Local Agent and Cloud Container git transports are not connected in this build yet."
+      });
+      return {
+        ok: false as const,
+        message: "Local Agent and Cloud Container git transports are not connected in this build yet."
+      };
+    }
+
     if (!isOnline) {
       setSyncFeedback({
         tone: "error",
         text: "This device is offline. Local documents are still available."
       });
-      return;
+      return { ok: false as const, message: "This device is offline. Local documents are still available." };
     }
 
     if (!hasRequiredConfig(githubConfig)) {
       setSyncFeedback({
         tone: "error",
-        text: "Fill in owner, repo, branch, and token first. Leave directory blank to use the project name."
+        text: "Fill in owner, repo, branch, and token first."
       });
-      setSettingsTab("github");
+      setSettingsTab("git");
       setIsSettingsOpen(true);
-      return;
+      return { ok: false as const, message: "Fill in owner, repo, branch, and token first." };
+    }
+
+    if (hasUncommittedChanges(gitWorkingTreeEntries)) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Commit or unstage your local changes before pulling."
+      });
+      return {
+        ok: false as const,
+        message: "Commit or unstage your local changes before pulling."
+      };
     }
 
     setIsSyncing(true);
@@ -3119,7 +3670,7 @@ export function App() {
     });
 
     const result = await pullProjectFromGitHub(githubConfig, {
-      projectName: snapshot.project.name
+      projectName: selectedGitProject.name
     });
 
     setIsSyncing(false);
@@ -3129,17 +3680,20 @@ export function App() {
         tone: result.ok ? "error" : "error",
         text: result.message
       });
-      return;
+      return { ok: false as const, message: result.message };
     }
 
-    const lastSnapshot = loadSyncSnapshot();
-    const localDocs = snapshot.project.documents.map((d) => ({
-      id: d.id,
-      name: d.name,
-      content: d.content,
-      updatedAt: d.updatedAt
+    const filteredRemoteDocuments = result.documents.filter(
+      (document) => !shouldIgnorePath(document.name, selectedGitProject.ignorePatterns)
+    );
+    const lastSnapshot = loadSyncSnapshot(selectedGitProject.id);
+    const localDocs = selectedScopedDocuments.map((document) => ({
+      id: document.id,
+      name: document.relativePath,
+      content: document.content,
+      updatedAt: document.updatedAt
     }));
-    const remoteDocs = result.documents.map((d) => ({
+    const remoteDocs = filteredRemoteDocuments.map((d) => ({
       name: d.name,
       content: d.content
     }));
@@ -3147,17 +3701,21 @@ export function App() {
     const conflicts = detectConflicts(localDocs, remoteDocs, lastSnapshot);
 
     if (conflicts.conflicts.length > 0) {
-      setPendingRemoteDocuments(result.documents);
+      setPendingRemoteDocuments(filteredRemoteDocuments);
       setPendingRemoteProjectName(result.projectName ?? null);
       setConflictSet(conflicts);
       setSyncFeedback({
         tone: "neutral",
         text: `${conflicts.conflicts.length} conflict${conflicts.conflicts.length !== 1 ? "s" : ""} found. Resolve to continue.`
       });
-      return;
+      return {
+        ok: false as const,
+        message: `${conflicts.conflicts.length} conflict${conflicts.conflicts.length !== 1 ? "s" : ""} found. Resolve to continue.`
+      };
     }
 
-    applyPullResult(conflicts, result.documents, result.projectName ?? null);
+    applyPullResult(conflicts, filteredRemoteDocuments, result.projectName ?? null);
+    return { ok: true as const, message: result.message };
   };
 
   const applyPullResult = (
@@ -3165,12 +3723,15 @@ export function App() {
     remoteDocuments: GitHubSyncDocument[],
     projectName: string | null
   ) => {
-    const now = new Date().toISOString();
-    const localDocs = snapshot.project.documents.map((d) => ({
-      id: d.id,
-      name: d.name,
-      content: d.content,
-      updatedAt: d.updatedAt
+    if (!selectedGitProject) {
+      return;
+    }
+
+    const localDocs = selectedScopedDocuments.map((document) => ({
+      id: document.id,
+      name: document.relativePath,
+      content: document.content,
+      updatedAt: document.updatedAt
     }));
     const remoteDocs = remoteDocuments.map((d) => ({
       name: d.name,
@@ -3188,23 +3749,39 @@ export function App() {
       }
     }
 
+    replaceManagedProjectDocuments(merged, projectName);
+
     setSnapshot((current) => ({
       ...current,
       project: {
         ...current.project,
-        name: projectName ?? current.project.name,
-        documents: merged.map((d) => ({
-          id: d.id,
-          name: d.name,
-          content: d.content,
-          updatedAt: d.updatedAt
-        })),
-        activeDocumentId: newActiveId,
-        updatedAt: now
+        activeDocumentId: newActiveId
       }
     }));
 
-    saveSyncSnapshot();
+    saveSyncSnapshot(
+      selectedGitProject.id,
+      merged.map((document) => ({
+        name: document.name,
+        updatedAt: document.updatedAt
+      }))
+    );
+    updateGitManagedProject(selectedGitProject.id, (project) => ({
+      ...project,
+      committedDocuments: buildCommittedDocumentsFromRemote(remoteDocuments),
+      stagedPaths: [],
+      localCommits: [
+        {
+          id: `git-commit-${crypto.randomUUID()}`,
+          message: projectName ? `Pull ${projectName} from GitHub` : "Pull from GitHub",
+          createdAt: new Date().toISOString(),
+          paths: remoteDocuments.map((document) => document.name).sort((left, right) => left.localeCompare(right)),
+          pushedAt: new Date().toISOString()
+        },
+        ...project.localCommits
+      ],
+      lastPulledAt: new Date().toISOString()
+    }));
 
     const totalAdded = conflicts.addedRemotely.length;
     const totalAuto = conflicts.autoResolved.length;
@@ -3219,14 +3796,13 @@ export function App() {
   };
 
   const handleConflictResolve = (resolutions: ConflictResolution[]) => {
-    if (!pendingRemoteDocuments) return;
+    if (!pendingRemoteDocuments || !selectedGitProject) return;
 
-    const now = new Date().toISOString();
-    const localDocs = snapshot.project.documents.map((d) => ({
-      id: d.id,
-      name: d.name,
-      content: d.content,
-      updatedAt: d.updatedAt
+    const localDocs = selectedScopedDocuments.map((document) => ({
+      id: document.id,
+      name: document.relativePath,
+      content: document.content,
+      updatedAt: document.updatedAt
     }));
     const remoteDocs = pendingRemoteDocuments.map((d) => ({
       name: d.name,
@@ -3235,23 +3811,37 @@ export function App() {
 
     const merged = applyResolutions(localDocs, remoteDocs, resolutions);
 
-    setSnapshot((current) => ({
-      ...current,
-      project: {
-        ...current.project,
-        name: pendingRemoteProjectName ?? current.project.name,
-        documents: merged.map((d) => ({
-          id: d.id,
-          name: d.name,
-          content: d.content,
-          updatedAt: d.updatedAt
-        })),
-        activeDocumentId: current.project.activeDocumentId,
-        updatedAt: now
-      }
-    }));
+    replaceManagedProjectDocuments(merged, pendingRemoteProjectName);
 
-    saveSyncSnapshot();
+    saveSyncSnapshot(
+      selectedGitProject.id,
+      merged.map((document) => ({
+        name: document.name,
+        updatedAt: document.updatedAt
+      }))
+    );
+    updateGitManagedProject(selectedGitProject.id, (project) => ({
+      ...project,
+      committedDocuments: buildCommittedDocumentsFromRemote(
+        merged.map((document) => ({
+          name: document.name,
+          content: document.content
+        }))
+      ),
+      stagedPaths: [],
+      localCommits: [
+        {
+          id: `git-commit-${crypto.randomUUID()}`,
+          message: pendingRemoteProjectName
+            ? `Resolve pull for ${pendingRemoteProjectName}`
+            : "Resolve pull from GitHub",
+          createdAt: new Date().toISOString(),
+          paths: merged.map((document) => document.name).sort((left, right) => left.localeCompare(right)),
+          pushedAt: new Date().toISOString()
+        },
+        ...project.localCommits
+      ]
+    }));
     setConflictSet(null);
     setPendingRemoteDocuments(null);
     setPendingRemoteProjectName(null);
@@ -3264,39 +3854,83 @@ export function App() {
   };
 
   const handleSyncGitHub = async () => {
+    if (!selectedGitProject) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Create or select a managed GitHub project first."
+      });
+      setSettingsTab("git");
+      setIsSettingsOpen(true);
+      return { ok: false as const, message: "Create or select a managed GitHub project first." };
+    }
+
+    if (selectedGitProject.backendId !== "browser") {
+      setSyncFeedback({
+        tone: "error",
+        text: "Local Agent and Cloud Container git transports are not connected in this build yet."
+      });
+      return {
+        ok: false as const,
+        message: "Local Agent and Cloud Container git transports are not connected in this build yet."
+      };
+    }
+
     if (!isOnline) {
       setSyncFeedback({
         tone: "error",
         text: "This device is offline. Local documents are still available."
       });
-      return;
+      return { ok: false as const, message: "This device is offline. Local documents are still available." };
     }
 
     if (!hasRequiredConfig(githubConfig)) {
       setSyncFeedback({
         tone: "error",
-        text: "Fill in owner, repo, branch, and token first. Leave directory blank to use the project name."
+        text: "Fill in owner, repo, branch, and token first."
       });
-      setSettingsTab("github");
+      setSettingsTab("git");
       setIsSettingsOpen(true);
-      return;
+      return { ok: false as const, message: "Fill in owner, repo, branch, and token first." };
+    }
+
+    if (hasUncommittedChanges(gitWorkingTreeEntries)) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Commit or unstage your local changes before syncing."
+      });
+      return {
+        ok: false as const,
+        message: "Commit or unstage your local changes before syncing."
+      };
+    }
+
+    const syncDocuments = selectedCommittedDocuments;
+    if (syncDocuments.length === 0) {
+      setSyncFeedback({
+        tone: "error",
+        text: "There is no committed snapshot to sync yet. Stage files and commit them first."
+      });
+      return {
+        ok: false as const,
+        message: "There is no committed snapshot to sync yet. Stage files and commit them first."
+      };
     }
 
     setIsSyncing(true);
     setSyncFeedback({
       tone: "neutral",
-      text: `Syncing ${snapshot.project.documents.length} document${
-        snapshot.project.documents.length === 1 ? "" : "s"
+      text: `Syncing ${syncDocuments.length} file${
+        syncDocuments.length === 1 ? "" : "s"
       } with GitHub...`
     });
 
     const pushResult = await pushProjectToGitHub(githubConfig, {
-      projectName: snapshot.project.name,
-      documents: snapshot.project.documents.map((document) => ({
+      projectName: selectedGitProject.name,
+      documents: syncDocuments.map((document) => ({
         name: document.name,
         content: document.content
       })),
-      commitMessage: `Sync ${snapshot.project.name} from typr`
+      commitMessage: selectedGitProject.commitMessageTemplate
     });
 
     if (!pushResult.ok) {
@@ -3305,11 +3939,11 @@ export function App() {
         tone: "error",
         text: pushResult.message
       });
-      return;
+      return { ok: false as const, message: pushResult.message };
     }
 
     const pullResult = await pullProjectFromGitHub(githubConfig, {
-      projectName: snapshot.project.name
+      projectName: selectedGitProject.name
     });
 
     setIsSyncing(false);
@@ -3319,17 +3953,20 @@ export function App() {
         tone: "error",
         text: `Pushed, but pull failed: ${pullResult.message}`
       });
-      return;
+      return { ok: false as const, message: `Pushed, but pull failed: ${pullResult.message}` };
     }
 
-    const lastSnapshot = loadSyncSnapshot();
-    const localDocs = snapshot.project.documents.map((d) => ({
-      id: d.id,
-      name: d.name,
-      content: d.content,
-      updatedAt: d.updatedAt
+    const filteredRemoteDocuments = pullResult.documents.filter(
+      (document) => !shouldIgnorePath(document.name, selectedGitProject.ignorePatterns)
+    );
+    const lastSnapshot = loadSyncSnapshot(selectedGitProject.id);
+    const localDocs = selectedScopedDocuments.map((document) => ({
+      id: document.id,
+      name: document.relativePath,
+      content: document.content,
+      updatedAt: document.updatedAt
     }));
-    const remoteDocs = pullResult.documents.map((d) => ({
+    const remoteDocs = filteredRemoteDocuments.map((d) => ({
       name: d.name,
       content: d.content
     }));
@@ -3337,18 +3974,374 @@ export function App() {
     const conflicts = detectConflicts(localDocs, remoteDocs, lastSnapshot);
 
     if (conflicts.conflicts.length > 0) {
-      setPendingRemoteDocuments(pullResult.documents);
+      setPendingRemoteDocuments(filteredRemoteDocuments);
       setPendingRemoteProjectName(pullResult.projectName ?? null);
       setConflictSet(conflicts);
       setSyncFeedback({
         tone: "neutral",
         text: `Pushed. ${conflicts.conflicts.length} conflict${conflicts.conflicts.length !== 1 ? "s" : ""} found on pull.`
       });
-      return;
+      return {
+        ok: false as const,
+        message: `Pushed. ${conflicts.conflicts.length} conflict${conflicts.conflicts.length !== 1 ? "s" : ""} found on pull.`
+      };
     }
 
-    applyPullResult(conflicts, pullResult.documents, pullResult.projectName ?? null);
+    saveSyncSnapshot(
+      selectedGitProject.id,
+      syncDocuments.map((document) => ({
+        name: document.name,
+        updatedAt: document.updatedAt
+      }))
+    );
+    updateGitManagedProject(selectedGitProject.id, (project) => ({
+      ...project,
+      localCommits: markLocalCommitsPushed(project.localCommits),
+      lastPushedAt: new Date().toISOString()
+    }));
+    applyPullResult(conflicts, filteredRemoteDocuments, pullResult.projectName ?? null);
+    return { ok: true as const, message: "Sync complete." };
   };
+
+  const terminalRuntime = useMemo(
+    () => ({
+      getSnapshot: () => snapshot,
+      updateSnapshot: (updater: (current: AppSnapshot) => AppSnapshot) => {
+        setSnapshot((current) => updater(current));
+      },
+      getCompileResult: () => compileResultRef.current,
+      getCompilerStatus: () => compilerStatus,
+      getIsOnline: () => isOnline,
+      async compileActiveDocument() {
+        await runCompile();
+        return (
+          compileResultRef.current ?? {
+            ok: false,
+            engine: "typst-ts",
+            errors: [
+              {
+                message: "Compile result unavailable.",
+                severity: "error"
+              }
+            ]
+          }
+        );
+      },
+      async exportActiveDocument() {
+        try {
+          const pdfBytes = await exportTypstPdf(activeDocumentTextContent, [
+            ...diagramShadowAssets,
+            ...graphShadowAssets
+          ]);
+          const baseName = activeDocument.name.replace(/\.typ$/i, "");
+          const fileName = `${baseName || activeDocument.name}.pdf`;
+          downloadBlob(
+            fileName,
+            new Blob([Uint8Array.from(pdfBytes).buffer], {
+              type: "application/pdf"
+            })
+          );
+          return { ok: true as const, fileName };
+        } catch (error) {
+          return {
+            ok: false as const,
+            message: error instanceof Error ? error.message : "Unable to export PDF."
+          };
+        }
+      },
+      async syncProject() {
+        const result = await handleSyncGitHub();
+        return result.ok
+          ? { ok: true as const, message: result.message }
+          : { ok: false as const, message: result.message };
+      },
+      async runGitCommand(args: string[]) {
+        const subcommand = args[0] ?? "status";
+
+        if (!selectedGitProject) {
+          return {
+            stdout: "",
+            stderr: "No managed git project is selected.\n",
+            exitCode: 1
+          };
+        }
+
+        if (subcommand === "help") {
+          return {
+            stdout:
+              [
+                "Managed git commands",
+                "git status",
+                "git add <path|.>",
+                "git reset <path>",
+                "git commit -m <message>",
+                "git branch",
+                "git switch <branch>",
+                "git log",
+                "git remote -v",
+                "git pull",
+                "git push",
+                "git sync"
+              ].join("\n") + "\n",
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        if (subcommand === "push") {
+          const result = await handlePushToGitHub();
+          return result.ok
+            ? { stdout: `${result.message}\n`, stderr: "", exitCode: 0 }
+            : { stdout: "", stderr: `${result.message}\n`, exitCode: 1 };
+        }
+
+        if (subcommand === "pull") {
+          const result = await handlePullFromGitHub();
+          return result.ok
+            ? { stdout: `${result.message}\n`, stderr: "", exitCode: 0 }
+            : { stdout: "", stderr: `${result.message}\n`, exitCode: 1 };
+        }
+
+        if (subcommand === "sync") {
+          const result = await handleSyncGitHub();
+          return result.ok
+            ? { stdout: `${result.message}\n`, stderr: "", exitCode: 0 }
+            : { stdout: "", stderr: `${result.message}\n`, exitCode: 1 };
+        }
+
+        if (subcommand === "switch") {
+          const branch = args[1]?.trim();
+          if (!branch) {
+            return {
+              stdout: "",
+              stderr: "git switch: provide a branch name.\n",
+              exitCode: 1
+            };
+          }
+
+          updateSelectedGitProject((project) => ({
+            ...project,
+            branch
+          }));
+          return {
+            stdout: `Switched managed branch to ${branch}.\n`,
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        if (subcommand === "remote") {
+          return {
+            stdout:
+              `${selectedGitProject.remoteName} https://github.com/${selectedGitProject.owner}/${selectedGitProject.repo} (fetch)\n` +
+              `${selectedGitProject.remoteName} https://github.com/${selectedGitProject.owner}/${selectedGitProject.repo} (push)\n`,
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        if (subcommand === "add") {
+          const requestedPath = args[1]?.trim();
+          if (!requestedPath) {
+            return {
+              stdout: "",
+              stderr: "git add: provide a file path or '.'.\n",
+              exitCode: 1
+            };
+          }
+
+          const changedPaths = listChangedPaths(gitWorkingTreeEntries);
+          const pathsToStage =
+            requestedPath === "."
+              ? changedPaths
+              : changedPaths.filter((path) => path === requestedPath);
+
+          if (pathsToStage.length === 0) {
+            return {
+              stdout: "",
+              stderr: `git add: no changed file matches '${requestedPath}'.\n`,
+              exitCode: 1
+            };
+          }
+
+          handleStageGitPaths(pathsToStage);
+          return {
+            stdout: `Staged ${pathsToStage.length} path${pathsToStage.length === 1 ? "" : "s"}.\n`,
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        if (subcommand === "reset") {
+          const requestedPath = args[1]?.trim();
+          if (!requestedPath) {
+            return {
+              stdout: "",
+              stderr: "git reset: provide a staged path.\n",
+              exitCode: 1
+            };
+          }
+
+          if (!selectedGitProject.stagedPaths.includes(requestedPath)) {
+            return {
+              stdout: "",
+              stderr: `git reset: '${requestedPath}' is not staged.\n`,
+              exitCode: 1
+            };
+          }
+
+          handleUnstageGitPath(requestedPath);
+          return {
+            stdout: `Unstaged ${requestedPath}.\n`,
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        if (subcommand === "commit") {
+          const messageFlagIndex = args.findIndex((argument) => argument === "-m");
+          const message =
+            messageFlagIndex >= 0 ? args.slice(messageFlagIndex + 1).join(" ").trim() : "";
+
+          if (!message) {
+            return {
+              stdout: "",
+              stderr: "git commit: use -m with a commit message.\n",
+              exitCode: 1
+            };
+          }
+
+          if (selectedGitProject.stagedPaths.length === 0) {
+            return {
+              stdout: "",
+              stderr: "git commit: nothing staged.\n",
+              exitCode: 1
+            };
+          }
+
+          const commitResult = applyLocalCommit({
+            committedDocuments: selectedGitProject.committedDocuments,
+            scopedDocuments: selectedScopedDocuments.map((document) => ({
+              id: document.id,
+              relativePath: document.relativePath,
+              content: document.content,
+              updatedAt: document.updatedAt
+            })),
+            stagedPaths: selectedGitProject.stagedPaths,
+            message
+          });
+
+          updateGitManagedProject(selectedGitProject.id, (project) => ({
+            ...project,
+            committedDocuments: commitResult.committedDocuments,
+            localCommits: [commitResult.commit, ...project.localCommits],
+            stagedPaths: [],
+            draftCommitMessage: "",
+            commitMessageTemplate: message
+          }));
+
+          return {
+            stdout:
+              `[${selectedGitProject.branch} ${commitResult.commit.id.slice(-7)}] ${commitResult.commit.message}\n`,
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        if (subcommand === "status" || subcommand === "branch" || subcommand === "log") {
+          if (subcommand === "branch") {
+            const remoteBranches =
+              hasRequiredConfig(githubConfig) && isOnline
+                ? await fetchGitHubProjectStatus({
+                    config: githubConfig,
+                    projectName: selectedGitProject.name,
+                    localDocuments: selectedScopedDocuments.map((document) => ({
+                      name: document.relativePath,
+                      content: document.content,
+                      updatedAt: document.updatedAt
+                    }))
+                  }).then((status) => (status.ok ? status.branches : []))
+                : [];
+            const branchNames = remoteBranches.length > 0
+              ? remoteBranches.map((branch) => `${branch.current ? "*" : " "} ${branch.name}`)
+              : [`* ${selectedGitProject.branch}`];
+            return {
+              stdout: branchNames.join("\n") + "\n",
+              stderr: "",
+              exitCode: 0
+            };
+          }
+
+          if (subcommand === "log") {
+            if (localGitCommits.length === 0) {
+              return {
+                stdout: "",
+                stderr: "No local commits yet.\n",
+                exitCode: 1
+              };
+            }
+            return {
+              stdout:
+                localGitCommits
+                  .map(
+                    (commit) =>
+                      `${commit.id.slice(-7)} ${commit.createdAt} ${commit.message}${
+                        commit.pushedAt ? " [pushed]" : ""
+                      }`
+                  )
+                  .join("\n") + "\n",
+              stderr: "",
+              exitCode: 0
+            };
+          }
+
+          return {
+            stdout:
+              [
+                `Managed repo: ${selectedGitProject.name}`,
+                `Branch: ${selectedGitProject.branch}`,
+                `Backend: ${selectedGitProject.backendId}`,
+                `Workspace path: ${selectedGitProject.workspacePath || "/"}`,
+                `Repo path: ${selectedGitProject.repositoryPath || "/"}`,
+                `Staged: ${selectedGitProject.stagedPaths.length}`,
+                ...gitWorkingTreeEntries.map((entry) => `${entry.status.padEnd(10)} ${entry.path}`)
+              ].join("\n") + "\n",
+            stderr: "",
+            exitCode: 0
+          };
+        }
+
+        return {
+          stdout: "",
+          stderr: `git ${subcommand}: unsupported in Browser Shell.\n`,
+          exitCode: 1
+        };
+      }
+    }),
+    [
+      activeDocument.name,
+      activeDocumentTextContent,
+      compilerStatus,
+      diagramShadowAssets,
+      graphShadowAssets,
+      githubConfig,
+      handleSyncGitHub,
+      handlePullFromGitHub,
+      handlePushToGitHub,
+      handleStageGitPaths,
+      handleUnstageGitPath,
+      gitWorkingTreeEntries,
+      isOnline,
+      localGitCommits,
+      runCompile,
+      selectedGitProject,
+      selectedCommittedDocuments,
+      selectedScopedDocuments,
+      snapshot,
+      updateGitManagedProject,
+      updateSelectedGitProject
+    ]
+  );
 
   const closeMenusWithDelay = useCallback(() => {
     cancelPendingMenuOpen();
@@ -3614,7 +4607,21 @@ export function App() {
     [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth, workspaceMode]
   );
 
-  const canPushToGitHub = isOnline && hasRequiredConfig(githubConfig) && !isSyncing;
+  const canPullFromGitHub =
+    isOnline &&
+    Boolean(selectedGitProject) &&
+    selectedGitProject?.backendId === "browser" &&
+    hasRequiredConfig(githubConfig) &&
+    !hasUncommittedChanges(gitWorkingTreeEntries) &&
+    !isSyncing;
+  const canPushToGitHub =
+    isOnline &&
+    Boolean(selectedGitProject) &&
+    selectedGitProject?.backendId === "browser" &&
+    selectedCommittedDocuments.length > 0 &&
+    hasRequiredConfig(githubConfig) &&
+    !isSyncing;
+  const canSyncGitHub = canPushToGitHub && !hasUncommittedChanges(gitWorkingTreeEntries);
   const editorDiagnostics =
     compileResult === null
       ? []
@@ -4061,7 +5068,7 @@ export function App() {
             <button
               className="menu-action"
               onClick={() => {
-                setSettingsTab("github");
+                setSettingsTab("git");
                 setIsSettingsOpen(true);
                 setActiveMenu(null);
               }}
@@ -4789,15 +5796,65 @@ export function App() {
                   <div className="sync-stack">
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
-                        <span>GitHub sync</span>
-                        <span className="pane__meta">{isOnline ? "Ready" : "Offline"}</span>
+                        <span>Git projects</span>
+                        <span className="pane__meta">
+                          {selectedGitProject
+                            ? selectedGitProject.backendId
+                            : "No repo"}
+                        </span>
+                      </div>
+                      <div className="sidebar-card__actions">
+                        <select
+                          className="pane__button pane__button--compact"
+                          onChange={(event) =>
+                            setGitWorkspace((currentWorkspace) => ({
+                              ...currentWorkspace,
+                              selectedProjectId: event.target.value || null
+                            }))
+                          }
+                          value={selectedGitProject?.id ?? ""}
+                        >
+                          {gitWorkspace.projects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={handleAddGitProject}
+                          type="button"
+                        >
+                          Add repo
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={!selectedGitProject}
+                          onClick={handleRemoveSelectedGitProject}
+                          type="button"
+                        >
+                          Remove
+                        </button>
                       </div>
                       <p className="sidebar-card__copy">{syncFeedback.text}</p>
+                      {selectedGitProject ? (
+                        <div className="pane__meta">
+                          {selectedGitProject.owner && selectedGitProject.repo
+                            ? `${selectedGitProject.owner}/${selectedGitProject.repo}`
+                            : "Configure owner and repo in Settings"}
+                          {selectedGitProject.repositoryPath
+                            ? ` · repo path ${selectedGitProject.repositoryPath}`
+                            : ""}
+                          {selectedGitProject.workspacePath
+                            ? ` · workspace path ${selectedGitProject.workspacePath}`
+                            : ""}
+                        </div>
+                      ) : null}
                       <div className="sidebar-card__actions">
                         <button
                           className="pane__button"
                           onClick={() => {
-                            setSettingsTab("github");
+                            setSettingsTab("git");
                             setIsSettingsOpen(true);
                           }}
                           type="button"
@@ -4806,7 +5863,7 @@ export function App() {
                         </button>
                         <button
                           className="pane__button"
-                          disabled={!canPushToGitHub}
+                          disabled={!canPullFromGitHub}
                           onClick={() => {
                             void handlePullFromGitHub();
                           }}
@@ -4826,7 +5883,7 @@ export function App() {
                         </button>
                         <button
                           className="pane__button"
-                          disabled={!canPushToGitHub}
+                          disabled={!canSyncGitHub}
                           onClick={() => {
                             void handleSyncGitHub();
                           }}
@@ -4835,6 +5892,176 @@ export function App() {
                           {isSyncing ? "Syncing..." : "Sync"}
                         </button>
                       </div>
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Working tree</span>
+                        <span className="pane__meta">
+                          {gitWorkingTreeEntries.length > 0
+                            ? `${gitWorkingTreeEntries.filter((entry) => entry.status !== "committed").length} changed`
+                            : "Empty"}
+                        </span>
+                      </div>
+                      <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={handleStageAllGitChanges}
+                          type="button"
+                        >
+                          Stage all
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={
+                            !selectedGitProject ||
+                            selectedGitProject.stagedPaths.length === 0 ||
+                            !selectedGitProject.draftCommitMessage.trim()
+                          }
+                          onClick={handleCommitGitChanges}
+                          type="button"
+                        >
+                          Commit
+                        </button>
+                      </div>
+                      <label className="sync-field">
+                        <span>Commit message</span>
+                        <input
+                          autoCapitalize="sentences"
+                          autoCorrect="off"
+                          onChange={(event) =>
+                            handleGitProjectFieldChange("draftCommitMessage", event.target.value)
+                          }
+                          placeholder="Add a commit message"
+                          type="text"
+                          value={selectedGitProject?.draftCommitMessage ?? ""}
+                        />
+                      </label>
+                      {gitWorkingTreeEntries.length > 0 ? (
+                        <div className="outline-list" role="list">
+                          {gitWorkingTreeEntries.slice(0, 16).map((entry) => (
+                            <div key={entry.path} className="sidebar-card__row">
+                              <span>{entry.path}</span>
+                              <span className="pane__meta">{entry.status}</span>
+                              {entry.status !== "committed" ? (
+                                <button
+                                  className="pane__button pane__button--compact"
+                                  onClick={() =>
+                                    entry.staged
+                                      ? handleUnstageGitPath(entry.path)
+                                      : handleStageGitPaths([entry.path])
+                                  }
+                                  type="button"
+                                >
+                                  {entry.staged ? "Unstage" : "Stage"}
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">
+                          No files are in scope for this managed repo yet.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Local commits</span>
+                        <span className="pane__meta">
+                          {localGitCommits.length > 0 ? `${localGitCommits.length} stored` : "Empty"}
+                        </span>
+                      </div>
+                      {localGitCommits.length > 0 ? (
+                        <div className="outline-list" role="list">
+                          {localGitCommits.slice(0, 8).map((commit) => (
+                            <div key={commit.id} className="sidebar-card__row">
+                              <span>{commit.message}</span>
+                              <span className="pane__meta">
+                                {commit.pushedAt ? "pushed" : "local"} · {commit.paths.length}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">
+                          Stage files and commit them to build local history.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Branches</span>
+                        <span className="pane__meta">
+                          {isGitStatusLoading
+                            ? "Loading"
+                            : gitBranches.length > 0
+                              ? `${gitBranches.length} tracked`
+                              : "None"}
+                        </span>
+                      </div>
+                      {gitBranches.length > 0 ? (
+                        <div className="outline-list" role="list">
+                          {gitBranches.map((branch) => (
+                            <div key={branch.name} className="sidebar-card__row">
+                              <span>{branch.current ? `* ${branch.name}` : branch.name}</span>
+                              <span className="pane__meta">{branch.sha.slice(0, 7)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">
+                          Branch data appears here after the repo is configured.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Remote commits</span>
+                        <span className="pane__meta">
+                          {gitCommitHistory.length > 0 ? `${gitCommitHistory.length} shown` : "Empty"}
+                        </span>
+                      </div>
+                      {gitCommitHistory.length > 0 ? (
+                        <div className="outline-list" role="list">
+                          {gitCommitHistory.slice(0, 8).map((commit) => (
+                            <div key={commit.sha} className="sidebar-card__row">
+                              <span>{commit.message}</span>
+                              <span className="pane__meta">{commit.sha.slice(0, 7)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">
+                          No remote commit history loaded yet.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>File status</span>
+                        <span className="pane__meta">
+                          {gitFileStatuses.length > 0 ? `${gitFileStatuses.length} files` : "Empty"}
+                        </span>
+                      </div>
+                      {gitFileStatuses.length > 0 ? (
+                        <div className="outline-list" role="list">
+                          {gitFileStatuses.slice(0, 12).map((file) => (
+                            <div key={file.path} className="sidebar-card__row">
+                              <span>{file.path}</span>
+                              <span className="pane__meta">{file.state}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="snippet-empty">
+                          File status appears here after the repo is configured.
+                        </div>
+                      )}
                     </div>
                   </div>
                 </section>
@@ -5370,6 +6597,11 @@ export function App() {
                 theme={theme}
                 onChange={handleDocumentChange}
               />
+              <TerminalDrawer
+                isOpen={isTerminalOpen}
+                onClose={() => setIsTerminalOpen(false)}
+                runtime={terminalRuntime}
+              />
             </>
           ) : (
             <div className="source-empty-state">
@@ -5562,13 +6794,13 @@ export function App() {
             <div className="settings-sheet__body">
               <div className="settings-tabs" role="tablist" aria-label="Settings tabs">
                 <button
-                  aria-selected={settingsTab === "github"}
-                  className={`settings-tab ${settingsTab === "github" ? "settings-tab--active" : ""}`}
-                  onClick={() => setSettingsTab("github")}
+                  aria-selected={settingsTab === "git"}
+                  className={`settings-tab ${settingsTab === "git" ? "settings-tab--active" : ""}`}
+                  onClick={() => setSettingsTab("git")}
                   role="tab"
                   type="button"
                 >
-                  GitHub
+                  Git
                 </button>
                 <button
                   aria-selected={settingsTab === "themes"}
@@ -5617,9 +6849,62 @@ export function App() {
                 </button>
               </div>
 
-              {settingsTab === "github" ? (
+              {settingsTab === "git" ? (
                 <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Managed repos</h3>
+                      <span className="pane__meta">{gitWorkspace.projects.length}</span>
+                    </div>
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__actions">
+                        <select
+                          className="pane__button pane__button--compact"
+                          onChange={(event) =>
+                            setGitWorkspace((currentWorkspace) => ({
+                              ...currentWorkspace,
+                              selectedProjectId: event.target.value || null
+                            }))
+                          }
+                          value={selectedGitProject?.id ?? ""}
+                        >
+                          {gitWorkspace.projects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.name}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={handleAddGitProject}
+                          type="button"
+                        >
+                          Add repo
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={!selectedGitProject}
+                          onClick={handleRemoveSelectedGitProject}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="sync-grid">
+                    <label className="sync-field">
+                      <span>Name</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) => handleGitProjectFieldChange("name", event.target.value)}
+                        placeholder="Algebra notes repo"
+                        type="text"
+                        value={selectedGitProject?.name ?? ""}
+                      />
+                    </label>
                     <label className="sync-field">
                       <span>Owner</span>
                       <input
@@ -5660,7 +6945,7 @@ export function App() {
                       />
                     </label>
                     <label className="sync-field">
-                      <span>Directory</span>
+                      <span>Repo path</span>
                       <input
                         autoCapitalize="none"
                         autoCorrect="off"
@@ -5671,6 +6956,34 @@ export function App() {
                         type="text"
                         value={githubConfig.directory}
                       />
+                    </label>
+                    <label className="sync-field">
+                      <span>Workspace path</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                          handleGitProjectFieldChange("workspacePath", event.target.value)
+                        }
+                        placeholder="Leave blank for the full workspace"
+                        type="text"
+                        value={selectedGitProject?.workspacePath ?? ""}
+                      />
+                    </label>
+                    <label className="sync-field">
+                      <span>Backend</span>
+                      <select
+                        onChange={(event) =>
+                          handleGitProjectBackendChange(
+                            event.target.value as GitManagedProject["backendId"]
+                          )
+                        }
+                        value={selectedGitProject?.backendId ?? "browser"}
+                      >
+                        <option value="browser">Browser</option>
+                        <option value="local-agent">Local Agent</option>
+                        <option value="cloud-container">Cloud Container</option>
+                      </select>
                     </label>
                   </div>
 
@@ -5686,6 +6999,30 @@ export function App() {
                     />
                   </label>
 
+                  <label className="sync-field">
+                    <span>Ignore patterns</span>
+                    <textarea
+                      onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
+                      placeholder={"figures/\n*.pdf\nnotes/private/**"}
+                      rows={4}
+                      value={stringifyIgnorePatterns(selectedGitProject?.ignorePatterns ?? [])}
+                    />
+                  </label>
+
+                  <label className="sync-field">
+                    <span>Default push message</span>
+                    <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      onChange={(event) =>
+                        handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
+                      }
+                      placeholder="Sync project from typr"
+                      type="text"
+                      value={selectedGitProject?.commitMessageTemplate ?? ""}
+                    />
+                  </label>
+
                   <div
                     className={`sync-feedback ${
                       syncFeedback.tone === "success"
@@ -5698,6 +7035,12 @@ export function App() {
                     <span>{syncFeedback.text}</span>
                     <span className="sync-feedback__meta">
                       {isOnline ? "Network available" : "Network unavailable"} · {storageLabel}
+                      {selectedGitProject?.lastPulledAt
+                        ? ` · last pull ${new Date(selectedGitProject.lastPulledAt).toLocaleString()}`
+                        : ""}
+                      {selectedGitProject?.lastPushedAt
+                        ? ` · last push ${new Date(selectedGitProject.lastPushedAt).toLocaleString()}`
+                        : ""}
                     </span>
                   </div>
                 </div>
@@ -6344,7 +7687,7 @@ export function App() {
             <div className="settings-sheet__footer">
               <button
                 className="control-button"
-                disabled={!canPushToGitHub}
+                disabled={!canPullFromGitHub}
                 onClick={() => {
                   void handlePullFromGitHub();
                 }}
@@ -6364,7 +7707,7 @@ export function App() {
               </button>
               <button
                 className="control-button"
-                disabled={!canPushToGitHub}
+                disabled={!canSyncGitHub}
                 onClick={() => {
                   void handleSyncGitHub();
                 }}
@@ -6757,7 +8100,7 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
     case "graph":
       return "Desmos graph editor";
     case "sync":
-      return "GitHub publishing";
+      return "Managed GitHub repos";
     case "debug":
       return "Compiler and diagnostics";
   }
