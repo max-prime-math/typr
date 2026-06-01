@@ -6,6 +6,7 @@ import type {
   TypstDocumentFile,
   TypstProject
 } from "../app/appState";
+import { createDefaultDiagram, createDefaultGraph } from "../app/appState";
 import { getGraphFilePath } from "../graph/graphFiles";
 import { buildProjectWorkspaceEntries, normalizeWorkspacePath } from "../workspace/workspaceTree";
 
@@ -248,6 +249,102 @@ export function updateSelectedProjectRepository(
     projects: storage.projects.map((project) =>
       project.id === selectedProject.id ? nextProject : project
     )
+  };
+}
+
+export function createEmptyProjectRepository(options: {
+  displayName: string;
+  defaultFileName?: string | null;
+  defaultContent?: string;
+}): TyprProjectRepository {
+  const now = new Date().toISOString();
+  const projectId = createId("project");
+  const defaultFileName = options.defaultFileName === null
+    ? null
+    : normalizeProjectPath(options.defaultFileName ?? "main.typ");
+  const fileId = defaultFileName ? createId("file") : null;
+  const documentId = defaultFileName ? createId("doc") : null;
+  const entries = defaultFileName && fileId && documentId
+    ? {
+        [defaultFileName]: {
+          id: fileId,
+          kind: "file" as const,
+          path: defaultFileName,
+          content: options.defaultContent ?? "",
+          source: { kind: "document" as const, id: documentId },
+          updatedAt: now
+        }
+      }
+    : {};
+  const documents = defaultFileName && documentId
+    ? [
+        {
+          id: documentId,
+          name: defaultFileName,
+          content: options.defaultContent ?? "",
+          updatedAt: now
+        }
+      ]
+    : [];
+
+  return {
+    id: projectId,
+    displayName: options.displayName.trim() || "Untitled project",
+    rootPath: DEFAULT_PROJECT_ROOT_PATH,
+    storageRoot: getProjectStorageRoot(projectId),
+    filesystem: {
+      version: PROJECT_FILESYSTEM_VERSION,
+      entries,
+      updatedAt: now
+    },
+    git: {
+      backend: "browser-placeholder",
+      status: "not-initialized",
+      headRef: null,
+      defaultBranch: null,
+      remotes: []
+    },
+    selection: {
+      activeFilePath: defaultFileName,
+      openFilePaths: defaultFileName ? [defaultFileName] : []
+    },
+    editor: {
+      previewPath: null
+    },
+    legacyRecovery: {
+      migratedAt: now,
+      snapshotVersion: null,
+      project: {
+        id: projectId,
+        name: options.displayName.trim() || "Untitled project",
+        documents,
+        folders: [],
+        trash: [],
+        figures: [],
+        graphs: [],
+        activeDocumentId: documentId ?? "",
+        diagram: createDefaultDiagram(),
+        graph: createDefaultGraph(),
+        createdAt: now,
+        updatedAt: now
+      }
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function addProjectRepository(
+  storage: TyprProjectStorageState,
+  project: TyprProjectRepository
+): TyprProjectStorageState {
+  return {
+    ...storage,
+    selectedProjectId: project.id,
+    projects: [
+      ...storage.projects.filter((existingProject) => existingProject.id !== project.id),
+      project
+    ]
   };
 }
 

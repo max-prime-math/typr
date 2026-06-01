@@ -90,6 +90,27 @@ export interface RepoCommit {
   parentShas: string[];
 }
 
+export interface RepoCommitDetails extends RepoCommit {
+  treeSha: string;
+  committerName: string;
+  committerEmail: string;
+  committedAt: string;
+  authorTimezone: string;
+  committerTimezone: string;
+}
+
+export interface RepoTreeEntry {
+  path: string;
+  oid: string;
+  mode: "100644" | "100755";
+  size: number;
+}
+
+export interface RepoObject {
+  type: "blob" | "tree" | "commit";
+  content: Uint8Array;
+}
+
 export interface RepoTrackedFile {
   path: string;
   content: ProjectFileContent;
@@ -121,6 +142,25 @@ export interface RepoBackend {
   ): Promise<RepoResult<{ project: TyprProjectRepository; branch: RepoBranch }>>;
   log(project: TyprProjectRepository, limit?: number): Promise<RepoResult<RepoCommit[]>>;
   readTrackedFiles(project: TyprProjectRepository): Promise<RepoResult<RepoTrackedFile[]>>;
+  getRef(project: TyprProjectRepository, refPath: string): Promise<RepoResult<string | null>>;
+  setRef(project: TyprProjectRepository, refPath: string, sha: string | null): Promise<RepoResult<void>>;
+  listRefs(project: TyprProjectRepository, prefix?: string): Promise<RepoResult<Record<string, string>>>;
+  hasObject(project: TyprProjectRepository, sha: string): Promise<RepoResult<boolean>>;
+  readObject(project: TyprProjectRepository, sha: string): Promise<RepoResult<RepoObject>>;
+  writeObject(
+    project: TyprProjectRepository,
+    type: RepoObject["type"],
+    content: Uint8Array
+  ): Promise<RepoResult<string>>;
+  readCommitDetails(project: TyprProjectRepository, sha: string): Promise<RepoResult<RepoCommitDetails>>;
+  listCommitTree(project: TyprProjectRepository, commitSha: string): Promise<RepoResult<RepoTreeEntry[]>>;
+  writeTree(project: TyprProjectRepository, entries: RepoTreeEntry[]): Promise<RepoResult<string>>;
+  fastForwardBranch(
+    project: TyprProjectRepository,
+    branch: string,
+    sha: string
+  ): Promise<RepoResult<{ project: TyprProjectRepository; status: RepoStatus }>>;
+  isAncestor(project: TyprProjectRepository, ancestorSha: string, descendantSha: string): Promise<RepoResult<boolean>>;
 }
 
 export function createRepoBackend(storage: GitFileStorage = createIndexedDbGitFileStorage()): RepoBackend {
@@ -136,7 +176,24 @@ export function createRepoBackend(storage: GitFileStorage = createIndexedDbGitFi
     createBranch: (project, name) => asResult(() => createBranch(storage, project, name)),
     switchBranch: (project, name) => asResult(() => switchBranch(storage, project, name)),
     log: (project, limit) => asResult(() => getLog(storage, project, limit)),
-    readTrackedFiles: (project) => asResult(() => readTrackedFiles(storage, project))
+    readTrackedFiles: (project) => asResult(() => readTrackedFiles(storage, project)),
+    getRef: (project, refPath) => asResult(() => getRef(storage, project, refPath)),
+    setRef: (project, refPath, sha) => asResult(() => setRef(storage, project, refPath, sha)),
+    listRefs: (project, prefix) => asResult(() => listRefs(storage, project, prefix)),
+    hasObject: (project, sha) => asResult(() => hasObject(storage, project, sha)),
+    readObject: (project, sha) => asResult(() => readAnyObject(storage, project.id, validateSha(sha))),
+    writeObject: (project, type, content) =>
+      asResult(async () => {
+        await assertRepositoryExists(storage, project.id);
+        return writeObject(storage, project.id, type, content);
+      }),
+    readCommitDetails: (project, sha) => asResult(() => readCommitDetails(storage, project, sha)),
+    listCommitTree: (project, commitSha) => asResult(() => listCommitTree(storage, project, commitSha)),
+    writeTree: (project, entries) => asResult(() => writeTree(storage, project, entries)),
+    fastForwardBranch: (project, branch, sha) =>
+      asResult(() => fastForwardBranch(storage, project, branch, sha)),
+    isAncestor: (project, ancestorSha, descendantSha) =>
+      asResult(() => isAncestor(storage, project, ancestorSha, descendantSha))
   };
 }
 
@@ -490,6 +547,139 @@ async function readTrackedFiles(
   return tracked;
 }
 
+async function getRef(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  refPath: string
+): Promise<string | null> {
+  await assertRepositoryExists(storage, project.id);
+  const normalizedRef = validateRefPath(refPath);
+  return (await readTextFile(storage, project.id, normalizedRef))?.trim() || null;
+}
+
+async function setRef(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  refPath: string,
+  sha: string | null
+): Promise<void> {
+  await assertRepositoryExists(storage, project.id);
+  const normalizedRef = validateRefPath(refPath);
+  if (sha === null) {
+    await storage.deleteFile(project.id, normalizedRef);
+    return;
+  }
+  await writeTextFile(storage, project.id, normalizedRef, `${validateSha(sha)}\n`);
+}
+
+async function listRefs(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  prefix = "refs/"
+): Promise<Record<string, string>> {
+  await assertRepositoryExists(storage, project.id);
+  const normalizedPrefix = validateRefPrefix(prefix);
+  const files = await storage.listFiles(project.id, normalizedPrefix);
+  const refs: Record<string, string> = {};
+  for (const file of files) {
+    const value = (await readTextFile(storage, project.id, file))?.trim();
+    if (value) {
+      refs[file] = value;
+    }
+  }
+  return refs;
+}
+
+async function hasObject(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  sha: string
+): Promise<boolean> {
+  await assertRepositoryExists(storage, project.id);
+  const objectSha = validateSha(sha);
+  return (await storage.readFile(project.id, `objects/${objectSha.slice(0, 2)}/${objectSha.slice(2)}`)) !== null;
+}
+
+async function readCommitDetails(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  sha: string
+): Promise<RepoCommitDetails> {
+  await assertRepositoryExists(storage, project.id);
+  return readCommit(storage, project.id, validateSha(sha));
+}
+
+async function listCommitTree(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  commitSha: string
+): Promise<RepoTreeEntry[]> {
+  await assertRepositoryExists(storage, project.id);
+  const files = await readCommitTreeFiles(storage, project.id, validateSha(commitSha));
+  return [...files.values()].sort(comparePathEntries);
+}
+
+async function writeTree(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  entries: RepoTreeEntry[]
+): Promise<string> {
+  await assertRepositoryExists(storage, project.id);
+  for (const entry of entries) {
+    assertRepositoryPath(entry.path);
+    validateSha(entry.oid);
+  }
+  return writeTreeFromIndex(storage, project.id, entries);
+}
+
+async function fastForwardBranch(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  branch: string,
+  sha: string
+): Promise<{ project: TyprProjectRepository; status: RepoStatus }> {
+  await assertRepositoryExists(storage, project.id);
+  const branchName = validateBranchName(branch);
+  const targetSha = validateSha(sha);
+  await readObject(storage, project.id, targetSha, "commit");
+  const status = await getStatus(storage, project);
+  if (status.entries.length > 0) {
+    throw repoFailure("unsafe-worktree", "git pull: commit or reset local changes before pulling.", true);
+  }
+  await writeTextFile(storage, project.id, `refs/heads/${branchName}`, `${targetSha}\n`);
+  await writeTextFile(storage, project.id, "HEAD", `ref: refs/heads/${branchName}\n`);
+  const files = await readCommitTreeFiles(storage, project.id, targetSha);
+  await writeIndex(storage, project.id, [...files.values()].sort(comparePathEntries));
+  const nextProject = await applyTrackedFilesToProject(storage, project, files);
+  const readyProject = markProjectReady(nextProject, branchName);
+  return { project: readyProject, status: await getStatus(storage, readyProject) };
+}
+
+async function isAncestor(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  ancestorSha: string,
+  descendantSha: string
+): Promise<boolean> {
+  await assertRepositoryExists(storage, project.id);
+  const ancestor = validateSha(ancestorSha);
+  const stack = [validateSha(descendantSha)];
+  const seen = new Set<string>();
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || seen.has(sha)) {
+      continue;
+    }
+    if (sha === ancestor) {
+      return true;
+    }
+    seen.add(sha);
+    const commit = await readCommit(storage, project.id, sha);
+    stack.push(...commit.parentShas);
+  }
+  return false;
+}
+
 async function buildWorkingFileMap(
   storage: GitFileStorage,
   project: TyprProjectRepository
@@ -649,17 +839,19 @@ async function readCommit(
   storage: GitFileStorage,
   projectId: string,
   sha: string
-): Promise<RepoCommit> {
+): Promise<RepoCommitDetails> {
   return parseCommitText(decodeUtf8(await readObject(storage, projectId, sha, "commit")), sha);
 }
 
-function parseCommitText(text: string, sha: string): RepoCommit & { treeSha: string } {
+function parseCommitText(text: string, sha: string): RepoCommitDetails {
   const [rawHeaders, ...messageParts] = text.split("\n\n");
   const headers = rawHeaders.split("\n");
   const treeSha = headers.find((line) => line.startsWith("tree "))?.slice(5).trim() ?? "";
   const parentShas = headers.filter((line) => line.startsWith("parent ")).map((line) => line.slice(7).trim());
   const authorLine = headers.find((line) => line.startsWith("author ")) ?? "";
-  const authorMatch = /^author (.*) <([^>]*)> (\d+) [+-]\d{4}$/.exec(authorLine);
+  const committerLine = headers.find((line) => line.startsWith("committer ")) ?? "";
+  const authorMatch = /^author (.*) <([^>]*)> (\d+) ([+-]\d{4})$/.exec(authorLine);
+  const committerMatch = /^committer (.*) <([^>]*)> (\d+) ([+-]\d{4})$/.exec(committerLine);
   const message = messageParts.join("\n\n").trim();
 
   if (!treeSha) {
@@ -674,7 +866,12 @@ function parseCommitText(text: string, sha: string): RepoCommit & { treeSha: str
     authorName: authorMatch?.[1] ?? "Unknown",
     authorEmail: authorMatch?.[2] ?? "",
     authoredAt: authorMatch ? new Date(Number(authorMatch[3]) * 1000).toISOString() : "",
-    parentShas
+    parentShas,
+    committerName: committerMatch?.[1] ?? authorMatch?.[1] ?? "Unknown",
+    committerEmail: committerMatch?.[2] ?? authorMatch?.[2] ?? "",
+    committedAt: committerMatch ? new Date(Number(committerMatch[3]) * 1000).toISOString() : "",
+    authorTimezone: authorMatch?.[4] ?? "+0000",
+    committerTimezone: committerMatch?.[4] ?? authorMatch?.[4] ?? "+0000"
   };
 }
 
@@ -716,6 +913,30 @@ async function readObject(
     throw repoFailure("corrupt-repository", `Git object ${sha} has an invalid size.`, true);
   }
   return content;
+}
+
+async function readAnyObject(
+  storage: GitFileStorage,
+  projectId: string,
+  sha: string
+): Promise<RepoObject> {
+  const compressed = await storage.readFile(projectId, `objects/${sha.slice(0, 2)}/${sha.slice(2)}`);
+  if (!compressed) {
+    throw repoFailure("corrupt-repository", `Missing git object ${sha}.`, true);
+  }
+
+  const payload = unzlibSync(compressed);
+  const headerEnd = indexOfByte(payload, 0x00, 0);
+  const header = decodeUtf8(payload.slice(0, headerEnd));
+  const [type, sizeText] = header.split(" ");
+  if (type !== "blob" && type !== "tree" && type !== "commit") {
+    throw repoFailure("unsupported", `Git object ${sha} has unsupported type ${type}.`, true);
+  }
+  const content = payload.slice(headerEnd + 1);
+  if (content.byteLength !== Number(sizeText)) {
+    throw repoFailure("corrupt-repository", `Git object ${sha} has an invalid size.`, true);
+  }
+  return { type, content };
 }
 
 async function readIndex(storage: GitFileStorage, projectId: string): Promise<IndexEntry[]> {
@@ -935,6 +1156,30 @@ function validateBranchName(name: string): string {
     throw repoFailure("invalid-ref", `Unsafe branch name '${name}'.`, true);
   }
   return branchName;
+}
+
+function validateSha(sha: string): string {
+  const value = sha.trim();
+  if (!/^[a-f0-9]{40}$/i.test(value)) {
+    throw repoFailure("invalid-ref", `Invalid git object id '${sha}'.`, true);
+  }
+  return value.toLowerCase();
+}
+
+function validateRefPath(refPath: string): string {
+  const value = normalizeGitStoragePath(refPath);
+  if (!value.startsWith("refs/") || value.includes("..") || value.endsWith(".lock")) {
+    throw repoFailure("invalid-ref", `Unsafe ref '${refPath}'.`, true);
+  }
+  return value;
+}
+
+function validateRefPrefix(prefix: string): string {
+  const value = normalizeGitStoragePath(prefix || "refs/");
+  if (!value.startsWith("refs")) {
+    throw repoFailure("invalid-ref", `Unsafe ref prefix '${prefix}'.`, true);
+  }
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 function decodeProjectContent(

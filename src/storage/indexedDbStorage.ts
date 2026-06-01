@@ -15,6 +15,7 @@ const PROJECT_STORAGE_KEY = "project-storage";
 const PROJECT_STORAGE_METADATA_KEY = "project-storage-metadata";
 const GITHUB_CONFIG_KEY = "github-config";
 const GIT_WORKSPACE_KEY = "git-workspace";
+const GIT_CREDENTIALS_KEY = "git-credentials";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
 const DESMOS_API_KEY_KEY = "desmos-api-key";
@@ -83,6 +84,16 @@ export async function loadGitWorkspace(): Promise<GitWorkspaceState | null> {
 export async function saveGitWorkspace(workspace: GitWorkspaceState): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, workspace, GIT_WORKSPACE_KEY);
+}
+
+export async function loadGitCredentials(): Promise<Record<string, string> | null> {
+  const database = await getDatabase();
+  return (await database.get(STORE_NAME, GIT_CREDENTIALS_KEY)) ?? null;
+}
+
+export async function saveGitCredentials(credentials: Record<string, string>): Promise<void> {
+  const database = await getDatabase();
+  await database.put(STORE_NAME, credentials, GIT_CREDENTIALS_KEY);
 }
 
 export async function readProjectGitFile(

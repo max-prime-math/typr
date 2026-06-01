@@ -6,6 +6,9 @@ import {
   stripPathPrefix
 } from "../git/pathFilters";
 
+// Legacy compatibility only. Phase 3 remote sync uses src/git/remoteService.ts
+// and GitHub Git Database object/ref APIs instead of this Contents API path.
+
 export interface GitHubRemoteConfig {
   owner: string;
   repo: string;

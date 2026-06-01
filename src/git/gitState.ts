@@ -14,7 +14,6 @@ export interface GitManagedProject {
   remoteName: string;
   workspacePath: string;
   repositoryPath: string;
-  token: string;
   ignorePatterns: string[];
   commitMessageTemplate: string;
   draftCommitMessage: string;
@@ -45,7 +44,6 @@ export function createEmptyGitManagedProject(options: {
     remoteName: "origin",
     workspacePath: "",
     repositoryPath: options.repositoryPath ?? "",
-    token: "",
     ignorePatterns: [],
     commitMessageTemplate: `Sync ${options.projectName} from typr`,
     draftCommitMessage: "",
@@ -109,7 +107,6 @@ export function normalizeManagedProject(
     remoteName: project.remoteName?.trim() || "origin",
     workspacePath: normalizeProjectPath(project.workspacePath),
     repositoryPath: normalizeProjectPath(project.repositoryPath),
-    token: project.token?.trim() || "",
     ignorePatterns: normalizeIgnorePatterns(project.ignorePatterns),
     commitMessageTemplate:
       project.commitMessageTemplate?.trim() || `Sync ${fallbackProjectName} from typr`,
