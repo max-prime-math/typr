@@ -2,6 +2,7 @@ import { openDB } from "idb";
 import type { AppSnapshot } from "../app/appState";
 import type { GitWorkspaceState } from "../git/gitState";
 import type { GitHubRemoteConfig } from "../github/githubSync";
+import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
 import type { TypstSnippet } from "../snippets/snippets";
 
@@ -9,6 +10,8 @@ const DATABASE_NAME = "wrytr";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "app";
 const SNAPSHOT_KEY = "snapshot";
+const PROJECT_STORAGE_KEY = "project-storage";
+const PROJECT_STORAGE_METADATA_KEY = "project-storage-metadata";
 const GITHUB_CONFIG_KEY = "github-config";
 const GIT_WORKSPACE_KEY = "git-workspace";
 const CUSTOM_THEMES_KEY = "custom-themes";
@@ -33,6 +36,29 @@ export async function loadSnapshot(): Promise<AppSnapshot | null> {
 export async function saveSnapshot(snapshot: AppSnapshot): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, snapshot, SNAPSHOT_KEY);
+}
+
+export async function loadProjectStorage(): Promise<TyprProjectStorageState | null> {
+  const database = await getDatabase();
+  return (await database.get(STORE_NAME, PROJECT_STORAGE_KEY)) ?? null;
+}
+
+export async function saveProjectStorage(storage: TyprProjectStorageState): Promise<void> {
+  const database = await getDatabase();
+  await Promise.all([
+    database.put(STORE_NAME, storage, PROJECT_STORAGE_KEY),
+    database.put(
+      STORE_NAME,
+      {
+        version: storage.version,
+        selectedProjectId: storage.selectedProjectId,
+        projectCount: storage.projects.length,
+        savedAt: new Date().toISOString(),
+        legacySnapshotRetained: storage.migration.legacySnapshotRetained
+      },
+      PROJECT_STORAGE_METADATA_KEY
+    )
+  ]);
 }
 
 export async function loadGitHubConfig(): Promise<GitHubRemoteConfig | null> {

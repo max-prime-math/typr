@@ -1,6 +1,12 @@
 import type { AppSnapshot } from "../app/appState";
 import {
-  buildProjectWorkspaceEntries,
+  createProjectStorageFromSnapshot,
+  getSelectedProjectRepository,
+  normalizeProjectPath,
+  type TyprProjectRepository
+} from "../project/projectState";
+import {
+  buildProjectWorkspaceEntriesFromProject,
   buildWorkspaceTree,
   normalizeWorkspacePath,
   type WorkspaceFlatEntry,
@@ -17,14 +23,20 @@ export function isOpfsAvailable(): boolean {
 }
 
 export async function syncSnapshotToOpfs(snapshot: AppSnapshot): Promise<void> {
+  const project = getSelectedProjectRepository(createProjectStorageFromSnapshot(snapshot));
+  if (project) {
+    await syncProjectToOpfs(project);
+  }
+}
+
+export async function syncProjectToOpfs(project: TyprProjectRepository): Promise<void> {
   if (!isOpfsAvailable()) {
     return;
   }
 
-  const workspaceRoot = await getWorkspaceRootHandle(true);
-  await clearDirectory(workspaceRoot);
+  const workspaceRoot = await getWorkspaceRootHandle(project.id, true);
 
-  for (const entry of buildProjectWorkspaceEntries(snapshot)) {
+  for (const entry of buildProjectWorkspaceEntriesFromProject(project)) {
     if (entry.kind === "folder") {
       await ensureDirectory(workspaceRoot, entry.path);
       continue;
@@ -34,22 +46,25 @@ export async function syncSnapshotToOpfs(snapshot: AppSnapshot): Promise<void> {
   }
 }
 
-export async function loadWorkspaceTreeFromOpfs(): Promise<WorkspaceTreeNode[]> {
+export async function loadWorkspaceTreeFromOpfs(projectId: string): Promise<WorkspaceTreeNode[]> {
   if (!isOpfsAvailable()) {
     return [];
   }
 
-  const workspaceRoot = await getWorkspaceRootHandle(true);
+  const workspaceRoot = await getWorkspaceRootHandle(projectId, true);
   const entries = await collectWorkspaceEntries(workspaceRoot);
   return buildWorkspaceTree(entries);
 }
 
-export async function readWorkspaceFileFromOpfs(path: string): Promise<Uint8Array | null> {
+export async function readWorkspaceFileFromOpfs(
+  projectId: string,
+  path: string
+): Promise<Uint8Array | null> {
   if (!isOpfsAvailable()) {
     return null;
   }
 
-  const workspaceRoot = await getWorkspaceRootHandle(false);
+  const workspaceRoot = await getWorkspaceRootHandle(projectId, false);
   const fileHandle = await getFileHandleByPath(workspaceRoot, path);
 
   if (!fileHandle) {
@@ -60,9 +75,15 @@ export async function readWorkspaceFileFromOpfs(path: string): Promise<Uint8Arra
   return new Uint8Array(await file.arrayBuffer());
 }
 
-async function getWorkspaceRootHandle(create: boolean): Promise<FileSystemDirectoryHandle> {
+async function getWorkspaceRootHandle(
+  projectId: string,
+  create: boolean
+): Promise<FileSystemDirectoryHandle> {
   const opfsRoot = await navigator.storage.getDirectory();
-  return opfsRoot.getDirectoryHandle(WORKSPACE_ROOT_DIRECTORY, { create });
+  const workspaceRoot = await opfsRoot.getDirectoryHandle(WORKSPACE_ROOT_DIRECTORY, { create });
+  const projectsRoot = await workspaceRoot.getDirectoryHandle("projects", { create });
+  const projectRoot = await projectsRoot.getDirectoryHandle(projectId, { create });
+  return projectRoot.getDirectoryHandle("worktree", { create });
 }
 
 async function ensureDirectory(
@@ -83,7 +104,13 @@ async function getFileHandleByPath(
   root: FileSystemDirectoryHandle,
   path: string
 ): Promise<FileSystemFileHandle | null> {
-  const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
+  let segments: string[];
+
+  try {
+    segments = normalizeProjectPath(path).split("/").filter(Boolean);
+  } catch {
+    return null;
+  }
 
   if (segments.length === 0) {
     return null;
@@ -113,23 +140,11 @@ async function getFileHandleByPath(
   return null;
 }
 
-async function clearDirectory(directory: FileSystemDirectoryHandle): Promise<void> {
-  const names: string[] = [];
-
-  for await (const [name] of iterateDirectoryEntries(directory)) {
-    names.push(name);
-  }
-
-  for (const name of names) {
-    await directory.removeEntry(name, { recursive: true });
-  }
-}
-
 async function writeWorkspaceFile(
   root: FileSystemDirectoryHandle,
   entry: WorkspaceFlatEntry
 ): Promise<void> {
-  const segments = normalizeWorkspacePath(entry.path).split("/");
+  const segments = normalizeProjectPath(entry.path).split("/");
   const fileName = segments.pop();
 
   if (!fileName) {

@@ -1,5 +1,6 @@
 import type { AppSnapshot } from "../app/appState";
 import type { CompileResult, CompilerStatus } from "../compiler/types";
+import type { TyprProjectRepository } from "../project/projectState";
 
 export type TerminalBackendId = "browser" | "local-agent" | "cloud-container";
 
@@ -27,6 +28,8 @@ export interface TerminalBackend {
 export interface TerminalProjectRuntime {
   getSnapshot(): AppSnapshot;
   updateSnapshot(updater: (snapshot: AppSnapshot) => AppSnapshot): void;
+  getProjectRepository(): TyprProjectRepository | null;
+  updateProjectRepository(updater: (project: TyprProjectRepository) => TyprProjectRepository): void;
   getCompileResult(): CompileResult | null;
   getCompilerStatus(): CompilerStatus;
   getIsOnline(): boolean;

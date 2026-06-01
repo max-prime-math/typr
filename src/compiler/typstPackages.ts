@@ -1,3 +1,5 @@
+import type { CompileAssetFile } from "./types";
+
 export interface TypstPackageReference {
   namespace: string;
   name: string;
@@ -31,10 +33,28 @@ export function extractTypstPackageReferences(source: string): TypstPackageRefer
   return [...matches.values()];
 }
 
+export function extractTypstPackageReferencesFromCompileInputs(
+  source: string,
+  assets: CompileAssetFile[] = []
+): TypstPackageReference[] {
+  return extractTypstPackageReferences(
+    [
+      source,
+      ...assets
+        .filter((asset) => isTextCompileAssetPath(asset.path))
+        .map((asset) => new TextDecoder().decode(asset.content))
+    ].join("\n")
+  );
+}
+
 export function formatTypstPackageReference(reference: TypstPackageReference): string {
   return `@${reference.namespace}/${reference.name}:${reference.version}`;
 }
 
 export function getTypstPackageUrl(reference: TypstPackageReference): string {
   return `https://packages.typst.org/preview/${reference.name}-${reference.version}.tar.gz`;
+}
+
+function isTextCompileAssetPath(path: string): boolean {
+  return /\.(typ|tex|txt|md|json|yaml|yml|csv)$/i.test(path);
 }

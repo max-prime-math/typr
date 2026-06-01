@@ -11,7 +11,7 @@ import {
   createCloudContainerBackendPlaceholder,
   createLocalAgentBackendPlaceholder
 } from "./browserBackend";
-import { buildProjectWorkspaceEntries } from "../workspace/workspaceTree";
+import { buildProjectWorkspaceEntriesFromProject } from "../workspace/workspaceTree";
 import type { TerminalBackend, TerminalProjectRuntime } from "./types";
 
 const DEFAULT_RATIO = 0.35;
@@ -211,9 +211,10 @@ export function TerminalDrawer({ isOpen, runtime, onClose }: TerminalDrawerProps
   function handleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     if (event.key === "Tab") {
       event.preventDefault();
+      const project = runtime.getProjectRepository();
       const completion = completeShellInput(
         inputValue,
-        buildProjectWorkspaceEntries(runtime.getSnapshot()).map((entry) => entry.path)
+        project ? buildProjectWorkspaceEntriesFromProject(project).map((entry) => entry.path) : []
       );
       if (completion !== null) {
         setInputValue(completion);

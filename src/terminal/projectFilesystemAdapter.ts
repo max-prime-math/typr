@@ -1,6 +1,15 @@
-import type { AppSnapshot, FileFolder, TypstDocumentFile } from "../app/appState";
 import {
-  buildProjectWorkspaceEntries,
+  assertSafeProjectPath,
+  deleteProjectPath,
+  ensureProjectFolder,
+  listProjectEntries,
+  renameProjectPath,
+  writeProjectFile,
+  type ProjectFileContent,
+  type TyprProjectRepository
+} from "../project/projectState";
+import {
+  buildProjectWorkspaceEntriesFromProject,
   normalizeWorkspacePath
 } from "../workspace/workspaceTree";
 import { InMemoryFs } from "just-bash";
@@ -33,16 +42,20 @@ const PROJECT_ROOT = "/project";
 const FIGURES_PREFIX = "figures/";
 
 export function createProjectFsAdapter(options: {
-  getSnapshot: () => AppSnapshot;
-  updateSnapshot: (updater: (snapshot: AppSnapshot) => AppSnapshot) => void;
+  getProject: () => TyprProjectRepository | null;
+  updateProject: (updater: (project: TyprProjectRepository) => TyprProjectRepository) => void;
 }): IFileSystem {
-  const fs = new InMemoryFs(buildInitialFiles(options.getSnapshot()));
-  return new ProjectFsAdapter(fs, options.getSnapshot, options.updateSnapshot);
+  const fs = new InMemoryFs(buildInitialFiles(options.getProject()));
+  return new ProjectFsAdapter(fs, options.updateProject);
 }
 
-function buildInitialFiles(snapshot: AppSnapshot): Record<string, string | Uint8Array> {
+function buildInitialFiles(project: TyprProjectRepository | null): Record<string, string | Uint8Array> {
   const files: Record<string, string | Uint8Array> = {};
-  for (const entry of buildProjectWorkspaceEntries(snapshot)) {
+  if (!project) {
+    return files;
+  }
+
+  for (const entry of buildProjectWorkspaceEntriesFromProject(project)) {
     const absolutePath = toAbsoluteProjectPath(entry.path);
     if (entry.kind === "folder") {
       continue;
@@ -55,8 +68,7 @@ function buildInitialFiles(snapshot: AppSnapshot): Record<string, string | Uint8
 class ProjectFsAdapter implements IFileSystem {
   constructor(
     private readonly inner: InMemoryFs,
-    private readonly getSnapshot: () => AppSnapshot,
-    private readonly updateSnapshot: (updater: (snapshot: AppSnapshot) => AppSnapshot) => void
+    private readonly updateProject: (updater: (project: TyprProjectRepository) => TyprProjectRepository) => void
   ) {}
 
   readFile(path: string, options?: ReadFileOptions | BufferEncoding): Promise<string> {
@@ -68,15 +80,20 @@ class ProjectFsAdapter implements IFileSystem {
   }
 
   async writeFile(path: string, content: FileContent, options?: WriteFileOptions | BufferEncoding) {
-    this.assertWritablePath(path);
+    const relativePath = this.assertWritablePath(path);
     await this.inner.writeFile(path, content, options);
-    this.syncSnapshot();
+    this.syncProject((project) =>
+      writeProjectFile(project, relativePath, normalizeFileContent(content) as ProjectFileContent)
+    );
   }
 
   async appendFile(path: string, content: FileContent, options?: WriteFileOptions | BufferEncoding) {
-    this.assertWritablePath(path);
+    const relativePath = this.assertWritablePath(path);
     await this.inner.appendFile(path, content, options);
-    this.syncSnapshot();
+    const entry = getInMemoryEntry(this.inner, path);
+    this.syncProject((project) =>
+      writeProjectFile(project, relativePath, normalizeFileContent(entry?.content ?? content))
+    );
   }
 
   exists(path: string): Promise<boolean> {
@@ -92,9 +109,9 @@ class ProjectFsAdapter implements IFileSystem {
   }
 
   async mkdir(path: string, options?: MkdirOptions) {
-    this.assertWritablePath(path);
+    const relativePath = this.assertWritablePath(path);
     await this.inner.mkdir(path, options);
-    this.syncSnapshot();
+    this.syncProject((project) => ensureProjectFolder(project, relativePath));
   }
 
   readdir(path: string): Promise<string[]> {
@@ -106,22 +123,29 @@ class ProjectFsAdapter implements IFileSystem {
   }
 
   async rm(path: string, options?: RmOptions) {
-    this.assertWritablePath(path);
+    const relativePath = this.assertWritablePath(path);
     await this.inner.rm(path, options);
-    this.syncSnapshot();
+    this.syncProject((project) => deleteProjectPath(project, relativePath));
   }
 
   async cp(src: string, dest: string, options?: CpOptions) {
-    this.assertWritablePath(dest);
+    const relativePath = this.assertWritablePath(dest);
     await this.inner.cp(src, dest, options);
-    this.syncSnapshot();
+    const entry = getInMemoryEntry(this.inner, dest);
+    if (entry?.type === "directory") {
+      this.syncWholeProject();
+      return;
+    }
+    this.syncProject((project) =>
+      writeProjectFile(project, relativePath, normalizeFileContent(entry?.content ?? ""))
+    );
   }
 
   async mv(src: string, dest: string) {
-    this.assertWritablePath(src);
-    this.assertWritablePath(dest);
+    const sourcePath = this.assertWritablePath(src);
+    const destinationPath = this.assertWritablePath(dest);
     await this.inner.mv(src, dest);
-    this.syncSnapshot();
+    this.syncProject((project) => renameProjectPath(project, sourcePath, destinationPath));
   }
 
   resolvePath(base: string, path: string): string {
@@ -158,58 +182,53 @@ class ProjectFsAdapter implements IFileSystem {
     return this.inner.utimes(path, atime, mtime);
   }
 
-  private assertWritablePath(path: string) {
+  private assertWritablePath(path: string): string {
     const relativePath = toRelativeProjectPath(path);
     if (relativePath === null) {
       throw new Error("Browser Shell can only access files inside /project.");
     }
+    if (relativePath === "") {
+      throw new Error("Browser Shell cannot modify the project root directly.");
+    }
+    const safePath = assertSafeProjectPath(relativePath);
     if (relativePath === "figures" || relativePath.startsWith(FIGURES_PREFIX)) {
       throw new Error("Figure assets are read-only in Browser Shell.");
     }
+    return safePath;
   }
 
-  private syncSnapshot() {
+  private syncProject(updater: (project: TyprProjectRepository) => TyprProjectRepository) {
+    this.updateProject(updater);
+  }
+
+  private syncWholeProject() {
     const entries = collectWorkspaceEntries(this.inner.getAllPaths(), this.inner);
-    this.updateSnapshot((snapshot) => {
-      const now = new Date().toISOString();
-      const previousByPath = new Map(snapshot.project.documents.map((document) => [document.name, document]));
-      const previousFolders = new Map(snapshot.project.folders.map((folder) => [folder.name, folder]));
+    this.updateProject((project) => {
+      let nextProject = project;
+      const livePaths = new Set([...entries.folders, ...entries.files.map((entry) => entry.path)]);
 
-      const documents: TypstDocumentFile[] = entries.files.map((entry) => {
-        const previous = previousByPath.get(entry.path);
-        return {
-          id: previous?.id ?? crypto.randomUUID(),
-          name: entry.path,
-          content: entry.content,
-          updatedAt: previous?.updatedAt ?? now
-        };
-      });
-
-      const folders: FileFolder[] = entries.folders.map((path) => {
-        const previous = previousFolders.get(path);
-        return {
-          id: previous?.id ?? crypto.randomUUID(),
-          name: path,
-          updatedAt: previous?.updatedAt ?? now
-        };
-      });
-
-      const activeDocumentExists = documents.some(
-        (document) => document.id === snapshot.project.activeDocumentId
-      );
-
-      return {
-        ...snapshot,
-        project: {
-          ...snapshot.project,
-          documents,
-          folders,
-          activeDocumentId: activeDocumentExists
-            ? snapshot.project.activeDocumentId
-            : (documents[0]?.id ?? snapshot.project.activeDocumentId),
-          updatedAt: now
+      for (const entry of listProjectEntries(project)) {
+        if (
+          entry.source.kind === "diagram" ||
+          entry.source.kind === "graph" ||
+          entry.path === "figures" ||
+          entry.path.startsWith(FIGURES_PREFIX)
+        ) {
+          continue;
         }
-      };
+        if (!livePaths.has(entry.path)) {
+          nextProject = deleteProjectPath(nextProject, entry.path);
+        }
+      }
+
+      for (const folder of entries.folders) {
+        nextProject = ensureProjectFolder(nextProject, folder);
+      }
+      for (const file of entries.files) {
+        nextProject = writeProjectFile(nextProject, file.path, file.content);
+      }
+
+      return nextProject;
     });
   }
 }
@@ -245,6 +264,26 @@ function collectWorkspaceEntries(allPaths: string[], fs: InMemoryFs) {
     folders: [...folders].sort(),
     files: files.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+
+function getInMemoryEntry(
+  fs: InMemoryFs,
+  path: string
+): { type: string; content?: string | Uint8Array } | undefined {
+  const data = (fs as unknown as { data: Map<string, { type: string; content?: string | Uint8Array }> }).data;
+  return data.get(path);
+}
+
+function normalizeFileContent(content: FileContent | string | Uint8Array): string | Uint8Array {
+  if (content instanceof Uint8Array) {
+    return content;
+  }
+
+  if (typeof content === "string") {
+    return content;
+  }
+
+  return new Uint8Array(content);
 }
 
 function toAbsoluteProjectPath(path: string): string {

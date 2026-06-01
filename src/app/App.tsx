@@ -165,13 +165,25 @@ import packageJson from "../../package.json";
 import {
   loadGitWorkspace,
   loadGitHubConfig,
+  loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
   saveGitWorkspace,
   saveGitHubConfig,
+  saveProjectStorage,
   saveSnapshot,
   saveCustomSnippets
 } from "../storage/indexedDbStorage";
+import {
+  createProjectStorageFromSnapshot,
+  getSelectedProjectRepository,
+  normalizeProjectStorageState,
+  projectRepositoryToLegacyProject,
+  syncProjectStorageFromSnapshot,
+  updateSelectedProjectRepository,
+  type TyprProjectRepository,
+  type TyprProjectStorageState
+} from "../project/projectState";
 import {
   createEmptyGitManagedProject,
   normalizeGitWorkspaceState,
@@ -202,13 +214,14 @@ import {
 } from "../snippets/snippets";
 import { PreviewZoomControls } from "../preview/PreviewPane";
 import {
-  syncSnapshotToOpfs,
+  syncProjectToOpfs,
   isOpfsAvailable,
   readWorkspaceFileFromOpfs
 } from "../workspace/opfsWorkspace";
 import { WorkspaceTree, WORKSPACE_ROOT_PATH } from "../workspace/WorkspaceTree";
 import {
   buildProjectWorkspaceEntries,
+  buildProjectWorkspaceEntriesFromProject,
   buildTrashWorkspaceEntries,
   buildWorkspaceTree,
   canMoveWorkspaceNode,
@@ -716,7 +729,55 @@ export function App() {
       }),
     []
   );
-  const [snapshot, setSnapshot] = useState<AppSnapshot>(createDefaultSnapshot);
+  const defaultSnapshotRef = useRef<AppSnapshot | null>(null);
+  if (defaultSnapshotRef.current === null) {
+    defaultSnapshotRef.current = createDefaultSnapshot();
+  }
+  const [rawSnapshot, setRawSnapshot] = useState<AppSnapshot>(defaultSnapshotRef.current);
+  const [projectStorage, setProjectStorage] = useState<TyprProjectStorageState>(() =>
+    createProjectStorageFromSnapshot(defaultSnapshotRef.current as AppSnapshot)
+  );
+  const snapshot = rawSnapshot;
+  const selectedProjectRepository = useMemo(
+    () => getSelectedProjectRepository(projectStorage),
+    [projectStorage]
+  );
+  const setSnapshot = useCallback<Dispatch<SetStateAction<AppSnapshot>>>((snapshotAction) => {
+    setRawSnapshot((currentSnapshot) => {
+      const nextSnapshot =
+        typeof snapshotAction === "function"
+          ? (snapshotAction as (snapshot: AppSnapshot) => AppSnapshot)(currentSnapshot)
+          : snapshotAction;
+
+      setProjectStorage((currentStorage) =>
+        syncProjectStorageFromSnapshot(nextSnapshot, currentStorage, currentSnapshot)
+      );
+
+      return nextSnapshot;
+    });
+  }, []);
+  const setProjectRepository = useCallback(
+    (updater: (project: TyprProjectRepository) => TyprProjectRepository) => {
+      setProjectStorage((currentStorage) => {
+        let nextProject: TyprProjectRepository | null = null;
+        const nextStorage = updateSelectedProjectRepository(currentStorage, (project) => {
+          nextProject = updater(project);
+          return nextProject;
+        });
+
+        const updatedProject = nextProject;
+        if (updatedProject) {
+          setRawSnapshot((currentSnapshot) => ({
+            ...currentSnapshot,
+            project: projectRepositoryToLegacyProject(updatedProject, currentSnapshot.project)
+          }));
+        }
+
+        return nextStorage;
+      });
+    },
+    []
+  );
   const [gitWorkspace, setGitWorkspace] = useState<GitWorkspaceState>({
     version: 1,
     selectedProjectId: null,
@@ -1012,7 +1073,9 @@ export function App() {
         return;
       }
 
-      const bytes = await readWorkspaceFileFromOpfs(sourceWorkspaceNode.path);
+      const bytes = selectedProjectRepository
+        ? await readWorkspaceFileFromOpfs(selectedProjectRepository.id, sourceWorkspaceNode.path)
+        : null;
 
       if (cancelled) {
         return;
@@ -1036,7 +1099,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [sourceWorkspaceNode]);
+  }, [selectedProjectRepository, sourceWorkspaceNode]);
   useEffect(() => {
     if (
       sourceWorkspaceNode &&
@@ -1150,18 +1213,26 @@ export function App() {
     const handle = window.setTimeout(() => {
       const loadWorkspace = async () => {
         try {
-          if (isOpfsAvailable()) {
-            await syncSnapshotToOpfs(snapshot);
+          if (isOpfsAvailable() && selectedProjectRepository) {
+            await syncProjectToOpfs(selectedProjectRepository);
           }
 
-          const fallbackTree = buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot));
+          const fallbackTree = buildWorkspaceTree(
+            selectedProjectRepository
+              ? buildProjectWorkspaceEntriesFromProject(selectedProjectRepository)
+              : buildProjectWorkspaceEntries(snapshot)
+          );
 
           if (!cancelled) {
             setWorkspaceTree(fallbackTree);
             setWorkspaceLoadError(null);
           }
         } catch (error) {
-          const fallbackTree = buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot));
+          const fallbackTree = buildWorkspaceTree(
+            selectedProjectRepository
+              ? buildProjectWorkspaceEntriesFromProject(selectedProjectRepository)
+              : buildProjectWorkspaceEntries(snapshot)
+          );
 
           if (!cancelled) {
             setWorkspaceTree(fallbackTree);
@@ -1179,7 +1250,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [isHydrated, snapshot]);
+  }, [isHydrated, selectedProjectRepository, snapshot]);
 
   useEffect(() => {
     setSelectedWorkspacePath((currentPath) => {
@@ -1332,8 +1403,9 @@ export function App() {
     let cancelled = false;
 
     async function hydrate() {
-      const [storedSnapshot, storedGitWorkspace, storedGitHubConfig] = await Promise.all([
+      const [storedSnapshot, storedProjectStorage, storedGitWorkspace, storedGitHubConfig] = await Promise.all([
         loadSnapshot(),
+        loadProjectStorage(),
         loadGitWorkspace(),
         loadGitHubConfig()
       ]);
@@ -1346,6 +1418,17 @@ export function App() {
       const nextSnapshot = storedSnapshot
         ? normalizeSnapshot(storedSnapshot)
         : createDefaultSnapshot();
+      const nextProjectStorage = normalizeProjectStorageState(
+        storedProjectStorage,
+        nextSnapshot
+      );
+      const selectedProject = getSelectedProjectRepository(nextProjectStorage);
+      const hydratedSnapshot = selectedProject
+        ? {
+            ...nextSnapshot,
+            project: projectRepositoryToLegacyProject(selectedProject, nextSnapshot.project)
+          }
+        : nextSnapshot;
       const migratedWorkspace = normalizeGitWorkspaceState(
         storedGitWorkspace ?? {
           version: 1,
@@ -1354,16 +1437,16 @@ export function App() {
             ? [
                 {
                   ...createEmptyGitManagedProject({
-                    projectId: nextSnapshot.project.id,
-                    projectName: nextSnapshot.project.name,
+                    projectId: hydratedSnapshot.project.id,
+                    projectName: hydratedSnapshot.project.name,
                     repositoryPath:
-                      storedGitHubConfig.directory || getDefaultGitHubDirectory(nextSnapshot.project.name)
+                      storedGitHubConfig.directory || getDefaultGitHubDirectory(hydratedSnapshot.project.name)
                   }),
                   owner: storedGitHubConfig.owner,
                   repo: storedGitHubConfig.repo,
                   branch: storedGitHubConfig.branch || "main",
                   repositoryPath:
-                    storedGitHubConfig.directory || getDefaultGitHubDirectory(nextSnapshot.project.name),
+                    storedGitHubConfig.directory || getDefaultGitHubDirectory(hydratedSnapshot.project.name),
                   token: storedGitHubConfig.token
                 }
               ]
@@ -1371,13 +1454,14 @@ export function App() {
           syncSnapshots: {}
         },
         {
-          projectId: nextSnapshot.project.id,
-          projectName: nextSnapshot.project.name,
-          repositoryPath: getDefaultGitHubDirectory(nextSnapshot.project.name)
+          projectId: hydratedSnapshot.project.id,
+          projectName: hydratedSnapshot.project.name,
+          repositoryPath: getDefaultGitHubDirectory(hydratedSnapshot.project.name)
         }
       );
-      setSnapshot(nextSnapshot);
-      setTheme(nextSnapshot.preferences.theme);
+      setRawSnapshot(hydratedSnapshot);
+      setProjectStorage(nextProjectStorage);
+      setTheme(hydratedSnapshot.preferences.theme);
       setGitWorkspace(migratedWorkspace);
       setCustomSnippets(storedSnippets ?? []);
       setIsHydrated(true);
@@ -1760,13 +1844,13 @@ export function App() {
 
     const handle = window.setTimeout(() => {
       setStorageStatus("saving");
-      saveSnapshot(snapshot)
+      Promise.all([saveSnapshot(snapshot), saveProjectStorage(projectStorage)])
         .then(() => setStorageStatus("saved"))
         .catch(() => setStorageStatus("error"));
     }, SAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(handle);
-  }, [isHydrated, snapshot]);
+  }, [isHydrated, projectStorage, snapshot]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -4009,6 +4093,10 @@ export function App() {
       updateSnapshot: (updater: (current: AppSnapshot) => AppSnapshot) => {
         setSnapshot((current) => updater(current));
       },
+      getProjectRepository: () => selectedProjectRepository,
+      updateProjectRepository: (updater: (project: TyprProjectRepository) => TyprProjectRepository) => {
+        setProjectRepository(updater);
+      },
       getCompileResult: () => compileResultRef.current,
       getCompilerStatus: () => compilerStatus,
       getIsOnline: () => isOnline,
@@ -4336,7 +4424,9 @@ export function App() {
       runCompile,
       selectedGitProject,
       selectedCommittedDocuments,
+      selectedProjectRepository,
       selectedScopedDocuments,
+      setProjectRepository,
       snapshot,
       updateGitManagedProject,
       updateSelectedGitProject

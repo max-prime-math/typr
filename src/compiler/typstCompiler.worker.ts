@@ -8,7 +8,7 @@ import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
 import { normalizeTypstDiagnostic } from "./diagnostics";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
-import { extractTypstPackageReferences } from "./typstPackages";
+import { extractTypstPackageReferencesFromCompileInputs } from "./typstPackages";
 import { createTypstPackageStatusReporter } from "./typstPackageStatus";
 import {
   ensureTypstPackageReferences,
@@ -156,7 +156,7 @@ async function compileWithTypst(
   try {
     return await withTimeout(
       (async () => {
-        const packageReferences = extractTypstPackageReferences(source);
+        const packageReferences = extractTypstPackageReferencesFromCompileInputs(source, assets);
         if (packageReferences.length > 0) {
           const packageStatusReporter = createTypstPackageStatusReporter(
             "worker",

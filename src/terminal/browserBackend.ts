@@ -11,8 +11,8 @@ const BUILD_DIR = `${PROJECT_ROOT}/build`;
 export function createBrowserBackend(runtime: TerminalProjectRuntime): TerminalBackend {
   const bash = new Bash({
     fs: createProjectFsAdapter({
-      getSnapshot: runtime.getSnapshot,
-      updateSnapshot: runtime.updateSnapshot
+      getProject: runtime.getProjectRepository,
+      updateProject: runtime.updateProjectRepository
     }),
     cwd: PROJECT_ROOT,
     customCommands: createTerminalCommands({

@@ -1,15 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultSnapshot, type AppSnapshot } from "../app/appState";
+import {
+  createProjectStorageFromSnapshot,
+  getSelectedProjectRepository,
+  updateSelectedProjectRepository,
+  type TyprProjectStorageState
+} from "../project/projectState";
 import { createBrowserBackend } from "./browserBackend";
 import type { TerminalProjectRuntime } from "./types";
 
 function createRuntime(snapshot: AppSnapshot): TerminalProjectRuntime {
   let currentSnapshot = snapshot;
+  let projectStorage: TyprProjectStorageState = createProjectStorageFromSnapshot(snapshot);
 
   return {
     getSnapshot: () => currentSnapshot,
     updateSnapshot: (updater) => {
       currentSnapshot = updater(currentSnapshot);
+    },
+    getProjectRepository: () => getSelectedProjectRepository(projectStorage),
+    updateProjectRepository: (updater) => {
+      projectStorage = updateSelectedProjectRepository(projectStorage, updater);
     },
     getCompileResult: () => null,
     getCompilerStatus: () => ({
@@ -89,5 +100,15 @@ describe("BrowserBackend", () => {
     const result = await backend.execute("git push");
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("pushed");
+  });
+
+  it("rejects reserved git internals and path escapes", async () => {
+    const backend = createBrowserBackend(createRuntime(createDefaultSnapshot()));
+    const gitResult = await backend.execute("touch .git/config");
+    const escapeResult = await backend.execute("touch ../escape.typ");
+
+    expect(gitResult.exitCode).not.toBe(0);
+    expect(gitResult.stderr).toContain(".git");
+    expect(escapeResult.exitCode).not.toBe(0);
   });
 });

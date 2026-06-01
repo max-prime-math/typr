@@ -4,6 +4,7 @@ import type {
   GraphAsset,
   WorkspaceTrashEntry
 } from "../app/appState";
+import type { TyprProjectRepository } from "../project/projectState";
 import { getDiagramFilePath } from "../diagram/diagramFiles";
 import { serializeDiagramSvg } from "../diagram/DiagramEditor";
 import { getGraphFilePath } from "../graph/graphFiles";
@@ -124,6 +125,19 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
   }
 
   return [...entries.values()];
+}
+
+export function buildProjectWorkspaceEntriesFromProject(
+  project: TyprProjectRepository
+): WorkspaceFlatEntry[] {
+  return Object.values(project.filesystem.entries)
+    .map((entry): WorkspaceFlatEntry => ({
+      path: entry.path,
+      kind: entry.kind,
+      content: entry.kind === "file" ? entry.content : undefined,
+      source: toWorkspaceSource(entry.source)
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
 }
 
 export function buildTrashWorkspaceEntries(trashEntries: WorkspaceTrashEntry[]): WorkspaceFlatEntry[] {
@@ -402,4 +416,24 @@ function sortWorkspaceNodes(nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] {
         sensitivity: "base"
       });
     });
+}
+
+function toWorkspaceSource(
+  source: TyprProjectRepository["filesystem"]["entries"][string]["source"]
+): WorkspaceSource {
+  if (source.kind === "virtual") {
+    if (source.id === "figures") {
+      return {
+        kind: "system-folder",
+        id: "figures"
+      };
+    }
+
+    return {
+      kind: "folder",
+      id: `virtual:${source.id}`
+    };
+  }
+
+  return source;
 }
