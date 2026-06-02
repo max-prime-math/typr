@@ -4,12 +4,34 @@ import {
   canMoveWorkspaceNode,
   canRenameWorkspaceNode,
   getWorkspaceNodeBadge,
+  type WorkspaceFileBadge,
   type WorkspaceTreeNode
 } from "./workspaceTree";
 
 export const WORKSPACE_ROOT_PATH = "__workspace_root__";
 const TOUCH_CONTEXT_MENU_DELAY_MS = 500;
 const TOUCH_CONTEXT_MENU_MOVE_TOLERANCE_PX = 10;
+
+function getWorkspaceIconTitle(badge: WorkspaceFileBadge): string {
+  switch (badge) {
+    case "typ":
+      return "Typst file";
+    case "tex":
+      return "TeX file";
+    case "img":
+      return "Image file";
+    case "pdf":
+      return "PDF file";
+    case "txt":
+      return "Text file";
+    case "bin":
+      return "Binary file";
+    case "dir":
+      return "Folder";
+    case "empty":
+      return "Empty folder";
+  }
+}
 
 interface WorkspaceTreeProps {
   collapsedPaths: Record<string, boolean>;
@@ -102,6 +124,7 @@ export function WorkspaceTree({
           aria-expanded={!isRootCollapsed}
           aria-label={`${isRootCollapsed ? "Expand" : "Collapse"} ${rootLabel}`}
           role="treeitem"
+          title={`${isRootCollapsed ? "Expand" : "Collapse"} ${rootLabel}`}
         >
           <span
             aria-hidden="true"
@@ -112,6 +135,7 @@ export function WorkspaceTree({
               isRootCollapsed ? "file-tree__folder-icon--closed" : "file-tree__folder-icon--open"
             }`}
             aria-hidden="true"
+            title="Folder"
           />
           {isRootRenaming ? (
             <input
@@ -347,7 +371,11 @@ function WorkspaceTreeBranch({
           aria-expanded={isEmpty ? undefined : !isCollapsed}
         >
           {isEmpty ? (
-            <span aria-hidden="true" className="file-tree__chevron-text file-tree__chevron-text--empty">
+            <span
+              aria-hidden="true"
+              className="file-tree__chevron-text file-tree__chevron-text--empty"
+              title="Empty folder"
+            >
               •
             </span>
           ) : (
@@ -356,6 +384,7 @@ function WorkspaceTreeBranch({
               onClick={() => onToggleFolder(node.path)}
               type="button"
               aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
+              title={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
             >
               <span
                 aria-hidden="true"
@@ -372,6 +401,7 @@ function WorkspaceTreeBranch({
                   : "file-tree__folder-icon--open"
             }`}
             aria-hidden="true"
+            title={getWorkspaceIconTitle(isEmpty ? "empty" : "dir")}
           />
           {isRenaming ? (
             <input
@@ -449,7 +479,11 @@ function WorkspaceTreeBranch({
         }}
         role="treeitem"
       >
-        <span aria-hidden="true" className={`file-tree__file-icon file-tree__file-icon--${badge}`} />
+        <span
+          aria-hidden="true"
+          className={`file-tree__file-icon file-tree__file-icon--${badge}`}
+          title={getWorkspaceIconTitle(badge)}
+        />
         <input
           autoFocus
           className="file-tree__rename-input"
@@ -504,7 +538,11 @@ function WorkspaceTreeBranch({
       role="treeitem"
       type="button"
     >
-      <span aria-hidden="true" className={`file-tree__file-icon file-tree__file-icon--${badge}`} />
+      <span
+        aria-hidden="true"
+        className={`file-tree__file-icon file-tree__file-icon--${badge}`}
+        title={getWorkspaceIconTitle(badge)}
+      />
       <span className="file-row__name">{node.name}</span>
     </button>
   );

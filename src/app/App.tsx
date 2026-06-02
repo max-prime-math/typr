@@ -1126,6 +1126,7 @@ export function App() {
         const connectedProjects = gitWorkspace.projects.filter(
           (managedProject) =>
             managedProject.projectId === project.id &&
+            managedProject.connected &&
             managedProject.owner.trim() &&
             managedProject.repo.trim()
         );
@@ -1192,13 +1193,16 @@ export function App() {
   );
   const selectedGitToken = selectedGitProject ? (gitCredentials[selectedGitProject.id] ?? "") : "";
   const selectedGitProjectIsGitHubConnected =
-    Boolean(selectedGitProject?.owner.trim() && selectedGitProject?.repo.trim());
+    Boolean(selectedGitProject?.connected && selectedGitProject.owner.trim() && selectedGitProject.repo.trim());
+  const selectedProjectGitConnectionLabel = selectedGitProjectIsGitHubConnected
+    ? "Connected"
+    : "Not connected";
   const selectedGitHubProjectDropdownValue =
     selectedGitProjectIsGitHubConnected && selectedProjectRepository
       ? selectedProjectRepository.id
       : "";
   useEffect(() => {
-    if (!isHydrated || !selectedGitProject || !selectedProjectRepository) {
+    if (!isHydrated || !selectedGitProject || !selectedProjectRepository || !selectedGitProject.connected) {
       return;
     }
 
@@ -1308,22 +1312,6 @@ export function App() {
       }));
     },
     [selectedGitProject?.id]
-  );
-  const selectGitManagedProject = useCallback(
-    (managedProjectId: string | null) => {
-      const typrProjectId = selectedProjectRepository?.id;
-      setGitWorkspace((currentWorkspace) => ({
-        ...currentWorkspace,
-        selectedProjectId: managedProjectId,
-        selectedProjectIdsByTyprProjectId: typrProjectId
-          ? {
-              ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-              [typrProjectId]: managedProjectId
-            }
-          : currentWorkspace.selectedProjectIdsByTyprProjectId
-      }));
-    },
-    [selectedProjectRepository?.id]
   );
   useEffect(() => {
     if (!activeMergeState) {
@@ -3227,11 +3215,11 @@ export function App() {
   const handleConnectGitHub = useCallback(async () => {
     if (!selectedGitProject) {
       setSyncFeedback({ tone: "error", text: "Create or select a managed git project first." });
-      return;
+      return { ok: false as const };
     }
     if (!selectedGitToken.trim()) {
       setSyncFeedback({ tone: "error", text: "Add a GitHub token before connecting." });
-      return;
+      return { ok: false as const };
     }
 
     setGitHubDiscovery((current) => ({
@@ -3259,7 +3247,7 @@ export function App() {
         isLoadingBranches: false
       }));
       setSyncFeedback({ tone: "error", text: message });
-      return;
+      return { ok: false as const };
     }
 
     const currentOwner = remoteConfig.owner.trim();
@@ -3281,6 +3269,7 @@ export function App() {
       handleGitRemoteConfigChange("owner", nextOwner);
     }
     setSyncFeedback({ tone: "success", text: result.message });
+    return { ok: true as const };
   }, [handleGitRemoteConfigChange, remoteConfig.owner, remoteGitService, selectedGitProject, selectedGitToken]);
 
   const handleGitHubRepoModeChange = useCallback((mode: GitHubRepoMode) => {
@@ -3673,7 +3662,7 @@ export function App() {
 
     const nextProject = createEmptyGitManagedProject({
       projectId: selectedProjectRepository.id,
-      projectName: `${selectedProjectRepository.displayName} repo`
+      projectName: selectedProjectRepository.displayName
     });
 
     setGitWorkspace((currentWorkspace) => ({
@@ -3800,7 +3789,7 @@ export function App() {
   );
 
   const addDefaultGitManagedProject = useCallback(
-    (project: TyprProjectRepository, projectName = `${project.displayName} repo`) => {
+    (project: TyprProjectRepository, projectName = project.displayName) => {
       const nextProject = createEmptyGitManagedProject({
         projectId: project.id,
         projectName
@@ -3840,6 +3829,115 @@ export function App() {
     },
     []
   );
+
+  const handleSelectGitSettingsProject = useCallback(
+    (projectId: string) => {
+      const nextProject = projectStorage.projects.find((project) => project.id === projectId);
+      selectStoredProjectRepository(projectId);
+      if (nextProject) {
+        addDefaultGitManagedProject(nextProject, nextProject.displayName);
+      }
+    },
+    [addDefaultGitManagedProject, projectStorage.projects, selectStoredProjectRepository]
+  );
+
+  const handleToggleSelectedGitHubConnection = useCallback(() => {
+    if (!selectedGitProject) {
+      return;
+    }
+
+    if (selectedGitProjectIsGitHubConnected) {
+      const remoteName = selectedGitProject.remoteName.trim();
+      updateSelectedGitProject((project) => ({
+        ...project,
+        connected: false,
+        lastPulledAt: null,
+        lastPushedAt: null
+      }));
+      setGitCredentials((currentCredentials) => {
+        const nextCredentials = { ...currentCredentials };
+        delete nextCredentials[selectedGitProject.id];
+        return nextCredentials;
+      });
+      if (remoteName) {
+        setProjectRepository((project) => ({
+          ...project,
+          git: {
+            ...project.git,
+            remotes: project.git.remotes.filter((remote) => remote.name !== remoteName)
+          }
+        }));
+      }
+      setSyncFeedback({
+        tone: "success",
+        text: "Disconnected this project from GitHub. The GitHub repository was not deleted."
+      });
+      return;
+    }
+
+    if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim() || !selectedGitToken.trim()) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Fill in owner, repo, branch, and token before connecting."
+      });
+      return;
+    }
+
+    updateSelectedGitProject((project) => ({
+      ...project,
+      connected: true
+    }));
+    setSyncFeedback({
+      tone: "success",
+      text: `Connected this project to ${remoteConfig.owner}/${remoteConfig.repo}.`
+    });
+  }, [
+    remoteConfig,
+    selectedGitProject,
+    selectedGitProjectIsGitHubConnected,
+    selectedGitToken,
+    setProjectRepository,
+    updateSelectedGitProject
+  ]);
+
+  const handleGitHubTokenConnectionAction = useCallback(async () => {
+    if (selectedGitProjectIsGitHubConnected) {
+      handleToggleSelectedGitHubConnection();
+      return;
+    }
+
+    if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim()) {
+      const tokenResult = await handleConnectGitHub();
+      if (tokenResult.ok) {
+        setSyncFeedback({
+          tone: "neutral",
+          text: "Choose a repository and branch, then click Connect again."
+        });
+      }
+      return;
+    }
+
+    const tokenResult = await handleConnectGitHub();
+    if (!tokenResult.ok) {
+      return;
+    }
+
+    updateSelectedGitProject((project) => ({
+      ...project,
+      connected: true
+    }));
+    setSyncFeedback({
+      tone: "success",
+      text: `Connected this project to ${remoteConfig.owner}/${remoteConfig.repo}.`
+    });
+  }, [
+    handleConnectGitHub,
+    handleToggleSelectedGitHubConnection,
+    remoteConfig,
+    selectedGitProjectIsGitHubConnected,
+    setSyncFeedback,
+    updateSelectedGitProject
+  ]);
 
   const handleCreateLocalProject = useCallback(() => {
     const enteredName = window.prompt("Project name", "Untitled project");
@@ -4052,6 +4150,7 @@ export function App() {
       name,
       owner: remoteConfig.owner,
       repo: remoteConfig.repo,
+      connected: true,
       branch: remoteConfig.branch,
       remoteName: remoteConfig.remoteName
     }),
@@ -4129,7 +4228,7 @@ export function App() {
       return;
     }
 
-    const managedProject = createManagedProjectForRepository(remoteProject, `${selectedProjectRepository.displayName} GitHub`);
+    const managedProject = createManagedProjectForRepository(remoteProject, selectedProjectRepository.displayName);
     selectProjectRepository(remoteProject);
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
@@ -4200,7 +4299,7 @@ export function App() {
       ...pullResult.project,
       displayName: remoteConfig.repo
     };
-    const managedProject = createManagedProjectForRepository(importedProject, `${remoteConfig.repo} GitHub`);
+    const managedProject = createManagedProjectForRepository(importedProject, remoteConfig.repo);
     selectProjectRepository(importedProject);
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
@@ -4909,6 +5008,13 @@ export function App() {
     if (!isOnline) {
       const message = "This device is offline. Local commits are still available.";
       setSyncFeedback({ tone: "error", text: message });
+      return { ok: false as const, message };
+    }
+    if (!selectedGitProject.connected) {
+      const message = "Connect this project to GitHub first.";
+      setSyncFeedback({ tone: "error", text: message });
+      setSettingsTab("git");
+      setIsSettingsOpen(true);
       return { ok: false as const, message };
     }
     if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim() || !selectedGitToken.trim()) {
@@ -6054,6 +6160,7 @@ export function App() {
     isOnline &&
     Boolean(selectedGitProject) &&
     selectedGitProject?.backendId === "browser" &&
+    selectedGitProjectIsGitHubConnected &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !hasRepoChanges(localRepoStatus) &&
     !hasActiveMergeStop(localRepoStatus) &&
@@ -6062,6 +6169,7 @@ export function App() {
     isOnline &&
     Boolean(selectedGitProject) &&
     selectedGitProject?.backendId === "browser" &&
+    selectedGitProjectIsGitHubConnected &&
     Boolean(localRepoStatus?.headSha) &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !hasActiveMergeStop(localRepoStatus) &&
@@ -6071,6 +6179,7 @@ export function App() {
     Boolean(selectedProjectRepository) &&
     Boolean(selectedGitProject) &&
     selectedGitProject?.backendId === "browser" &&
+    selectedGitProjectIsGitHubConnected &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !isSyncing;
   const handleMergeVersionBodyScroll = useCallback((role: MergeVersionRole) => {
@@ -6962,6 +7071,7 @@ export function App() {
                         onClick={handleNewDocument}
                         type="button"
                         aria-label="New file"
+                        title="New file"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-file" />
                       </button>
@@ -6970,6 +7080,7 @@ export function App() {
                         onClick={handleAddFolder}
                         type="button"
                         aria-label="New folder"
+                        title="New folder"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-folder" />
                       </button>
@@ -6978,6 +7089,7 @@ export function App() {
                         onClick={() => documentUploadInputRef.current?.click()}
                         type="button"
                         aria-label="Upload .typ"
+                        title="Upload .typ"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
                       </button>
@@ -6986,6 +7098,7 @@ export function App() {
                         aria-pressed={isTrashViewOpen}
                         className="pane__button pane__button--compact pane__icon-button"
                         onClick={handleToggleTrashView}
+                        title={isTrashViewOpen ? "Close trash" : "Open trash"}
                         type="button"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--trash" />
@@ -7064,23 +7177,6 @@ export function App() {
                           type="button"
                         >
                           New local project
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={handleRequestImportGitHubProject}
-                          type="button"
-                        >
-                          Import GitHub repo
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact pane__button--danger"
-                          disabled={!selectedProjectRepository}
-                          onClick={() => {
-                            void handleDeleteSelectedProject();
-                          }}
-                          type="button"
-                        >
-                          Delete project
                         </button>
                       </div>
                     </div>
@@ -7525,19 +7621,23 @@ export function App() {
                           ))}
                         </select>
                         <button
-                          className="pane__button pane__button--compact"
+                          aria-label="Add repo"
+                          className="pane__button pane__button--compact pane__icon-button"
                           onClick={handleAddGitProject}
+                          title="Add repo"
                           type="button"
                         >
-                          Add repo
+                          <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-folder" />
                         </button>
                         <button
-                          className="pane__button pane__button--compact"
+                          aria-label="Remove repo"
+                          className="pane__button pane__button--compact pane__icon-button"
                           disabled={!selectedGitProject}
                           onClick={handleRemoveSelectedGitProject}
+                          title="Remove repo"
                           type="button"
                         >
-                          Remove
+                          <span aria-hidden="true" className="toolbar-icon toolbar-icon--trash" />
                         </button>
                       </div>
                       {selectedGitProject ? (
@@ -8162,6 +8262,7 @@ export function App() {
                   disabled={!isSourceFileEditable}
                   aria-pressed={isSourceToolbarVisible}
                   aria-label={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
+                  title={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
                 >
                 <span
                   aria-hidden="true"
@@ -8181,6 +8282,7 @@ export function App() {
                     onClick={handleBold}
                     type="button"
                     aria-label="Bold"
+                    title="Bold"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--bold" />
                   </button>
@@ -8189,6 +8291,7 @@ export function App() {
                     onClick={handleItalic}
                     type="button"
                     aria-label="Italic"
+                    title="Italic"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--italic" />
                   </button>
@@ -8197,6 +8300,7 @@ export function App() {
                     onClick={handleUnderline}
                     type="button"
                     aria-label="Underline"
+                    title="Underline"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--underline" />
                   </button>
@@ -8210,6 +8314,7 @@ export function App() {
                     onClick={handleBulletList}
                     type="button"
                     aria-label="Bulleted list"
+                    title="Bulleted list"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--bullet-list" />
                   </button>
@@ -8218,6 +8323,7 @@ export function App() {
                     onClick={handleNumberedList}
                     type="button"
                     aria-label="Numbered list"
+                    title="Numbered list"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--numbered-list" />
                   </button>
@@ -8226,6 +8332,7 @@ export function App() {
                     onClick={handleMathMode}
                     type="button"
                     aria-label="Math mode"
+                    title="Math mode"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--math" />
                   </button>
@@ -8234,6 +8341,7 @@ export function App() {
                     onClick={handleCycleHeading}
                     type="button"
                     aria-label="Cycle heading level"
+                    title="Cycle heading level"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--heading" />
                   </button>
@@ -8243,6 +8351,7 @@ export function App() {
                       aria-label="Matrix options"
                       className="pane__button pane__button--compact pane__icon-button"
                       onClick={() => toggleToolbarMenu("matrix")}
+                      title="Matrix options"
                       type="button"
                     >
                       <span aria-hidden="true" className="toolbar-icon toolbar-icon--matrix" />
@@ -8325,6 +8434,7 @@ export function App() {
                       aria-label="Table options"
                       className="pane__button pane__button--compact pane__icon-button"
                       onClick={() => toggleToolbarMenu("table")}
+                      title="Table options"
                       type="button"
                     >
                       <span aria-hidden="true" className="toolbar-icon toolbar-icon--table" />
@@ -8500,6 +8610,7 @@ export function App() {
                   <summary
                     className="pane__button pane__button--compact pane__icon-button"
                     aria-label="Symbols"
+                    title="Symbols"
                   >
                     <span aria-hidden="true" className="toolbar-icon toolbar-icon--symbols" />
                   </summary>
@@ -8520,6 +8631,7 @@ export function App() {
                         onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
                         onPointerMove={positionSourceSymbolTooltip}
                         onPointerLeave={clearSourceSymbolPreview}
+                        title={item.label}
                         type="button"
                       >
                         <span aria-hidden="true" className="source-symbol-menu__glyph">
@@ -8538,6 +8650,7 @@ export function App() {
                   }}
                   type="button"
                   aria-label="Snippets"
+                  title="Snippets"
                 >
                   <span aria-hidden="true" className="toolbar-icon toolbar-icon--snippets" />
                 </button>
@@ -8826,37 +8939,37 @@ export function App() {
                 <div className="settings-panel" role="tabpanel">
                   <div className="settings-section">
                     <div className="settings-section__header">
-                      <h3>Managed repos</h3>
-                      <span className="pane__meta">{gitProjectsForSelectedTyprProject.length}</span>
+                      <h3>Project connection</h3>
+                      <span className="pane__meta">{projectStorage.projects.length}</span>
                     </div>
                     <div className="sidebar-card">
-                      <div className="sidebar-card__actions">
-                        <select
-                          className="pane__button pane__button--compact"
-                          onChange={(event) => selectGitManagedProject(event.target.value || null)}
-                          value={selectedGitProject?.id ?? ""}
-                        >
-                          {gitProjectsForSelectedTyprProject.map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.name}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={handleAddGitProject}
-                          type="button"
-                        >
-                          Add repo
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          disabled={!selectedGitProject}
-                          onClick={handleRemoveSelectedGitProject}
-                          type="button"
-                        >
-                          Remove
-                        </button>
+                      <div className="git-project-connection-row">
+                        <label className="sync-field git-project-connection-row__select">
+                          <span>Project</span>
+                          <select
+                            onChange={(event) => handleSelectGitSettingsProject(event.target.value)}
+                            value={selectedProjectRepository?.id ?? ""}
+                          >
+                            {projectStorage.projects.map((project) => (
+                              <option key={project.id} value={project.id}>
+                                {project.displayName}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="git-project-connection-row__actions">
+                          <span className="git-project-status">
+                            <span
+                              aria-hidden="true"
+                              className={`git-project-status__dot ${
+                                selectedGitProjectIsGitHubConnected
+                                  ? "git-project-status__dot--connected"
+                                  : "git-project-status__dot--disconnected"
+                              }`}
+                            />
+                            {selectedProjectGitConnectionLabel}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -8886,14 +8999,29 @@ export function App() {
                         />
                       </label>
                       <button
-                        className="pane__button pane__button--compact"
-                        disabled={!selectedGitProject || !selectedGitToken.trim() || gitHubDiscovery.status === "loading"}
+                        className={`pane__button pane__button--compact ${
+                          selectedGitProjectIsGitHubConnected ? "pane__button--danger" : ""
+                        }`}
+                        disabled={
+                          !selectedGitProject ||
+                          gitHubDiscovery.status === "loading" ||
+                          (!selectedGitProjectIsGitHubConnected && !selectedGitToken.trim())
+                        }
                         onClick={() => {
-                          void handleConnectGitHub();
+                          void handleGitHubTokenConnectionAction();
                         }}
+                        title={
+                          selectedGitProjectIsGitHubConnected
+                            ? "Disconnect this project from GitHub"
+                            : "Connect this project to GitHub"
+                        }
                         type="button"
                       >
-                        {gitHubDiscovery.status === "loading" ? "Connecting..." : "Connect"}
+                        {selectedGitProjectIsGitHubConnected
+                          ? "Disconnect"
+                          : gitHubDiscovery.status === "loading"
+                            ? "Connecting..."
+                            : "Connect"}
                       </button>
                     </div>
                     <ul className="sidebar-card__copy sidebar-card__list">
@@ -10443,6 +10571,7 @@ function renderOutlineEntries(
                   [entry.id]: !isCollapsed
                 }));
               }}
+              title={isCollapsed ? `Expand ${entry.title}` : `Collapse ${entry.title}`}
               type="button"
             >
               <span

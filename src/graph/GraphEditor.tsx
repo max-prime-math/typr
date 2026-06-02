@@ -500,11 +500,12 @@ export function GraphEditor({
                           event.dataTransfer.effectAllowed = "move";
                           event.dataTransfer.setData("text/plain", functionRows[index]!.id);
                         }}
+                        title={`Drag Y${index + 1}`}
                         type="button"
                       >
                         ::
                       </button>
-                      <label className="graph-editor__function-visibility">
+                      <label className="graph-editor__function-visibility" title={`Toggle Y${index + 1} visibility`}>
                         <input
                           checked={functionRows[index]?.visible ?? true}
                           onChange={(event) =>
@@ -524,6 +525,7 @@ export function GraphEditor({
                           )
                         }
                         style={{ backgroundColor: analysis.color }}
+                        title={`Style Y${index + 1}`}
                         type="button"
                       />
                       <input
@@ -539,6 +541,7 @@ export function GraphEditor({
                         aria-label={`Clear Y${index + 1}`}
                         className="pane__button pane__button--compact graph-editor__function-remove"
                         onClick={() => removeFunctionRow(functionRows[index]!.id)}
+                        title={`Clear Y${index + 1}`}
                         type="button"
                       >
                         X

@@ -189,6 +189,7 @@ export function PreviewZoomControls({
       <button
         className="preview-zoom-button"
         onClick={() => onZoomChange(nextZoomStep(zoom, -1))}
+        title="Zoom out"
         type="button"
       >
         -
@@ -211,6 +212,7 @@ export function PreviewZoomControls({
       <button
         className="preview-zoom-button"
         onClick={() => onZoomChange(nextZoomStep(zoom, 1))}
+        title="Zoom in"
         type="button"
       >
         +
@@ -227,7 +229,7 @@ export function PreviewStatusIcon({
   label: string;
 }) {
   return (
-    <span className="preview-status-icon-wrap" aria-label={label}>
+    <span className="preview-status-icon-wrap" aria-label={label} title={label}>
       <span
         aria-hidden="true"
         className={`preview-status-icon preview-status-icon--${kind}`}

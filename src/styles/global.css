@@ -3545,6 +3545,49 @@ button {
   min-width: 0;
 }
 
+.git-project-connection-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.git-project-connection-row__select {
+  min-width: 0;
+}
+
+.git-project-connection-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.git-project-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  min-height: 2.35rem;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.git-project-status__dot {
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.git-project-status__dot--connected {
+  background: var(--accent);
+}
+
+.git-project-status__dot--disconnected {
+  background: var(--danger);
+}
+
 .sync-feedback {
   display: flex;
   align-items: center;
@@ -5381,6 +5424,15 @@ button {
   .sync-token-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .git-project-connection-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .git-project-connection-row__actions {
+    justify-content: space-between;
   }
 
   .settings-sheet__footer-actions {

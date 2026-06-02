@@ -9,6 +9,7 @@ export interface GitManagedProject {
   backendId: TerminalBackendId;
   owner: string;
   repo: string;
+  connected: boolean;
   branch: string;
   remoteName: string;
   workspacePath: string;
@@ -38,6 +39,7 @@ export function createEmptyGitManagedProject(options: {
     backendId: "browser",
     owner: "",
     repo: "",
+    connected: false,
     branch: "main",
     remoteName: "origin",
     workspacePath: "",
@@ -121,6 +123,10 @@ export function normalizeManagedProject(
     backendId: normalizeBackendId(project.backendId),
     owner: project.owner?.trim() || "",
     repo: project.repo?.trim() || "",
+    connected:
+      typeof project.connected === "boolean"
+        ? project.connected
+        : Boolean(project.owner?.trim() && project.repo?.trim()),
     branch: project.branch?.trim() || "main",
     remoteName: project.remoteName?.trim() || "origin",
     workspacePath: normalizeProjectPath(project.workspacePath),

@@ -22,6 +22,7 @@ export function InlinePaneExpandControls({
           aria-label={collapseLabel}
           className="pane__button pane__button--compact inline-pane-expand-controls__button"
           onClick={onExpandLeft}
+          title={collapseLabel}
           type="button"
         >
           <span
@@ -35,6 +36,7 @@ export function InlinePaneExpandControls({
           aria-label={expandLabel}
           className="pane__button pane__button--compact inline-pane-expand-controls__button"
           onClick={onExpandRight}
+          title={expandLabel}
           type="button"
         >
           <span
