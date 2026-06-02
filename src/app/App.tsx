@@ -60,6 +60,7 @@ import {
   updateActiveDocument,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
+  updateAutoSyncGitProjectsPreference,
   updateEditorFontSizePreference,
   updateKeybindingsPreference,
   updateLiveCompilationPreference,
@@ -372,7 +373,7 @@ type SyncStatusSnapshot = SyncFeedback & {
 
 const INITIAL_SYNC_STATUS: SyncStatusSnapshot = {
   tone: "neutral",
-  text: "Documents stay on this device. Pull, push, and sync use the local Git repo when you are online.",
+  text: "Ready for Git.",
   progress: null
 };
 
@@ -625,6 +626,10 @@ function hasRepoChanges(status: RepoStatus | null): boolean {
 
 function hasActiveMergeStop(status: RepoStatus | null): boolean {
   return Boolean(status?.mergeState);
+}
+
+function isRemoteDivergenceMessage(message: string): boolean {
+  return /remote contains work|pull first|diverged|non-fast-forward/i.test(message);
 }
 
 function getMergeDiffLines(
@@ -948,6 +953,7 @@ export function App() {
   const pendingSyncProgressRef = useRef<RemoteGitProgress | null>(null);
   const syncProgressFlushTimerRef = useRef<number | null>(null);
   const lastSyncProgressFlushAtRef = useRef(0);
+  const lastAutoSyncKeyRef = useRef<string | null>(null);
   const setSyncFeedback = useCallback((feedback: SyncFeedback) => {
     setSyncStatusSnapshot({ ...feedback, progress: null });
   }, []);
@@ -976,6 +982,7 @@ export function App() {
   const [localRepoStatus, setLocalRepoStatus] = useState<RepoStatus | null>(null);
   const [localRepoCommits, setLocalRepoCommits] = useState<RepoCommit[]>([]);
   const [localRepoBranches, setLocalRepoBranches] = useState<RepoBranch[]>([]);
+  const [filesGitConflictNotice, setFilesGitConflictNotice] = useState<string | null>(null);
   const [selectedMergePath, setSelectedMergePath] = useState<string | null>(null);
   const [mergeFilePreview, setMergeFilePreview] = useState<MergeFilePreview | null>(null);
   const [isMergeFilePreviewLoading, setIsMergeFilePreviewLoading] = useState(false);
@@ -1069,6 +1076,14 @@ export function App() {
       updateLiveCompilationPreference(
         currentSnapshot,
         !currentSnapshot.preferences.liveCompilation
+      )
+    );
+  }, []);
+  const handleAutoSyncGitProjectsToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateAutoSyncGitProjectsPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.autoSyncGitProjects
       )
     );
   }, []);
@@ -5121,6 +5136,107 @@ export function App() {
     validateRemoteAction
   ]);
 
+  const handleQuickSaveToGit = useCallback(async () => {
+    setFilesGitConflictNotice(null);
+    const ready = validateRemoteAction();
+    if (!ready.ok) return ready;
+
+    const conflictMessage = "Git conflicts need to be resolved before this project can be saved to Git.";
+    if (hasActiveMergeStop(localRepoStatus)) {
+      setFilesGitConflictNotice(conflictMessage);
+      setSyncFeedback({ tone: "error", text: conflictMessage });
+      return { ok: false as const, message: conflictMessage };
+    }
+
+    if (!beginRemoteOperation(`Saving ${ready.repository.displayName} to Git...`)) {
+      return { ok: false as const, message: "A Git remote operation is already running." };
+    }
+
+    try {
+      setSyncFeedback({ tone: "neutral", text: "Staging all local changes..." });
+      const stageResult = await repoBackend.stagePaths(ready.repository, ["."]);
+      if (!stageResult.ok) {
+        return finishRemoteOperation(
+          { ok: false, message: formatRepoError(stageResult.error) },
+          "push"
+        );
+      }
+      setLocalRepoStatus(stageResult.value);
+
+      const hasStagedChanges = stageResult.value.entries.some((entry) => entry.staged !== null);
+      if (hasStagedChanges) {
+        const message =
+          ready.project.commitMessageTemplate.trim() ||
+          `Sync ${ready.repository.displayName} from Typr`;
+        setSyncFeedback({ tone: "neutral", text: "Committing local changes..." });
+        const commitResult = await repoBackend.commit(ready.repository, { message });
+        if (!commitResult.ok) {
+          return finishRemoteOperation(
+            { ok: false, message: formatRepoError(commitResult.error) },
+            "push"
+          );
+        }
+        const statusResult = await repoBackend.status(ready.repository);
+        if (statusResult.ok) {
+          setLocalRepoStatus(statusResult.value);
+        }
+        setGitRefreshToken((token) => token + 1);
+      } else {
+        setSyncFeedback({ tone: "neutral", text: "No local changes to commit. Checking remote..." });
+      }
+
+      setSyncFeedback({
+        tone: "neutral",
+        text: `Pushing ${remoteConfig.branch} to ${remoteConfig.remoteName}...`
+      });
+      const pushResult = await remoteGitService.push(
+        ready.repository,
+        remoteConfig,
+        () => selectedGitToken,
+        { onProgress: handleRemoteGitProgress }
+      );
+
+      if (!pushResult.ok && isRemoteDivergenceMessage(pushResult.message)) {
+        setSyncFeedback({ tone: "neutral", text: "Remote changes found. Checking conflicts..." });
+        const pullResult = await remoteGitService.pull(
+          ready.repository,
+          remoteConfig,
+          () => selectedGitToken,
+          { onProgress: handleRemoteGitProgress }
+        );
+        if (!pullResult.status) {
+          const statusResult = await repoBackend.status(ready.repository);
+          if (statusResult.ok) {
+            setLocalRepoStatus(statusResult.value);
+          }
+        }
+        if (!pullResult.ok && isRemoteDivergenceMessage(pullResult.message)) {
+          await finishRemoteOperation(pullResult, "pull");
+          setFilesGitConflictNotice(conflictMessage);
+          setSyncFeedback({ tone: "error", text: conflictMessage });
+          return { ok: false as const, message: conflictMessage };
+        }
+        return finishRemoteOperation(pullResult, "pull");
+      }
+
+      return finishRemoteOperation(pushResult, "push");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Quick Git sync failed.";
+      return finishRemoteOperation({ ok: false, message }, "push");
+    }
+  }, [
+    beginRemoteOperation,
+    finishRemoteOperation,
+    handleRemoteGitProgress,
+    localRepoStatus,
+    remoteConfig,
+    remoteGitService,
+    repoBackend,
+    selectedGitToken,
+    setSyncFeedback,
+    validateRemoteAction
+  ]);
+
   const handleSyncRemote = useCallback(async () => {
     const pullResult = await handlePullRemote();
     if (!pullResult.ok && !/Already up to date/i.test(pullResult.message)) {
@@ -5131,6 +5247,72 @@ export function App() {
       ? { ok: true as const, message: "Sync complete." }
       : pushResult;
   }, [handlePullRemote, handlePushRemote]);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+    if (!snapshot.preferences.autoSyncGitProjects) {
+      lastAutoSyncKeyRef.current = null;
+      return;
+    }
+    if (
+      !selectedProjectRepository ||
+      !selectedGitProject ||
+      selectedGitProject.backendId !== "browser" ||
+      !selectedGitProjectIsGitHubConnected ||
+      !isOnline ||
+      !selectedGitToken.trim() ||
+      !localRepoStatus ||
+      isGitStatusLoading ||
+      isSyncing
+    ) {
+      return;
+    }
+
+    const autoSyncKey = [
+      selectedProjectRepository.id,
+      selectedGitProject.id
+    ].join(":");
+    if (lastAutoSyncKeyRef.current === autoSyncKey) {
+      return;
+    }
+    lastAutoSyncKeyRef.current = autoSyncKey;
+
+    const conflictMessage = "Git conflicts need to be resolved before this project can sync.";
+    if (hasActiveMergeStop(localRepoStatus)) {
+      setFilesGitConflictNotice(conflictMessage);
+      setSyncFeedback({ tone: "error", text: conflictMessage });
+      return;
+    }
+
+    if (hasRepoChanges(localRepoStatus)) {
+      setSyncFeedback({
+        tone: "neutral",
+        text: "Auto-sync skipped because this project has local changes."
+      });
+      return;
+    }
+
+    void handleSyncRemote().then((result) => {
+      if (!result.ok && isRemoteDivergenceMessage(result.message)) {
+        setFilesGitConflictNotice(conflictMessage);
+      }
+    });
+  }, [
+    handleSyncRemote,
+    isGitStatusLoading,
+    isHydrated,
+    isOnline,
+    isSyncing,
+    localRepoStatus,
+    selectedGitProject,
+    selectedGitProjectIsGitHubConnected,
+    selectedGitToken,
+    selectedProjectRepository,
+    setSyncFeedback,
+    snapshot.preferences.autoSyncGitProjects
+  ]);
 
   const terminalRuntime = useMemo(
     () => ({
@@ -5884,7 +6066,13 @@ export function App() {
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !hasActiveMergeStop(localRepoStatus) &&
     !isSyncing;
-  const canSyncRemote = canPushRemote && !hasRepoChanges(localRepoStatus);
+  const canQuickSaveToGit =
+    isOnline &&
+    Boolean(selectedProjectRepository) &&
+    Boolean(selectedGitProject) &&
+    selectedGitProject?.backendId === "browser" &&
+    Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
+    !isSyncing;
   const handleMergeVersionBodyScroll = useCallback((role: MergeVersionRole) => {
     const sourceBody = mergeVersionBodyRefs.current[role];
     if (!sourceBody || isSyncingMergeScrollRef.current) {
@@ -6758,6 +6946,18 @@ export function App() {
                   {activeSidebarTool === "files" ? (
                     <>
                       <button
+                        aria-label="Sync project to Git"
+                        className="pane__button pane__button--compact pane__icon-button"
+                        disabled={!canQuickSaveToGit}
+                        onClick={() => {
+                          void handleQuickSaveToGit();
+                        }}
+                        title="Stage all changes, commit with the default message, and push to GitHub."
+                        type="button"
+                      >
+                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--sync" />
+                      </button>
+                      <button
                         className="pane__button pane__button--compact pane__icon-button"
                         onClick={handleNewDocument}
                         type="button"
@@ -6791,8 +6991,7 @@ export function App() {
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--trash" />
                       </button>
                     </>
-                  ) : activeSidebarTool === "sync" ? (
-                    activeMergeState ? (
+                  ) : activeSidebarTool === "sync" && activeMergeState ? (
                       <InlinePaneExpandControls
                         collapseLabel={
                           gitMergePaneMode === "preview"
@@ -6815,18 +7014,6 @@ export function App() {
                             : undefined
                         }
                       />
-                    ) : (
-                      <button
-                        className="pane__button"
-                        disabled={!canPushRemote}
-                        onClick={() => {
-                          void handlePushRemote();
-                        }}
-                        type="button"
-                      >
-                        {isSyncing ? "Pushing..." : "Push"}
-                      </button>
-                    )
                   ) : activeSidebarTool === "diagram" &&
                     isDiagramInlineExpanded &&
                     !snapshot.preferences.liveCompilation ? (
@@ -6896,6 +7083,30 @@ export function App() {
                           Delete project
                         </button>
                       </div>
+                    </div>
+                  ) : null}
+                  {!isTrashViewOpen && filesGitConflictNotice ? (
+                    <div className="files-git-notice">
+                      <div className="files-git-notice__body">
+                        <strong>Git conflicts</strong>
+                        <span>{filesGitConflictNotice}</span>
+                      </div>
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => {
+                          setActiveSidebarTool("sync");
+                          setIsSidebarCollapsed(false);
+                          if (isMobileWorkspace) {
+                            setMobileWorkspaceTab("files");
+                          } else if (workspaceMode === "editor" || workspaceMode === "preview") {
+                            setWorkspaceMode("split");
+                          }
+                          setGitMergePaneMode("sidebar");
+                        }}
+                        type="button"
+                      >
+                        Open Git view
+                      </button>
                     </div>
                   ) : null}
                   {isTrashViewOpen ? (
@@ -7367,67 +7578,11 @@ export function App() {
                         >
                           {isSyncing ? "Pushing..." : "Push"}
                         </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          disabled={!canSyncRemote}
-                          onClick={() => {
-                            void handleSyncRemote();
-                          }}
-                          type="button"
-                        >
-                          {isSyncing ? "Syncing..." : "Sync"}
-                        </button>
                       </div>
                       <SyncStatusBar
                         active={isSyncing}
                         meta={syncStatusMeta}
                       />
-                    </div>
-
-                    <div className="sidebar-card">
-                      <div className="sidebar-card__row">
-                        <span>Storage</span>
-                        <span className="pane__meta">
-                          {isRepoStorageLoading
-                            ? "Measuring"
-                            : repoStorageStats
-                              ? formatByteSize(repoStorageStats.objectBytes)
-                              : "Unknown"}
-                        </span>
-                      </div>
-                      {repoStorageStats ? (
-                        <p className="sidebar-card__copy">
-                          {repoStorageStats.objectCount} loose objects:{" "}
-                          {repoStorageStats.objectCounts.commit} commits,{" "}
-                          {repoStorageStats.objectCounts.tree} trees,{" "}
-                          {repoStorageStats.objectCounts.blob} blobs.
-                        </p>
-                      ) : null}
-                      {repoStorageFeedback.text ? (
-                        <p className="sidebar-card__copy">{repoStorageFeedback.text}</p>
-                      ) : null}
-                      <div className="sidebar-card__actions">
-                        <button
-                          className="pane__button pane__button--compact"
-                          disabled={isRepoStorageLoading || !selectedProjectRepository}
-                          onClick={() => {
-                            void refreshRepoStorageStats();
-                          }}
-                          type="button"
-                        >
-                          Refresh
-                        </button>
-                        <button
-                          className="pane__button pane__button--compact"
-                          disabled={isRepoStorageLoading || !selectedProjectRepository}
-                          onClick={() => {
-                            void handlePruneRepoObjects();
-                          }}
-                          type="button"
-                        >
-                          Clean up
-                        </button>
-                      </div>
                     </div>
 
                     {activeMergeState ? (
@@ -7847,6 +8002,52 @@ export function App() {
                           File status appears here after the repo is configured.
                         </div>
                       )}
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Storage</span>
+                        <span className="pane__meta">
+                          {isRepoStorageLoading
+                            ? "Measuring"
+                            : repoStorageStats
+                              ? formatByteSize(repoStorageStats.objectBytes)
+                              : "Unknown"}
+                        </span>
+                      </div>
+                      {repoStorageStats ? (
+                        <p className="sidebar-card__copy">
+                          {repoStorageStats.objectCount} loose objects:{" "}
+                          {repoStorageStats.objectCounts.commit} commits,{" "}
+                          {repoStorageStats.objectCounts.tree} trees,{" "}
+                          {repoStorageStats.objectCounts.blob} blobs.
+                        </p>
+                      ) : null}
+                      {repoStorageFeedback.text ? (
+                        <p className="sidebar-card__copy">{repoStorageFeedback.text}</p>
+                      ) : null}
+                      <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={isRepoStorageLoading || !selectedProjectRepository}
+                          onClick={() => {
+                            void refreshRepoStorageStats();
+                          }}
+                          type="button"
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={isRepoStorageLoading || !selectedProjectRepository}
+                          onClick={() => {
+                            void handlePruneRepoObjects();
+                          }}
+                          type="button"
+                        >
+                          Clean up
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </section>
@@ -8660,33 +8861,52 @@ export function App() {
                     </div>
                   </div>
 
-                  <label className="sync-field">
-                    <span>GitHub token</span>
-                    <input
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      onChange={(event) => handleGitCredentialChange(event.target.value)}
-                      placeholder="Create a Fine-grained token at github.com/settings/tokens"
-                      type="password"
-                      value={selectedGitToken}
-                    />
-                  </label>
-                  <div className="sidebar-card__actions">
-                    <button
-                      className="pane__button pane__button--compact"
-                      disabled={!selectedGitProject || !selectedGitToken.trim() || gitHubDiscovery.status === "loading"}
-                      onClick={() => {
-                        void handleConnectGitHub();
-                      }}
-                      type="button"
-                    >
-                      {gitHubDiscovery.status === "loading" ? "Connecting..." : "Connect"}
-                    </button>
-                    <span className="pane__meta">
-                      {gitHubDiscovery.status === "connected" && gitHubDiscovery.accountLogin
-                        ? `Connected as ${gitHubDiscovery.accountLogin}`
-                        : gitHubDiscovery.message || "Token is stored per managed repo"}
-                    </span>
+                  <div className="sidebar-card">
+                    <div className="sidebar-card__row">
+                      <span>Fine-grained token</span>
+                      <a
+                        className="pane__meta"
+                        href="https://github.com/settings/personal-access-tokens/new"
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        Open GitHub
+                      </a>
+                    </div>
+                    <div className="sync-token-row">
+                      <label className="sync-field sync-token-row__field">
+                        <span>Token</span>
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) => handleGitCredentialChange(event.target.value)}
+                          placeholder="Paste token"
+                          type="password"
+                          value={selectedGitToken}
+                        />
+                      </label>
+                      <button
+                        className="pane__button pane__button--compact"
+                        disabled={!selectedGitProject || !selectedGitToken.trim() || gitHubDiscovery.status === "loading"}
+                        onClick={() => {
+                          void handleConnectGitHub();
+                        }}
+                        type="button"
+                      >
+                        {gitHubDiscovery.status === "loading" ? "Connecting..." : "Connect"}
+                      </button>
+                    </div>
+                    <ul className="sidebar-card__copy sidebar-card__list">
+                      <li>
+                        Existing repo: select only that repo and grant <strong>Contents</strong>{" "}
+                        read/write.
+                      </li>
+                      <li>
+                        Creating repos from Typr: choose All repositories and also grant{" "}
+                        <strong>Administration</strong> read/write. Use an expiring token, and
+                        turn this broader access off when you are not creating repos.
+                      </li>
+                    </ul>
                   </div>
 
                   <div className="sync-grid">
@@ -8871,6 +9091,21 @@ export function App() {
                     />
                   </label>
 
+                  <label className="settings-toggle">
+                    <span>
+                      <strong>Auto-sync GitHub projects</strong>
+                      <small>
+                        Pulls and pushes a connected project when Typr opens it or switches to it.
+                        Local uncommitted changes are left alone.
+                      </small>
+                    </span>
+                    <input
+                      checked={snapshot.preferences.autoSyncGitProjects}
+                      onChange={handleAutoSyncGitProjectsToggle}
+                      type="checkbox"
+                    />
+                  </label>
+
                   <div className="sidebar-card">
                     <div className="sidebar-card__row">
                       <span>Connect to GitHub</span>
@@ -8921,7 +9156,7 @@ export function App() {
                       onChange={(event) =>
                         handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
                       }
-                      placeholder="Sync project from typr"
+                      placeholder="Sync project from Typr"
                       type="text"
                       value={selectedGitProject?.commitMessageTemplate ?? ""}
                     />
@@ -9594,16 +9829,6 @@ export function App() {
                   type="button"
                 >
                   {isSyncing ? "Pushing..." : "Push"}
-                </button>
-                <button
-                  className="control-button"
-                  disabled={!canSyncRemote}
-                  onClick={() => {
-                    void handleSyncRemote();
-                  }}
-                  type="button"
-                >
-                  {isSyncing ? "Syncing..." : "Sync"}
                 </button>
               </div>
             </div>

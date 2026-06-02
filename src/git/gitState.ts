@@ -43,7 +43,7 @@ export function createEmptyGitManagedProject(options: {
     workspacePath: "",
     repositoryPath: "",
     ignorePatterns: [],
-    commitMessageTemplate: `Sync ${options.projectName} from typr`,
+    commitMessageTemplate: `Sync ${options.projectName} from Typr`,
     draftCommitMessage: "",
     lastPulledAt: null,
     lastPushedAt: null
@@ -127,7 +127,7 @@ export function normalizeManagedProject(
     repositoryPath: normalizeProjectPath(project.repositoryPath),
     ignorePatterns: normalizeIgnorePatterns(project.ignorePatterns),
     commitMessageTemplate:
-      project.commitMessageTemplate?.trim() || `Sync ${fallbackProjectName} from typr`,
+      project.commitMessageTemplate?.trim() || `Sync ${fallbackProjectName} from Typr`,
     draftCommitMessage: project.draftCommitMessage?.trim() || "",
     lastPulledAt: project.lastPulledAt ?? null,
     lastPushedAt: project.lastPushedAt ?? null

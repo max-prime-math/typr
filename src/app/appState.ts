@@ -255,6 +255,7 @@ export interface AppPreferences {
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
+  autoSyncGitProjects: boolean;
   graphProvider: GraphProvider;
   keybindings: KeybindingMap;
   editorFontSize: number;
@@ -271,7 +272,7 @@ export const DEFAULT_DOCUMENT_NAME = "main.typ";
 export const DEFAULT_DOCUMENT_CONTENT = `#set page(margin: 1.2in)
 #set text(font: "New Computer Modern", size: 11pt)
 
-= typr
+= Typr
 
 A local-first, browser-based Typst editor for iPad and desktop.
 
@@ -359,7 +360,7 @@ export function createDefaultSnapshot(): AppSnapshot {
     version: 9,
     project: {
       id: createId("project"),
-      name: "typr Project",
+      name: "Typr Project",
       documents: [document],
       folders: [],
       trash: [],
@@ -378,6 +379,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
+      autoSyncGitProjects: true,
       graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE
@@ -432,6 +434,8 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
             ? 0
             : DEFAULT_CURSOR_SMEAR,
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
+      autoSyncGitProjects:
+        (snapshot.preferences as Partial<AppPreferences>).autoSyncGitProjects ?? true,
       graphProvider: normalizeGraphProvider(storedGraphProvider),
       keybindings: normalizeKeybindings(
         (snapshot.preferences as Partial<AppPreferences>).keybindings
@@ -2157,6 +2161,19 @@ export function updateLiveCompilationPreference(
     preferences: {
       ...snapshot.preferences,
       liveCompilation
+    }
+  };
+}
+
+export function updateAutoSyncGitProjectsPreference(
+  snapshot: AppSnapshot,
+  autoSyncGitProjects: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      autoSyncGitProjects
     }
   };
 }
