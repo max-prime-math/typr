@@ -21,8 +21,8 @@ export function createTerminalCommands(options: {
         "Search/text: grep rg find sort uniq sed",
         "Typst: typst compile|watch|query|fonts|--version",
         "Project helpers: build clean export sync doctor help",
-        "Git: git status add reset commit branch switch log remote fetch push pull sync",
-        "Limitations: figure assets are read-only, merge/rebase are unavailable in Browser Shell"
+        "Git: git status add reset commit branch switch log remote fetch push pull sync merge --abort merge --continue",
+        "Limitations: figure assets are read-only, rebase is unavailable in Browser Shell"
       ].join("\n") + "\n",
       stderr: "",
       exitCode: 0

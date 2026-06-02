@@ -47,6 +47,33 @@ export interface UpstreamTracking {
   behind: number;
 }
 
+export interface RemoteGitAccount {
+  login: string;
+  type: "user" | "org";
+}
+
+export interface RemoteGitRepositorySummary {
+  name: string;
+  fullName: string;
+  owner: string;
+  private: boolean;
+  defaultBranch: string;
+}
+
+export interface RemoteGitBranchSummary {
+  name: string;
+  sha: string;
+}
+
+export type RemoteGitDiscoveryResult<T> =
+  | { ok: true; value: T; message: string }
+  | { ok: false; message: string };
+
+export interface RemoteGitConnectionInfo {
+  user: RemoteGitAccount;
+  owners: RemoteGitAccount[];
+}
+
 interface GitHubCommitResponse {
   sha: string;
   message: string;
@@ -82,6 +109,31 @@ interface GitHubBlobResponse {
   sha: string;
   content: string;
   encoding: string;
+}
+
+interface GitHubUserResponse {
+  login?: string;
+}
+
+interface GitHubOrgResponse {
+  login?: string;
+}
+
+interface GitHubRepoResponse {
+  name?: string;
+  full_name?: string;
+  private?: boolean;
+  default_branch?: string;
+  owner?: {
+    login?: string;
+  };
+}
+
+interface GitHubBranchResponse {
+  name?: string;
+  commit?: {
+    sha?: string;
+  };
 }
 
 export const REMOTE_TRANSPORT_STRATEGY = [
@@ -143,6 +195,14 @@ export function createRemoteGitService(options: {
     if (!statusResult.ok) {
       return repoErrorResult(statusResult);
     }
+    if (statusResult.value.mergeState) {
+      return {
+        ok: false,
+        message:
+          `git pull: a browser merge stop is already active for ${statusResult.value.mergeState.remoteName}/${statusResult.value.mergeState.remoteBranch}. ` +
+          "Use git merge --abort to clear it. Browser Shell cannot continue merges yet."
+      };
+    }
     if (statusResult.value.entries.length > 0) {
       return {
         ok: false,
@@ -191,9 +251,23 @@ export function createRemoteGitService(options: {
         if (localAhead.value) {
           return { ok: true, message: "Already up to date.", status: statusResult.value };
         }
+        const mergeState = await options.repoBackend.beginDivergedPull(project, {
+          branch: config.branch,
+          remoteName: config.remoteName,
+          remoteBranch: config.branch,
+          localSha,
+          remoteSha
+        });
+        if (!mergeState.ok) {
+          return repoErrorResult(mergeState);
+        }
         return {
           ok: false,
-          message: "git pull: remote and local history diverged. Merge/rebase is not implemented in Browser Shell."
+          message:
+            `git pull: stopped before merge because local ${localSha.slice(0, 7)} and ${config.remoteName}/${config.branch} ${remoteSha.slice(0, 7)} diverged. ` +
+            `Preserved base, local, and remote versions for ${mergeState.value.files.length} changed path${mergeState.value.files.length === 1 ? "" : "s"} ` +
+            `(${mergeState.value.conflictCount} conflict${mergeState.value.conflictCount === 1 ? "" : "s"}). ` +
+            "Use git merge --abort to clear this state; Browser Shell cannot continue merges yet."
         };
       }
     }
@@ -259,17 +333,47 @@ export function createRemoteGitService(options: {
       }
 
       const commits = await collectCommitsToPush(options.repoBackend, project, localSha, remoteSha);
+      const remoteCommitShas = new Map<string, string>();
+      if (remoteSha) {
+        remoteCommitShas.set(remoteSha, remoteSha);
+      }
+      let remoteHeadSha = remoteSha;
       for (const commit of commits.reverse()) {
         emit(remoteOptions, "push", `Uploading commit ${commit.sha.slice(0, 7)}.`);
-        await pushCommit(fetchImpl, options.repoBackend, project, config, token, commit, remoteOptions.signal);
+        remoteHeadSha = await pushCommit(
+          fetchImpl,
+          options.repoBackend,
+          project,
+          config,
+          token,
+          commit,
+          remoteCommitShas,
+          remoteOptions.signal
+        );
+        remoteCommitShas.set(commit.sha, remoteHeadSha);
       }
 
-      await updateRemoteBranch(fetchImpl, config, token, localSha, Boolean(remoteSha), remoteOptions.signal);
-      const refResult = await options.repoBackend.setRef(project, remoteTrackingRef(config), localSha);
+      if (!remoteHeadSha) {
+        return { ok: false, message: "git push: no local commits were selected for upload." };
+      }
+      await updateRemoteBranch(fetchImpl, config, token, remoteHeadSha, Boolean(remoteSha), remoteOptions.signal);
+      if (remoteHeadSha !== localSha) {
+        await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteHeadSha, remoteOptions);
+        const localRefResult = await options.repoBackend.setRef(project, `refs/heads/${config.branch}`, remoteHeadSha);
+        if (!localRefResult.ok) {
+          return repoErrorResult(localRefResult);
+        }
+      }
+      const refResult = await options.repoBackend.setRef(project, remoteTrackingRef(config), remoteHeadSha);
       if (!refResult.ok) {
         return repoErrorResult(refResult);
       }
-      return { ok: true, message: `Pushed ${commits.length} commit${commits.length === 1 ? "" : "s"} to ${config.remoteName}/${config.branch}.` };
+      const statusResult = await options.repoBackend.status(project);
+      return {
+        ok: true,
+        message: `Pushed ${commits.length} commit${commits.length === 1 ? "" : "s"} to ${config.remoteName}/${config.branch}.`,
+        status: statusResult.ok ? statusResult.value : undefined
+      };
     } catch (error) {
       return { ok: false, message: redactGitSecrets(formatUnknownError(error), [token]) };
     }
@@ -322,6 +426,17 @@ export function createRemoteGitService(options: {
     }
 
     try {
+      const existing = await githubFetch(fetchImpl, config, token, "", remoteOptions.signal);
+      if (existing.ok) {
+        return {
+          ok: true,
+          message: `Using existing ${config.owner.trim()}/${config.repo.trim()}.`
+        };
+      }
+      if (existing.status !== 404) {
+        throw new Error(await formatGitHubError(existing));
+      }
+
       emit(remoteOptions, "config", "Creating GitHub repository.");
       const user = await githubApiJson<{ login?: string }>(fetchImpl, token, "/user", remoteOptions.signal);
       const owner = config.owner.trim();
@@ -346,11 +461,136 @@ export function createRemoteGitService(options: {
     }
   }
 
+  async function inspectToken(
+    getToken: () => string | Promise<string>,
+    remoteOptions: RemoteGitOptions = {}
+  ): Promise<RemoteGitDiscoveryResult<RemoteGitConnectionInfo>> {
+    const token = (await getToken()).trim();
+    if (!token) {
+      return { ok: false, message: "Add a GitHub token before connecting." };
+    }
+
+    try {
+      const user = await githubApiJson<GitHubUserResponse>(fetchImpl, token, "/user", remoteOptions.signal);
+      if (!user.login) {
+        return { ok: false, message: "GitHub token is valid, but the account login was unavailable." };
+      }
+      const orgs = await githubApiJson<GitHubOrgResponse[]>(
+        fetchImpl,
+        token,
+        "/user/orgs?per_page=100",
+        remoteOptions.signal
+      );
+      const owners = [
+        { login: user.login, type: "user" as const },
+        ...orgs
+          .map((org) => org.login?.trim())
+          .filter((login): login is string => Boolean(login))
+          .map((login) => ({ login, type: "org" as const }))
+      ];
+      return {
+        ok: true,
+        value: {
+          user: { login: user.login, type: "user" },
+          owners
+        },
+        message: `Connected as ${user.login}.`
+      };
+    } catch (error) {
+      return { ok: false, message: redactGitSecrets(formatUnknownError(error), [token]) };
+    }
+  }
+
+  async function listRepositories(
+    owner: string,
+    getToken: () => string | Promise<string>,
+    remoteOptions: RemoteGitOptions = {}
+  ): Promise<RemoteGitDiscoveryResult<RemoteGitRepositorySummary[]>> {
+    const token = (await getToken()).trim();
+    const normalizedOwner = owner.trim();
+    if (!token) {
+      return { ok: false, message: "Add a GitHub token before loading repositories." };
+    }
+    if (!normalizedOwner) {
+      return { ok: false, message: "Choose or enter an owner before loading repositories." };
+    }
+
+    try {
+      const repos = await githubApiJson<GitHubRepoResponse[]>(
+        fetchImpl,
+        token,
+        "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
+        remoteOptions.signal
+      );
+      const filteredRepos = repos
+        .filter((repo) => repo.owner?.login?.toLowerCase() === normalizedOwner.toLowerCase())
+        .map((repo) => ({
+          name: repo.name ?? "",
+          fullName: repo.full_name ?? `${repo.owner?.login ?? normalizedOwner}/${repo.name ?? ""}`,
+          owner: repo.owner?.login ?? normalizedOwner,
+          private: Boolean(repo.private),
+          defaultBranch: repo.default_branch ?? "main"
+        }))
+        .filter((repo) => repo.name)
+        .sort((left, right) => left.name.localeCompare(right.name));
+
+      return {
+        ok: true,
+        value: filteredRepos,
+        message: `Loaded ${filteredRepos.length} repositories for ${normalizedOwner}.`
+      };
+    } catch (error) {
+      return { ok: false, message: redactGitSecrets(formatUnknownError(error), [token]) };
+    }
+  }
+
+  async function listBranches(
+    config: Pick<RemoteGitConfig, "owner" | "repo">,
+    getToken: () => string | Promise<string>,
+    remoteOptions: RemoteGitOptions = {}
+  ): Promise<RemoteGitDiscoveryResult<RemoteGitBranchSummary[]>> {
+    const token = (await getToken()).trim();
+    const owner = config.owner.trim();
+    const repo = config.repo.trim();
+    if (!token) {
+      return { ok: false, message: "Add a GitHub token before loading branches." };
+    }
+    if (!owner || !repo) {
+      return { ok: false, message: "Choose or enter an owner and repo before loading branches." };
+    }
+
+    try {
+      const branches = await githubApiJson<GitHubBranchResponse[]>(
+        fetchImpl,
+        token,
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`,
+        remoteOptions.signal
+      );
+      const summaries = branches
+        .map((branch) => ({
+          name: branch.name ?? "",
+          sha: branch.commit?.sha ?? ""
+        }))
+        .filter((branch) => branch.name)
+        .sort((left, right) => left.name.localeCompare(right.name));
+      return {
+        ok: true,
+        value: summaries,
+        message: `Loaded ${summaries.length} branches for ${owner}/${repo}.`
+      };
+    } catch (error) {
+      return { ok: false, message: redactGitSecrets(formatUnknownError(error), [token]) };
+    }
+  }
+
   return {
     createRepository: createRemoteRepository,
     fetch: fetchRemote,
     pull: pullRemote,
     push: pushRemote,
+    inspectToken,
+    listRepositories,
+    listBranches,
     inspectUpstream,
     getRemoteUrl: (config: RemoteGitConfig) =>
       `https://github.com/${encodeURIComponent(config.owner.trim())}/${encodeURIComponent(config.repo.trim())}.git`
@@ -375,13 +615,14 @@ async function importCommitGraph(
     await importCommitGraph(fetchImpl, repoBackend, project, config, token, parent.sha, options);
   }
   await importTree(fetchImpl, repoBackend, project, config, token, commit.tree.sha, options.signal);
-  const written = await repoBackend.writeObject(project, "commit", encodeUtf8(buildCommitObject(commit)));
+  const commitObject = await buildMatchingCommitObject(commit);
+  const written = await repoBackend.writeObject(project, "commit", encodeUtf8(commitObject));
   if (!written.ok) {
     throw new Error(formatRepoError(written.error));
   }
   if (written.value !== commit.sha) {
     throw new Error(
-      `Remote commit ${commit.sha.slice(0, 7)} cannot be reconstructed from GitHub's commit metadata in browser mode.`
+      `Remote commit ${commit.sha.slice(0, 7)} cannot be reconstructed from GitHub's commit metadata in browser mode. This usually means the commit contains metadata that GitHub's Git Database API does not expose exactly, such as an unsupported signature, encoding header, or merge tag.`
     );
   }
 }
@@ -442,8 +683,9 @@ async function pushCommit(
   config: RemoteGitConfig,
   token: string,
   commit: RepoCommitDetails,
+  remoteCommitShas: Map<string, string>,
   signal?: AbortSignal
-): Promise<void> {
+): Promise<string> {
   const treeEntries = await repoBackend.listCommitTree(project, commit.sha);
   if (!treeEntries.ok) {
     throw new Error(formatRepoError(treeEntries.error));
@@ -485,7 +727,7 @@ async function pushCommit(
     body: JSON.stringify({
       message: commit.message,
       tree: commit.treeSha,
-      parents: commit.parentShas,
+      parents: commit.parentShas.map((sha) => remoteCommitShas.get(sha) ?? sha),
       author: {
         name: commit.authorName,
         email: commit.authorEmail,
@@ -498,9 +740,7 @@ async function pushCommit(
       }
     })
   });
-  if (createdCommit.sha !== commit.sha) {
-    throw new Error(`GitHub returned ${createdCommit.sha.slice(0, 7)} for local commit ${commit.sha.slice(0, 7)}.`);
-  }
+  return createdCommit.sha;
 }
 
 async function collectCommitsToPush(
@@ -678,12 +918,49 @@ async function formatGitHubError(response: Response): Promise<string> {
   return `GitHub remote operation failed (${response.status}).`;
 }
 
-function buildCommitObject(commit: GitHubCommitResponse): string {
+async function buildMatchingCommitObject(commit: GitHubCommitResponse): Promise<string> {
   const signedCommit = buildSignedCommitObject(commit);
   if (signedCommit) {
-    return signedCommit;
+    const signedSha = await gitObjectSha("commit", signedCommit);
+    if (signedSha === commit.sha) {
+      return signedCommit;
+    }
   }
 
+  for (const commitObject of buildUnsignedCommitObjectCandidates(commit)) {
+    const sha = await gitObjectSha("commit", commitObject);
+    if (sha === commit.sha) {
+      return commitObject;
+    }
+  }
+
+  return buildUnsignedCommitObject(commit);
+}
+
+function* buildUnsignedCommitObjectCandidates(commit: GitHubCommitResponse): Generator<string> {
+  const seen = new Set<string>();
+  for (const commitObject of buildUnsignedCommitObjectCandidateSequence(commit)) {
+    if (!seen.has(commitObject)) {
+      seen.add(commitObject);
+      yield commitObject;
+    }
+  }
+}
+
+function* buildUnsignedCommitObjectCandidateSequence(commit: GitHubCommitResponse): Generator<string> {
+  yield buildUnsignedCommitObject(commit);
+  yield* buildSameTimezoneCommitObjects(commit);
+  yield* buildTimezonePairCommitObjects(commit);
+}
+
+function buildUnsignedCommitObject(commit: GitHubCommitResponse): string {
+  return buildUnsignedCommitObjectWithMessage(commit, ensureTrailingNewline(commit.message));
+}
+
+function buildUnsignedCommitObjectWithMessage(
+  commit: GitHubCommitResponse,
+  message: string
+): string {
   const headers = [
     `tree ${commit.tree.sha}`,
     ...commit.parents.map((parent) => `parent ${parent.sha}`),
@@ -691,7 +968,47 @@ function buildCommitObject(commit: GitHubCommitResponse): string {
     `committer ${formatSignature(commit.committer ?? commit.author)}`,
     ""
   ];
-  return `${headers.join("\n")}\n${ensureTrailingNewline(commit.message)}`;
+  return `${headers.join("\n")}\n${message}`;
+}
+
+function buildUnsignedCommitObjectWithTimezones(
+  commit: GitHubCommitResponse,
+  authorTimezone: string,
+  committerTimezone: string,
+  message = ensureTrailingNewline(commit.message)
+): string {
+  const headers = [
+    `tree ${commit.tree.sha}`,
+    ...commit.parents.map((parent) => `parent ${parent.sha}`),
+    `author ${formatSignature(commit.author, authorTimezone)}`,
+    `committer ${formatSignature(commit.committer ?? commit.author, committerTimezone)}`,
+    ""
+  ];
+  return `${headers.join("\n")}\n${message}`;
+}
+
+function* buildSameTimezoneCommitObjects(commit: GitHubCommitResponse): Generator<string> {
+  for (const timezone of getGitTimezoneCandidates()) {
+    for (const message of getCommitMessageCandidates(commit.message)) {
+      yield buildUnsignedCommitObjectWithTimezones(commit, timezone, timezone, message);
+    }
+  }
+}
+
+function* buildTimezonePairCommitObjects(commit: GitHubCommitResponse): Generator<string> {
+  const candidates = getGitTimezoneCandidates();
+  for (const authorTimezone of candidates) {
+    for (const committerTimezone of candidates) {
+      for (const message of getCommitMessageCandidates(commit.message)) {
+        yield buildUnsignedCommitObjectWithTimezones(commit, authorTimezone, committerTimezone, message);
+      }
+    }
+  }
+}
+
+function getCommitMessageCandidates(message: string): string[] {
+  const candidates = [ensureTrailingNewline(message), message];
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
 }
 
 function buildSignedCommitObject(commit: GitHubCommitResponse): string | null {
@@ -716,9 +1033,9 @@ function buildSignedCommitObject(commit: GitHubCommitResponse): string | null {
   return `${headers}\n${signatureHeader}\n\n${message}`;
 }
 
-function formatSignature(signature: GitHubSignature | null): string {
+function formatSignature(signature: GitHubSignature | null, timezoneOverride?: string): string {
   const date = parseGitDate(signature?.date ?? new Date().toISOString());
-  return `${signature?.name ?? "Unknown"} <${signature?.email ?? "unknown@example.invalid"}> ${date.timestamp} ${date.timezone}`;
+  return `${signature?.name ?? "Unknown"} <${signature?.email ?? "unknown@example.invalid"}> ${date.timestamp} ${timezoneOverride ?? date.timezone}`;
 }
 
 function parseGitDate(dateText: string): { timestamp: number; timezone: string } {
@@ -751,6 +1068,54 @@ function parseTimezoneOffset(timezone: string): number {
   }
   const minutes = Number(match[2]) * 60 + Number(match[3]);
   return match[1] === "-" ? -minutes : minutes;
+}
+
+let gitTimezoneCandidates: string[] | null = null;
+
+function getGitTimezoneCandidates(): string[] {
+  if (gitTimezoneCandidates) {
+    return gitTimezoneCandidates;
+  }
+
+  const timezones = ["+0000"];
+  for (let minutes = -12 * 60; minutes <= 14 * 60; minutes += 15) {
+    const sign = minutes < 0 ? "-" : "+";
+    const absolute = Math.abs(minutes);
+    const timezone = `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}${String(absolute % 60).padStart(2, "0")}`;
+    if (!timezones.includes(timezone)) {
+      timezones.push(timezone);
+    }
+  }
+
+  gitTimezoneCandidates = timezones;
+  return timezones;
+}
+
+async function gitObjectSha(type: "commit" | "tree" | "blob", content: string): Promise<string> {
+  const body = encodeUtf8(content);
+  const payload = concatBytes([encodeUtf8(`${type} ${body.byteLength}\0`), body]);
+  return sha1Hex(payload);
+}
+
+async function sha1Hex(bytes: Uint8Array): Promise<string> {
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  const digest = await crypto.subtle.digest("SHA-1", buffer);
+  return bytesToHex(new Uint8Array(digest));
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function validateRemoteConfig(config: RemoteGitConfig, token: string): RemoteGitResult {

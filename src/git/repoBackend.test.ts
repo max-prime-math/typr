@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { createDefaultSnapshot } from "../app/appState";
 import {
   createProjectStorageFromSnapshot,
+  createEmptyProjectRepository,
   getSelectedProjectRepository,
+  readProjectFileBytes,
   writeProjectFile
 } from "../project/projectState";
 import { createMemoryGitFileStorage, createRepoBackend } from "./repoBackend";
@@ -14,6 +16,24 @@ function createProject() {
     throw new Error("Expected default project.");
   }
   return project;
+}
+
+async function initAndCommitDefault(project = createProject()) {
+  const backend = createRepoBackend(createMemoryGitFileStorage());
+  const init = await backend.initRepository(project);
+  expect(init.ok).toBe(true);
+  if (!init.ok) {
+    throw new Error("init failed");
+  }
+  const initializedProject = init.value;
+  const stage = await backend.stagePaths(initializedProject, ["."]);
+  expect(stage.ok).toBe(true);
+  const commit = await backend.commit(initializedProject, { message: "initial commit" });
+  expect(commit.ok).toBe(true);
+  if (!commit.ok) {
+    throw new Error("commit failed");
+  }
+  return { backend, project: initializedProject, commit: commit.value };
 }
 
 describe("repoBackend", () => {
@@ -70,5 +90,211 @@ describe("repoBackend", () => {
     const switched = await backend.switchBranch(project, "draft");
     expect(switched.ok).toBe(false);
     expect(!switched.ok && switched.error.code).toBe("unsafe-worktree");
+  });
+
+  it("keeps git objects and refs isolated per Typr project", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    let firstProject = createEmptyProjectRepository({
+      displayName: "First",
+      defaultContent: "first\n"
+    });
+    let secondProject = createEmptyProjectRepository({
+      displayName: "Second",
+      defaultContent: "second\n"
+    });
+
+    const firstInit = await backend.initRepository(firstProject);
+    const secondInit = await backend.initRepository(secondProject);
+    expect(firstInit.ok).toBe(true);
+    expect(secondInit.ok).toBe(true);
+    if (!firstInit.ok || !secondInit.ok) return;
+    firstProject = firstInit.value;
+    secondProject = secondInit.value;
+
+    await backend.stagePaths(firstProject, ["."]);
+    await backend.stagePaths(secondProject, ["."]);
+    const firstCommit = await backend.commit(firstProject, { message: "first commit" });
+    const secondCommit = await backend.commit(secondProject, { message: "second commit" });
+
+    const firstLog = await backend.log(firstProject);
+    const secondLog = await backend.log(secondProject);
+    expect(firstCommit.ok && secondCommit.ok).toBe(true);
+    expect(firstLog.ok && firstLog.value.map((commit) => commit.message)).toEqual(["first commit"]);
+    expect(secondLog.ok && secondLog.value.map((commit) => commit.message)).toEqual(["second commit"]);
+  });
+
+  it("preserves staged changes after backend reload", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    let project = createProject();
+    const init = await backend.initRepository(project);
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+    project = init.value;
+    await backend.stagePaths(project, ["."]);
+
+    const reloadedBackend = createRepoBackend(gitStorage);
+    const status = await reloadedBackend.status(project);
+    expect(status.ok).toBe(true);
+    expect(status.ok && status.value.entries.some((entry) => entry.staged === "added")).toBe(true);
+  });
+
+  it("recovers repository init when HEAD exists but index is missing", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    const project = createProject();
+    await gitStorage.writeFile(project.id, "HEAD", new TextEncoder().encode("ref: refs/heads/main\n"));
+
+    const init = await backend.initRepository(project);
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+    const status = await backend.status(init.value);
+    expect(status.ok).toBe(true);
+    expect(status.ok && status.value.branch).toBe("main");
+  });
+
+  it("switches branches by replacing the selected project worktree only", async () => {
+    const { backend, project: initialProject } = await initAndCommitDefault();
+    await backend.createBranch(initialProject, "draft");
+    const draftSwitch = await backend.switchBranch(initialProject, "draft");
+    expect(draftSwitch.ok).toBe(true);
+    if (!draftSwitch.ok) return;
+    let draftProject = writeProjectFile(draftSwitch.value.project, "main.typ", "draft\n");
+    await backend.stagePaths(draftProject, ["."]);
+    await backend.commit(draftProject, { message: "draft edit" });
+
+    const mainSwitch = await backend.switchBranch(draftProject, "main");
+    expect(mainSwitch.ok).toBe(true);
+    expect(mainSwitch.ok && new TextDecoder().decode(readProjectFileBytes(mainSwitch.value.project, "main.typ") ?? new Uint8Array())).not.toBe("draft\n");
+  });
+
+  it("persists a diverged pull merge stop and clears it with abort", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    let project = createProject();
+    const init = await backend.initRepository(project);
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+    project = init.value;
+    await backend.stagePaths(project, ["."]);
+    const baseCommit = await backend.commit(project, { message: "base" });
+    expect(baseCommit.ok).toBe(true);
+    if (!baseCommit.ok) return;
+
+    await backend.createBranch(project, "remote-main");
+    const remoteSwitch = await backend.switchBranch(project, "remote-main");
+    expect(remoteSwitch.ok).toBe(true);
+    if (!remoteSwitch.ok) return;
+    project = writeProjectFile(remoteSwitch.value.project, "main.typ", "remote\n");
+    await backend.stagePaths(project, ["."]);
+    const remoteCommit = await backend.commit(project, { message: "remote" });
+    expect(remoteCommit.ok).toBe(true);
+    if (!remoteCommit.ok) return;
+
+    const mainSwitch = await backend.switchBranch(project, "main");
+    expect(mainSwitch.ok).toBe(true);
+    if (!mainSwitch.ok) return;
+    project = writeProjectFile(mainSwitch.value.project, "main.typ", "local\n");
+    await backend.stagePaths(project, ["."]);
+    const localCommit = await backend.commit(project, { message: "local" });
+    expect(localCommit.ok).toBe(true);
+    if (!localCommit.ok) return;
+
+    const mergeState = await backend.beginDivergedPull(project, {
+      branch: "main",
+      remoteName: "origin",
+      remoteBranch: "main",
+      localSha: localCommit.value.sha,
+      remoteSha: remoteCommit.value.sha
+    });
+    expect(mergeState.ok).toBe(true);
+    expect(mergeState.ok && mergeState.value.baseSha).toBe(baseCommit.value.sha);
+    expect(mergeState.ok && mergeState.value.conflictCount).toBe(1);
+
+    const reloadedBackend = createRepoBackend(gitStorage);
+    const reloadedStatus = await reloadedBackend.status(project);
+    expect(reloadedStatus.ok && reloadedStatus.value.mergeState?.remoteSha).toBe(remoteCommit.value.sha);
+
+    const abort = await reloadedBackend.abortMerge(project);
+    expect(abort.ok).toBe(true);
+    expect(abort.ok && abort.value.mergeState).toBe(null);
+  });
+
+  it("continues a diverged pull with explicit conflict resolutions", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    let project = createProject();
+    const init = await backend.initRepository(project);
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+    project = init.value;
+    await backend.stagePaths(project, ["."]);
+    const baseCommit = await backend.commit(project, { message: "base" });
+    expect(baseCommit.ok).toBe(true);
+    if (!baseCommit.ok) return;
+
+    await backend.createBranch(project, "remote-main");
+    const remoteSwitch = await backend.switchBranch(project, "remote-main");
+    expect(remoteSwitch.ok).toBe(true);
+    if (!remoteSwitch.ok) return;
+    project = writeProjectFile(remoteSwitch.value.project, "main.typ", "remote\n");
+    await backend.stagePaths(project, ["."]);
+    const remoteCommit = await backend.commit(project, { message: "remote" });
+    expect(remoteCommit.ok).toBe(true);
+    if (!remoteCommit.ok) return;
+
+    const mainSwitch = await backend.switchBranch(project, "main");
+    expect(mainSwitch.ok).toBe(true);
+    if (!mainSwitch.ok) return;
+    project = writeProjectFile(mainSwitch.value.project, "main.typ", "local\n");
+    await backend.stagePaths(project, ["."]);
+    const localCommit = await backend.commit(project, { message: "local" });
+    expect(localCommit.ok).toBe(true);
+    if (!localCommit.ok) return;
+
+    const mergeState = await backend.beginDivergedPull(project, {
+      branch: "main",
+      remoteName: "origin",
+      remoteBranch: "main",
+      localSha: localCommit.value.sha,
+      remoteSha: remoteCommit.value.sha
+    });
+    expect(mergeState.ok).toBe(true);
+    if (!mergeState.ok) return;
+
+    const unresolved = await backend.continueMerge(project, {
+      message: "merge remote",
+      resolutions: []
+    });
+    expect(unresolved.ok).toBe(false);
+    expect(!unresolved.ok && unresolved.error.code).toBe("merge-conflict");
+
+    const continued = await backend.continueMerge(project, {
+      message: "merge remote",
+      resolutions: [{ path: "main.typ", content: "resolved\n" }]
+    });
+    expect(continued.ok).toBe(true);
+    if (!continued.ok) return;
+
+    expect(continued.value.commit.parentShas).toEqual([
+      localCommit.value.sha,
+      remoteCommit.value.sha
+    ]);
+    expect(
+      new TextDecoder().decode(readProjectFileBytes(continued.value.project, "main.typ") ?? new Uint8Array())
+    ).toBe("resolved\n");
+    expect(continued.value.status.mergeState).toBe(null);
+  });
+
+  it("blocks .git internals and path traversal in repo operations", async () => {
+    const { backend, project } = await initAndCommitDefault();
+    const gitPath = await backend.stagePaths(project, [".git/config"]);
+    const traversal = await backend.stagePaths(project, ["../escape.typ"]);
+
+    expect(gitPath.ok).toBe(false);
+    expect(!gitPath.ok && gitPath.error.code).toBe("invalid-path");
+    expect(traversal.ok).toBe(false);
+    expect(!traversal.ok && traversal.error.code).toBe("invalid-path");
   });
 });

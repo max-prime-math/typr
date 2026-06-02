@@ -1,4 +1,3 @@
-import type { SyncSnapshot } from "../github/conflict";
 import type { TerminalBackendId } from "../terminal/types";
 
 export const GIT_STATE_VERSION = 2;
@@ -24,14 +23,13 @@ export interface GitManagedProject {
 export interface GitWorkspaceState {
   version: number;
   selectedProjectId: string | null;
+  selectedProjectIdsByTyprProjectId: Record<string, string | null>;
   projects: GitManagedProject[];
-  syncSnapshots: Record<string, SyncSnapshot>;
 }
 
 export function createEmptyGitManagedProject(options: {
   projectId: string;
   projectName: string;
-  repositoryPath?: string;
 }): GitManagedProject {
   return {
     id: `git-project-${crypto.randomUUID()}`,
@@ -43,7 +41,7 @@ export function createEmptyGitManagedProject(options: {
     branch: "main",
     remoteName: "origin",
     workspacePath: "",
-    repositoryPath: options.repositoryPath ?? "",
+    repositoryPath: "",
     ignorePatterns: [],
     commitMessageTemplate: `Sync ${options.projectName} from typr`,
     draftCommitMessage: "",
@@ -55,21 +53,22 @@ export function createEmptyGitManagedProject(options: {
 export function createInitialGitWorkspaceState(options: {
   projectId: string;
   projectName: string;
-  repositoryPath?: string;
 }): GitWorkspaceState {
   const project = createEmptyGitManagedProject(options);
 
   return {
     version: GIT_STATE_VERSION,
     selectedProjectId: project.id,
-    projects: [project],
-    syncSnapshots: {}
+    selectedProjectIdsByTyprProjectId: {
+      [options.projectId]: project.id
+    },
+    projects: [project]
   };
 }
 
 export function normalizeGitWorkspaceState(
   state: GitWorkspaceState | null | undefined,
-  options: { projectId: string; projectName: string; repositoryPath?: string }
+  options: { projectId: string; projectName: string }
 ): GitWorkspaceState {
   if (!state || !Array.isArray(state.projects) || state.projects.length === 0) {
     return createInitialGitWorkspaceState(options);
@@ -78,16 +77,35 @@ export function normalizeGitWorkspaceState(
   const projects = state.projects.map((project) =>
     normalizeManagedProject(project, options.projectId, options.projectName)
   );
-  const selectedProjectId = projects.some((project) => project.id === state.selectedProjectId)
+  const projectsForCurrentTyprProject = projects.filter(
+    (project) => project.projectId === options.projectId
+  );
+  const storedSelectionMap =
+    "selectedProjectIdsByTyprProjectId" in state &&
+    state.selectedProjectIdsByTyprProjectId &&
+    typeof state.selectedProjectIdsByTyprProjectId === "object"
+      ? state.selectedProjectIdsByTyprProjectId
+      : {};
+  const selectedProjectIdsByTyprProjectId = {
+    ...storedSelectionMap
+  };
+  const fallbackSelectedProjectId = projects.some((project) => project.id === state.selectedProjectId)
     ? state.selectedProjectId
-    : projects[0]?.id ?? null;
+    : null;
+  const selectedForCurrentProject =
+    projectsForCurrentTyprProject.find(
+      (project) => project.id === selectedProjectIdsByTyprProjectId[options.projectId]
+    )?.id ??
+    projectsForCurrentTyprProject.find((project) => project.id === fallbackSelectedProjectId)?.id ??
+    projectsForCurrentTyprProject[0]?.id ??
+    null;
+  selectedProjectIdsByTyprProjectId[options.projectId] = selectedForCurrentProject;
 
   return {
     version: GIT_STATE_VERSION,
-    selectedProjectId,
-    projects,
-    syncSnapshots:
-      state.syncSnapshots && typeof state.syncSnapshots === "object" ? state.syncSnapshots : {}
+    selectedProjectId: selectedForCurrentProject,
+    selectedProjectIdsByTyprProjectId,
+    projects
   };
 }
 

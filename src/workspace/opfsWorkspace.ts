@@ -75,15 +75,33 @@ export async function readWorkspaceFileFromOpfs(
   return new Uint8Array(await file.arrayBuffer());
 }
 
+export async function removeProjectFromOpfs(projectId: string): Promise<void> {
+  if (!isOpfsAvailable()) {
+    return;
+  }
+
+  try {
+    const projectsRoot = await getProjectsRootHandle(false);
+    await projectsRoot.removeEntry(projectId, { recursive: true });
+  } catch {
+    // OPFS mirrors are best-effort caches; missing browser handles or absent
+    // project directories should not block IndexedDB-backed project deletion.
+  }
+}
+
 async function getWorkspaceRootHandle(
   projectId: string,
   create: boolean
 ): Promise<FileSystemDirectoryHandle> {
-  const opfsRoot = await navigator.storage.getDirectory();
-  const workspaceRoot = await opfsRoot.getDirectoryHandle(WORKSPACE_ROOT_DIRECTORY, { create });
-  const projectsRoot = await workspaceRoot.getDirectoryHandle("projects", { create });
+  const projectsRoot = await getProjectsRootHandle(create);
   const projectRoot = await projectsRoot.getDirectoryHandle(projectId, { create });
   return projectRoot.getDirectoryHandle("worktree", { create });
+}
+
+async function getProjectsRootHandle(create: boolean): Promise<FileSystemDirectoryHandle> {
+  const opfsRoot = await navigator.storage.getDirectory();
+  const workspaceRoot = await opfsRoot.getDirectoryHandle(WORKSPACE_ROOT_DIRECTORY, { create });
+  return workspaceRoot.getDirectoryHandle("projects", { create });
 }
 
 async function ensureDirectory(

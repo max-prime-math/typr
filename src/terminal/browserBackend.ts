@@ -39,7 +39,7 @@ export function createBrowserBackend(runtime: TerminalProjectRuntime): TerminalB
             "Search/text: grep rg find sort uniq sed",
             "Typst: typst compile|watch|query|fonts|--version",
             "Project helpers: build clean export sync doctor help",
-            "Git: git status add reset commit branch switch log remote fetch push pull sync"
+            "Git: git status add reset commit branch switch log remote fetch push pull sync merge --abort merge --continue"
           ].join("\n") + "\n",
           stderr: "",
           exitCode: 0,

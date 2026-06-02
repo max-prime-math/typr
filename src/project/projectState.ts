@@ -53,7 +53,7 @@ export interface ProjectFilesystemTree {
 
 export interface ProjectRepoMetadata {
   // Tokens and credentials remain in the existing sync configuration paths.
-  backend: "browser-placeholder" | "browser-git";
+  backend: "browser-git";
   status: "not-initialized" | "ready" | "needs-recovery";
   headRef: string | null;
   defaultBranch: string | null;
@@ -298,7 +298,7 @@ export function createEmptyProjectRepository(options: {
       updatedAt: now
     },
     git: {
-      backend: "browser-placeholder",
+      backend: "browser-git",
       status: "not-initialized",
       headRef: null,
       defaultBranch: null,
@@ -345,6 +345,30 @@ export function addProjectRepository(
       ...storage.projects.filter((existingProject) => existingProject.id !== project.id),
       project
     ]
+  };
+}
+
+export function removeProjectRepository(
+  storage: TyprProjectStorageState,
+  projectId: string,
+  fallbackProject?: TyprProjectRepository
+): TyprProjectStorageState {
+  const remainingProjects = storage.projects.filter((project) => project.id !== projectId);
+  const projects =
+    remainingProjects.length > 0
+      ? remainingProjects
+      : fallbackProject
+        ? [fallbackProject]
+        : [];
+  const selectedProjectId =
+    projects.find((project) => project.id === storage.selectedProjectId)?.id ??
+    projects[0]?.id ??
+    null;
+
+  return {
+    ...storage,
+    selectedProjectId,
+    projects
   };
 }
 
@@ -663,7 +687,7 @@ function createRepositoryFromLegacyProject(
       updatedAt: snapshot.project.updatedAt ?? now
     },
     git: existingProject?.git ?? {
-      backend: "browser-placeholder",
+      backend: "browser-git",
       status: "not-initialized",
       headRef: null,
       defaultBranch: null,
@@ -736,7 +760,7 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
 function normalizeRepoMetadata(
   metadata: Partial<ProjectRepoMetadata> | null | undefined
 ): ProjectRepoMetadata {
-  const backend = metadata?.backend === "browser-git" ? "browser-git" : "browser-placeholder";
+  const backend = "browser-git";
   const status =
     metadata?.status === "ready" || metadata?.status === "needs-recovery"
       ? metadata.status

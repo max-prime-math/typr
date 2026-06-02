@@ -77,6 +77,7 @@ import {
   matchesKeybinding,
   type KeybindingCommandId
 } from "./keybindings";
+import { InlinePaneExpandControls } from "./InlinePaneExpandControls";
 import {
   createTypstCompiler,
   type CompilerStatus,
@@ -146,6 +147,7 @@ import {
   loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
+  deleteProjectGitFiles,
   saveGitWorkspace,
   saveGitHubConfig,
   saveProjectStorage,
@@ -162,6 +164,8 @@ import {
   listProjectEntries,
   normalizeProjectStorageState,
   projectRepositoryToLegacyProject,
+  readProjectFileBytes,
+  removeProjectRepository,
   syncProjectStorageFromSnapshot,
   updateSelectedProjectRepository,
   writeProjectFile,
@@ -182,6 +186,7 @@ import {
   formatRepoError,
   type RepoBranch,
   type RepoCommit,
+  type RepoMergeResolution,
   type RepoStatus,
   type RepoStatusEntry
 } from "../git/repoBackend";
@@ -189,6 +194,9 @@ import { loadGitCredentialMap, redactGitSecrets, saveGitCredentialMap } from "..
 import {
   createRemoteGitService,
   type RemoteGitConfig,
+  type RemoteGitAccount,
+  type RemoteGitBranchSummary,
+  type RemoteGitRepositorySummary,
   type UpstreamTracking
 } from "../git/remoteService";
 import { useTheme } from "../theme/ThemeProvider";
@@ -202,6 +210,7 @@ import {
 } from "../snippets/snippets";
 import { PreviewZoomControls } from "../preview/PreviewPane";
 import {
+  removeProjectFromOpfs,
   syncProjectToOpfs,
   isOpfsAvailable,
   readWorkspaceFileFromOpfs
@@ -241,16 +250,6 @@ const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
 const APP_VERSION = packageJson.version;
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
-
-function getDefaultRepositoryPath(projectName: string): string {
-  return (
-    projectName
-      .trim()
-      .replace(/[/\\?%*:|"<>]/g, "-")
-      .replace(/\s+/g, " ")
-      .slice(0, 120) || "project"
-  );
-}
 
 function isApplePlatform(): boolean {
   if (typeof navigator === "undefined") {
@@ -319,7 +318,7 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "outline", label: "Outline" },
   { id: "diagram", label: "Diagram" },
   { id: "graph", label: "Graph" },
-  { id: "sync", label: "Sync" },
+  { id: "sync", label: "Git" },
   { id: "debug", label: "Debug" }
 ];
 
@@ -349,6 +348,8 @@ type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
 type DiagramPaneMode = "sidebar" | "source" | "preview";
 type GraphPaneMode = "sidebar" | "source" | "preview";
+type GitMergePaneMode = "sidebar" | "source" | "preview";
+type MergeVersionRole = "base" | "local" | "remote";
 type SettingsTab = "git" | "themes" | "keybindings" | "snippets" | "packages" | "graphs";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
@@ -364,6 +365,37 @@ interface SyncFeedback {
 interface GitFileStatus {
   path: string;
   state: "in-sync" | "local-only" | "remote-only" | "diverged";
+}
+
+type GitHubRepoMode = "select" | "create" | "manual";
+
+interface GitHubDiscoveryState {
+  status: "idle" | "loading" | "connected" | "error";
+  message: string;
+  accountLogin: string | null;
+  owners: RemoteGitAccount[];
+  repos: RemoteGitRepositorySummary[];
+  branches: RemoteGitBranchSummary[];
+  repoMode: GitHubRepoMode;
+  isLoadingRepos: boolean;
+  isLoadingBranches: boolean;
+}
+
+type MergeResolutionDraft =
+  | { kind: "oid"; oid: string | null; label: string }
+  | { kind: "content"; content: string };
+
+interface MergeVersionPreview {
+  oid: string | null;
+  label: string;
+  text: string;
+}
+
+interface MergeFilePreview {
+  path: string;
+  base: MergeVersionPreview;
+  local: MergeVersionPreview;
+  remote: MergeVersionPreview;
 }
 
 interface StoredPanelLayout {
@@ -547,6 +579,57 @@ function hasRepoChanges(status: RepoStatus | null): boolean {
   return Boolean(status?.entries.length);
 }
 
+function hasActiveMergeStop(status: RepoStatus | null): boolean {
+  return Boolean(status?.mergeState);
+}
+
+function getMergeDiffLines(
+  versionText: string,
+  baseText: string,
+  peerText: string
+): Array<{ number: number; text: string; tone: "same" | "changed" | "missing" }> {
+  const versionLines = versionText.split("\n");
+  const baseLines = baseText.split("\n");
+  const peerLines = peerText.split("\n");
+  const lineCount = Math.max(versionLines.length, baseLines.length, peerLines.length);
+
+  return Array.from({ length: lineCount }, (_, index) => {
+    const text = versionLines[index] ?? "";
+    const differsFromBase = versionLines[index] !== baseLines[index];
+    const differsFromPeer = versionLines[index] !== peerLines[index];
+    const missing = index >= versionLines.length;
+    return {
+      number: index + 1,
+      text: missing ? "" : text,
+      tone: missing ? "missing" : differsFromBase || differsFromPeer ? "changed" : "same"
+    };
+  });
+}
+
+function getFirstChangedMergeLineNumber(baseText: string, localText: string, remoteText: string): number {
+  const baseLines = baseText.split("\n");
+  const localLines = localText.split("\n");
+  const remoteLines = remoteText.split("\n");
+  const lineCount = Math.max(baseLines.length, localLines.length, remoteLines.length);
+
+  for (let index = 0; index < lineCount; index += 1) {
+    if (baseLines[index] !== localLines[index] || baseLines[index] !== remoteLines[index]) {
+      return index + 1;
+    }
+  }
+
+  return 1;
+}
+
+function scrollMergeBodyToLine(body: HTMLDivElement, lineNumber: number) {
+  const line = body.querySelector<HTMLElement>(`[data-merge-line="${lineNumber}"]`);
+  if (!line) {
+    return;
+  }
+
+  body.scrollTop = Math.max(0, line.offsetTop - body.offsetTop);
+}
+
 function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
   const assets = new Map<string, CompileAssetFile>();
 
@@ -606,6 +689,13 @@ export function App() {
   const diagramAssetsRef = useRef<CompileAssetFile[]>([]);
   const graphAssetsRevisionRef = useRef("");
   const graphAssetsRef = useRef<CompileAssetFile[]>([]);
+  const gitStatusRequestRef = useRef(0);
+  const mergeVersionBodyRefs = useRef<Record<MergeVersionRole, HTMLDivElement | null>>({
+    base: null,
+    local: null,
+    remote: null
+  });
+  const isSyncingMergeScrollRef = useRef(false);
   const themeRef = useRef<ThemeDefinition | null>(null);
   const compileResultRef = useRef<CompileResult | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
@@ -646,6 +736,7 @@ export function App() {
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
   const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("sidebar");
   const [graphPaneMode, setGraphPaneMode] = useState<GraphPaneMode>("sidebar");
+  const [gitMergePaneMode, setGitMergePaneMode] = useState<GitMergePaneMode>("sidebar");
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -794,8 +885,8 @@ export function App() {
   const [gitWorkspace, setGitWorkspace] = useState<GitWorkspaceState>({
     version: 1,
     selectedProjectId: null,
-    projects: [],
-    syncSnapshots: {}
+    selectedProjectIdsByTyprProjectId: {},
+    projects: []
   });
   const [isHydrated, setIsHydrated] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
@@ -814,6 +905,17 @@ export function App() {
     text: "Documents stay on this device. Pull, push, and sync use the local Git repo when you are online."
   });
   const [gitCredentials, setGitCredentials] = useState<Record<string, string>>({});
+  const [gitHubDiscovery, setGitHubDiscovery] = useState<GitHubDiscoveryState>({
+    status: "idle",
+    message: "",
+    accountLogin: null,
+    owners: [],
+    repos: [],
+    branches: [],
+    repoMode: "select",
+    isLoadingRepos: false,
+    isLoadingBranches: false
+  });
   const [upstreamTracking, setUpstreamTracking] = useState<UpstreamTracking | null>(null);
   const [createGitHubRepoPrivate, setCreateGitHubRepoPrivate] = useState(true);
   const [gitCommitHistory, setGitCommitHistory] = useState<RepoCommit[]>([]);
@@ -827,6 +929,11 @@ export function App() {
   const [localRepoStatus, setLocalRepoStatus] = useState<RepoStatus | null>(null);
   const [localRepoCommits, setLocalRepoCommits] = useState<RepoCommit[]>([]);
   const [localRepoBranches, setLocalRepoBranches] = useState<RepoBranch[]>([]);
+  const [selectedMergePath, setSelectedMergePath] = useState<string | null>(null);
+  const [mergeFilePreview, setMergeFilePreview] = useState<MergeFilePreview | null>(null);
+  const [isMergeFilePreviewLoading, setIsMergeFilePreviewLoading] = useState(false);
+  const [mergeResolutionDrafts, setMergeResolutionDrafts] = useState<Record<string, MergeResolutionDraft>>({});
+  const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [gitRefreshToken, setGitRefreshToken] = useState(0);
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
@@ -938,14 +1045,34 @@ export function App() {
   const activeDocument = getActiveDocument(snapshot.project);
   const activeDocumentTextContent =
     typeof activeDocument.content === "string" ? activeDocument.content : "";
-  const defaultRepositoryPath = useMemo(
-    () => getDefaultRepositoryPath(snapshot.project.name),
-    [snapshot.project.name]
+  const gitProjectsForSelectedTyprProject = useMemo(
+    () =>
+      selectedProjectRepository
+        ? gitWorkspace.projects.filter((project) => project.projectId === selectedProjectRepository.id)
+        : [],
+    [gitWorkspace.projects, selectedProjectRepository]
   );
   const selectedGitProject = useMemo(
-    () =>
-      gitWorkspace.projects.find((project) => project.id === gitWorkspace.selectedProjectId) ?? null,
-    [gitWorkspace.projects, gitWorkspace.selectedProjectId]
+    () => {
+      if (!selectedProjectRepository) {
+        return null;
+      }
+
+      const scopedSelection =
+        gitWorkspace.selectedProjectIdsByTyprProjectId[selectedProjectRepository.id] ??
+        gitWorkspace.selectedProjectId;
+      return (
+        gitProjectsForSelectedTyprProject.find((project) => project.id === scopedSelection) ??
+        gitProjectsForSelectedTyprProject[0] ??
+        null
+      );
+    },
+    [
+      gitProjectsForSelectedTyprProject,
+      gitWorkspace.selectedProjectId,
+      gitWorkspace.selectedProjectIdsByTyprProjectId,
+      selectedProjectRepository
+    ]
   );
   const remoteConfig = useMemo<RemoteGitConfig>(
     () =>
@@ -965,6 +1092,54 @@ export function App() {
     [selectedGitProject]
   );
   const selectedGitToken = selectedGitProject ? (gitCredentials[selectedGitProject.id] ?? "") : "";
+  useEffect(() => {
+    if (!isHydrated || !selectedGitProject || !selectedProjectRepository) {
+      return;
+    }
+
+    const remoteName = selectedGitProject.remoteName.trim();
+    const hasRemoteAddress = selectedGitProject.owner.trim() && selectedGitProject.repo.trim();
+    if (!remoteName || !hasRemoteAddress) {
+      return;
+    }
+
+    const remoteUrl = remoteGitService.getRemoteUrl({
+      owner: selectedGitProject.owner,
+      repo: selectedGitProject.repo,
+      branch: selectedGitProject.branch,
+      remoteName
+    });
+    const existingRemote = selectedProjectRepository.git.remotes.find(
+      (remote) => remote.name === remoteName
+    );
+    if (existingRemote?.url === remoteUrl) {
+      return;
+    }
+
+    setProjectRepository((project) => {
+      if (project.id !== selectedProjectRepository.id) {
+        return project;
+      }
+
+      const nextRemotes = [
+        ...project.git.remotes.filter((remote) => remote.name !== remoteName),
+        { name: remoteName, url: remoteUrl }
+      ].sort((left, right) => left.name.localeCompare(right.name));
+      return {
+        ...project,
+        git: {
+          ...project.git,
+          remotes: nextRemotes
+        }
+      };
+    });
+  }, [
+    isHydrated,
+    remoteGitService,
+    selectedGitProject,
+    selectedProjectRepository,
+    setProjectRepository
+  ]);
   const gitWorkingTreeEntries = useMemo<RepoStatusEntry[]>(
     () =>
       selectedGitProject
@@ -978,6 +1153,33 @@ export function App() {
     () => (selectedGitProject ? localRepoCommits : []),
     [localRepoCommits, selectedGitProject]
   );
+  const activeMergeState = localRepoStatus?.mergeState ?? null;
+  const activeMergeKey = activeMergeState
+    ? `${activeMergeState.localSha}:${activeMergeState.remoteSha}:${activeMergeState.startedAt}`
+    : "";
+  const conflictMergeFiles = useMemo(
+    () => activeMergeState?.files.filter((file) => file.state === "conflict") ?? [],
+    [activeMergeState]
+  );
+  const unresolvedMergeConflictCount = conflictMergeFiles.filter(
+    (file) => !mergeResolutionDrafts[file.path]
+  ).length;
+  const selectedMergeDraft = selectedMergePath ? mergeResolutionDrafts[selectedMergePath] : null;
+  const mergeResolutionEditorValue = useMemo(() => {
+    if (!selectedMergeDraft || !mergeFilePreview) {
+      return "";
+    }
+    if (selectedMergeDraft.kind === "content") {
+      return selectedMergeDraft.content;
+    }
+
+    const matchingVersion = [
+      mergeFilePreview.base,
+      mergeFilePreview.local,
+      mergeFilePreview.remote
+    ].find((version) => version.oid === selectedMergeDraft.oid);
+    return matchingVersion?.oid ? matchingVersion.text : "";
+  }, [mergeFilePreview, selectedMergeDraft]);
   const updateGitManagedProject = useCallback(
     (projectId: string, updater: (project: GitManagedProject) => GitManagedProject) => {
       setGitWorkspace((currentWorkspace) => ({
@@ -994,12 +1196,99 @@ export function App() {
       setGitWorkspace((currentWorkspace) => ({
         ...currentWorkspace,
         projects: currentWorkspace.projects.map((project) =>
-          project.id === currentWorkspace.selectedProjectId ? updater(project) : project
+          project.id === selectedGitProject?.id
+            ? updater(project)
+            : project
         )
       }));
     },
-    []
+    [selectedGitProject?.id]
   );
+  const selectGitManagedProject = useCallback(
+    (managedProjectId: string | null) => {
+      const typrProjectId = selectedProjectRepository?.id;
+      setGitWorkspace((currentWorkspace) => ({
+        ...currentWorkspace,
+        selectedProjectId: managedProjectId,
+        selectedProjectIdsByTyprProjectId: typrProjectId
+          ? {
+              ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+              [typrProjectId]: managedProjectId
+            }
+          : currentWorkspace.selectedProjectIdsByTyprProjectId
+      }));
+    },
+    [selectedProjectRepository?.id]
+  );
+  useEffect(() => {
+    if (!activeMergeState) {
+      setSelectedMergePath(null);
+      setMergeFilePreview(null);
+      setMergeResolutionDrafts({});
+      setMergeCommitMessage("");
+      return;
+    }
+
+    const firstFile = activeMergeState.files.find((file) => file.state === "conflict") ??
+      activeMergeState.files[0] ??
+      null;
+    setSelectedMergePath(firstFile?.path ?? null);
+    setMergeFilePreview(null);
+    setMergeResolutionDrafts({});
+    setMergeCommitMessage(
+      `Merge ${activeMergeState.remoteName}/${activeMergeState.remoteBranch} into ${activeMergeState.branch}`
+    );
+  }, [activeMergeKey]);
+
+  useEffect(() => {
+    if (!activeMergeState || !selectedProjectRepository || !selectedMergePath) {
+      setMergeFilePreview(null);
+      setIsMergeFilePreviewLoading(false);
+      return;
+    }
+
+    const file = activeMergeState.files.find((entry) => entry.path === selectedMergePath);
+    if (!file) {
+      setMergeFilePreview(null);
+      return;
+    }
+
+    let cancelled = false;
+    const readVersion = async (oid: string | null, label: string): Promise<MergeVersionPreview> => {
+      if (!oid) {
+        return { oid: null, label, text: "(deleted)" };
+      }
+      const object = await repoBackend.readObject(selectedProjectRepository, oid);
+      if (!object.ok) {
+        return { oid, label, text: formatRepoError(object.error) };
+      }
+      if (object.value.type !== "blob") {
+        return { oid, label, text: `Unsupported ${object.value.type} object.` };
+      }
+      return {
+        oid,
+        label,
+        text: new TextDecoder().decode(object.value.content)
+      };
+    };
+
+    setIsMergeFilePreviewLoading(true);
+    void Promise.all([
+      readVersion(file.baseOid, "Base"),
+      readVersion(file.localOid, "Local"),
+      readVersion(file.remoteOid, "Remote")
+    ]).then(([base, local, remote]) => {
+      if (cancelled) {
+        return;
+      }
+      setMergeFilePreview({ path: file.path, base, local, remote });
+      setIsMergeFilePreviewLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMergeState, repoBackend, selectedMergePath, selectedProjectRepository]);
   const trashWorkspaceTree = useMemo(
     () => buildWorkspaceTree(buildTrashWorkspaceEntries(snapshot.project.trash ?? [])),
     [snapshot.project.trash]
@@ -1207,33 +1496,25 @@ export function App() {
       return;
     }
 
+    const fallbackTree = buildWorkspaceTree(
+      selectedProjectRepository
+        ? buildProjectWorkspaceEntriesFromProject(selectedProjectRepository)
+        : buildProjectWorkspaceEntries(snapshot)
+    );
+    setWorkspaceTree(fallbackTree);
+    setWorkspaceLoadError(null);
+
+    if (!isOpfsAvailable() || !selectedProjectRepository) {
+      return;
+    }
+
     let cancelled = false;
     const handle = window.setTimeout(() => {
-      const loadWorkspace = async () => {
+      const syncWorkspace = async () => {
         try {
-          if (isOpfsAvailable() && selectedProjectRepository) {
-            await syncProjectToOpfs(selectedProjectRepository);
-          }
-
-          const fallbackTree = buildWorkspaceTree(
-            selectedProjectRepository
-              ? buildProjectWorkspaceEntriesFromProject(selectedProjectRepository)
-              : buildProjectWorkspaceEntries(snapshot)
-          );
-
-          if (!cancelled) {
-            setWorkspaceTree(fallbackTree);
-            setWorkspaceLoadError(null);
-          }
+          await syncProjectToOpfs(selectedProjectRepository);
         } catch (error) {
-          const fallbackTree = buildWorkspaceTree(
-            selectedProjectRepository
-              ? buildProjectWorkspaceEntriesFromProject(selectedProjectRepository)
-              : buildProjectWorkspaceEntries(snapshot)
-          );
-
           if (!cancelled) {
-            setWorkspaceTree(fallbackTree);
             setWorkspaceLoadError(
               error instanceof Error ? error.message : "Unable to load workspace explorer."
             );
@@ -1241,7 +1522,7 @@ export function App() {
         }
       };
 
-      void loadWorkspace();
+      void syncWorkspace();
     }, 280);
 
     return () => {
@@ -1252,6 +1533,8 @@ export function App() {
 
   const refreshLocalRepoState = useCallback(
     async (project: TyprProjectRepository | null = selectedProjectRepository) => {
+      const requestId = gitStatusRequestRef.current + 1;
+      gitStatusRequestRef.current = requestId;
       if (!project) {
         setLocalRepoStatus(null);
         setLocalRepoCommits([]);
@@ -1261,6 +1544,9 @@ export function App() {
 
       setIsGitStatusLoading(true);
       const initResult = await repoBackend.initRepository(project);
+      if (gitStatusRequestRef.current !== requestId) {
+        return;
+      }
       if (!initResult.ok) {
         setIsGitStatusLoading(false);
         setSyncFeedback({
@@ -1283,6 +1569,9 @@ export function App() {
         repoBackend.log(initializedProject, 30)
       ]);
 
+      if (gitStatusRequestRef.current !== requestId) {
+        return;
+      }
       setIsGitStatusLoading(false);
       if (!statusResult.ok) {
         setSyncFeedback({
@@ -1310,6 +1599,9 @@ export function App() {
           branch: statusResult.value.branch,
           remoteName: selectedGitProject.remoteName
         });
+        if (gitStatusRequestRef.current !== requestId) {
+          return;
+        }
         setUpstreamTracking(upstream.ok ? upstream.value : null);
       } else {
         setUpstreamTracking(null);
@@ -1530,24 +1822,19 @@ export function App() {
                 {
                   ...createEmptyGitManagedProject({
                     projectId: hydratedSnapshot.project.id,
-                    projectName: hydratedSnapshot.project.name,
-                    repositoryPath:
-                      storedGitHubConfig.directory || getDefaultRepositoryPath(hydratedSnapshot.project.name)
+                    projectName: hydratedSnapshot.project.name
                   }),
                   owner: storedGitHubConfig.owner,
                   repo: storedGitHubConfig.repo,
-                  branch: storedGitHubConfig.branch || "main",
-                  repositoryPath:
-                    storedGitHubConfig.directory || getDefaultRepositoryPath(hydratedSnapshot.project.name)
+                  branch: storedGitHubConfig.branch || "main"
                 }
               ]
             : [],
-          syncSnapshots: {}
+          selectedProjectIdsByTyprProjectId: {}
         },
         {
           projectId: hydratedSnapshot.project.id,
-          projectName: hydratedSnapshot.project.name,
-          repositoryPath: getDefaultRepositoryPath(hydratedSnapshot.project.name)
+          projectName: hydratedSnapshot.project.name
         }
       );
       const migratedCredentials = { ...storedGitCredentials };
@@ -1917,7 +2204,7 @@ export function App() {
             owner: selectedGitProject.owner,
             repo: selectedGitProject.repo,
             branch: selectedGitProject.branch,
-            directory: selectedGitProject.repositoryPath,
+            directory: "",
             token: ""
           }
         : { owner: "", repo: "", branch: "main", directory: "", token: "" };
@@ -2733,25 +3020,255 @@ export function App() {
     );
   };
 
-  const handleGitRemoteConfigChange = (
-    field: "owner" | "repo" | "branch" | "remoteName" | "repositoryPath",
+  const handleGitRemoteConfigChange = useCallback((
+    field: "owner" | "repo" | "branch" | "remoteName",
     value: string
   ) => {
     updateSelectedGitProject((currentProject) => ({
       ...currentProject,
       [field]: value
     }));
-  };
+  }, [updateSelectedGitProject]);
 
   const handleGitCredentialChange = (value: string) => {
     if (!selectedGitProject) {
       return;
     }
+    setGitHubDiscovery({
+      status: "idle",
+      message: "",
+      accountLogin: null,
+      owners: [],
+      repos: [],
+      branches: [],
+      repoMode: "select",
+      isLoadingRepos: false,
+      isLoadingBranches: false
+    });
     setGitCredentials((current) => ({
       ...current,
       [selectedGitProject.id]: value
     }));
   };
+
+  const handleConnectGitHub = useCallback(async () => {
+    if (!selectedGitProject) {
+      setSyncFeedback({ tone: "error", text: "Create or select a managed git project first." });
+      return;
+    }
+    if (!selectedGitToken.trim()) {
+      setSyncFeedback({ tone: "error", text: "Add a GitHub token before connecting." });
+      return;
+    }
+
+    setGitHubDiscovery((current) => ({
+      ...current,
+      status: "loading",
+      message: "Connecting to GitHub...",
+      repos: [],
+      branches: [],
+      isLoadingRepos: false,
+      isLoadingBranches: false
+    }));
+
+    const result = await remoteGitService.inspectToken(() => selectedGitToken);
+    if (!result.ok) {
+      const message = redactGitSecrets(result.message, [selectedGitToken]);
+      setGitHubDiscovery((current) => ({
+        ...current,
+        status: "error",
+        message,
+        accountLogin: null,
+        owners: [],
+        repos: [],
+        branches: [],
+        isLoadingRepos: false,
+        isLoadingBranches: false
+      }));
+      setSyncFeedback({ tone: "error", text: message });
+      return;
+    }
+
+    const currentOwner = remoteConfig.owner.trim();
+    const nextOwner =
+      result.value.owners.find((owner) => owner.login.toLowerCase() === currentOwner.toLowerCase())?.login ??
+      (currentOwner || result.value.user.login);
+    setGitHubDiscovery((current) => ({
+      ...current,
+      status: "connected",
+      message: result.message,
+      accountLogin: result.value.user.login,
+      owners: result.value.owners,
+      repos: [],
+      branches: [],
+      isLoadingRepos: false,
+      isLoadingBranches: false
+    }));
+    if (!currentOwner || nextOwner !== currentOwner) {
+      handleGitRemoteConfigChange("owner", nextOwner);
+    }
+    setSyncFeedback({ tone: "success", text: result.message });
+  }, [handleGitRemoteConfigChange, remoteConfig.owner, remoteGitService, selectedGitProject, selectedGitToken]);
+
+  const handleGitHubRepoModeChange = useCallback((mode: GitHubRepoMode) => {
+    setGitHubDiscovery((current) => ({
+      ...current,
+      repoMode: mode,
+      branches: mode === "select" ? current.branches : []
+    }));
+    if (mode === "create") {
+      handleGitRemoteConfigChange("repo", "");
+      handleGitRemoteConfigChange("branch", "main");
+    }
+  }, [handleGitRemoteConfigChange]);
+
+  const handleGitHubOwnerChange = useCallback(
+    (owner: string) => {
+      handleGitRemoteConfigChange("owner", owner);
+      handleGitRemoteConfigChange("repo", "");
+      handleGitRemoteConfigChange("branch", "main");
+      setGitHubDiscovery((current) => ({
+        ...current,
+        repos: [],
+        branches: []
+      }));
+    },
+    [handleGitRemoteConfigChange]
+  );
+
+  const handleGitHubRepoSelection = useCallback(
+    (repoName: string) => {
+      const selectedRepo = gitHubDiscovery.repos.find((repo) => repo.name === repoName);
+      handleGitRemoteConfigChange("repo", repoName);
+      if (selectedRepo?.defaultBranch) {
+        handleGitRemoteConfigChange("branch", selectedRepo.defaultBranch);
+      }
+    },
+    [gitHubDiscovery.repos, handleGitRemoteConfigChange]
+  );
+
+  const handleGitHubUrlPaste = useCallback((value: string) => {
+    const match = /github\.com[:/]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/?#\s]|$)/i.exec(value.trim());
+    if (!match) {
+      return false;
+    }
+
+    handleGitRemoteConfigChange("owner", match[1]);
+    handleGitRemoteConfigChange("repo", match[2]);
+    setGitHubDiscovery((current) => ({
+      ...current,
+      repoMode: "manual",
+      branches: []
+    }));
+    return true;
+  }, [handleGitRemoteConfigChange]);
+
+  useEffect(() => {
+    if (
+      gitHubDiscovery.status !== "connected" ||
+      !selectedGitToken.trim() ||
+      !remoteConfig.owner.trim()
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    setGitHubDiscovery((current) => ({
+      ...current,
+      repos: [],
+      branches: [],
+      isLoadingRepos: true,
+      isLoadingBranches: false
+    }));
+
+    void remoteGitService
+      .listRepositories(remoteConfig.owner, () => selectedGitToken)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        if (!result.ok) {
+          const message = redactGitSecrets(result.message, [selectedGitToken]);
+          setGitHubDiscovery((current) => ({
+            ...current,
+            message,
+            repos: [],
+            branches: [],
+            isLoadingRepos: false,
+            isLoadingBranches: false
+          }));
+          return;
+        }
+
+        setGitHubDiscovery((current) => ({
+          ...current,
+          message: result.message,
+          repos: result.value,
+          branches: [],
+          isLoadingRepos: false,
+          isLoadingBranches: false
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gitHubDiscovery.status, remoteConfig.owner, remoteGitService, selectedGitToken]);
+
+  useEffect(() => {
+    if (
+      gitHubDiscovery.status !== "connected" ||
+      !selectedGitToken.trim() ||
+      !remoteConfig.owner.trim() ||
+      !remoteConfig.repo.trim()
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    setGitHubDiscovery((current) => ({
+      ...current,
+      branches: [],
+      isLoadingBranches: true
+    }));
+
+    void remoteGitService
+      .listBranches(
+        { owner: remoteConfig.owner, repo: remoteConfig.repo },
+        () => selectedGitToken
+      )
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        if (!result.ok) {
+          const message = redactGitSecrets(result.message, [selectedGitToken]);
+          setGitHubDiscovery((current) => ({
+            ...current,
+            message,
+            branches: [],
+            isLoadingBranches: false
+          }));
+          return;
+        }
+        setGitHubDiscovery((current) => ({
+          ...current,
+          message: result.message,
+          branches: result.value,
+          isLoadingBranches: false
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gitHubDiscovery.status,
+    remoteConfig.owner,
+    remoteConfig.repo,
+    remoteGitService,
+    selectedGitToken
+  ]);
 
   const handleGitProjectFieldChange = useCallback(
     (field: keyof GitManagedProject, value: string) => {
@@ -2887,19 +3404,115 @@ export function App() {
     updateGitManagedProject
   ]);
 
+  const handleAbortGitMerge = useCallback(async () => {
+    if (!selectedProjectRepository) {
+      return;
+    }
+
+    const result = await repoBackend.abortMerge(selectedProjectRepository);
+    if (!result.ok) {
+      setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
+      return;
+    }
+
+    setLocalRepoStatus(result.value);
+    setGitRefreshToken((token) => token + 1);
+    setSyncFeedback({
+      tone: "neutral",
+      text: "Cleared the browser merge stop. Local files and commits were left unchanged."
+    });
+  }, [repoBackend, selectedProjectRepository]);
+
+  const handleUseMergeVersion = useCallback(
+    (path: string, label: string, oid: string | null) => {
+      setMergeResolutionDrafts((currentDrafts) => ({
+        ...currentDrafts,
+        [path]: { kind: "oid", oid, label }
+      }));
+    },
+    []
+  );
+
+  const handleEditMergeResolution = useCallback((path: string, content: string) => {
+    setMergeResolutionDrafts((currentDrafts) => ({
+      ...currentDrafts,
+      [path]: { kind: "content", content }
+    }));
+  }, []);
+
+  const handleContinueGitMerge = useCallback(async () => {
+    if (!selectedProjectRepository || !activeMergeState) {
+      return;
+    }
+
+    const unresolvedFile = conflictMergeFiles.find((file) => !mergeResolutionDrafts[file.path]);
+    if (unresolvedFile) {
+      setSyncFeedback({
+        tone: "error",
+        text: `Resolve ${unresolvedFile.path} before continuing the merge.`
+      });
+      setSelectedMergePath(unresolvedFile.path);
+      return;
+    }
+
+    const resolutions: RepoMergeResolution[] = conflictMergeFiles.map((file) => {
+      const draft = mergeResolutionDrafts[file.path];
+      return draft.kind === "content"
+        ? { path: file.path, content: draft.content }
+        : { path: file.path, oid: draft.oid };
+    });
+    const result = await repoBackend.continueMerge(selectedProjectRepository, {
+      message: mergeCommitMessage.trim() ||
+        `Merge ${activeMergeState.remoteName}/${activeMergeState.remoteBranch} into ${activeMergeState.branch}`,
+      resolutions
+    });
+    if (!result.ok) {
+      setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
+      return;
+    }
+
+    setProjectRepository((project) =>
+      project.id === result.value.project.id ? result.value.project : project
+    );
+    setLocalRepoStatus(result.value.status);
+    setMergeResolutionDrafts({});
+    setMergeFilePreview(null);
+    setSelectedMergePath(null);
+    setGitRefreshToken((token) => token + 1);
+    setSyncFeedback({
+      tone: "success",
+      text: `Created merge commit ${result.value.commit.shortSha}. You can push again now.`
+    });
+  }, [
+    activeMergeState,
+    conflictMergeFiles,
+    mergeCommitMessage,
+    mergeResolutionDrafts,
+    repoBackend,
+    selectedProjectRepository,
+    setProjectRepository
+  ]);
+
   const handleAddGitProject = useCallback(() => {
+    if (!selectedProjectRepository) {
+      return;
+    }
+
     const nextProject = createEmptyGitManagedProject({
-      projectId: snapshot.project.id,
-      projectName: `${snapshot.project.name} repo`,
-      repositoryPath: defaultRepositoryPath
+      projectId: selectedProjectRepository.id,
+      projectName: `${selectedProjectRepository.displayName} repo`
     });
 
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
       selectedProjectId: nextProject.id,
+      selectedProjectIdsByTyprProjectId: {
+        ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+        [selectedProjectRepository.id]: nextProject.id
+      },
       projects: [...currentWorkspace.projects, nextProject]
     }));
-  }, [defaultRepositoryPath, snapshot.project.id, snapshot.project.name]);
+  }, [selectedProjectRepository]);
 
   const handleRemoveSelectedGitProject = useCallback(() => {
     if (!selectedGitProject) {
@@ -2910,22 +3523,27 @@ export function App() {
       const remainingProjects = currentWorkspace.projects.filter(
         (project) => project.id !== selectedGitProject.id
       );
+      const remainingProjectScopedSelection =
+        remainingProjects.find((project) => project.projectId === selectedGitProject.projectId)?.id ?? null;
       return normalizeGitWorkspaceState(
         {
           ...currentWorkspace,
-          selectedProjectId: remainingProjects[0]?.id ?? null,
+          selectedProjectId: remainingProjectScopedSelection,
+          selectedProjectIdsByTyprProjectId: {
+            ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+            [selectedGitProject.projectId]: remainingProjectScopedSelection
+          },
           projects: remainingProjects
         },
         {
-          projectId: snapshot.project.id,
-          projectName: snapshot.project.name,
-          repositoryPath: defaultRepositoryPath
+          projectId: selectedProjectRepository?.id ?? snapshot.project.id,
+          projectName: selectedProjectRepository?.displayName ?? snapshot.project.name
         }
       );
     });
   }, [
-    defaultRepositoryPath,
     selectedGitProject,
+    selectedProjectRepository,
     snapshot.project.id,
     snapshot.project.name
   ]);
@@ -2937,6 +3555,252 @@ export function App() {
       project: projectRepositoryToLegacyProject(project, currentSnapshot.project)
     }));
   }, []);
+
+  const selectStoredProjectRepository = useCallback((projectId: string) => {
+    setProjectStorage((currentStorage) => {
+      const nextProject = currentStorage.projects.find((project) => project.id === projectId);
+      if (!nextProject) {
+        return currentStorage;
+      }
+
+      setRawSnapshot((currentSnapshot) => ({
+        ...currentSnapshot,
+        project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
+      }));
+
+      return {
+        ...currentStorage,
+        selectedProjectId: nextProject.id
+      };
+    });
+  }, []);
+
+  const addDefaultGitManagedProject = useCallback(
+    (project: TyprProjectRepository, projectName = `${project.displayName} repo`) => {
+      const nextProject = createEmptyGitManagedProject({
+        projectId: project.id,
+        projectName
+      });
+
+      setGitWorkspace((currentWorkspace) => {
+        const existingProjects = currentWorkspace.projects.filter(
+          (managedProject) => managedProject.projectId === project.id
+        );
+        const scopedSelection = currentWorkspace.selectedProjectIdsByTyprProjectId[project.id];
+        const existingProject =
+          existingProjects.find((managedProject) => managedProject.id === scopedSelection) ??
+          existingProjects[0];
+        if (existingProject) {
+          return {
+            ...currentWorkspace,
+            selectedProjectId: existingProject.id,
+            selectedProjectIdsByTyprProjectId: {
+              ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+              [project.id]: existingProject.id
+            }
+          };
+        }
+
+        return {
+          ...currentWorkspace,
+          selectedProjectId: nextProject.id,
+          selectedProjectIdsByTyprProjectId: {
+            ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+            [project.id]: nextProject.id
+          },
+          projects: [...currentWorkspace.projects, nextProject]
+        };
+      });
+
+      return nextProject.id;
+    },
+    []
+  );
+
+  const handleCreateLocalProject = useCallback(() => {
+    const enteredName = window.prompt("Project name", "Untitled project");
+    if (enteredName === null) {
+      return;
+    }
+
+    const displayName = enteredName.trim() || "Untitled project";
+    const nextProject = createEmptyProjectRepository({
+      displayName,
+      defaultFileName: "main.typ",
+      defaultContent: ""
+    });
+
+    selectProjectRepository(nextProject);
+    addDefaultGitManagedProject(nextProject);
+    setIsTrashViewOpen(false);
+    setSelectedWorkspacePath(nextProject.selection.activeFilePath);
+    setSelectedWorkspacePaths(nextProject.selection.activeFilePath ? [nextProject.selection.activeFilePath] : []);
+    setWorkspaceSelectionAnchorPath(nextProject.selection.activeFilePath);
+    setGitRefreshToken((token) => token + 1);
+    setSyncFeedback({
+      tone: "success",
+      text: `Created local project "${displayName}".`
+    });
+  }, [addDefaultGitManagedProject, selectProjectRepository]);
+
+  const handleDeleteSelectedProject = useCallback(async () => {
+    if (!selectedProjectRepository) {
+      return;
+    }
+
+    const projectToDelete = selectedProjectRepository;
+    const confirmation = window.prompt(
+      [
+        `Delete local Typr project "${projectToDelete.displayName}"?`,
+        "This removes its local files, browser git repo, managed repo entries, and stored tokens.",
+        "It does not delete any GitHub repository.",
+        "",
+        `Type ${projectToDelete.displayName} to confirm.`
+      ].join("\n"),
+      ""
+    );
+
+    if (confirmation === null) {
+      return;
+    }
+
+    if (confirmation !== projectToDelete.displayName) {
+      setSyncFeedback({
+        tone: "error",
+        text: "Project deletion canceled because the confirmation text did not match."
+      });
+      return;
+    }
+
+    try {
+      await deleteProjectGitFiles(projectToDelete.id);
+      await removeProjectFromOpfs(projectToDelete.id);
+    } catch (error) {
+      setSyncFeedback({
+        tone: "error",
+        text: error instanceof Error
+          ? `Unable to delete local repo data: ${error.message}`
+          : "Unable to delete local repo data."
+      });
+      return;
+    }
+
+    const fallbackProject =
+      projectStorage.projects.length <= 1
+        ? createEmptyProjectRepository({
+            displayName: "Untitled project",
+            defaultFileName: "main.typ",
+            defaultContent: ""
+          })
+        : undefined;
+    const nextProjectStorage = removeProjectRepository(
+      projectStorage,
+      projectToDelete.id,
+      fallbackProject
+    );
+    const nextProject = getSelectedProjectRepository(nextProjectStorage);
+    const deletedManagedProjectIds = gitWorkspace.projects
+      .filter((project) => project.projectId === projectToDelete.id)
+      .map((project) => project.id);
+
+    setProjectStorage(nextProjectStorage);
+    if (nextProject) {
+      setRawSnapshot((currentSnapshot) => ({
+        ...currentSnapshot,
+        project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
+      }));
+      setSelectedWorkspacePath(nextProject.selection.activeFilePath);
+      setSelectedWorkspacePaths(nextProject.selection.activeFilePath ? [nextProject.selection.activeFilePath] : []);
+      setWorkspaceSelectionAnchorPath(nextProject.selection.activeFilePath);
+    }
+
+    setGitWorkspace((currentWorkspace) => {
+      let nextManagedProjects = currentWorkspace.projects.filter(
+        (project) => project.projectId !== projectToDelete.id
+      );
+      const nextScopedSelections = { ...currentWorkspace.selectedProjectIdsByTyprProjectId };
+      delete nextScopedSelections[projectToDelete.id];
+
+      for (const [typrProjectId, managedProjectId] of Object.entries(nextScopedSelections)) {
+        if (!nextManagedProjects.some((project) => project.id === managedProjectId && project.projectId === typrProjectId)) {
+          delete nextScopedSelections[typrProjectId];
+        }
+      }
+
+      let nextSelectedManagedProjectId: string | null = null;
+      if (nextProject) {
+        const scopedSelection = nextScopedSelections[nextProject.id];
+        nextSelectedManagedProjectId =
+          nextManagedProjects.find(
+            (project) => project.id === scopedSelection && project.projectId === nextProject.id
+          )?.id ??
+          nextManagedProjects.find((project) => project.projectId === nextProject.id)?.id ??
+          null;
+
+        if (!nextSelectedManagedProjectId) {
+          const nextManagedProject = createEmptyGitManagedProject({
+            projectId: nextProject.id,
+            projectName: `${nextProject.displayName} repo`
+          });
+          nextManagedProjects = [...nextManagedProjects, nextManagedProject];
+          nextSelectedManagedProjectId = nextManagedProject.id;
+        }
+
+        nextScopedSelections[nextProject.id] = nextSelectedManagedProjectId;
+      }
+
+      return {
+        ...currentWorkspace,
+        selectedProjectId: nextSelectedManagedProjectId,
+        selectedProjectIdsByTyprProjectId: nextScopedSelections,
+        projects: nextManagedProjects
+      };
+    });
+    setGitCredentials((currentCredentials) => {
+      const nextCredentials = { ...currentCredentials };
+      for (const managedProjectId of deletedManagedProjectIds) {
+        delete nextCredentials[managedProjectId];
+      }
+      return nextCredentials;
+    });
+    setGitHubDiscovery({
+      status: "idle",
+      message: "",
+      accountLogin: null,
+      owners: [],
+      repos: [],
+      branches: [],
+      repoMode: "select",
+      isLoadingRepos: false,
+      isLoadingBranches: false
+    });
+    setIsTrashViewOpen(false);
+    setLocalRepoStatus(null);
+    setLocalRepoCommits([]);
+    setLocalRepoBranches([]);
+    setUpstreamTracking(null);
+    setGitRefreshToken((token) => token + 1);
+    setSyncFeedback({
+      tone: "success",
+      text: `Deleted local project "${projectToDelete.displayName}". GitHub repositories were not changed.`
+    });
+  }, [
+    gitWorkspace.projects,
+    projectStorage,
+    selectedProjectRepository
+  ]);
+
+  const handleRequestImportGitHubProject = useCallback(() => {
+    if (selectedProjectRepository) {
+      addDefaultGitManagedProject(selectedProjectRepository);
+    }
+    setSettingsTab("git");
+    setIsSettingsOpen(true);
+    setSyncFeedback({
+      tone: "neutral",
+      text: "Connect GitHub, choose owner/repo/branch, then import the repo as a separate project."
+    });
+  }, [addDefaultGitManagedProject, selectedProjectRepository]);
 
   const replaceProjectEntries = useCallback(
     (project: TyprProjectRepository, entries: ProjectFilesystemEntry[]) => {
@@ -2959,17 +3823,15 @@ export function App() {
     (project: TyprProjectRepository, name: string) => ({
       ...createEmptyGitManagedProject({
         projectId: project.id,
-        projectName: name,
-        repositoryPath: defaultRepositoryPath
+        projectName: name
       }),
       name,
       owner: remoteConfig.owner,
       repo: remoteConfig.repo,
       branch: remoteConfig.branch,
-      remoteName: remoteConfig.remoteName,
-      repositoryPath: defaultRepositoryPath
+      remoteName: remoteConfig.remoteName
     }),
-    [defaultRepositoryPath, remoteConfig]
+    [remoteConfig]
   );
 
   const handleCreateGitHubRepoFromCurrentProject = useCallback(async () => {
@@ -3048,6 +3910,10 @@ export function App() {
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
       selectedProjectId: managedProject.id,
+      selectedProjectIdsByTyprProjectId: {
+        ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+        [remoteProject.id]: managedProject.id
+      },
       projects: [...currentWorkspace.projects, managedProject]
     }));
     setGitCredentials((currentCredentials) => ({
@@ -3115,6 +3981,10 @@ export function App() {
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
       selectedProjectId: managedProject.id,
+      selectedProjectIdsByTyprProjectId: {
+        ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+        [importedProject.id]: managedProject.id
+      },
       projects: [...currentWorkspace.projects, managedProject]
     }));
     setGitCredentials((currentCredentials) => ({
@@ -3778,7 +4648,7 @@ export function App() {
 
   const handleShowTutorial = () => {
     window.alert(
-      "Tutorial: open Files to switch documents, type in Source, use View for layout controls, and use Git settings when you want to sync."
+      "Tutorial: open Files to switch projects and documents, type in Source, use View for layout controls, and use Git settings when you want to connect a remote."
     );
   };
 
@@ -3902,6 +4772,11 @@ export function App() {
   const handlePullRemote = useCallback(async () => {
     const ready = validateRemoteAction();
     if (!ready.ok) return ready;
+    if (hasActiveMergeStop(localRepoStatus)) {
+      const message = "A browser merge stop is active. Resolve it with Continue merge, or use git merge --abort before pulling again.";
+      setSyncFeedback({ tone: "error", text: message });
+      return { ok: false as const, message };
+    }
     if (hasRepoChanges(localRepoStatus)) {
       const message = "Commit or reset local changes before pulling.";
       setSyncFeedback({ tone: "error", text: message });
@@ -4020,7 +4895,9 @@ export function App() {
                 "git fetch",
                 "git pull",
                 "git push",
-                "git sync"
+                "git sync",
+                "git merge --abort",
+                "git merge --continue -m <message>"
               ].join("\n") + "\n",
             stderr: "",
             exitCode: 0
@@ -4053,6 +4930,71 @@ export function App() {
           return result.ok
             ? { stdout: `${result.message}\n`, stderr: "", exitCode: 0 }
             : { stdout: "", stderr: `${result.message}\n`, exitCode: 1 };
+        }
+
+        if (subcommand === "merge") {
+          if (args[1] === "--abort") {
+            const result = await repoBackend.abortMerge(selectedProjectRepository);
+            if (!result.ok) {
+              return { stdout: "", stderr: `${formatRepoError(result.error)}\n`, exitCode: 1 };
+            }
+            setLocalRepoStatus(result.value);
+            setGitRefreshToken((token) => token + 1);
+            return {
+              stdout: "Cleared browser merge stop. Local files and commits were left unchanged.\n",
+              stderr: "",
+              exitCode: 0
+            };
+          }
+          if (args[1] === "--continue") {
+            const messageFlagIndex = args.findIndex((argument) => argument === "-m");
+            const message =
+              messageFlagIndex >= 0 ? args.slice(messageFlagIndex + 1).join(" ").trim() : "";
+            if (!message) {
+              return {
+                stdout: "",
+                stderr: "git merge --continue: use -m with a merge commit message.\n",
+                exitCode: 1
+              };
+            }
+            const mergeStateResult = await repoBackend.getMergeState(selectedProjectRepository);
+            if (!mergeStateResult.ok) {
+              return { stdout: "", stderr: `${formatRepoError(mergeStateResult.error)}\n`, exitCode: 1 };
+            }
+            if (!mergeStateResult.value) {
+              return { stdout: "", stderr: "git merge --continue: no browser merge stop is active.\n", exitCode: 1 };
+            }
+            const resolutions: RepoMergeResolution[] = mergeStateResult.value.files
+              .filter((file) => file.state === "conflict")
+              .map((file) => {
+                const bytes = readProjectFileBytes(selectedProjectRepository, file.path);
+                return bytes === null
+                  ? { path: file.path, content: null }
+                  : { path: file.path, content: bytes };
+              });
+            const result = await repoBackend.continueMerge(selectedProjectRepository, {
+              message,
+              resolutions
+            });
+            if (!result.ok) {
+              return { stdout: "", stderr: `${formatRepoError(result.error)}\n`, exitCode: 1 };
+            }
+            setProjectRepository((project) =>
+              project.id === result.value.project.id ? result.value.project : project
+            );
+            setLocalRepoStatus(result.value.status);
+            setGitRefreshToken((token) => token + 1);
+            return {
+              stdout: `Created merge commit ${result.value.commit.shortSha}: ${result.value.commit.message}\n`,
+              stderr: "",
+              exitCode: 0
+            };
+          }
+          return {
+            stdout: "",
+            stderr: "git merge: only --abort and --continue -m <message> are supported in Browser Shell.\n",
+            exitCode: 1
+          };
         }
 
         if (subcommand === "switch") {
@@ -4251,6 +5193,9 @@ export function App() {
             stdout:
               [
                 `On branch ${statusResult.value.branch}`,
+                statusResult.value.mergeState
+                  ? `Browser merge stop active for ${statusResult.value.mergeState.remoteName}/${statusResult.value.mergeState.remoteBranch}: ${statusResult.value.mergeState.conflictCount} conflict(s), ${statusResult.value.mergeState.files.length} changed path(s).`
+                  : "",
                 upstreamTracking
                   ? `Your branch is ${upstreamTracking.ahead} ahead and ${upstreamTracking.behind} behind ${upstreamTracking.remoteName}/${upstreamTracking.branch}.`
                   : "",
@@ -4431,6 +5376,36 @@ export function App() {
     });
   }
 
+  function expandGitMergePaneForward() {
+    setWorkspaceMode("split");
+    setIsSidebarCollapsed(false);
+    setGitMergePaneMode((currentMode) => {
+      if (currentMode === "sidebar") {
+        return "source";
+      }
+
+      if (currentMode === "source") {
+        return "preview";
+      }
+
+      return currentMode;
+    });
+  }
+
+  function expandGitMergePaneBackward() {
+    setGitMergePaneMode((currentMode) => {
+      if (currentMode === "preview") {
+        return "source";
+      }
+
+      if (currentMode === "source") {
+        return "sidebar";
+      }
+
+      return currentMode;
+    });
+  }
+
   function cycleSidebarTool(direction: -1 | 1) {
     setIsSidebarCollapsed(false);
     setActiveSidebarTool((currentTool) => {
@@ -4571,6 +5546,7 @@ export function App() {
     selectedGitProject?.backendId === "browser" &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !hasRepoChanges(localRepoStatus) &&
+    !hasActiveMergeStop(localRepoStatus) &&
     !isSyncing;
   const canPushRemote =
     isOnline &&
@@ -4578,8 +5554,123 @@ export function App() {
     selectedGitProject?.backendId === "browser" &&
     Boolean(localRepoStatus?.headSha) &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
+    !hasActiveMergeStop(localRepoStatus) &&
     !isSyncing;
   const canSyncRemote = canPushRemote && !hasRepoChanges(localRepoStatus);
+  const handleMergeVersionBodyScroll = useCallback((role: MergeVersionRole) => {
+    const sourceBody = mergeVersionBodyRefs.current[role];
+    if (!sourceBody || isSyncingMergeScrollRef.current) {
+      return;
+    }
+
+    const lines = Array.from(
+      sourceBody.querySelectorAll<HTMLElement>("[data-merge-line]")
+    );
+    const scrollTop = sourceBody.scrollTop;
+    const currentLine =
+      lines.find((line) => line.offsetTop - sourceBody.offsetTop >= scrollTop) ??
+      lines[lines.length - 1];
+    const lineNumber = Number(currentLine?.dataset.mergeLine ?? 1);
+
+    isSyncingMergeScrollRef.current = true;
+    (Object.keys(mergeVersionBodyRefs.current) as MergeVersionRole[]).forEach((targetRole) => {
+      if (targetRole === role) {
+        return;
+      }
+
+      const targetBody = mergeVersionBodyRefs.current[targetRole];
+      if (targetBody) {
+        scrollMergeBodyToLine(targetBody, lineNumber);
+      }
+    });
+    window.requestAnimationFrame(() => {
+      isSyncingMergeScrollRef.current = false;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!mergeFilePreview) {
+      return;
+    }
+
+    const firstChangedLine = getFirstChangedMergeLineNumber(
+      mergeFilePreview.base.text,
+      mergeFilePreview.local.text,
+      mergeFilePreview.remote.text
+    );
+
+    window.requestAnimationFrame(() => {
+      isSyncingMergeScrollRef.current = true;
+      (Object.keys(mergeVersionBodyRefs.current) as MergeVersionRole[]).forEach((role) => {
+        const body = mergeVersionBodyRefs.current[role];
+        if (body) {
+          scrollMergeBodyToLine(body, firstChangedLine);
+        }
+      });
+      window.requestAnimationFrame(() => {
+        isSyncingMergeScrollRef.current = false;
+      });
+    });
+  }, [gitMergePaneMode, mergeFilePreview, selectedMergePath]);
+
+  const renderMergeVersionPanel = (
+    version: MergeVersionPreview,
+    options: {
+      baseText: string;
+      peerText: string;
+      role: MergeVersionRole;
+      action?: {
+        disabled?: boolean;
+        label: string;
+        onClick: () => void;
+      };
+    }
+  ): ReactNode => {
+    const lines = getMergeDiffLines(version.text, options.baseText, options.peerText);
+    return (
+      <div className={`merge-version merge-version--${options.role}`} key={version.label}>
+        <div className="sidebar-card__row">
+          <span>{version.label}</span>
+          <span className="pane__meta">
+            {version.oid ? version.oid.slice(0, 7) : "deleted"}
+          </span>
+        </div>
+        <div
+          className="merge-version__body"
+          onScroll={() => handleMergeVersionBodyScroll(options.role)}
+          ref={(element) => {
+            mergeVersionBodyRefs.current[options.role] = element;
+          }}
+          role="table"
+          aria-label={`${version.label} version`}
+        >
+          {lines.map((line) => (
+            <div
+              className={`merge-version__line merge-version__line--${line.tone}`}
+              data-merge-line={line.number}
+              key={`${version.label}-${line.number}`}
+              role="row"
+            >
+              <span className="merge-version__line-number" role="cell">{line.number}</span>
+              <code role="cell">{line.text || " "}</code>
+            </div>
+          ))}
+        </div>
+        {options.action ? (
+          <div className="merge-version__actions">
+            <button
+              className="pane__button pane__button--compact"
+              disabled={options.action.disabled}
+              onClick={options.action.onClick}
+              type="button"
+            >
+              {options.action.label}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
   const editorDiagnostics =
     compileResult === null
       ? []
@@ -4640,11 +5731,18 @@ export function App() {
     workspaceMode === "split" &&
     activeSidebarTool === "graph" &&
     graphPaneMode !== "sidebar";
+  const isGitMergeInlineExpanded =
+    showDesktopSidebar &&
+    workspaceMode === "split" &&
+    activeSidebarTool === "sync" &&
+    Boolean(activeMergeState) &&
+    gitMergePaneMode !== "sidebar";
   const isDiagramPreviewExpanded = isDiagramInlineExpanded && diagramPaneMode === "preview";
   const isGraphPreviewExpanded = isGraphInlineExpanded && graphPaneMode === "preview";
-  const isSidebarInlineExpanded = isDiagramInlineExpanded || isGraphInlineExpanded;
+  const isGitMergePreviewExpanded = isGitMergeInlineExpanded && gitMergePaneMode === "preview";
+  const isSidebarInlineExpanded = isDiagramInlineExpanded || isGraphInlineExpanded || isGitMergeInlineExpanded;
   const showSourcePane = !isSidebarInlineExpanded && isSourceFileEditable;
-  const showPreviewPane = !isDiagramPreviewExpanded && !isGraphPreviewExpanded;
+  const showPreviewPane = !isDiagramPreviewExpanded && !isGraphPreviewExpanded && !isGitMergePreviewExpanded;
   const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
   const baseSidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
   const basePreviewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
@@ -4679,7 +5777,7 @@ export function App() {
           display: "flex",
           flexDirection: "column"
         }
-      : workspaceMode === "split" && (isDiagramPreviewExpanded || isGraphPreviewExpanded)
+      : workspaceMode === "split" && (isDiagramPreviewExpanded || isGraphPreviewExpanded || isGitMergePreviewExpanded)
       ? {
           gridTemplateColumns: "minmax(0, 1fr)"
         }
@@ -4746,6 +5844,20 @@ export function App() {
     setGraphPaneMode("sidebar");
   }, [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
 
+  useEffect(() => {
+    if (
+      !isMobileWorkspace &&
+      workspaceMode === "split" &&
+      activeSidebarTool === "sync" &&
+      !isSidebarCollapsed &&
+      activeMergeState
+    ) {
+      return;
+    }
+
+    setGitMergePaneMode("sidebar");
+  }, [activeMergeState, activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
+
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
       const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
@@ -4769,6 +5881,10 @@ export function App() {
 
       if (tool !== "graph") {
         setGraphPaneMode("sidebar");
+      }
+
+      if (tool !== "sync") {
+        setGitMergePaneMode("sidebar");
       }
 
       if (shouldOpenSearchPane) {
@@ -5295,7 +6411,7 @@ export function App() {
         {showDesktopSidebar || isMobileWorkspace ? (
           <aside
             className={`pane pane--sidebar ${sidebarVisibilityClass}`}
-            aria-label="Files and sync"
+            aria-label="Files and git"
           >
             <>
               <div className="pane__header">
@@ -5340,16 +6456,41 @@ export function App() {
                       </button>
                     </>
                   ) : activeSidebarTool === "sync" ? (
-                    <button
-                      className="pane__button"
-                      disabled={!canPushRemote}
-                      onClick={() => {
-                        void handlePushRemote();
-                      }}
-                      type="button"
-                    >
-                      {isSyncing ? "Pushing..." : "Push"}
-                    </button>
+                    activeMergeState ? (
+                      <InlinePaneExpandControls
+                        collapseLabel={
+                          gitMergePaneMode === "preview"
+                            ? "Show two-way conflict view"
+                            : "Collapse conflict view"
+                        }
+                        expandLabel={
+                          gitMergePaneMode === "source"
+                            ? "Show three-way conflict view"
+                            : "Expand conflict view"
+                        }
+                        onExpandLeft={
+                          gitMergePaneMode !== "sidebar"
+                            ? expandGitMergePaneBackward
+                            : undefined
+                        }
+                        onExpandRight={
+                          !isMobileWorkspace && gitMergePaneMode !== "preview"
+                            ? expandGitMergePaneForward
+                            : undefined
+                        }
+                      />
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={!canPushRemote}
+                        onClick={() => {
+                          void handlePushRemote();
+                        }}
+                        type="button"
+                      >
+                        {isSyncing ? "Pushing..." : "Push"}
+                      </button>
+                    )
                   ) : activeSidebarTool === "diagram" &&
                     isDiagramInlineExpanded &&
                     !snapshot.preferences.liveCompilation ? (
@@ -5370,6 +6511,57 @@ export function App() {
                   ref={filesSectionRef}
                   className="sidebar-section sidebar-section--scrollable sidebar-section--files"
                 >
+                  {!isTrashViewOpen ? (
+                    <div className="project-switcher" aria-label="Typr projects">
+                      <label className="project-switcher__field">
+                        <span>Project</span>
+                        <select
+                          onChange={(event) => {
+                            const nextProject = projectStorage.projects.find(
+                              (project) => project.id === event.target.value
+                            );
+                            selectStoredProjectRepository(event.target.value);
+                            if (nextProject) {
+                              addDefaultGitManagedProject(nextProject);
+                            }
+                          }}
+                          value={selectedProjectRepository?.id ?? ""}
+                        >
+                          {projectStorage.projects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.displayName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="project-switcher__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={handleCreateLocalProject}
+                          type="button"
+                        >
+                          New local project
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={handleRequestImportGitHubProject}
+                          type="button"
+                        >
+                          Import GitHub repo
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact pane__button--danger"
+                          disabled={!selectedProjectRepository}
+                          onClick={() => {
+                            void handleDeleteSelectedProject();
+                          }}
+                          type="button"
+                        >
+                          Delete project
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   {isTrashViewOpen ? (
                     <div className="sidebar-section__actions">
                       <button
@@ -5750,7 +6942,13 @@ export function App() {
               ) : null}
 
               {activeSidebarTool === "sync" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  className={`sidebar-section sidebar-section--scrollable sidebar-section--sync ${
+                    activeMergeState ? "sidebar-section--git-merge" : ""
+                  } ${
+                    isGitMergeInlineExpanded ? "sidebar-section--pane-expanded" : ""
+                  }`}
+                >
                   <div className="sync-stack">
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
@@ -5764,15 +6962,10 @@ export function App() {
                       <div className="sidebar-card__actions">
                         <select
                           className="pane__button pane__button--compact"
-                          onChange={(event) =>
-                            setGitWorkspace((currentWorkspace) => ({
-                              ...currentWorkspace,
-                              selectedProjectId: event.target.value || null
-                            }))
-                          }
+                          onChange={(event) => selectGitManagedProject(event.target.value || null)}
                           value={selectedGitProject?.id ?? ""}
                         >
-                          {gitWorkspace.projects.map((project) => (
+                          {gitProjectsForSelectedTyprProject.map((project) => (
                             <option key={project.id} value={project.id}>
                               {project.name}
                             </option>
@@ -5800,17 +6993,11 @@ export function App() {
                           {selectedGitProject.owner && selectedGitProject.repo
                             ? `${selectedGitProject.owner}/${selectedGitProject.repo}`
                             : "Configure owner and repo in Settings"}
-                          {selectedGitProject.repositoryPath
-                            ? ` · repo path ${selectedGitProject.repositoryPath}`
-                            : ""}
-                          {selectedGitProject.workspacePath
-                            ? ` · workspace path ${selectedGitProject.workspacePath}`
-                            : ""}
                         </div>
                       ) : null}
                       <div className="sidebar-card__actions">
                         <button
-                          className="pane__button"
+                          className="pane__button pane__button--compact"
                           onClick={() => {
                             setSettingsTab("git");
                             setIsSettingsOpen(true);
@@ -5820,7 +7007,7 @@ export function App() {
                           Settings
                         </button>
                         <button
-                          className="pane__button"
+                          className="pane__button pane__button--compact"
                           disabled={!canPullRemote}
                           onClick={() => {
                             void handlePullRemote();
@@ -5830,7 +7017,7 @@ export function App() {
                           {isSyncing ? "Pulling..." : "Pull"}
                         </button>
                         <button
-                          className="pane__button"
+                          className="pane__button pane__button--compact"
                           disabled={!canPushRemote}
                           onClick={() => {
                             void handlePushRemote();
@@ -5840,7 +7027,7 @@ export function App() {
                           {isSyncing ? "Pushing..." : "Push"}
                         </button>
                         <button
-                          className="pane__button"
+                          className="pane__button pane__button--compact"
                           disabled={!canSyncRemote}
                           onClick={() => {
                             void handleSyncRemote();
@@ -5851,6 +7038,255 @@ export function App() {
                         </button>
                       </div>
                     </div>
+
+                    {activeMergeState ? (
+                      <div className="sidebar-card">
+                        <div className="sidebar-card__row">
+                          <span>Merge stopped</span>
+                          <span className="pane__meta">
+                            {activeMergeState.conflictCount} conflict
+                            {activeMergeState.conflictCount === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <p className="sidebar-card__copy">
+                          Pull fetched {activeMergeState.remoteName}/
+                          {activeMergeState.remoteBranch}, but local and remote history diverged.
+                          Choose a resolution for each conflict, then create a merge commit.
+                        </p>
+                        <div className="pane__meta">
+                          Local {activeMergeState.localSha.slice(0, 7)} · Remote{" "}
+                          {activeMergeState.remoteSha.slice(0, 7)} · Base{" "}
+                          {activeMergeState.baseSha?.slice(0, 7) ?? "none"}
+                        </div>
+                        <div className="sidebar-card__actions">
+                          {gitMergePaneMode !== "sidebar" ? (
+                            <button
+                              className="pane__button pane__button--compact"
+                              onClick={expandGitMergePaneBackward}
+                              type="button"
+                            >
+                              {gitMergePaneMode === "preview" ? "Two-way view" : "Collapse view"}
+                            </button>
+                          ) : null}
+                          {!isMobileWorkspace && gitMergePaneMode !== "preview" ? (
+                            <button
+                              className="pane__button pane__button--compact"
+                              onClick={expandGitMergePaneForward}
+                              type="button"
+                            >
+                              {gitMergePaneMode === "source" ? "Three-way view" : "Expand view"}
+                            </button>
+                          ) : null}
+                          {isMobileWorkspace ? (
+                            <span className="pane__meta">Wide views need a larger screen</span>
+                          ) : null}
+                        </div>
+                        <div className="merge-file-list" role="list">
+                          {activeMergeState.files.map((file) => (
+                            <button
+                              key={file.path}
+                              aria-pressed={selectedMergePath === file.path}
+                              className="merge-file-row"
+                              onClick={() => setSelectedMergePath(file.path)}
+                              type="button"
+                            >
+                              <span>{file.path}</span>
+                              <span className="pane__meta">
+                                {file.state === "conflict" && mergeResolutionDrafts[file.path]
+                                  ? "resolved"
+                                  : file.state}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+
+                        {selectedMergePath ? (
+                          <div className="merge-resolver">
+                            <div className="sidebar-card__row">
+                              <span>{selectedMergePath}</span>
+                              <span className="pane__meta">
+                                {mergeResolutionDrafts[selectedMergePath]
+                                  ? mergeResolutionDrafts[selectedMergePath].kind === "content"
+                                    ? "edited"
+                                    : mergeResolutionDrafts[selectedMergePath].label
+                                  : "needs resolution"}
+                              </span>
+                            </div>
+                            {isMergeFilePreviewLoading ? (
+                              <p className="sidebar-card__copy">Loading preserved versions...</p>
+                            ) : mergeFilePreview ? (
+                              <>
+                                <div
+                                  className={`merge-version-grid merge-version-grid--${gitMergePaneMode}`}
+                                >
+                                  {gitMergePaneMode === "preview" ? (
+                                    <>
+                                      {renderMergeVersionPanel(mergeFilePreview.base, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.local.text,
+                                        role: "base",
+                                        action: {
+                                          disabled: !mergeFilePreview.base.oid,
+                                          label: "Use base",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Base", mergeFilePreview.base.oid)
+                                        }
+                                      })}
+                                      {renderMergeVersionPanel(mergeFilePreview.local, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.remote.text,
+                                        role: "local",
+                                        action: {
+                                          disabled: !mergeFilePreview.local.oid,
+                                          label: "Use local",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Local", mergeFilePreview.local.oid)
+                                        }
+                                      })}
+                                      {renderMergeVersionPanel(mergeFilePreview.remote, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.local.text,
+                                        role: "remote",
+                                        action: {
+                                          disabled: !mergeFilePreview.remote.oid,
+                                          label: "Use remote",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Remote", mergeFilePreview.remote.oid)
+                                        }
+                                      })}
+                                    </>
+                                  ) : gitMergePaneMode === "source" ? (
+                                    <>
+                                      {renderMergeVersionPanel(mergeFilePreview.base, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.local.text,
+                                        role: "base",
+                                        action: {
+                                          disabled: !mergeFilePreview.base.oid,
+                                          label: "Use base",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Base", mergeFilePreview.base.oid)
+                                        }
+                                      })}
+                                      {renderMergeVersionPanel(mergeFilePreview.local, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.remote.text,
+                                        role: "local",
+                                        action: {
+                                          disabled: !mergeFilePreview.local.oid,
+                                          label: "Use local",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Local", mergeFilePreview.local.oid)
+                                        }
+                                      })}
+                                      {renderMergeVersionPanel(mergeFilePreview.remote, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.local.text,
+                                        role: "remote",
+                                        action: {
+                                          disabled: !mergeFilePreview.remote.oid,
+                                          label: "Use remote",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Remote", mergeFilePreview.remote.oid)
+                                        }
+                                      })}
+                                    </>
+                                  ) : (
+                                    <>
+                                      {renderMergeVersionPanel(mergeFilePreview.base, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.local.text,
+                                        role: "base",
+                                        action: {
+                                          disabled: !mergeFilePreview.base.oid,
+                                          label: "Use base",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Base", mergeFilePreview.base.oid)
+                                        }
+                                      })}
+                                      {renderMergeVersionPanel(mergeFilePreview.local, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.remote.text,
+                                        role: "local",
+                                        action: {
+                                          disabled: !mergeFilePreview.local.oid,
+                                          label: "Use local",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Local", mergeFilePreview.local.oid)
+                                        }
+                                      })}
+                                      {renderMergeVersionPanel(mergeFilePreview.remote, {
+                                        baseText: mergeFilePreview.base.text,
+                                        peerText: mergeFilePreview.local.text,
+                                        role: "remote",
+                                        action: {
+                                          disabled: !mergeFilePreview.remote.oid,
+                                          label: "Use remote",
+                                          onClick: () =>
+                                            handleUseMergeVersion(selectedMergePath, "Remote", mergeFilePreview.remote.oid)
+                                        }
+                                      })}
+                                    </>
+                                  )}
+                                </div>
+                                <div className="sidebar-card__actions">
+                                  <button
+                                    className="pane__button pane__button--compact pane__button--danger"
+                                    onClick={() => handleUseMergeVersion(selectedMergePath, "Delete", null)}
+                                    type="button"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                                <textarea
+                                  className="merge-resolution-editor"
+                                  onChange={(event) =>
+                                    handleEditMergeResolution(selectedMergePath, event.target.value)
+                                  }
+                                  placeholder="Edit a resolved version here, or choose local/remote/base."
+                                  rows={8}
+                                  value={
+                                    mergeResolutionEditorValue
+                                  }
+                                />
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        <label className="sync-field">
+                          <span>Merge commit message</span>
+                          <input
+                            onChange={(event) => setMergeCommitMessage(event.target.value)}
+                            type="text"
+                            value={mergeCommitMessage}
+                          />
+                        </label>
+                        <div className="sidebar-card__actions">
+                          <button
+                            className="pane__button pane__button--compact"
+                            onClick={() => {
+                              void handleAbortGitMerge();
+                            }}
+                            type="button"
+                          >
+                            Abort merge
+                          </button>
+                          <button
+                            className="pane__button pane__button--compact"
+                            disabled={unresolvedMergeConflictCount > 0}
+                            onClick={() => {
+                              void handleContinueGitMerge();
+                            }}
+                            type="button"
+                          >
+                            {unresolvedMergeConflictCount > 0
+                              ? `Resolve ${unresolvedMergeConflictCount}`
+                              : "Continue merge"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
 
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
@@ -6799,21 +8235,16 @@ export function App() {
                   <div className="settings-section">
                     <div className="settings-section__header">
                       <h3>Managed repos</h3>
-                      <span className="pane__meta">{gitWorkspace.projects.length}</span>
+                      <span className="pane__meta">{gitProjectsForSelectedTyprProject.length}</span>
                     </div>
                     <div className="sidebar-card">
                       <div className="sidebar-card__actions">
                         <select
                           className="pane__button pane__button--compact"
-                          onChange={(event) =>
-                            setGitWorkspace((currentWorkspace) => ({
-                              ...currentWorkspace,
-                              selectedProjectId: event.target.value || null
-                            }))
-                          }
+                          onChange={(event) => selectGitManagedProject(event.target.value || null)}
                           value={selectedGitProject?.id ?? ""}
                         >
-                          {gitWorkspace.projects.map((project) => (
+                          {gitProjectsForSelectedTyprProject.map((project) => (
                             <option key={project.id} value={project.id}>
                               {project.name}
                             </option>
@@ -6838,6 +8269,35 @@ export function App() {
                     </div>
                   </div>
 
+                  <label className="sync-field">
+                    <span>GitHub token</span>
+                    <input
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      onChange={(event) => handleGitCredentialChange(event.target.value)}
+                      placeholder="Create a Fine-grained token at github.com/settings/tokens"
+                      type="password"
+                      value={selectedGitToken}
+                    />
+                  </label>
+                  <div className="sidebar-card__actions">
+                    <button
+                      className="pane__button pane__button--compact"
+                      disabled={!selectedGitProject || !selectedGitToken.trim() || gitHubDiscovery.status === "loading"}
+                      onClick={() => {
+                        void handleConnectGitHub();
+                      }}
+                      type="button"
+                    >
+                      {gitHubDiscovery.status === "loading" ? "Connecting..." : "Connect"}
+                    </button>
+                    <span className="pane__meta">
+                      {gitHubDiscovery.status === "connected" && gitHubDiscovery.accountLogin
+                        ? `Connected as ${gitHubDiscovery.accountLogin}`
+                        : gitHubDiscovery.message || "Token is stored per managed repo"}
+                    </span>
+                  </div>
+
                   <div className="sync-grid">
                     <label className="sync-field">
                       <span>Name</span>
@@ -6853,54 +8313,128 @@ export function App() {
                     <label className="sync-field">
                       <span>Owner</span>
                       <input
+                        list="github-owner-options"
                         autoCapitalize="none"
                         autoCorrect="off"
                         onChange={(event) =>
-                          handleGitRemoteConfigChange("owner", event.target.value)
+                          handleGitHubOwnerChange(event.target.value)
                         }
-                        placeholder="GitHub username or org"
+                        placeholder={
+                          gitHubDiscovery.status === "connected"
+                            ? "Choose or enter an owner"
+                            : "Connect token, then choose owner"
+                        }
                         type="text"
                         value={remoteConfig.owner}
                       />
+                      <datalist id="github-owner-options">
+                        {gitHubDiscovery.owners.map((owner) => (
+                          <option key={owner.login} value={owner.login}>
+                            {owner.type}
+                          </option>
+                        ))}
+                      </datalist>
                     </label>
                     <label className="sync-field">
                       <span>Repo</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitRemoteConfigChange("repo", event.target.value)
-                        }
-                        placeholder="Repository name"
-                        type="text"
-                        value={remoteConfig.repo}
-                      />
+                      {gitHubDiscovery.repoMode === "select" ? (
+                        <select
+                          disabled={!remoteConfig.owner.trim() || gitHubDiscovery.isLoadingRepos}
+                          onChange={(event) => {
+                            if (event.target.value === "__create__") {
+                              handleGitHubRepoModeChange("create");
+                              return;
+                            }
+                            if (event.target.value === "__manual__") {
+                              handleGitHubRepoModeChange("manual");
+                              return;
+                            }
+                            handleGitHubRepoSelection(event.target.value);
+                          }}
+                          value={
+                            gitHubDiscovery.repos.some((repo) => repo.name === remoteConfig.repo)
+                              ? remoteConfig.repo
+                              : ""
+                          }
+                        >
+                          <option value="">
+                            {gitHubDiscovery.isLoadingRepos
+                              ? "Loading repositories..."
+                              : "Choose repository"}
+                          </option>
+                          {gitHubDiscovery.repos.map((repo) => (
+                            <option key={repo.fullName} value={repo.name}>
+                              {repo.name}{repo.private ? " (private)" : ""}
+                            </option>
+                          ))}
+                          <option value="__create__">Create new repository...</option>
+                          <option value="__manual__">Enter manually...</option>
+                        </select>
+                      ) : (
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) =>
+                            handleGitRemoteConfigChange("repo", event.target.value)
+                          }
+                          onPaste={(event) => {
+                            if (handleGitHubUrlPaste(event.clipboardData.getData("text"))) {
+                              event.preventDefault();
+                            }
+                          }}
+                          placeholder={
+                            gitHubDiscovery.repoMode === "create"
+                              ? "New repository name"
+                              : "Repository name or GitHub URL"
+                          }
+                          type="text"
+                          value={remoteConfig.repo}
+                        />
+                      )}
+                      {gitHubDiscovery.repoMode !== "select" ? (
+                        <button
+                          className="pane__button pane__button--compact"
+                          onClick={() => handleGitHubRepoModeChange("select")}
+                          type="button"
+                        >
+                          Choose existing
+                        </button>
+                      ) : null}
                     </label>
                     <label className="sync-field">
                       <span>Branch</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitRemoteConfigChange("branch", event.target.value)
-                        }
-                        placeholder="main"
-                        type="text"
-                        value={remoteConfig.branch}
-                      />
-                    </label>
-                    <label className="sync-field">
-                      <span>Repo path</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitRemoteConfigChange("repositoryPath", event.target.value)
-                        }
-                        placeholder={defaultRepositoryPath}
-                        type="text"
-                        value={selectedGitProject?.repositoryPath ?? ""}
-                      />
+                      {gitHubDiscovery.branches.length > 0 ? (
+                        <select
+                          onChange={(event) =>
+                            handleGitRemoteConfigChange("branch", event.target.value)
+                          }
+                          value={
+                            gitHubDiscovery.branches.some((branch) => branch.name === remoteConfig.branch)
+                              ? remoteConfig.branch
+                              : ""
+                          }
+                        >
+                          <option value="">
+                            {gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "Choose branch"}
+                          </option>
+                          {gitHubDiscovery.branches.map((branch) => (
+                            <option key={branch.name} value={branch.name}>
+                              {branch.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) =>
+                            handleGitRemoteConfigChange("branch", event.target.value)
+                          }
+                          placeholder={gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "main"}
+                          type="text"
+                          value={remoteConfig.branch}
+                        />
+                      )}
                     </label>
                     <label className="sync-field">
                       <span>Remote</span>
@@ -6913,19 +8447,6 @@ export function App() {
                         placeholder="origin"
                         type="text"
                         value={remoteConfig.remoteName}
-                      />
-                    </label>
-                    <label className="sync-field">
-                      <span>Workspace path</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitProjectFieldChange("workspacePath", event.target.value)
-                        }
-                        placeholder="Leave blank for the full workspace"
-                        type="text"
-                        value={selectedGitProject?.workspacePath ?? ""}
                       />
                     </label>
                     <label className="sync-field">
@@ -6944,18 +8465,6 @@ export function App() {
                       </select>
                     </label>
                   </div>
-
-                  <label className="sync-field">
-                    <span>Token</span>
-                    <input
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      onChange={(event) => handleGitCredentialChange(event.target.value)}
-                      placeholder="Create a Fine-grained token at github.com/settings/tokens"
-                      type="password"
-                      value={selectedGitToken}
-                    />
-                  </label>
 
                   <label className="settings-toggle">
                     <span>

@@ -2,25 +2,15 @@
 
 https://max-prime-math.github.io/typr/
 
-Typr is a local-first, browser-based Typst editor for iPad and desktop. It runs as a Progressive Web App, keeps documents on device, and supports live preview, offline reopen, Vim mode, themes, and GitHub push when you are back online.  Features a diagram editor as well as a graph editor.  
+Typr is a local-first, browser-based Typst editor for iPad and desktop. It runs as a Progressive Web App, keeps projects on device, and supports live preview, offline reopen, Vim mode, themes, diagrams, graphs, a browser shell, and repo-backed GitHub sync.
 
 ## What It Does
 
-- Runs fully in the browser for the MVP.
-- Keeps documents local-first with IndexedDB autosave.
-- Supports live preview, theme switching, and Vim-compatible editing.
-- Caches core Typst assets for offline preview after install.
-- Falls back to a mock preview if WASM bootstrapping fails in a target browser.
-
-## Current Status
-
-Typr is still a focused MVP, but the core pieces are in place:
-
-- The editor, autosave, theme toggle, Vim toggle, and responsive layout are implemented.
-- The compiler layer uses a stable adapter interface.
-- The app bundles the real `typst.ts` browser compiler and renderer WASM modules.
-- GitHub push is available from the app UI when the device is online.
-- The `typst.ts` integration remains isolated in `src/compiler/typstCompiler.ts`.
+- Runs fully in the browser for the current build.
+- Stores each Typr project as its own workspace and browser-managed git repository.
+- Supports Typst preview, package caching, theme switching, and Vim-compatible editing.
+- Keeps `.git` internals hidden from the workspace tree and Browser Shell.
+- Uses local commits before remote push/pull, instead of replacing files through a document sync API.
 
 ## Getting Started
 
@@ -63,78 +53,73 @@ src/
     App.tsx
     appState.ts
   compiler/
-    mockCompiler.ts
     typstCompiler.ts
   editor/
     TypstEditor.tsx
     codemirrorSetup.ts
-    typstLanguage.ts
-  github/
-    githubSync.ts
+  git/
+    repoBackend.ts
+    remoteService.ts
+    gitState.ts
+    credentials.ts
+  project/
+    projectState.ts
   preview/
     PreviewPane.tsx
   storage/
     indexedDbStorage.ts
-  styles/
-    global.css
-  theme/
-    ThemeProvider.tsx
-    themes.ts
-  main.tsx
+  terminal/
+    browserBackend.ts
+    projectFilesystemAdapter.ts
+  workspace/
+    workspaceTree.ts
+    opfsWorkspace.ts
 ```
 
-## How It Works
+## Repo-Backed Git Model
 
-- `src/app/appState.ts` defines the project, document, and preference model.
-- `src/editor/TypstEditor.tsx` hosts the CodeMirror 6 editor inside React.
-- `src/compiler/typstCompiler.ts` owns the compiler adapter and worker lifecycle.
-- `src/preview/PreviewPane.tsx` renders compiled output, diagnostics, and fallback states.
-- `src/storage/indexedDbStorage.ts` persists and restores the full app snapshot in IndexedDB.
-- `src/theme/ThemeProvider.tsx` manages the active theme, with CSS variables in `src/styles/global.css` handling most of the visual system.
-- `src/github/githubSync.ts` implements GitHub Contents API push support with locally stored connection settings.
+Each Typr project owns its working tree, hidden `.git` data, remote config, and selected Git UI state. The project filesystem is the git working tree. Browser-managed `.git` files live in a separate IndexedDB object store keyed by Typr project id, so two projects can have separate branches, refs, indexes, commits, and remotes even when both are open in the app state.
 
-## Compiler Notes
+Use the Files pane project selector to switch Typr projects, create a new local project, or start importing a GitHub repository as a separate project. Git settings manages the selected project's managed repo entries and GitHub remote connection; changing branches, remotes, tokens, or commit state there does not change another Typr project.
 
-Real Typst compilation is wired by default using:
+The browser git backend writes Git-compatible loose objects, trees, commits, refs, HEAD, config, and a v2 index. The visible workspace and Browser Shell cannot edit, delete, list, or stage `.git` internals as normal files.
 
-- `@myriaddreamin/typst.ts`
-- `@myriaddreamin/typst-ts-web-compiler`
-- `@myriaddreamin/typst-ts-renderer`
+GitHub remotes use the GitHub Git Database REST API for blobs, trees, commits, and refs. Typr does not use the old GitHub Contents API document-sync path and does not depend on a CORS proxy. Tokens are stored only through `src/git/credentials.ts`, persisted in the credentials store, and redacted from UI feedback and command output.
 
-The compiler wrapper loads the peer-package `.wasm` assets directly and passes those bundled URLs into the `typst.ts` API.
+Supported Browser Shell commands include:
 
-The next compiler-focused improvements are:
+- `git status`
+- `git add <path|.>`
+- `git reset [path]`
+- `git commit -m <message>`
+- `git branch`, `git branch -r`
+- `git switch <branch>`, `git switch -c <branch>`
+- `git log`
+- `git remote -v`
+- `git fetch`
+- `git pull`
+- `git push`
+- `git sync`
+- `git merge --abort`
+- `git merge --continue -m <message>`
 
-1. Better diagnostic mapping from thrown errors into line-aware editor diagnostics.
-2. On-the-fly Typst package downloads with local caching.
-3. Incremental compile flows inside the warm worker to reduce repeated compile cost.
-4. Stronger GitHub auth plus pull and conflict handling.
+## Merge And Conflict Limits
 
-Package download plan:
+Fast-forward pulls are applied to the project working tree. Dirty working trees are blocked before fetch or checkout.
 
-1. Detect package imports during compile and normalize them into stable package keys.
-2. Resolve missing packages from Typst Universe, persist the fetched package tree locally, and reuse it across sessions.
-3. Surface a clear download state and fail fast when a package is unavailable offline.
-4. Keep the implementation isolated behind the compiler layer so the editor and preview code stay unchanged.
+When local and remote history diverge, Browser mode stops before merge. It records a persistent merge-stop state containing the base, local, and remote object ids for every changed path, including conflict classification. It does not auto-resolve by timestamps and does not write conflict markers into project files. The Git pane lets you inspect base/local/remote versions, choose or edit a resolution for each conflict, then create a two-parent merge commit. `git merge --abort` clears that state without changing local files or commits. Rebase, cherry-pick, tags, submodules, executable bits, symlinks, and real smart-HTTP git transport are not implemented in Browser mode.
 
-## Roadmap
+## Data Safety
 
-- Add multi-document project navigation and export/import.
-- Add richer Typst syntax highlighting and diagnostics.
-- Add pull/conflict handling for GitHub sync.
-- Improve font management for offline Typst rendering.
-- Add shareable bundles and installable templates.
-- Improve mobile editing ergonomics and keyboard shortcuts.
-- Evaluate an embedded lightweight SVG-Edit-based diagram surface.
-- LaTeX to Typst converter
-- Native Typst graphs
-- Live compilation (non-experimental)
-- PDF Markup
-- "Live View" for presenting slides and marking up like a whiteboard.
-- Native iPad app
+- Project deletion, trash emptying, and cache clearing are user-triggered actions with explicit UI controls.
+- Deleting a Typr project requires typing the project name and removes only local Typr data, browser `.git` data, managed repo entries, and stored tokens for that project. It does not delete a GitHub repository.
+- Normal project operations reject path traversal and `.git` paths.
+- Remote operations call `https://api.github.com` directly with bearer tokens in request headers.
+- Legacy project snapshots are retained as recovery data during migration.
 
-## Open Source Notes
+## Tests
 
-- License: GPL
-- Contributor-friendly structure with small, readable modules
-- Clear seams between editor, compiler, preview, and sync layers
+```bash
+npm run typecheck
+npm test
+```

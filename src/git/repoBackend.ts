@@ -20,6 +20,7 @@ import {
 } from "../storage/indexedDbStorage";
 
 const DEFAULT_BRANCH = "main";
+const MERGE_STATE_FILE = "MERGE_STATE.json";
 const DEFAULT_AUTHOR: RepoAuthor = {
   name: "Typr Local",
   email: "typr-local@example.invalid"
@@ -50,6 +51,7 @@ export interface RepoError {
     | "nothing-to-commit"
     | "invalid-author"
     | "invalid-message"
+    | "merge-conflict"
     | "unsupported"
     | "corrupt-repository"
     | "storage-error";
@@ -72,6 +74,34 @@ export interface RepoStatus {
   branch: string;
   headSha: string | null;
   entries: RepoStatusEntry[];
+  mergeState: RepoMergeState | null;
+}
+
+export interface RepoMergeFile {
+  path: string;
+  state: "conflict" | "local-only" | "remote-only" | "same-result";
+  baseOid: string | null;
+  localOid: string | null;
+  remoteOid: string | null;
+}
+
+export interface RepoMergeState {
+  kind: "diverged-pull";
+  branch: string;
+  remoteName: string;
+  remoteBranch: string;
+  baseSha: string | null;
+  localSha: string;
+  remoteSha: string;
+  startedAt: string;
+  files: RepoMergeFile[];
+  conflictCount: number;
+}
+
+export interface RepoMergeResolution {
+  path: string;
+  content?: ProjectFileContent | null;
+  oid?: string | null;
 }
 
 export interface RepoBranch {
@@ -128,6 +158,22 @@ export interface RepoBackend {
   openRepository(project: TyprProjectRepository): Promise<RepoResult<RepoStatus>>;
   getCurrentBranch(project: TyprProjectRepository): Promise<RepoResult<string>>;
   status(project: TyprProjectRepository): Promise<RepoResult<RepoStatus>>;
+  getMergeState(project: TyprProjectRepository): Promise<RepoResult<RepoMergeState | null>>;
+  beginDivergedPull(
+    project: TyprProjectRepository,
+    options: {
+      branch: string;
+      remoteName: string;
+      remoteBranch: string;
+      localSha: string;
+      remoteSha: string;
+    }
+  ): Promise<RepoResult<RepoMergeState>>;
+  abortMerge(project: TyprProjectRepository): Promise<RepoResult<RepoStatus>>;
+  continueMerge(
+    project: TyprProjectRepository,
+    options: { message: string; resolutions: RepoMergeResolution[]; author?: Partial<RepoAuthor> }
+  ): Promise<RepoResult<{ project: TyprProjectRepository; commit: RepoCommit; status: RepoStatus }>>;
   stagePaths(project: TyprProjectRepository, paths: string[]): Promise<RepoResult<RepoStatus>>;
   resetIndex(project: TyprProjectRepository, paths?: string[]): Promise<RepoResult<RepoStatus>>;
   commit(
@@ -169,6 +215,11 @@ export function createRepoBackend(storage: GitFileStorage = createIndexedDbGitFi
     openRepository: (project) => asResult(() => openRepository(storage, project)),
     getCurrentBranch: (project) => asResult(() => getCurrentBranch(storage, project)),
     status: (project) => asResult(() => getStatus(storage, project)),
+    getMergeState: (project) => asResult(() => getMergeState(storage, project)),
+    beginDivergedPull: (project, mergeOptions) =>
+      asResult(() => beginDivergedPull(storage, project, mergeOptions)),
+    abortMerge: (project) => asResult(() => abortMerge(storage, project)),
+    continueMerge: (project, options) => asResult(() => continueMerge(storage, project, options)),
     stagePaths: (project, paths) => asResult(() => stagePaths(storage, project, paths)),
     resetIndex: (project, paths) => asResult(() => resetIndex(storage, project, paths)),
     commit: (project, options) => asResult(() => commit(storage, project, options)),
@@ -297,6 +348,159 @@ async function getCurrentBranch(storage: GitFileStorage, project: TyprProjectRep
   return getCurrentBranchName(storage, project.id);
 }
 
+async function getMergeState(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<RepoMergeState | null> {
+  await assertRepositoryExists(storage, project.id);
+  return readMergeState(storage, project.id);
+}
+
+async function beginDivergedPull(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  options: {
+    branch: string;
+    remoteName: string;
+    remoteBranch: string;
+    localSha: string;
+    remoteSha: string;
+  }
+): Promise<RepoMergeState> {
+  await assertRepositoryExists(storage, project.id);
+  const existingState = await readMergeState(storage, project.id);
+  if (existingState) {
+    return existingState;
+  }
+
+  const branch = validateBranchName(options.branch);
+  const remoteName = validateRemoteName(options.remoteName);
+  const remoteBranch = validateBranchName(options.remoteBranch);
+  const localSha = validateSha(options.localSha);
+  const remoteSha = validateSha(options.remoteSha);
+  await readObject(storage, project.id, localSha, "commit");
+  await readObject(storage, project.id, remoteSha, "commit");
+  const baseSha = await findMergeBase(storage, project.id, localSha, remoteSha);
+  const files = await buildMergeFiles(storage, project.id, baseSha, localSha, remoteSha);
+  const mergeState: RepoMergeState = {
+    kind: "diverged-pull",
+    branch,
+    remoteName,
+    remoteBranch,
+    baseSha,
+    localSha,
+    remoteSha,
+    startedAt: new Date().toISOString(),
+    files,
+    conflictCount: files.filter((file) => file.state === "conflict").length
+  };
+  await writeTextFile(storage, project.id, MERGE_STATE_FILE, JSON.stringify(mergeState, null, 2));
+  return mergeState;
+}
+
+async function abortMerge(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<RepoStatus> {
+  await assertRepositoryExists(storage, project.id);
+  await storage.deleteFile(project.id, MERGE_STATE_FILE);
+  return getStatus(storage, project);
+}
+
+async function continueMerge(
+  storage: GitFileStorage,
+  project: TyprProjectRepository,
+  options: { message: string; resolutions: RepoMergeResolution[]; author?: Partial<RepoAuthor> }
+): Promise<{ project: TyprProjectRepository; commit: RepoCommit; status: RepoStatus }> {
+  await assertRepositoryExists(storage, project.id);
+  const mergeState = await readMergeState(storage, project.id);
+  if (!mergeState) {
+    throw repoFailure("not-found", "git merge --continue: no browser merge stop is active.", true);
+  }
+
+  const branch = await getCurrentBranchName(storage, project.id);
+  if (branch !== mergeState.branch) {
+    throw repoFailure(
+      "merge-conflict",
+      `git merge --continue: merge is for ${mergeState.branch}, but ${branch} is checked out.`,
+      true
+    );
+  }
+  const headSha = await getHeadSha(storage, project.id);
+  if (headSha !== mergeState.localSha) {
+    throw repoFailure(
+      "merge-conflict",
+      "git merge --continue: local HEAD changed after the merge stop. Abort and pull again.",
+      true
+    );
+  }
+
+  const message = validateCommitMessage(options.message);
+  const author = validateAuthor(options.author);
+  const resolutionByPath = new Map(
+    options.resolutions.map((resolution) => [assertRepositoryPath(resolution.path), resolution])
+  );
+  const unresolvedConflict = mergeState.files.find(
+    (file) => file.state === "conflict" && !resolutionByPath.has(file.path)
+  );
+  if (unresolvedConflict) {
+    throw repoFailure(
+      "merge-conflict",
+      `git merge --continue: ${unresolvedConflict.path} still needs an explicit resolution.`,
+      true
+    );
+  }
+
+  const nextFiles = await readCommitTreeFiles(storage, project.id, mergeState.localSha);
+  const remoteFiles = await readCommitTreeFiles(storage, project.id, mergeState.remoteSha);
+
+  for (const file of mergeState.files) {
+    if (file.state === "local-only") {
+      continue;
+    }
+
+    if (file.state === "remote-only" || file.state === "same-result") {
+      const remoteEntry = remoteFiles.get(file.path);
+      if (remoteEntry) {
+        nextFiles.set(file.path, remoteEntry);
+      } else {
+        nextFiles.delete(file.path);
+      }
+      continue;
+    }
+
+    const resolution = resolutionByPath.get(file.path);
+    if (!resolution) {
+      continue;
+    }
+    const resolvedEntry = await buildResolvedIndexEntry(storage, project.id, file.path, resolution);
+    if (resolvedEntry) {
+      nextFiles.set(file.path, resolvedEntry);
+    } else {
+      nextFiles.delete(file.path);
+    }
+  }
+
+  const index = [...nextFiles.values()].sort(comparePathEntries);
+  await writeIndex(storage, project.id, index);
+  const treeSha = await writeTreeFromIndex(storage, project.id, index);
+  const commit = await writeCommitObject(storage, project.id, {
+    treeSha,
+    parentShas: [mergeState.localSha, mergeState.remoteSha],
+    message,
+    author
+  });
+  await writeTextFile(storage, project.id, `refs/heads/${branch}`, `${commit.sha}\n`);
+  await storage.deleteFile(project.id, MERGE_STATE_FILE);
+  const nextProject = await applyTrackedFilesToProject(storage, project, nextFiles);
+  const readyProject = markProjectReady(nextProject, branch);
+  return {
+    project: readyProject,
+    commit,
+    status: await getStatus(storage, readyProject)
+  };
+}
+
 async function getStatus(storage: GitFileStorage, project: TyprProjectRepository): Promise<RepoStatus> {
   await assertRepositoryExists(storage, project.id);
   const branch = await getCurrentBranchName(storage, project.id);
@@ -319,7 +523,7 @@ async function getStatus(storage: GitFileStorage, project: TyprProjectRepository
     }
   }
 
-  return { branch, headSha, entries };
+  return { branch, headSha, entries, mergeState: await readMergeState(storage, project.id) };
 }
 
 async function stagePaths(
@@ -328,6 +532,7 @@ async function stagePaths(
   paths: string[]
 ): Promise<RepoStatus> {
   await assertRepositoryExists(storage, project.id);
+  await assertNoMergeInProgress(storage, project.id, "git add");
   const requestedPaths = normalizeRequestedPaths(paths);
   const status = await getStatus(storage, project);
   const changedPaths =
@@ -365,6 +570,7 @@ async function resetIndex(
   paths: string[] = []
 ): Promise<RepoStatus> {
   await assertRepositoryExists(storage, project.id);
+  await assertNoMergeInProgress(storage, project.id, "git reset");
   const requestedPaths = normalizeRequestedPaths(paths);
   const headSha = await getHeadSha(storage, project.id);
   const headFiles = headSha ? await readCommitTreeFiles(storage, project.id, headSha) : new Map<string, IndexEntry>();
@@ -395,6 +601,7 @@ async function commit(
   options: { message: string; author?: Partial<RepoAuthor> }
 ): Promise<RepoCommit> {
   await assertRepositoryExists(storage, project.id);
+  await assertNoMergeInProgress(storage, project.id, "git commit");
   const message = validateCommitMessage(options.message);
   const author = validateAuthor(options.author);
   const status = await getStatus(storage, project);
@@ -405,28 +612,16 @@ async function commit(
   const index = await readIndex(storage, project.id);
   const treeSha = await writeTreeFromIndex(storage, project.id, index);
   const parentSha = await getHeadSha(storage, project.id);
-  const now = Math.floor(Date.now() / 1000);
-  const timezone = formatTimezoneOffset(new Date());
-  const header = [
-    `tree ${treeSha}`,
-    parentSha ? `parent ${parentSha}` : null,
-    `author ${author.name} <${author.email}> ${now} ${timezone}`,
-    `committer ${author.name} <${author.email}> ${now} ${timezone}`,
-    ""
-  ].filter((line): line is string => line !== null);
-  const sha = await writeObject(storage, project.id, "commit", encodeUtf8(`${header.join("\n")}\n${message}\n`));
-  const branch = await getCurrentBranchName(storage, project.id);
-  await writeTextFile(storage, project.id, `refs/heads/${branch}`, `${sha}\n`);
-
-  return {
-    sha,
-    shortSha: sha.slice(0, 7),
+  const commit = await writeCommitObject(storage, project.id, {
+    treeSha,
+    parentShas: parentSha ? [parentSha] : [],
     message,
-    authorName: author.name,
-    authorEmail: author.email,
-    authoredAt: new Date(now * 1000).toISOString(),
-    parentShas: parentSha ? [parentSha] : []
-  };
+    author
+  });
+  const branch = await getCurrentBranchName(storage, project.id);
+  await writeTextFile(storage, project.id, `refs/heads/${branch}`, `${commit.sha}\n`);
+
+  return commit;
 }
 
 async function listBranches(storage: GitFileStorage, project: TyprProjectRepository): Promise<RepoBranch[]> {
@@ -464,6 +659,7 @@ async function createBranch(
   name: string
 ): Promise<RepoBranch> {
   await assertRepositoryExists(storage, project.id);
+  await assertNoMergeInProgress(storage, project.id, "git branch");
   const branchName = validateBranchName(name);
   const existing = await readTextFile(storage, project.id, `refs/heads/${branchName}`);
   if (existing !== null) {
@@ -480,6 +676,7 @@ async function switchBranch(
   name: string
 ): Promise<{ project: TyprProjectRepository; branch: RepoBranch }> {
   await assertRepositoryExists(storage, project.id);
+  await assertNoMergeInProgress(storage, project.id, "git switch");
   const branchName = validateBranchName(name);
   const branchSha = (await readTextFile(storage, project.id, `refs/heads/${branchName}`))?.trim() ?? null;
   if (branchSha === null) {
@@ -639,6 +836,7 @@ async function fastForwardBranch(
   sha: string
 ): Promise<{ project: TyprProjectRepository; status: RepoStatus }> {
   await assertRepositoryExists(storage, project.id);
+  await assertNoMergeInProgress(storage, project.id, "git pull");
   const branchName = validateBranchName(branch);
   const targetSha = validateSha(sha);
   await readObject(storage, project.id, targetSha, "commit");
@@ -678,6 +876,102 @@ async function isAncestor(
     stack.push(...commit.parentShas);
   }
   return false;
+}
+
+async function findMergeBase(
+  storage: GitFileStorage,
+  projectId: string,
+  leftSha: string,
+  rightSha: string
+): Promise<string | null> {
+  const leftAncestors = await collectAncestorShas(storage, projectId, leftSha);
+  const stack = [rightSha];
+  const seen = new Set<string>();
+
+  while (stack.length > 0) {
+    const sha = stack.shift();
+    if (!sha || seen.has(sha)) {
+      continue;
+    }
+    if (leftAncestors.has(sha)) {
+      return sha;
+    }
+    seen.add(sha);
+    const commit = await readCommit(storage, projectId, sha);
+    stack.push(...commit.parentShas);
+  }
+
+  return null;
+}
+
+async function collectAncestorShas(
+  storage: GitFileStorage,
+  projectId: string,
+  startSha: string
+): Promise<Set<string>> {
+  const ancestors = new Set<string>();
+  const stack = [startSha];
+
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || ancestors.has(sha)) {
+      continue;
+    }
+    ancestors.add(sha);
+    const commit = await readCommit(storage, projectId, sha);
+    stack.push(...commit.parentShas);
+  }
+
+  return ancestors;
+}
+
+async function buildMergeFiles(
+  storage: GitFileStorage,
+  projectId: string,
+  baseSha: string | null,
+  localSha: string,
+  remoteSha: string
+): Promise<RepoMergeFile[]> {
+  const baseFiles = baseSha
+    ? await readCommitTreeFiles(storage, projectId, baseSha)
+    : new Map<string, IndexEntry>();
+  const localFiles = await readCommitTreeFiles(storage, projectId, localSha);
+  const remoteFiles = await readCommitTreeFiles(storage, projectId, remoteSha);
+  const paths = new Set([...baseFiles.keys(), ...localFiles.keys(), ...remoteFiles.keys()]);
+  const files: RepoMergeFile[] = [];
+
+  for (const path of [...paths].sort((left, right) => left.localeCompare(right))) {
+    const baseOid = baseFiles.get(path)?.oid ?? null;
+    const localOid = localFiles.get(path)?.oid ?? null;
+    const remoteOid = remoteFiles.get(path)?.oid ?? null;
+    const localChanged = localOid !== baseOid;
+    const remoteChanged = remoteOid !== baseOid;
+
+    if (!localChanged && !remoteChanged) {
+      continue;
+    }
+
+    if (localChanged && remoteChanged) {
+      files.push({
+        path,
+        state: localOid === remoteOid ? "same-result" : "conflict",
+        baseOid,
+        localOid,
+        remoteOid
+      });
+      continue;
+    }
+
+    files.push({
+      path,
+      state: localChanged ? "local-only" : "remote-only",
+      baseOid,
+      localOid,
+      remoteOid
+    });
+  }
+
+  return files;
 }
 
 async function buildWorkingFileMap(
@@ -745,6 +1039,85 @@ async function writeTreeFromIndex(
   entries: IndexEntry[]
 ): Promise<string> {
   return writeTreeNode(storage, projectId, buildTreeNode(entries));
+}
+
+async function buildResolvedIndexEntry(
+  storage: GitFileStorage,
+  projectId: string,
+  path: string,
+  resolution: RepoMergeResolution
+): Promise<IndexEntry | null> {
+  assertRepositoryPath(path);
+
+  if ("content" in resolution) {
+    if (resolution.content === null || resolution.content === undefined) {
+      return null;
+    }
+    const bytes = typeof resolution.content === "string"
+      ? encodeUtf8(resolution.content)
+      : resolution.content;
+    const oid = await writeObject(storage, projectId, "blob", bytes);
+    return {
+      path,
+      oid,
+      mode: "100644",
+      size: bytes.byteLength
+    };
+  }
+
+  if ("oid" in resolution) {
+    if (!resolution.oid) {
+      return null;
+    }
+    const oid = validateSha(resolution.oid);
+    const bytes = await readObject(storage, projectId, oid, "blob");
+    return {
+      path,
+      oid,
+      mode: "100644",
+      size: bytes.byteLength
+    };
+  }
+
+  throw repoFailure("merge-conflict", `git merge --continue: ${path} has no resolution.`, true);
+}
+
+async function writeCommitObject(
+  storage: GitFileStorage,
+  projectId: string,
+  options: {
+    treeSha: string;
+    parentShas: string[];
+    message: string;
+    author: RepoAuthor;
+  }
+): Promise<RepoCommit> {
+  const now = Math.floor(Date.now() / 1000);
+  const timezone = formatTimezoneOffset(new Date());
+  const parentLines = options.parentShas.map((parentSha) => `parent ${validateSha(parentSha)}`);
+  const header = [
+    `tree ${validateSha(options.treeSha)}`,
+    ...parentLines,
+    `author ${options.author.name} <${options.author.email}> ${now} ${timezone}`,
+    `committer ${options.author.name} <${options.author.email}> ${now} ${timezone}`,
+    ""
+  ];
+  const sha = await writeObject(
+    storage,
+    projectId,
+    "commit",
+    encodeUtf8(`${header.join("\n")}\n${options.message}\n`)
+  );
+
+  return {
+    sha,
+    shortSha: sha.slice(0, 7),
+    message: options.message,
+    authorName: options.author.name,
+    authorEmail: options.author.email,
+    authoredAt: new Date(now * 1000).toISOString(),
+    parentShas: options.parentShas
+  };
 }
 
 async function writeTreeNode(
@@ -1017,6 +1390,86 @@ async function assertRepositoryExists(storage: GitFileStorage, projectId: string
   }
 }
 
+async function assertNoMergeInProgress(
+  storage: GitFileStorage,
+  projectId: string,
+  command: string
+): Promise<void> {
+  const mergeState = await readMergeState(storage, projectId);
+  if (!mergeState) {
+    return;
+  }
+  throw repoFailure(
+    "merge-conflict",
+    `${command}: a browser merge stop is active for ${mergeState.remoteName}/${mergeState.remoteBranch}. Resolve conflicts and use 'git merge --continue -m <message>', or use 'git merge --abort' to clear it.`,
+    true
+  );
+}
+
+async function readMergeState(
+  storage: GitFileStorage,
+  projectId: string
+): Promise<RepoMergeState | null> {
+  const text = await readTextFile(storage, projectId, MERGE_STATE_FILE);
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(text) as Partial<RepoMergeState>;
+    if (
+      parsed.kind !== "diverged-pull" ||
+      !parsed.branch ||
+      !parsed.remoteName ||
+      !parsed.remoteBranch ||
+      !parsed.localSha ||
+      !parsed.remoteSha ||
+      !Array.isArray(parsed.files)
+    ) {
+      throw new Error("invalid merge state");
+    }
+    return {
+      kind: "diverged-pull",
+      branch: validateBranchName(parsed.branch),
+      remoteName: validateRemoteName(parsed.remoteName),
+      remoteBranch: validateBranchName(parsed.remoteBranch),
+      baseSha: parsed.baseSha ? validateSha(parsed.baseSha) : null,
+      localSha: validateSha(parsed.localSha),
+      remoteSha: validateSha(parsed.remoteSha),
+      startedAt: parsed.startedAt ?? new Date().toISOString(),
+      files: parsed.files
+        .map((file) => normalizeMergeFile(file))
+        .sort((left, right) => left.path.localeCompare(right.path)),
+      conflictCount: Number.isFinite(parsed.conflictCount)
+        ? Number(parsed.conflictCount)
+        : parsed.files.filter((file) => file.state === "conflict").length
+    };
+  } catch {
+    throw repoFailure(
+      "corrupt-repository",
+      "The saved browser merge state is invalid. Use git merge --abort to clear it.",
+      true
+    );
+  }
+}
+
+function normalizeMergeFile(file: Partial<RepoMergeFile>): RepoMergeFile {
+  const state =
+    file.state === "conflict" ||
+    file.state === "local-only" ||
+    file.state === "remote-only" ||
+    file.state === "same-result"
+      ? file.state
+      : "conflict";
+  return {
+    path: assertRepositoryPath(file.path ?? ""),
+    state,
+    baseOid: file.baseOid ? validateSha(file.baseOid) : null,
+    localOid: file.localOid ? validateSha(file.localOid) : null,
+    remoteOid: file.remoteOid ? validateSha(file.remoteOid) : null
+  };
+}
+
 function markProjectReady(project: TyprProjectRepository, branch: string): TyprProjectRepository {
   if (
     project.git.backend === "browser-git" &&
@@ -1069,7 +1522,16 @@ function expandRequestedPaths(
 }
 
 function assertRepositoryPath(path: string): string {
-  const normalizedPath = normalizeProjectPath(path);
+  let normalizedPath = "";
+  try {
+    normalizedPath = normalizeProjectPath(path);
+  } catch (error) {
+    throw repoFailure(
+      "invalid-path",
+      error instanceof Error ? error.message : "Invalid repository path.",
+      true
+    );
+  }
   if (!normalizedPath || isReservedGitPath(normalizedPath)) {
     throw repoFailure("invalid-path", "Direct access to .git internals is reserved for Typr git storage.", true);
   }
@@ -1156,6 +1618,22 @@ function validateBranchName(name: string): string {
     throw repoFailure("invalid-ref", `Unsafe branch name '${name}'.`, true);
   }
   return branchName;
+}
+
+function validateRemoteName(name: string): string {
+  const remoteName = name.trim();
+  if (
+    !remoteName ||
+    remoteName.startsWith("/") ||
+    remoteName.endsWith("/") ||
+    remoteName.includes("..") ||
+    remoteName.includes("//") ||
+    /[\s~^:?*[\\\]\0]/.test(remoteName) ||
+    remoteName.split("/").some((segment) => segment.startsWith(".") || segment.endsWith("."))
+  ) {
+    throw repoFailure("invalid-ref", `Unsafe remote name '${name}'.`, true);
+  }
+  return remoteName;
 }
 
 function validateSha(sha: string): string {

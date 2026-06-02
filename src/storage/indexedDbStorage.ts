@@ -1,7 +1,6 @@
 import { openDB } from "idb";
 import type { AppSnapshot } from "../app/appState";
 import type { GitWorkspaceState } from "../git/gitState";
-import type { GitHubRemoteConfig } from "../github/githubSync";
 import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
 import type { TypstSnippet } from "../snippets/snippets";
@@ -19,6 +18,14 @@ const GIT_CREDENTIALS_KEY = "git-credentials";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
 const DESMOS_API_KEY_KEY = "desmos-api-key";
+
+export interface LegacyGitHubRemoteConfig {
+  owner: string;
+  repo: string;
+  branch: string;
+  directory: string;
+  token: string;
+}
 
 async function getDatabase() {
   return openDB(DATABASE_NAME, DATABASE_VERSION, {
@@ -66,12 +73,12 @@ export async function saveProjectStorage(storage: TyprProjectStorageState): Prom
   ]);
 }
 
-export async function loadGitHubConfig(): Promise<GitHubRemoteConfig | null> {
+export async function loadGitHubConfig(): Promise<LegacyGitHubRemoteConfig | null> {
   const database = await getDatabase();
   return (await database.get(STORE_NAME, GITHUB_CONFIG_KEY)) ?? null;
 }
 
-export async function saveGitHubConfig(config: GitHubRemoteConfig): Promise<void> {
+export async function saveGitHubConfig(config: LegacyGitHubRemoteConfig): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, config, GITHUB_CONFIG_KEY);
 }
@@ -116,6 +123,17 @@ export async function writeProjectGitFile(
 export async function deleteProjectGitFile(projectId: string, path: string): Promise<void> {
   const database = await getDatabase();
   await database.delete(GIT_FILE_STORE_NAME, getProjectGitFileKey(projectId, path));
+}
+
+export async function deleteProjectGitFiles(projectId: string): Promise<void> {
+  const database = await getDatabase();
+  const projectPrefix = getProjectGitFileKey(projectId, "");
+  const keys = await database.getAllKeys(GIT_FILE_STORE_NAME);
+  const projectKeys = keys.filter((key): key is string =>
+    typeof key === "string" && key.startsWith(projectPrefix)
+  );
+
+  await Promise.all(projectKeys.map((key) => database.delete(GIT_FILE_STORE_NAME, key)));
 }
 
 export async function listProjectGitFiles(projectId: string, prefix = ""): Promise<string[]> {
