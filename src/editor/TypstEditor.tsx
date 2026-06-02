@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  memo,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -103,7 +104,7 @@ export interface TypstEditorHandle {
   replaceAll: () => void;
 }
 
-export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor({
+const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(function TypstEditor({
   value,
   readOnly = false,
   vimMode,
@@ -508,6 +509,8 @@ export const TypstEditor = forwardRef<TypstEditorHandle, TypstEditorProps>(funct
 
   return <div className="editor-root" ref={containerRef} />;
 });
+
+export const TypstEditor = memo(TypstEditorComponent);
 
 function applyEditorChanges(
   currentValueRef: MutableRefObject<string>,

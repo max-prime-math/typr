@@ -6,7 +6,7 @@ import {
   writeProjectFile
 } from "../project/projectState";
 import { createMemoryGitFileStorage, createRepoBackend } from "./repoBackend";
-import { createRemoteGitService } from "./remoteService";
+import { createRemoteGitService, type RemoteGitProgress } from "./remoteService";
 
 function createProject() {
   const storage = createProjectStorageFromSnapshot(createDefaultSnapshot());
@@ -32,11 +32,34 @@ async function sha1Hex(bytes: Uint8Array): Promise<string> {
 
 async function gitObjectSha(type: "blob" | "commit" | "tree", content: string): Promise<string> {
   const body = new TextEncoder().encode(content);
+  return gitObjectShaBytes(type, body);
+}
+
+async function gitObjectShaBytes(type: "blob" | "commit" | "tree", body: Uint8Array): Promise<string> {
   const header = new TextEncoder().encode(`${type} ${body.byteLength}\0`);
   const payload = new Uint8Array(header.byteLength + body.byteLength);
   payload.set(header, 0);
   payload.set(body, header.byteLength);
   return sha1Hex(payload);
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }
 
 function decodeBase64Text(content: string): string {
@@ -391,6 +414,8 @@ describe("remoteGitService", () => {
 
     let createdRemoteSha = "";
     let createdCommitResponse: unknown = null;
+    const progressMessages: string[] = [];
+    const progressEvents: RemoteGitProgress[] = [];
     const blobs = new Map<string, string>();
     const trees = new Map<string, Array<{ path: string; mode: string; type: "blob"; sha: string; size: number }>>();
     const service = createRemoteGitService({
@@ -474,10 +499,18 @@ describe("remoteGitService", () => {
     const result = await service.push(
       project,
       { owner: "owner", repo: "repo", branch: "main", remoteName: "origin" },
-      () => "token"
+      () => "token",
+      {
+        onProgress: (progress) => {
+          progressMessages.push(progress.message);
+          progressEvents.push(progress);
+        }
+      }
     );
 
     expect(result.ok).toBe(true);
+    expect(progressMessages).toContain(`Uploading commit 1 of 1 (${commit.value.sha.slice(0, 7)}).`);
+    expect(progressEvents.some((progress) => progress.total && progress.current === progress.total)).toBe(true);
     const localRef = await backend.getRef(project, "refs/heads/main");
     const remoteRef = await backend.getRef(project, "refs/remotes/origin/main");
     expect(localRef.ok && localRef.value).toBe(createdRemoteSha);
@@ -556,6 +589,122 @@ describe("remoteGitService", () => {
     expect(hasObject.ok && hasObject.value).toBe(true);
     const ref = await backend.getRef(init.value, "refs/remotes/origin/main");
     expect(ref.ok && ref.value).toBe(remoteSha);
+  });
+
+  it("fetches blobs for the remote tip while keeping parent commits metadata-only", async () => {
+    const backend = createRepoBackend(createMemoryGitFileStorage());
+    const timestamp = Math.floor(Date.parse("2024-03-09T16:00:00Z") / 1000);
+    const oldBlobText = "old\n";
+    const newBlobText = "new\n";
+    const oldBlobSha = await gitObjectSha("blob", oldBlobText);
+    const newBlobSha = await gitObjectSha("blob", newBlobText);
+    const oldTreeContent = concatBytes([
+      new TextEncoder().encode("100644 main.typ\0"),
+      hexToBytes(oldBlobSha)
+    ]);
+    const newTreeContent = concatBytes([
+      new TextEncoder().encode("100644 main.typ\0"),
+      hexToBytes(newBlobSha)
+    ]);
+    const oldTreeSha = await gitObjectShaBytes("tree", oldTreeContent);
+    const newTreeSha = await gitObjectShaBytes("tree", newTreeContent);
+    const parentCommitText =
+      `tree ${oldTreeSha}\n` +
+      `author A <a@example.com> ${timestamp} +0000\n` +
+      `committer A <a@example.com> ${timestamp} +0000\n\n` +
+      "parent\n";
+    const parentSha = await gitObjectSha("commit", parentCommitText);
+    const childCommitText =
+      `tree ${newTreeSha}\n` +
+      `parent ${parentSha}\n` +
+      `author A <a@example.com> ${timestamp} +0000\n` +
+      `committer A <a@example.com> ${timestamp} +0000\n\n` +
+      "child\n";
+    const childSha = await gitObjectSha("commit", childCommitText);
+    const blobRequests: string[] = [];
+    let remoteTipSha = childSha;
+    const service = createRemoteGitService({
+      repoBackend: backend,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/repos/owner/repo")) {
+          return jsonResponse({});
+        }
+        if (url.includes("/git/ref/heads/main")) {
+          return jsonResponse({ object: { sha: remoteTipSha } });
+        }
+        if (url.includes(`/git/commits/${childSha}`)) {
+          return jsonResponse({
+            sha: childSha,
+            message: "child",
+            tree: { sha: newTreeSha },
+            parents: [{ sha: parentSha }],
+            author: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" },
+            committer: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" }
+          });
+        }
+        if (url.includes(`/git/commits/${parentSha}`)) {
+          return jsonResponse({
+            sha: parentSha,
+            message: "parent",
+            tree: { sha: oldTreeSha },
+            parents: [],
+            author: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" },
+            committer: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" }
+          });
+        }
+        if (url.includes(`/git/trees/${newTreeSha}`)) {
+          return jsonResponse({
+            sha: newTreeSha,
+            tree: [{ type: "blob", sha: newBlobSha, path: "main.typ", mode: "100644", size: newBlobText.length }]
+          });
+        }
+        if (url.includes(`/git/trees/${oldTreeSha}`)) {
+          return jsonResponse({
+            sha: oldTreeSha,
+            tree: [{ type: "blob", sha: oldBlobSha, path: "main.typ", mode: "100644", size: oldBlobText.length }]
+          });
+        }
+        if (url.includes(`/git/blobs/${newBlobSha}`)) {
+          blobRequests.push(newBlobSha);
+          return jsonResponse({ content: btoa(newBlobText), encoding: "base64" });
+        }
+        if (url.includes(`/git/blobs/${oldBlobSha}`)) {
+          blobRequests.push(oldBlobSha);
+          return jsonResponse({ content: btoa(oldBlobText), encoding: "base64" });
+        }
+        return jsonResponse({ message: `unexpected request ${url}` }, 500);
+      }
+    });
+    const init = await backend.initRepository(createProject());
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+
+    const result = await service.fetch(
+      init.value,
+      { owner: "owner", repo: "repo", branch: "main", remoteName: "origin" },
+      () => "token"
+    );
+
+    expect(result.ok).toBe(true);
+    expect(blobRequests).toEqual([newBlobSha]);
+    const hasChildBlob = await backend.hasObject(init.value, newBlobSha);
+    const hasParentBlob = await backend.hasObject(init.value, oldBlobSha);
+    expect(hasChildBlob.ok && hasChildBlob.value).toBe(true);
+    expect(hasParentBlob.ok && hasParentBlob.value).toBe(false);
+
+    blobRequests.length = 0;
+    remoteTipSha = parentSha;
+    const parentResult = await service.fetch(
+      init.value,
+      { owner: "owner", repo: "repo", branch: "main", remoteName: "origin" },
+      () => "token"
+    );
+
+    expect(parentResult.ok).toBe(true);
+    expect(blobRequests).toEqual([oldBlobSha]);
+    const hasBackfilledParentBlob = await backend.hasObject(init.value, oldBlobSha);
+    expect(hasBackfilledParentBlob.ok && hasBackfilledParentBlob.value).toBe(true);
   });
 
   it("leaves local commits and working tree intact when push authentication fails", async () => {

@@ -73,6 +73,33 @@ describe("repoBackend", () => {
     expect(log.ok && log.value[0]?.message).toBe("initial commit");
   });
 
+  it("reports git object storage and prunes unreachable loose objects", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    let project = createProject();
+
+    const init = await backend.initRepository(project);
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+    project = init.value;
+
+    const orphan = await backend.writeObject(project, "blob", new TextEncoder().encode("orphan\n"));
+    expect(orphan.ok).toBe(true);
+
+    const before = await backend.getStorageStats(project);
+    expect(before.ok).toBe(true);
+    expect(before.ok && before.value.objectCounts.blob).toBeGreaterThan(0);
+
+    const pruned = await backend.pruneObjects(project);
+    expect(pruned.ok).toBe(true);
+    expect(pruned.ok && pruned.value.deletedObjectCount).toBe(1);
+
+    if (orphan.ok) {
+      const hasOrphan = await backend.hasObject(project, orphan.value);
+      expect(hasOrphan.ok && hasOrphan.value).toBe(false);
+    }
+  });
+
   it("blocks unsafe branch switches with local changes", async () => {
     const backend = createRepoBackend(createMemoryGitFileStorage());
     let project = createProject();

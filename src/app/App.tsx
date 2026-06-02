@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ChangeEvent,
@@ -187,6 +188,7 @@ import {
   type RepoBranch,
   type RepoCommit,
   type RepoMergeResolution,
+  type RepoStorageStats,
   type RepoStatus,
   type RepoStatusEntry
 } from "../git/repoBackend";
@@ -196,6 +198,7 @@ import {
   type RemoteGitConfig,
   type RemoteGitAccount,
   type RemoteGitBranchSummary,
+  type RemoteGitProgress,
   type RemoteGitRepositorySummary,
   type UpstreamTracking
 } from "../git/remoteService";
@@ -233,6 +236,7 @@ import { shouldIgnorePath } from "../git/pathFilters";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
+const SYNC_PROGRESS_UPDATE_INTERVAL_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
 const MOVE_HOVER_EXPAND_DELAY_MS = 1000;
 const PANEL_LAYOUT_STORAGE_KEY = "typr.panel-layout";
@@ -360,6 +364,46 @@ type TableStroke = "default" | "none";
 interface SyncFeedback {
   tone: "neutral" | "success" | "error";
   text: string;
+}
+
+type SyncStatusSnapshot = SyncFeedback & {
+  progress: { current: number; total: number } | null;
+};
+
+const INITIAL_SYNC_STATUS: SyncStatusSnapshot = {
+  tone: "neutral",
+  text: "Documents stay on this device. Pull, push, and sync use the local Git repo when you are online.",
+  progress: null
+};
+
+let syncStatusSnapshot = INITIAL_SYNC_STATUS;
+const syncStatusListeners = new Set<() => void>();
+
+function subscribeSyncStatus(listener: () => void): () => void {
+  syncStatusListeners.add(listener);
+  return () => {
+    syncStatusListeners.delete(listener);
+  };
+}
+
+function getSyncStatusSnapshot(): SyncStatusSnapshot {
+  return syncStatusSnapshot;
+}
+
+function setSyncStatusSnapshot(nextStatus: SyncStatusSnapshot): void {
+  if (
+    syncStatusSnapshot.tone === nextStatus.tone &&
+    syncStatusSnapshot.text === nextStatus.text &&
+    syncStatusSnapshot.progress?.current === nextStatus.progress?.current &&
+    syncStatusSnapshot.progress?.total === nextStatus.progress?.total
+  ) {
+    return;
+  }
+
+  syncStatusSnapshot = nextStatus;
+  for (const listener of syncStatusListeners) {
+    listener();
+  }
 }
 
 interface GitFileStatus {
@@ -896,14 +940,17 @@ export function App() {
   const [isErrorSettled, setIsErrorSettled] = useState(false);
   const [isCompiling, setIsCompiling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const syncOperationRef = useRef(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [storageStatus, setStorageStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle"
   );
-  const [syncFeedback, setSyncFeedback] = useState<SyncFeedback>({
-    tone: "neutral",
-    text: "Documents stay on this device. Pull, push, and sync use the local Git repo when you are online."
-  });
+  const pendingSyncProgressRef = useRef<RemoteGitProgress | null>(null);
+  const syncProgressFlushTimerRef = useRef<number | null>(null);
+  const lastSyncProgressFlushAtRef = useRef(0);
+  const setSyncFeedback = useCallback((feedback: SyncFeedback) => {
+    setSyncStatusSnapshot({ ...feedback, progress: null });
+  }, []);
   const [gitCredentials, setGitCredentials] = useState<Record<string, string>>({});
   const [gitHubDiscovery, setGitHubDiscovery] = useState<GitHubDiscoveryState>({
     status: "idle",
@@ -935,6 +982,12 @@ export function App() {
   const [mergeResolutionDrafts, setMergeResolutionDrafts] = useState<Record<string, MergeResolutionDraft>>({});
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [gitRefreshToken, setGitRefreshToken] = useState(0);
+  const [repoStorageStats, setRepoStorageStats] = useState<RepoStorageStats | null>(null);
+  const [isRepoStorageLoading, setIsRepoStorageLoading] = useState(false);
+  const [repoStorageFeedback, setRepoStorageFeedback] = useState<SyncFeedback>({
+    tone: "neutral",
+    text: ""
+  });
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator === "undefined" ? true : navigator.onLine
   );
@@ -1052,6 +1105,37 @@ export function App() {
         : [],
     [gitWorkspace.projects, selectedProjectRepository]
   );
+  const githubConnectedProjectOptions = useMemo(
+    () =>
+      projectStorage.projects.flatMap((project) => {
+        const connectedProjects = gitWorkspace.projects.filter(
+          (managedProject) =>
+            managedProject.projectId === project.id &&
+            managedProject.owner.trim() &&
+            managedProject.repo.trim()
+        );
+        if (connectedProjects.length === 0) {
+          return [];
+        }
+
+        const scopedSelection = gitWorkspace.selectedProjectIdsByTyprProjectId[project.id];
+        const selectedManagedProject =
+          connectedProjects.find((managedProject) => managedProject.id === scopedSelection) ??
+          connectedProjects[0];
+
+        return [
+          {
+            project,
+            managedProject: selectedManagedProject
+          }
+        ];
+      }),
+    [
+      gitWorkspace.projects,
+      gitWorkspace.selectedProjectIdsByTyprProjectId,
+      projectStorage.projects
+    ]
+  );
   const selectedGitProject = useMemo(
     () => {
       if (!selectedProjectRepository) {
@@ -1092,6 +1176,12 @@ export function App() {
     [selectedGitProject]
   );
   const selectedGitToken = selectedGitProject ? (gitCredentials[selectedGitProject.id] ?? "") : "";
+  const selectedGitProjectIsGitHubConnected =
+    Boolean(selectedGitProject?.owner.trim() && selectedGitProject?.repo.trim());
+  const selectedGitHubProjectDropdownValue =
+    selectedGitProjectIsGitHubConnected && selectedProjectRepository
+      ? selectedProjectRepository.id
+      : "";
   useEffect(() => {
     if (!isHydrated || !selectedGitProject || !selectedProjectRepository) {
       return;
@@ -1610,6 +1700,59 @@ export function App() {
     [repoBackend, remoteGitService, selectedGitProject, selectedProjectRepository, setProjectRepository]
   );
 
+  const refreshRepoStorageStats = useCallback(
+    async (project: TyprProjectRepository | null = selectedProjectRepository) => {
+      if (!project) {
+        setRepoStorageStats(null);
+        return;
+      }
+
+      setIsRepoStorageLoading(true);
+      const result = await repoBackend.getStorageStats(project);
+      setIsRepoStorageLoading(false);
+      if (!result.ok) {
+        setRepoStorageStats(null);
+        setRepoStorageFeedback({
+          tone: "error",
+          text: formatRepoError(result.error)
+        });
+        return;
+      }
+
+      setRepoStorageStats(result.value);
+    },
+    [repoBackend, selectedProjectRepository]
+  );
+
+  const handlePruneRepoObjects = useCallback(async () => {
+    if (!selectedProjectRepository) {
+      return;
+    }
+
+    setIsRepoStorageLoading(true);
+    const result = await repoBackend.pruneObjects(selectedProjectRepository);
+    setIsRepoStorageLoading(false);
+    if (!result.ok) {
+      setRepoStorageFeedback({
+        tone: "error",
+        text: formatRepoError(result.error)
+      });
+      return;
+    }
+
+    setRepoStorageFeedback({
+      tone: "success",
+      text:
+        result.value.deletedObjectCount === 0
+          ? "No unreachable Git objects found."
+          : `Removed ${result.value.deletedObjectCount} unreachable object${
+              result.value.deletedObjectCount === 1 ? "" : "s"
+            } and freed ${formatByteSize(result.value.deletedBytes)}.`
+    });
+    await refreshRepoStorageStats(selectedProjectRepository);
+    setGitRefreshToken((token) => token + 1);
+  }, [refreshRepoStorageStats, repoBackend, selectedProjectRepository]);
+
   useEffect(() => {
     if (!isHydrated || !selectedProjectRepository) {
       return;
@@ -1631,6 +1774,21 @@ export function App() {
     isHydrated,
     refreshLocalRepoState,
     selectedProjectRepository?.filesystem.updatedAt,
+    selectedProjectRepository?.git.headRef,
+    selectedProjectRepository?.id
+  ]);
+
+  useEffect(() => {
+    if (!isHydrated || !selectedProjectRepository) {
+      setRepoStorageStats(null);
+      return;
+    }
+
+    void refreshRepoStorageStats(selectedProjectRepository);
+  }, [
+    gitRefreshToken,
+    isHydrated,
+    refreshRepoStorageStats,
     selectedProjectRepository?.git.headRef,
     selectedProjectRepository?.id
   ]);
@@ -3575,6 +3733,57 @@ export function App() {
     });
   }, []);
 
+  const selectGitHubConnectedProject = useCallback(
+    (projectId: string) => {
+      const option = githubConnectedProjectOptions.find(
+        (connectedProject) => connectedProject.project.id === projectId
+      );
+      if (!option) {
+        return;
+      }
+
+      setProjectStorage((currentStorage) => {
+        const nextProject = currentStorage.projects.find((project) => project.id === projectId);
+        if (!nextProject) {
+          return currentStorage;
+        }
+
+        setRawSnapshot((currentSnapshot) => ({
+          ...currentSnapshot,
+          project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
+        }));
+
+        return {
+          ...currentStorage,
+          selectedProjectId: nextProject.id
+        };
+      });
+
+      setGitWorkspace((currentWorkspace) => {
+        const selectedManagedProject = currentWorkspace.projects.find(
+          (managedProject) =>
+            managedProject.id === option.managedProject.id &&
+            managedProject.projectId === projectId &&
+            managedProject.owner.trim() &&
+            managedProject.repo.trim()
+        );
+        if (!selectedManagedProject) {
+          return currentWorkspace;
+        }
+
+        return {
+          ...currentWorkspace,
+          selectedProjectId: selectedManagedProject.id,
+          selectedProjectIdsByTyprProjectId: {
+            ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+            [projectId]: selectedManagedProject.id
+          }
+        };
+      });
+    },
+    [githubConnectedProjectOptions]
+  );
+
   const addDefaultGitManagedProject = useCallback(
     (project: TyprProjectRepository, projectName = `${project.displayName} repo`) => {
       const nextProject = createEmptyGitManagedProject({
@@ -4711,6 +4920,12 @@ export function App() {
       result: Awaited<ReturnType<typeof remoteGitService.push>>,
       updateProject: "pull" | "push" | "fetch" | "sync"
     ) => {
+      syncOperationRef.current = false;
+      pendingSyncProgressRef.current = null;
+      if (syncProgressFlushTimerRef.current !== null) {
+        window.clearTimeout(syncProgressFlushTimerRef.current);
+        syncProgressFlushTimerRef.current = null;
+      }
       setIsSyncing(false);
       const message = redactGitSecrets(result.message, [selectedGitToken]);
       setSyncFeedback({ tone: result.ok ? "success" : "error", text: message });
@@ -4738,36 +4953,139 @@ export function App() {
         ? { ok: true as const, message }
         : { ok: false as const, message };
     },
-    [remoteGitService.push, selectedGitProject, selectedGitToken, setProjectRepository, updateGitManagedProject]
+    [selectedGitProject, selectedGitToken, setProjectRepository, updateGitManagedProject]
   );
+
+  const applyRemoteGitProgress = useCallback((progress: RemoteGitProgress) => {
+    if (
+      typeof progress.current === "number" &&
+      typeof progress.total === "number" &&
+      progress.total > 0
+    ) {
+      setSyncStatusSnapshot({
+        tone: "neutral",
+        text: progress.message,
+        progress: {
+          current: Math.max(0, Math.min(progress.current, progress.total)),
+          total: progress.total
+        }
+      });
+      return;
+    }
+    setSyncStatusSnapshot({ tone: "neutral", text: progress.message, progress: null });
+  }, []);
+
+  const flushRemoteGitProgress = useCallback(() => {
+    const progress = pendingSyncProgressRef.current;
+    if (!progress) {
+      return;
+    }
+    pendingSyncProgressRef.current = null;
+    if (syncProgressFlushTimerRef.current !== null) {
+      window.clearTimeout(syncProgressFlushTimerRef.current);
+      syncProgressFlushTimerRef.current = null;
+    }
+    lastSyncProgressFlushAtRef.current = Date.now();
+    applyRemoteGitProgress(progress);
+  }, [applyRemoteGitProgress]);
+
+  const handleRemoteGitProgress = useCallback((progress: RemoteGitProgress) => {
+    if (
+      typeof progress.current === "number" &&
+      typeof progress.total === "number" &&
+      progress.total > 0
+    ) {
+      pendingSyncProgressRef.current = progress;
+      const now = Date.now();
+      const elapsed = now - lastSyncProgressFlushAtRef.current;
+      const complete = progress.current >= progress.total;
+      if (complete || elapsed >= SYNC_PROGRESS_UPDATE_INTERVAL_MS) {
+        flushRemoteGitProgress();
+        return;
+      }
+      if (syncProgressFlushTimerRef.current === null) {
+        syncProgressFlushTimerRef.current = window.setTimeout(
+          flushRemoteGitProgress,
+          SYNC_PROGRESS_UPDATE_INTERVAL_MS - elapsed
+        );
+      }
+      return;
+    }
+    pendingSyncProgressRef.current = progress;
+    flushRemoteGitProgress();
+  }, [flushRemoteGitProgress]);
+
+  const beginRemoteOperation = useCallback((message: string) => {
+    if (syncOperationRef.current) {
+      const busyMessage = "A Git remote operation is already running.";
+      setSyncFeedback({ tone: "neutral", text: busyMessage });
+      return false;
+    }
+    syncOperationRef.current = true;
+    pendingSyncProgressRef.current = null;
+    if (syncProgressFlushTimerRef.current !== null) {
+      window.clearTimeout(syncProgressFlushTimerRef.current);
+      syncProgressFlushTimerRef.current = null;
+    }
+    lastSyncProgressFlushAtRef.current = 0;
+    setIsSyncing(true);
+    setSyncFeedback({ tone: "neutral", text: message });
+    return true;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (syncProgressFlushTimerRef.current !== null) {
+        window.clearTimeout(syncProgressFlushTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleFetchRemote = useCallback(async () => {
     const ready = validateRemoteAction();
     if (!ready.ok) return ready;
-    setIsSyncing(true);
-    setSyncFeedback({ tone: "neutral", text: `Fetching ${remoteConfig.remoteName}/${remoteConfig.branch}...` });
+    if (!beginRemoteOperation(`Fetching ${remoteConfig.remoteName}/${remoteConfig.branch}...`)) {
+      return { ok: false as const, message: "A Git remote operation is already running." };
+    }
     const result = await remoteGitService.fetch(
       ready.repository,
       remoteConfig,
       () => selectedGitToken,
-      { onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message }) }
+      { onProgress: handleRemoteGitProgress }
     );
     return finishRemoteOperation(result, "fetch");
-  }, [finishRemoteOperation, remoteConfig, remoteGitService, selectedGitToken, validateRemoteAction]);
+  }, [
+    beginRemoteOperation,
+    finishRemoteOperation,
+    handleRemoteGitProgress,
+    remoteConfig,
+    remoteGitService,
+    selectedGitToken,
+    validateRemoteAction
+  ]);
 
   const handlePushRemote = useCallback(async () => {
     const ready = validateRemoteAction();
     if (!ready.ok) return ready;
-    setIsSyncing(true);
-    setSyncFeedback({ tone: "neutral", text: `Pushing ${remoteConfig.branch} to ${remoteConfig.remoteName}...` });
+    if (!beginRemoteOperation(`Pushing ${remoteConfig.branch} to ${remoteConfig.remoteName}...`)) {
+      return { ok: false as const, message: "A Git remote operation is already running." };
+    }
     const result = await remoteGitService.push(
       ready.repository,
       remoteConfig,
       () => selectedGitToken,
-      { onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message }) }
+      { onProgress: handleRemoteGitProgress }
     );
     return finishRemoteOperation(result, "push");
-  }, [finishRemoteOperation, remoteConfig, remoteGitService, selectedGitToken, validateRemoteAction]);
+  }, [
+    beginRemoteOperation,
+    finishRemoteOperation,
+    handleRemoteGitProgress,
+    remoteConfig,
+    remoteGitService,
+    selectedGitToken,
+    validateRemoteAction
+  ]);
 
   const handlePullRemote = useCallback(async () => {
     const ready = validateRemoteAction();
@@ -4782,16 +5100,26 @@ export function App() {
       setSyncFeedback({ tone: "error", text: message });
       return { ok: false as const, message };
     }
-    setIsSyncing(true);
-    setSyncFeedback({ tone: "neutral", text: `Pulling ${remoteConfig.remoteName}/${remoteConfig.branch}...` });
+    if (!beginRemoteOperation(`Pulling ${remoteConfig.remoteName}/${remoteConfig.branch}...`)) {
+      return { ok: false as const, message: "A Git remote operation is already running." };
+    }
     const result = await remoteGitService.pull(
       ready.repository,
       remoteConfig,
       () => selectedGitToken,
-      { onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message }) }
+      { onProgress: handleRemoteGitProgress }
     );
     return finishRemoteOperation(result, "pull");
-  }, [finishRemoteOperation, localRepoStatus, remoteConfig, remoteGitService, selectedGitToken, validateRemoteAction]);
+  }, [
+    beginRemoteOperation,
+    finishRemoteOperation,
+    handleRemoteGitProgress,
+    localRepoStatus,
+    remoteConfig,
+    remoteGitService,
+    selectedGitToken,
+    validateRemoteAction
+  ]);
 
   const handleSyncRemote = useCallback(async () => {
     const pullResult = await handlePullRemote();
@@ -5685,6 +6013,14 @@ export function App() {
         : storageStatus === "error"
           ? "Save failed"
           : "Local-first";
+  const syncStatusMeta =
+    `${isOnline ? "Network available" : "Network unavailable"} · ${storageLabel}` +
+    (selectedGitProject?.lastPulledAt
+      ? ` · last pull ${new Date(selectedGitProject.lastPulledAt).toLocaleString()}`
+      : "") +
+    (selectedGitProject?.lastPushedAt
+      ? ` · last push ${new Date(selectedGitProject.lastPushedAt).toLocaleString()}`
+      : "");
   const workspaceModeLabel = describeWorkspaceMode(workspaceMode);
   const allThemes = [...builtinThemes, ...customThemes];
   const allSnippets = useMemo(
@@ -6952,22 +7288,28 @@ export function App() {
                   <div className="sync-stack">
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
-                        <span>Git projects</span>
+                        <span>GitHub projects</span>
                         <span className="pane__meta">
-                          {selectedGitProject
+                          {selectedGitProjectIsGitHubConnected && selectedGitProject
                             ? selectedGitProject.backendId
-                            : "No repo"}
+                            : `${githubConnectedProjectOptions.length} connected`}
                         </span>
                       </div>
                       <div className="sidebar-card__actions">
                         <select
                           className="pane__button pane__button--compact"
-                          onChange={(event) => selectGitManagedProject(event.target.value || null)}
-                          value={selectedGitProject?.id ?? ""}
+                          disabled={githubConnectedProjectOptions.length === 0}
+                          onChange={(event) => selectGitHubConnectedProject(event.target.value)}
+                          value={selectedGitHubProjectDropdownValue}
                         >
-                          {gitProjectsForSelectedTyprProject.map((project) => (
+                          <option disabled value="">
+                            {githubConnectedProjectOptions.length === 0
+                              ? "No GitHub projects"
+                              : "Choose GitHub project"}
+                          </option>
+                          {githubConnectedProjectOptions.map(({ project }) => (
                             <option key={project.id} value={project.id}>
-                              {project.name}
+                              {project.displayName}
                             </option>
                           ))}
                         </select>
@@ -6987,7 +7329,6 @@ export function App() {
                           Remove
                         </button>
                       </div>
-                      <p className="sidebar-card__copy">{syncFeedback.text}</p>
                       {selectedGitProject ? (
                         <div className="pane__meta">
                           {selectedGitProject.owner && selectedGitProject.repo
@@ -7035,6 +7376,56 @@ export function App() {
                           type="button"
                         >
                           {isSyncing ? "Syncing..." : "Sync"}
+                        </button>
+                      </div>
+                      <SyncStatusBar
+                        active={isSyncing}
+                        meta={syncStatusMeta}
+                      />
+                    </div>
+
+                    <div className="sidebar-card">
+                      <div className="sidebar-card__row">
+                        <span>Storage</span>
+                        <span className="pane__meta">
+                          {isRepoStorageLoading
+                            ? "Measuring"
+                            : repoStorageStats
+                              ? formatByteSize(repoStorageStats.objectBytes)
+                              : "Unknown"}
+                        </span>
+                      </div>
+                      {repoStorageStats ? (
+                        <p className="sidebar-card__copy">
+                          {repoStorageStats.objectCount} loose objects:{" "}
+                          {repoStorageStats.objectCounts.commit} commits,{" "}
+                          {repoStorageStats.objectCounts.tree} trees,{" "}
+                          {repoStorageStats.objectCounts.blob} blobs.
+                        </p>
+                      ) : null}
+                      {repoStorageFeedback.text ? (
+                        <p className="sidebar-card__copy">{repoStorageFeedback.text}</p>
+                      ) : null}
+                      <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={isRepoStorageLoading || !selectedProjectRepository}
+                          onClick={() => {
+                            void refreshRepoStorageStats();
+                          }}
+                          type="button"
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={isRepoStorageLoading || !selectedProjectRepository}
+                          onClick={() => {
+                            void handlePruneRepoObjects();
+                          }}
+                          type="button"
+                        >
+                          Clean up
                         </button>
                       </div>
                     </div>
@@ -8536,26 +8927,6 @@ export function App() {
                     />
                   </label>
 
-                  <div
-                    className={`sync-feedback ${
-                      syncFeedback.tone === "success"
-                        ? "sync-feedback--success"
-                        : syncFeedback.tone === "error"
-                          ? "sync-feedback--error"
-                          : ""
-                    }`}
-                  >
-                    <span>{syncFeedback.text}</span>
-                    <span className="sync-feedback__meta">
-                      {isOnline ? "Network available" : "Network unavailable"} · {storageLabel}
-                      {selectedGitProject?.lastPulledAt
-                        ? ` · last pull ${new Date(selectedGitProject.lastPulledAt).toLocaleString()}`
-                        : ""}
-                      {selectedGitProject?.lastPushedAt
-                        ? ` · last push ${new Date(selectedGitProject.lastPushedAt).toLocaleString()}`
-                        : ""}
-                    </span>
-                  </div>
                 </div>
               ) : settingsTab === "themes" ? (
                 <div className="settings-panel" role="tabpanel">
@@ -9198,36 +9569,43 @@ export function App() {
             </div>
 
             <div className="settings-sheet__footer">
-              <button
-                className="control-button"
-                disabled={!canPullRemote}
-                onClick={() => {
-                  void handlePullRemote();
-                }}
-                type="button"
-              >
-                {isSyncing ? "Pulling..." : "Pull"}
-              </button>
-              <button
-                className="control-button"
-                disabled={!canPushRemote}
-                onClick={() => {
-                  void handlePushRemote();
-                }}
-                type="button"
-              >
-                {isSyncing ? "Pushing..." : "Push"}
-              </button>
-              <button
-                className="control-button"
-                disabled={!canSyncRemote}
-                onClick={() => {
-                  void handleSyncRemote();
-                }}
-                type="button"
-              >
-                {isSyncing ? "Syncing..." : "Sync"}
-              </button>
+              <SyncStatusBar
+                active={isSyncing}
+                className="sync-status-bar--footer"
+                meta={syncStatusMeta}
+              />
+              <div className="settings-sheet__footer-actions">
+                <button
+                  className="control-button"
+                  disabled={!canPullRemote}
+                  onClick={() => {
+                    void handlePullRemote();
+                  }}
+                  type="button"
+                >
+                  {isSyncing ? "Pulling..." : "Pull"}
+                </button>
+                <button
+                  className="control-button"
+                  disabled={!canPushRemote}
+                  onClick={() => {
+                    void handlePushRemote();
+                  }}
+                  type="button"
+                >
+                  {isSyncing ? "Pushing..." : "Push"}
+                </button>
+                <button
+                  className="control-button"
+                  disabled={!canSyncRemote}
+                  onClick={() => {
+                    void handleSyncRemote();
+                  }}
+                  type="button"
+                >
+                  {isSyncing ? "Syncing..." : "Sync"}
+                </button>
+              </div>
             </div>
           </section>
         </div>
@@ -9256,6 +9634,59 @@ export function App() {
         tabIndex={-1}
         type="file"
       />
+    </div>
+  );
+}
+
+function SyncStatusBar({
+  active,
+  className = "",
+  meta
+}: {
+  active: boolean;
+  className?: string;
+  meta: string;
+}) {
+  const { progress, text, tone } = useSyncExternalStore(
+    subscribeSyncStatus,
+    getSyncStatusSnapshot,
+    getSyncStatusSnapshot
+  );
+  const toneClass =
+    tone === "success"
+      ? "sync-status-bar--success"
+      : tone === "error"
+        ? "sync-status-bar--error"
+        : "";
+  const progressPercent = progress && progress.total > 0
+    ? Math.max(0, Math.min(100, (progress.current / progress.total) * 100))
+    : null;
+
+  return (
+    <div
+      aria-live="polite"
+      className={`sync-status-bar ${toneClass} ${active ? "sync-status-bar--active" : ""} ${className}`}
+      role="status"
+    >
+      <div className="sync-status-bar__body">
+        <span className="sync-status-bar__text">{text}</span>
+        <span className="sync-status-bar__meta">{meta}</span>
+      </div>
+      {active && progressPercent !== null ? (
+        <span
+          aria-label="Git operation progress"
+          aria-valuemax={progress?.total}
+          aria-valuemin={0}
+          aria-valuenow={progress?.current}
+          className="sync-status-bar__activity"
+          role="progressbar"
+          style={
+            {
+              "--sync-status-progress": `${progressPercent}%`
+            } as CSSProperties
+          }
+        />
+      ) : null}
     </div>
   );
 }

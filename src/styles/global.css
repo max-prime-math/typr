@@ -3520,6 +3520,79 @@ button {
   font-size: 0.9rem;
 }
 
+.sync-status-bar {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-strong) 92%, var(--background) 8%);
+}
+
+.sync-status-bar--success {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-strong));
+}
+
+.sync-status-bar--error {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-strong));
+}
+
+.sync-status-bar__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.12rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.68rem 0.58rem;
+}
+
+.sync-status-bar__text,
+.sync-status-bar__meta {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-status-bar__text {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.sync-status-bar__meta {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.sync-status-bar__activity {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+}
+
+.sync-status-bar__activity::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--sync-status-progress, 0%);
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
+.sync-status-bar--footer {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
 .sheet-backdrop {
   position: fixed;
   inset: 0;
@@ -3557,7 +3630,15 @@ button {
 
 .settings-sheet__footer {
   border-top: 1px solid var(--border);
+  justify-content: space-between;
+}
+
+.settings-sheet__footer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
   justify-content: flex-end;
+  gap: 0.65rem;
 }
 
 .settings-sheet__header h2 {
@@ -5245,6 +5326,12 @@ button {
   .sidebar-card__actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .settings-sheet__footer-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem;
   }
 
   .preview-placeholder__header,

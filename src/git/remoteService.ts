@@ -4,7 +4,8 @@ import {
   type RepoBackend,
   type RepoCommitDetails,
   type RepoResult,
-  type RepoStatus
+  type RepoStatus,
+  type RepoTreeEntry
 } from "./repoBackend";
 import { redactGitSecrets } from "./credentials";
 
@@ -18,6 +19,8 @@ export interface RemoteGitConfig {
 export interface RemoteGitProgress {
   phase: "config" | "fetch" | "pull" | "push";
   message: string;
+  current?: number;
+  total?: number;
 }
 
 export interface RemoteGitOptions {
@@ -170,7 +173,10 @@ export function createRemoteGitService(options: {
         return { ok: false, message: `Remote branch ${config.branch} was not found.` };
       }
 
-      await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteSha, remoteOptions);
+      await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteSha, {
+        ...remoteOptions,
+        includeBlobs: true
+      });
       const refResult = await options.repoBackend.setRef(project, remoteTrackingRef(config), remoteSha);
       if (!refResult.ok) {
         return repoErrorResult(refResult);
@@ -311,7 +317,10 @@ export function createRemoteGitService(options: {
       emit(remoteOptions, "push", "Reading remote branch.");
       const remoteSha = await getRemoteBranchSha(fetchImpl, config, token, remoteOptions.signal);
       if (remoteSha) {
-        await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteSha, remoteOptions);
+        await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteSha, {
+          ...remoteOptions,
+          includeBlobs: false
+        });
         const fastForward = await options.repoBackend.isAncestor(project, remoteSha, localSha);
         if (!fastForward.ok) {
           return repoErrorResult(fastForward);
@@ -332,14 +341,28 @@ export function createRemoteGitService(options: {
         return { ok: true, message: "Everything up to date." };
       }
 
+      emit(remoteOptions, "push", "Preparing local commits.");
       const commits = await collectCommitsToPush(options.repoBackend, project, localSha, remoteSha);
+      const pushPlans = await preparePushCommitPlans(options.repoBackend, project, commits);
+      const totalUploadSteps = pushPlans.reduce(
+        (total, plan) => total + plan.treeEntries.length + 2,
+        0
+      );
+      let completedUploadSteps = 0;
       const remoteCommitShas = new Map<string, string>();
       if (remoteSha) {
         remoteCommitShas.set(remoteSha, remoteSha);
       }
       let remoteHeadSha = remoteSha;
-      for (const commit of commits.reverse()) {
-        emit(remoteOptions, "push", `Uploading commit ${commit.sha.slice(0, 7)}.`);
+      for (const [index, plan] of pushPlans.entries()) {
+        const commit = plan.commit;
+        emit(
+          remoteOptions,
+          "push",
+          `Uploading commit ${index + 1} of ${pushPlans.length} (${commit.sha.slice(0, 7)}).`,
+          completedUploadSteps,
+          totalUploadSteps
+        );
         remoteHeadSha = await pushCommit(
           fetchImpl,
           options.repoBackend,
@@ -347,8 +370,19 @@ export function createRemoteGitService(options: {
           config,
           token,
           commit,
+          plan.treeEntries,
           remoteCommitShas,
-          remoteOptions.signal
+          remoteOptions.signal,
+          () => {
+            completedUploadSteps += 1;
+            emit(
+              remoteOptions,
+              "push",
+              `Uploaded ${completedUploadSteps} of ${totalUploadSteps} Git objects.`,
+              completedUploadSteps,
+              totalUploadSteps
+            );
+          }
         );
         remoteCommitShas.set(commit.sha, remoteHeadSha);
       }
@@ -356,9 +390,13 @@ export function createRemoteGitService(options: {
       if (!remoteHeadSha) {
         return { ok: false, message: "git push: no local commits were selected for upload." };
       }
+      emit(remoteOptions, "push", "Updating remote branch.", totalUploadSteps, totalUploadSteps);
       await updateRemoteBranch(fetchImpl, config, token, remoteHeadSha, Boolean(remoteSha), remoteOptions.signal);
       if (remoteHeadSha !== localSha) {
-        await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteHeadSha, remoteOptions);
+        await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteHeadSha, {
+          ...remoteOptions,
+          includeBlobs: true
+        });
         const localRefResult = await options.repoBackend.setRef(project, `refs/heads/${config.branch}`, remoteHeadSha);
         if (!localRefResult.ok) {
           return repoErrorResult(localRefResult);
@@ -604,17 +642,26 @@ async function importCommitGraph(
   config: RemoteGitConfig,
   token: string,
   sha: string,
-  options: RemoteGitOptions
+  options: RemoteGitOptions & { includeBlobs: boolean }
 ): Promise<void> {
   const existing = await repoBackend.hasObject(project, sha);
   if (existing.ok && existing.value) {
+    if (options.includeBlobs) {
+      await importCommitBlobs(fetchImpl, repoBackend, project, config, token, sha, options.signal);
+    }
     return;
   }
   const commit = await githubJson<GitHubCommitResponse>(fetchImpl, config, token, `/git/commits/${sha}`, options.signal);
   for (const parent of commit.parents) {
-    await importCommitGraph(fetchImpl, repoBackend, project, config, token, parent.sha, options);
+    await importCommitGraph(fetchImpl, repoBackend, project, config, token, parent.sha, {
+      ...options,
+      includeBlobs: false
+    });
   }
-  await importTree(fetchImpl, repoBackend, project, config, token, commit.tree.sha, options.signal);
+  await importTree(fetchImpl, repoBackend, project, config, token, commit.tree.sha, {
+    includeBlobs: options.includeBlobs,
+    signal: options.signal
+  });
   const commitObject = await buildMatchingCommitObject(commit);
   const written = await repoBackend.writeObject(project, "commit", encodeUtf8(commitObject));
   if (!written.ok) {
@@ -634,14 +681,14 @@ async function importTree(
   config: RemoteGitConfig,
   token: string,
   treeSha: string,
-  signal?: AbortSignal
+  options: { includeBlobs: boolean; signal?: AbortSignal }
 ): Promise<void> {
   const tree = await githubJson<GitHubTreeResponse>(
     fetchImpl,
     config,
     token,
     `/git/trees/${treeSha}?recursive=1`,
-    signal
+    options.signal
   );
   if (tree.truncated) {
     throw new Error("Remote tree is too large for the browser GitHub adapter response.");
@@ -651,20 +698,29 @@ async function importTree(
     if (entry.type !== "blob" || !entry.sha || !entry.path) {
       continue;
     }
-    const blob = await githubJson<GitHubBlobResponse>(fetchImpl, config, token, `/git/blobs/${entry.sha}`, signal);
-    const bytes = decodeBase64(blob.content);
-    const written = await repoBackend.writeObject(project, "blob", bytes);
-    if (!written.ok) {
-      throw new Error(formatRepoError(written.error));
-    }
-    if (written.value !== entry.sha) {
-      throw new Error(`Blob ${entry.path} did not round-trip to the expected object id.`);
+    if (options.includeBlobs) {
+      await yieldToBrowser();
+      const blob = await githubJson<GitHubBlobResponse>(
+        fetchImpl,
+        config,
+        token,
+        `/git/blobs/${entry.sha}`,
+        options.signal
+      );
+      const bytes = await decodeBase64FromGitHub(blob.content, options.signal);
+      const written = await repoBackend.writeObject(project, "blob", bytes);
+      if (!written.ok) {
+        throw new Error(formatRepoError(written.error));
+      }
+      if (written.value !== entry.sha) {
+        throw new Error(`Blob ${entry.path} did not round-trip to the expected object id.`);
+      }
     }
     entries.push({
       path: entry.path,
       oid: entry.sha,
       mode: entry.mode === "100755" ? "100755" as const : "100644" as const,
-      size: entry.size ?? bytes.byteLength
+      size: entry.size ?? 0
     });
   }
   const writtenTree = await repoBackend.writeTree(project, entries);
@@ -676,6 +732,45 @@ async function importTree(
   }
 }
 
+async function importCommitBlobs(
+  fetchImpl: typeof fetch,
+  repoBackend: RepoBackend,
+  project: TyprProjectRepository,
+  config: RemoteGitConfig,
+  token: string,
+  commitSha: string,
+  signal?: AbortSignal
+): Promise<void> {
+  const treeEntries = await repoBackend.listCommitTree(project, commitSha);
+  if (!treeEntries.ok) {
+    throw new Error(formatRepoError(treeEntries.error));
+  }
+
+  for (const entry of treeEntries.value) {
+    await yieldToBrowser();
+    const existingBlob = await repoBackend.readObject(project, entry.oid);
+    if (existingBlob.ok) {
+      continue;
+    }
+
+    const blob = await githubJson<GitHubBlobResponse>(
+      fetchImpl,
+      config,
+      token,
+      `/git/blobs/${entry.oid}`,
+      signal
+    );
+    const bytes = await decodeBase64FromGitHub(blob.content, signal);
+    const written = await repoBackend.writeObject(project, "blob", bytes);
+    if (!written.ok) {
+      throw new Error(formatRepoError(written.error));
+    }
+    if (written.value !== entry.oid) {
+      throw new Error(`Blob ${entry.path} did not round-trip to the expected object id.`);
+    }
+  }
+}
+
 async function pushCommit(
   fetchImpl: typeof fetch,
   repoBackend: RepoBackend,
@@ -683,29 +778,30 @@ async function pushCommit(
   config: RemoteGitConfig,
   token: string,
   commit: RepoCommitDetails,
+  treeEntries: RepoTreeEntry[],
   remoteCommitShas: Map<string, string>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onUploadStep?: () => void | Promise<void>
 ): Promise<string> {
-  const treeEntries = await repoBackend.listCommitTree(project, commit.sha);
-  if (!treeEntries.ok) {
-    throw new Error(formatRepoError(treeEntries.error));
-  }
   const remoteTreeEntries = [];
-  for (const entry of treeEntries.value) {
+  for (const entry of treeEntries) {
+    await yieldToBrowser();
     const blob = await repoBackend.readObject(project, entry.oid);
     if (!blob.ok) {
       throw new Error(formatRepoError(blob.error));
     }
+    const content = await encodeBase64ForUpload(blob.value.content, signal);
     const createdBlob = await githubJson<{ sha: string }>(fetchImpl, config, token, "/git/blobs", signal, {
       method: "POST",
       body: JSON.stringify({
-        content: encodeBase64(blob.value.content),
+        content,
         encoding: "base64"
       })
     });
     if (createdBlob.sha !== entry.oid) {
       throw new Error(`GitHub returned an unexpected blob id for ${entry.path}.`);
     }
+    await onUploadStep?.();
     remoteTreeEntries.push({
       path: entry.path,
       mode: entry.mode,
@@ -714,6 +810,7 @@ async function pushCommit(
     });
   }
 
+  await yieldToBrowser();
   const createdTree = await githubJson<{ sha: string }>(fetchImpl, config, token, "/git/trees", signal, {
     method: "POST",
     body: JSON.stringify({ tree: remoteTreeEntries })
@@ -721,7 +818,9 @@ async function pushCommit(
   if (createdTree.sha !== commit.treeSha) {
     throw new Error(`GitHub returned an unexpected tree id for ${commit.sha.slice(0, 7)}.`);
   }
+  await onUploadStep?.();
 
+  await yieldToBrowser();
   const createdCommit = await githubJson<{ sha: string }>(fetchImpl, config, token, "/git/commits", signal, {
     method: "POST",
     body: JSON.stringify({
@@ -740,7 +839,25 @@ async function pushCommit(
       }
     })
   });
+  await onUploadStep?.();
   return createdCommit.sha;
+}
+
+async function preparePushCommitPlans(
+  repoBackend: RepoBackend,
+  project: TyprProjectRepository,
+  commits: RepoCommitDetails[]
+): Promise<Array<{ commit: RepoCommitDetails; treeEntries: RepoTreeEntry[] }>> {
+  const plans = [];
+  for (const commit of commits) {
+    await yieldToBrowser();
+    const treeEntries = await repoBackend.listCommitTree(project, commit.sha);
+    if (!treeEntries.ok) {
+      throw new Error(formatRepoError(treeEntries.error));
+    }
+    plans.push({ commit, treeEntries: treeEntries.value });
+  }
+  return plans;
 }
 
 async function collectCommitsToPush(
@@ -749,16 +866,29 @@ async function collectCommitsToPush(
   localSha: string,
   remoteSha: string | null
 ): Promise<RepoCommitDetails[]> {
+  const excluded = await collectReachableCommitShas(repoBackend, project, remoteSha);
   const commits: RepoCommitDetails[] = [];
-  let sha: string | null = localSha;
-  while (sha && sha !== remoteSha) {
+  const seen = new Set<string>();
+
+  async function visit(sha: string | null): Promise<void> {
+    if (!sha || seen.has(sha) || excluded.has(sha)) {
+      return;
+    }
+    seen.add(sha);
     const commit = await repoBackend.readCommitDetails(project, sha);
     if (!commit.ok) {
       throw new Error(formatRepoError(commit.error));
     }
+    for (const parentSha of commit.value.parentShas) {
+      await visit(parentSha);
+    }
     commits.push(commit.value);
-    sha = commit.value.parentShas[0] ?? null;
+    if (commits.length % 25 === 0) {
+      await yieldToBrowser();
+    }
   }
+
+  await visit(localSha);
   return commits;
 }
 
@@ -771,17 +901,59 @@ async function countReachableExcluding(
   if (!startSha || startSha === excludeSha) {
     return { ok: true, value: 0 };
   }
-  let count = 0;
-  let sha: string | null = startSha;
-  while (sha && sha !== excludeSha) {
+  const excluded = await collectReachableCommitShasResult(repoBackend, project, excludeSha);
+  if (!excluded.ok) {
+    return excluded;
+  }
+  const seen = new Set<string>();
+  const stack = [startSha];
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || seen.has(sha) || excluded.value.has(sha)) {
+      continue;
+    }
+    seen.add(sha);
     const commit = await repoBackend.readCommitDetails(project, sha);
     if (!commit.ok) {
       return commit;
     }
-    count += 1;
-    sha = commit.value.parentShas[0] ?? null;
+    stack.push(...commit.value.parentShas);
   }
-  return { ok: true, value: count };
+  return { ok: true, value: seen.size };
+}
+
+async function collectReachableCommitShas(
+  repoBackend: RepoBackend,
+  project: TyprProjectRepository,
+  startSha: string | null
+): Promise<Set<string>> {
+  const result = await collectReachableCommitShasResult(repoBackend, project, startSha);
+  if (!result.ok) {
+    throw new Error(formatRepoError(result.error));
+  }
+  return result.value;
+}
+
+async function collectReachableCommitShasResult(
+  repoBackend: RepoBackend,
+  project: TyprProjectRepository,
+  startSha: string | null
+): Promise<RepoResult<Set<string>>> {
+  const seen = new Set<string>();
+  const stack = startSha ? [startSha] : [];
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || seen.has(sha)) {
+      continue;
+    }
+    seen.add(sha);
+    const commit = await repoBackend.readCommitDetails(project, sha);
+    if (!commit.ok) {
+      return commit;
+    }
+    stack.push(...commit.value.parentShas);
+  }
+  return { ok: true, value: seen };
 }
 
 async function getRemoteBranchSha(
@@ -1132,8 +1304,14 @@ function remoteTrackingRef(config: RemoteGitConfig): string {
   return `refs/remotes/${config.remoteName.trim()}/${config.branch.trim()}`;
 }
 
-function emit(options: RemoteGitOptions, phase: RemoteGitProgress["phase"], message: string): void {
-  options.onProgress?.({ phase, message });
+function emit(
+  options: RemoteGitOptions,
+  phase: RemoteGitProgress["phase"],
+  message: string,
+  current?: number,
+  total?: number
+): void {
+  options.onProgress?.({ phase, message, current, total });
 }
 
 function repoErrorResult<T>(result: RepoResult<T>): RemoteGitResult {
@@ -1152,19 +1330,55 @@ function encodeUtf8(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
-function encodeBase64(content: Uint8Array): string {
-  let binary = "";
-  for (const byte of content) {
-    binary += String.fromCharCode(byte);
+async function encodeBase64ForUpload(content: Uint8Array, signal?: AbortSignal): Promise<string> {
+  const chunkSize = 49_152;
+  const chunks = [];
+  for (let offset = 0; offset < content.byteLength; offset += chunkSize) {
+    if (signal?.aborted) {
+      throw new Error("Remote git operation was aborted.");
+    }
+    const chunk = content.subarray(offset, Math.min(offset + chunkSize, content.byteLength));
+    chunks.push(btoa(String.fromCharCode(...chunk)));
+    if (offset + chunkSize < content.byteLength) {
+      await yieldToBrowser();
+    }
   }
-  return btoa(binary);
+  return chunks.join("");
 }
 
-function decodeBase64(content: string): Uint8Array {
-  const decoded = atob(content.replace(/\n/g, ""));
-  const bytes = new Uint8Array(decoded.length);
-  for (let index = 0; index < decoded.length; index += 1) {
-    bytes[index] = decoded.charCodeAt(index);
+async function decodeBase64FromGitHub(content: string, signal?: AbortSignal): Promise<Uint8Array> {
+  const normalized = content.replace(/\n/g, "");
+  const chunkSize = 65_536;
+  const chunks = [];
+  let totalLength = 0;
+
+  for (let offset = 0; offset < normalized.length; offset += chunkSize) {
+    if (signal?.aborted) {
+      throw new Error("Remote git operation was aborted.");
+    }
+    const decoded = atob(normalized.slice(offset, Math.min(offset + chunkSize, normalized.length)));
+    const bytes = new Uint8Array(decoded.length);
+    for (let index = 0; index < decoded.length; index += 1) {
+      bytes[index] = decoded.charCodeAt(index);
+    }
+    chunks.push(bytes);
+    totalLength += bytes.byteLength;
+    if (offset + chunkSize < normalized.length) {
+      await yieldToBrowser();
+    }
   }
-  return bytes;
+
+  const result = new Uint8Array(totalLength);
+  let resultOffset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, resultOffset);
+    resultOffset += chunk.byteLength;
+  }
+  return result;
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }

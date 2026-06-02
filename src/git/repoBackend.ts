@@ -1,4 +1,4 @@
-import { unzlibSync, zlibSync } from "fflate";
+import { unzlib, unzlibSync, zlib, zlibSync } from "fflate";
 import {
   deleteProjectPath,
   ensureProjectFolder,
@@ -141,6 +141,21 @@ export interface RepoObject {
   content: Uint8Array;
 }
 
+export interface RepoStorageStats {
+  fileCount: number;
+  storedBytes: number;
+  objectCount: number;
+  objectBytes: number;
+  objectCounts: Record<RepoObject["type"] | "unknown", number>;
+  objectBytesByType: Record<RepoObject["type"] | "unknown", number>;
+}
+
+export interface RepoPruneResult {
+  deletedObjectCount: number;
+  deletedBytes: number;
+  retainedObjectCount: number;
+}
+
 export interface RepoTrackedFile {
   path: string;
   content: ProjectFileContent;
@@ -198,6 +213,8 @@ export interface RepoBackend {
     type: RepoObject["type"],
     content: Uint8Array
   ): Promise<RepoResult<string>>;
+  getStorageStats(project: TyprProjectRepository): Promise<RepoResult<RepoStorageStats>>;
+  pruneObjects(project: TyprProjectRepository): Promise<RepoResult<RepoPruneResult>>;
   readCommitDetails(project: TyprProjectRepository, sha: string): Promise<RepoResult<RepoCommitDetails>>;
   listCommitTree(project: TyprProjectRepository, commitSha: string): Promise<RepoResult<RepoTreeEntry[]>>;
   writeTree(project: TyprProjectRepository, entries: RepoTreeEntry[]): Promise<RepoResult<string>>;
@@ -238,6 +255,8 @@ export function createRepoBackend(storage: GitFileStorage = createIndexedDbGitFi
         await assertRepositoryExists(storage, project.id);
         return writeObject(storage, project.id, type, content);
       }),
+    getStorageStats: (project) => asResult(() => getStorageStats(storage, project)),
+    pruneObjects: (project) => asResult(() => pruneObjects(storage, project)),
     readCommitDetails: (project, sha) => asResult(() => readCommitDetails(storage, project, sha)),
     listCommitTree: (project, commitSha) => asResult(() => listCommitTree(storage, project, commitSha)),
     writeTree: (project, entries) => asResult(() => writeTree(storage, project, entries)),
@@ -787,6 +806,84 @@ async function listRefs(
   return refs;
 }
 
+async function getStorageStats(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<RepoStorageStats> {
+  await assertRepositoryExists(storage, project.id);
+  const files = await storage.listFiles(project.id);
+  const stats: RepoStorageStats = {
+    fileCount: 0,
+    storedBytes: 0,
+    objectCount: 0,
+    objectBytes: 0,
+    objectCounts: {
+      blob: 0,
+      tree: 0,
+      commit: 0,
+      unknown: 0
+    },
+    objectBytesByType: {
+      blob: 0,
+      tree: 0,
+      commit: 0,
+      unknown: 0
+    }
+  };
+
+  for (const file of files) {
+    const bytes = await storage.readFile(project.id, file);
+    if (!bytes) {
+      continue;
+    }
+    stats.fileCount += 1;
+    stats.storedBytes += bytes.byteLength;
+
+    if (!isObjectStoragePath(file)) {
+      continue;
+    }
+
+    const objectType = readStoredObjectType(bytes);
+    stats.objectCount += 1;
+    stats.objectBytes += bytes.byteLength;
+    stats.objectCounts[objectType] += 1;
+    stats.objectBytesByType[objectType] += bytes.byteLength;
+  }
+
+  return stats;
+}
+
+async function pruneObjects(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<RepoPruneResult> {
+  await assertRepositoryExists(storage, project.id);
+  const reachableObjects = await collectReachableObjectShas(storage, project);
+  const objectFiles = (await storage.listFiles(project.id, "objects/")).filter(isObjectStoragePath);
+  let deletedObjectCount = 0;
+  let deletedBytes = 0;
+  let retainedObjectCount = 0;
+
+  for (const file of objectFiles) {
+    const sha = objectPathToSha(file);
+    if (!sha || reachableObjects.has(sha)) {
+      retainedObjectCount += 1;
+      continue;
+    }
+
+    const bytes = await storage.readFile(project.id, file);
+    deletedBytes += bytes?.byteLength ?? 0;
+    await storage.deleteFile(project.id, file);
+    deletedObjectCount += 1;
+  }
+
+  return {
+    deletedObjectCount,
+    deletedBytes,
+    retainedObjectCount
+  };
+}
+
 async function hasObject(
   storage: GitFileStorage,
   project: TyprProjectRepository,
@@ -1197,12 +1294,12 @@ async function collectTreeFiles(
     if (mode === "40000") {
       await collectTreeFiles(storage, projectId, oid, path, result);
     } else {
-      const bytes = await readObject(storage, projectId, oid, "blob");
+      const bytes = await storage.readFile(projectId, objectShaToObjectPath(oid));
       result.set(path, {
         path,
         oid,
         mode: "100644",
-        size: bytes.byteLength
+        size: bytes ? unzlibObjectContentSize(bytes) : 0
       });
     }
   }
@@ -1258,7 +1355,7 @@ async function writeObject(
   const sha = await sha1Hex(payload);
   const path = `objects/${sha.slice(0, 2)}/${sha.slice(2)}`;
   if ((await storage.readFile(projectId, path)) === null) {
-    await storage.writeFile(projectId, path, zlibSync(payload));
+    await storage.writeFile(projectId, path, await zlibAsync(payload));
   }
   return sha;
 }
@@ -1274,7 +1371,7 @@ async function readObject(
     throw repoFailure("corrupt-repository", `Missing git object ${sha}.`, true);
   }
 
-  const payload = unzlibSync(compressed);
+  const payload = await unzlibAsync(compressed);
   const headerEnd = indexOfByte(payload, 0x00, 0);
   const header = decodeUtf8(payload.slice(0, headerEnd));
   const [type, sizeText] = header.split(" ");
@@ -1298,7 +1395,7 @@ async function readAnyObject(
     throw repoFailure("corrupt-repository", `Missing git object ${sha}.`, true);
   }
 
-  const payload = unzlibSync(compressed);
+  const payload = await unzlibAsync(compressed);
   const headerEnd = indexOfByte(payload, 0x00, 0);
   const header = decodeUtf8(payload.slice(0, headerEnd));
   const [type, sizeText] = header.split(" ");
@@ -1310,6 +1407,146 @@ async function readAnyObject(
     throw repoFailure("corrupt-repository", `Git object ${sha} has an invalid size.`, true);
   }
   return { type, content };
+}
+
+async function collectReachableObjectShas(
+  storage: GitFileStorage,
+  project: TyprProjectRepository
+): Promise<Set<string>> {
+  const reachable = new Set<string>();
+  const commitRoots = new Set<string>();
+  const headSha = await getHeadSha(storage, project.id);
+  if (headSha) {
+    commitRoots.add(headSha);
+  }
+
+  for (const sha of Object.values(await listRefs(storage, project))) {
+    commitRoots.add(sha);
+  }
+
+  const mergeState = await readMergeState(storage, project.id);
+  if (mergeState) {
+    if (mergeState.baseSha) {
+      commitRoots.add(mergeState.baseSha);
+    }
+    commitRoots.add(mergeState.localSha);
+    commitRoots.add(mergeState.remoteSha);
+    for (const file of mergeState.files) {
+      if (file.baseOid) {
+        reachable.add(file.baseOid);
+      }
+      if (file.localOid) {
+        reachable.add(file.localOid);
+      }
+      if (file.remoteOid) {
+        reachable.add(file.remoteOid);
+      }
+    }
+  }
+
+  for (const entry of await readIndex(storage, project.id)) {
+    reachable.add(entry.oid);
+  }
+
+  for (const sha of commitRoots) {
+    await collectReachableCommitObjects(storage, project.id, sha, reachable);
+  }
+
+  return reachable;
+}
+
+async function collectReachableCommitObjects(
+  storage: GitFileStorage,
+  projectId: string,
+  commitSha: string,
+  reachable: Set<string>
+): Promise<void> {
+  const stack = [validateSha(commitSha)];
+  while (stack.length > 0) {
+    const sha = stack.pop();
+    if (!sha || reachable.has(sha)) {
+      continue;
+    }
+    const commit = await readCommit(storage, projectId, sha);
+    reachable.add(sha);
+    await collectReachableTreeObjects(storage, projectId, commit.treeSha, reachable);
+    stack.push(...commit.parentShas);
+  }
+}
+
+async function collectReachableTreeObjects(
+  storage: GitFileStorage,
+  projectId: string,
+  treeSha: string,
+  reachable: Set<string>
+): Promise<void> {
+  const normalizedTreeSha = validateSha(treeSha);
+  if (reachable.has(normalizedTreeSha)) {
+    return;
+  }
+
+  const tree = await readObject(storage, projectId, normalizedTreeSha, "tree");
+  reachable.add(normalizedTreeSha);
+  let offset = 0;
+  while (offset < tree.length) {
+    const modeEnd = indexOfByte(tree, 0x20, offset);
+    const nameEnd = indexOfByte(tree, 0x00, modeEnd + 1);
+    const mode = decodeUtf8(tree.slice(offset, modeEnd));
+    const oid = bytesToHex(tree.slice(nameEnd + 1, nameEnd + 21));
+    offset = nameEnd + 21;
+
+    if (mode === "40000") {
+      await collectReachableTreeObjects(storage, projectId, oid, reachable);
+    } else if (await hasStoredObject(storage, projectId, oid)) {
+      reachable.add(oid);
+    }
+  }
+}
+
+async function hasStoredObject(
+  storage: GitFileStorage,
+  projectId: string,
+  sha: string
+): Promise<boolean> {
+  const objectSha = validateSha(sha);
+  return (await storage.readFile(projectId, objectShaToObjectPath(objectSha))) !== null;
+}
+
+function readStoredObjectType(bytes: Uint8Array): RepoObject["type"] | "unknown" {
+  try {
+    const payload = unzlibSync(bytes);
+    const headerEnd = indexOfByte(payload, 0x00, 0);
+    const header = decodeUtf8(payload.slice(0, headerEnd));
+    const [type] = header.split(" ");
+    return type === "blob" || type === "tree" || type === "commit" ? type : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function unzlibObjectContentSize(bytes: Uint8Array): number {
+  try {
+    const payload = unzlibSync(bytes);
+    const headerEnd = indexOfByte(payload, 0x00, 0);
+    return payload.byteLength - headerEnd - 1;
+  } catch {
+    return 0;
+  }
+}
+
+function isObjectStoragePath(path: string): boolean {
+  return /^objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/.test(path);
+}
+
+function objectPathToSha(path: string): string | null {
+  if (!isObjectStoragePath(path)) {
+    return null;
+  }
+  return `${path.slice("objects/".length, "objects/".length + 2)}${path.slice("objects/xx/".length)}`;
+}
+
+function objectShaToObjectPath(sha: string): string {
+  return `objects/${sha.slice(0, 2)}/${sha.slice(2)}`;
 }
 
 async function readIndex(storage: GitFileStorage, projectId: string): Promise<IndexEntry[]> {
@@ -1729,6 +1966,30 @@ function writeTextFile(
   text: string
 ): Promise<void> {
   return storage.writeFile(projectId, path, encodeUtf8(text));
+}
+
+function zlibAsync(content: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    zlib(content, (error, data) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(data);
+    });
+  });
+}
+
+function unzlibAsync(content: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    unzlib(content, (error, data) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(data);
+    });
+  });
 }
 
 async function sha1Hex(bytes: Uint8Array): Promise<string> {
