@@ -17,6 +17,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      VITE_TYPR_AUTH_USERS_SHA256: ${{ secrets.TYPR_AUTH_USERS_SHA256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6

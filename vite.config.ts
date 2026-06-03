@@ -2,10 +2,10 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
-const GITHUB_PAGES_BASE = "/typr/";
+const DEPLOYED_BASE = "./";
 
 export default defineConfig(({ command }) => {
-  const base = command === "build" ? GITHUB_PAGES_BASE : "/";
+  const base = command === "build" ? DEPLOYED_BASE : "/";
 
   return {
     base,

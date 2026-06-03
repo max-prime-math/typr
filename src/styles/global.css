@@ -84,6 +84,93 @@ button {
   cursor: pointer;
 }
 
+.auth-shell {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 1.2rem;
+}
+
+.auth-panel {
+  width: min(100%, 24rem);
+  padding: 1.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-strong) 92%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.auth-panel__brand {
+  margin-bottom: 1.15rem;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.auth-panel h1 {
+  margin: 0 0 1.2rem;
+  font-size: 1.45rem;
+  line-height: 1.15;
+}
+
+.auth-form {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.auth-field {
+  display: grid;
+  gap: 0.38rem;
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.auth-field input {
+  min-height: 2.65rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--editor-background);
+  color: var(--text);
+  padding: 0.65rem 0.75rem;
+}
+
+.auth-field input:focus {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  outline: 2px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  outline-offset: 1px;
+}
+
+.auth-submit {
+  min-height: 2.65rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--surface-strong);
+  font-weight: 800;
+}
+
+.auth-submit:hover,
+.auth-submit:focus-visible {
+  background: var(--accent-strong);
+  outline: none;
+}
+
+.auth-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.auth-message {
+  min-height: 1.2rem;
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.86rem;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

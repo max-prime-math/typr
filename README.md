@@ -1,6 +1,8 @@
 # Typr
 
-https://max-prime-math.github.io/typr/
+https://typr.ca/
+
+The GitHub Pages deployment is also available at https://max-prime-math.github.io/typr/.
 
 Typr is a local-first, browser-based Typst editor for iPad and desktop. It runs as a Progressive Web App, keeps projects on device, and supports live preview, offline reopen, Vim mode, themes, diagrams, graphs, a browser shell, and repo-backed GitHub sync.
 
@@ -38,6 +40,20 @@ Open the local Vite URL in your browser. If the host is reachable on your networ
 ```bash
 npm run build
 ```
+
+Production builds can enable an optional in-app sign-in layer with
+`VITE_TYPR_AUTH_USERS_SHA256`. The GitHub Actions workflow reads this from the
+`TYPR_AUTH_USERS_SHA256` repository secret when it is present.
+
+Add one or more entries as `username:sha256(username:password)`, separated by
+newlines, commas, or semicolons. Generate an entry with:
+
+```bash
+node -e 'const crypto = require("node:crypto"); const [u, p] = process.argv.slice(1); console.log(`${u}:${crypto.createHash("sha256").update(`${u}:${p}`).digest("hex")}`);' username password
+```
+
+The production app stores unlock state in `sessionStorage`, so sign-in is not
+kept across browser sessions.
 
 ### Preview the production build
 
