@@ -2,6 +2,7 @@ import { ensureTypstQueueMicrotask } from "./typstPolyfills";
 import { createMockCompiler } from "./mockCompiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
+import { loadFonts } from "@myriaddreamin/typst.ts/options.init";
 import { loadCoreFontData, MAIN_FILE_PATH } from "./typstAssets";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import { extractTypstPackageReferencesFromCompileInputs } from "./typstPackages";
@@ -31,8 +32,6 @@ import type {
 
 interface TypstSnippetModule {
   TypstSnippet: {
-    preloadFonts(fonts: (string | Uint8Array)[]): unknown;
-    disableDefaultFontAssets(): unknown;
     withAccessModel(accessModel: unknown): unknown;
     withPackageRegistry(registry: unknown): unknown;
   };
@@ -101,10 +100,7 @@ export function createMainThreadTypstCompiler(
         getModule: () => typstRendererWasmUrl
       });
       const coreFontData = await loadCoreFontData();
-      module.$typst.use(
-        module.TypstSnippet.preloadFonts(coreFontData),
-        module.TypstSnippet.disableDefaultFontAssets()
-      );
+      module.$typst.use(createCoreFontProvider(coreFontData));
       module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
       module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));
       initConfigured = true;
@@ -326,6 +322,14 @@ function sanitizePreviewSvg(svg: string): string {
   return svg
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
+}
+
+function createCoreFontProvider(coreFontData: Uint8Array[]): unknown {
+  return {
+    key: "typr-core-fonts",
+    forRoles: ["compiler", "renderer"],
+    provides: [loadFonts(coreFontData, { assets: false })]
+  };
 }
 
 function withTimeout<T>(
