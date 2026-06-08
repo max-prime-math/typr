@@ -7025,41 +7025,66 @@ export function App() {
         style={workspaceGridStyle}
       >
         {isMobileWorkspace ? (
-          <div className="workspace-mobile-switcher" role="tablist" aria-label="Workspace panes">
-            <button
-              aria-selected={mobileWorkspaceTab === "files"}
-              className={`workspace-mobile-tab ${
-                mobileWorkspaceTab === "files" ? "workspace-mobile-tab--active" : ""
-              }`}
-              onClick={() => setMobileWorkspaceTab("files")}
-              role="tab"
-              type="button"
-            >
-              Files
-            </button>
-            <button
-              aria-selected={mobileWorkspaceTab === "editor"}
-              className={`workspace-mobile-tab ${
-                mobileWorkspaceTab === "editor" ? "workspace-mobile-tab--active" : ""
-              }`}
-              onClick={() => setMobileWorkspaceTab("editor")}
-              role="tab"
-              type="button"
-            >
-              Source
-            </button>
-            <button
-              aria-selected={mobileWorkspaceTab === "preview"}
-              className={`workspace-mobile-tab ${
-                mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
-              }`}
-              onClick={() => setMobileWorkspaceTab("preview")}
-              role="tab"
-              type="button"
-            >
-              Preview
-            </button>
-          </div>
+          <>
+            <div className="workspace-mobile-switcher" role="tablist" aria-label="Workspace panes">
+              <button
+                aria-selected={mobileWorkspaceTab === "files"}
+                className={`workspace-mobile-tab ${
+                  mobileWorkspaceTab === "files" ? "workspace-mobile-tab--active" : ""
+                }`}
+                onClick={() => setMobileWorkspaceTab("files")}
+                role="tab"
+                type="button"
+              >
+                Files
+              </button>
+              <button
+                aria-selected={mobileWorkspaceTab === "editor"}
+                className={`workspace-mobile-tab ${
+                  mobileWorkspaceTab === "editor" ? "workspace-mobile-tab--active" : ""
+                }`}
+                onClick={() => setMobileWorkspaceTab("editor")}
+                role="tab"
+                type="button"
+              >
+                Source
+              </button>
+              <button
+                aria-selected={mobileWorkspaceTab === "preview"}
+                className={`workspace-mobile-tab ${
+                  mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
+                }`}
+                onClick={() => setMobileWorkspaceTab("preview")}
+                role="tab"
+                type="button"
+              >
+                Preview
+              </button>
+            </div>
+            <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
+              {SIDEBAR_TOOLS.map((tool) => (
+                <button
+                  key={tool.id}
+                  aria-label={tool.label}
+                  aria-pressed={activeSidebarTool === tool.id}
+                  className={`activity-bar__button ${
+                    activeSidebarTool === tool.id
+                      ? "activity-bar__button--active"
+                      : ""
+                  }`}
+                  onClick={() => handleOpenSidebarTool(tool.id)}
+                  title={tool.label}
+                  type="button"
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`activity-icon activity-icon--${tool.id}`}
+                  />
+                  <span className="visually-hidden">{tool.label}</span>
+                </button>
+              ))}
+            </div>
+          </>
         ) : null}
 
         {showDesktopSidebar || isMobileWorkspace ? (

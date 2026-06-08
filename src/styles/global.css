@@ -245,6 +245,22 @@ button {
   box-shadow: var(--shadow);
 }
 
+.activity-bar--mobile {
+  position: sticky;
+  top: 3.2rem;
+  z-index: 19;
+  flex-direction: row;
+  gap: 0.35rem;
+  overflow-x: auto;
+  padding: 0.35rem;
+  border-radius: 12px;
+  scrollbar-width: none;
+}
+
+.activity-bar--mobile::-webkit-scrollbar {
+  display: none;
+}
+
 .activity-bar__button {
   display: inline-flex;
   align-items: center;
@@ -256,6 +272,13 @@ button {
   border-radius: 10px;
   background: transparent;
   color: var(--text-muted);
+}
+
+.activity-bar--mobile .activity-bar__button {
+  flex: 0 0 2.65rem;
+  width: 2.65rem;
+  min-height: 2.45rem;
+  border-radius: 8px;
 }
 
 .activity-bar__button:hover,
