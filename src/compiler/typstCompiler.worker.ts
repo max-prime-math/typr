@@ -14,6 +14,13 @@ import {
   ensureTypstPackageReferences,
   createTypstPackageRegistry
 } from "./typstPackageRegistry";
+import {
+  TYPST_COMPILE_TIMEOUT_MESSAGE,
+  TYPST_COMPILE_TIMEOUT_MS,
+  TYPST_FIRST_COMPILE_TIMEOUT_MS,
+  TYPST_INIT_TIMEOUT_MESSAGE,
+  TYPST_INIT_TIMEOUT_MS
+} from "./typstTimeouts";
 import type {
   CompilerWorkerRequest,
   CompilerWorkerResponse
@@ -32,6 +39,7 @@ declare const self: DedicatedWorkerGlobalScope;
 interface TypstSnippetModule {
   TypstSnippet: {
     preloadFonts(fonts: (string | Uint8Array)[]): unknown;
+    disableDefaultFontAssets(): unknown;
     withAccessModel(accessModel: unknown): unknown;
     withPackageRegistry(registry: unknown): unknown;
   };
@@ -66,7 +74,6 @@ interface TypstStructuredDiagnostic {
   severity: string;
   message: string;
 }
-const COMPILER_TIMEOUT_MS = 15000;
 
 ensureTypstQueueMicrotask();
 
@@ -96,7 +103,8 @@ async function loadTypstModule(): Promise<TypstSnippetModule> {
       getModule: () => typstRendererWasmUrl
     });
     module.$typst.use(
-      module.TypstSnippet.preloadFonts(CORE_FONT_URLS)
+      module.TypstSnippet.preloadFonts(CORE_FONT_URLS),
+      module.TypstSnippet.disableDefaultFontAssets()
     );
     module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
     module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));
@@ -126,7 +134,7 @@ async function warmCompiler(requestId: number): Promise<void> {
       mode: "worker",
       label: "Loading Typst runtime"
     });
-    await loadTypstModule();
+    await getCompilerDriver();
   } catch (error) {
     bootstrapFailed = true;
     fallbackWarning = {
@@ -145,8 +153,8 @@ async function compileWithTypst(
 ): Promise<CompileResult> {
   await withTimeout(
     warmCompiler(requestId),
-    COMPILER_TIMEOUT_MS,
-    "Timed out initializing Typst. WASM or font assets may be blocked."
+    TYPST_INIT_TIMEOUT_MS,
+    TYPST_INIT_TIMEOUT_MESSAGE
   );
 
   if (bootstrapFailed) {
@@ -254,8 +262,8 @@ async function compileWithTypst(
           }
         } satisfies CompileSuccess;
       })(),
-      COMPILER_TIMEOUT_MS,
-      "Timed out compiling Typst. Font asset loading may be blocked or very slow."
+      fontsPrimed ? TYPST_COMPILE_TIMEOUT_MS : TYPST_FIRST_COMPILE_TIMEOUT_MS,
+      TYPST_COMPILE_TIMEOUT_MESSAGE
     );
   } catch (error) {
     const detail = formatUnknownError(error);

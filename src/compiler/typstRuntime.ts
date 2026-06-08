@@ -14,9 +14,10 @@ let rendererPromise: Promise<TypstRenderer> | null = null;
 export async function getTypstCompiler(): Promise<TypstCompiler> {
   if (!compilerPromise) {
     const { createTypstCompiler: createTypstCompilerImpl, loadFonts } = await import("@myriaddreamin/typst.ts");
+    const { disableDefaultFontAssets } = await import("@myriaddreamin/typst.ts/options.init");
     const compiler = createTypstCompilerImpl();
     compilerPromise = compiler.init({
-      beforeBuild: [loadFonts(CORE_FONT_URLS)],
+      beforeBuild: [loadFonts(CORE_FONT_URLS), disableDefaultFontAssets()],
       getModule: () => typstCompilerWasmUrl
     }).then(() => compiler);
   }
@@ -27,9 +28,10 @@ export async function getTypstCompiler(): Promise<TypstCompiler> {
 export async function getTypstRenderer(): Promise<TypstRenderer> {
   if (!rendererPromise) {
     const { createTypstRenderer: createTypstRendererImpl, loadFonts } = await import("@myriaddreamin/typst.ts");
+    const { disableDefaultFontAssets } = await import("@myriaddreamin/typst.ts/options.init");
     const renderer = createTypstRendererImpl();
     rendererPromise = renderer.init({
-      beforeBuild: [loadFonts(CORE_FONT_URLS)],
+      beforeBuild: [loadFonts(CORE_FONT_URLS), disableDefaultFontAssets()],
       getModule: () => typstRendererWasmUrl
     }).then(() => renderer);
   }

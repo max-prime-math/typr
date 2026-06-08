@@ -19,6 +19,19 @@ import type {
   DiagramStrokeStyle
 } from "../app/appState";
 import { InlinePaneExpandControls } from "../app/InlinePaneExpandControls";
+import diagramBezierIconUrl from "../icons/diagram/bezier.svg?url";
+import diagramCropIconUrl from "../icons/diagram/crop.svg?url";
+import diagramDefaultIconUrl from "../icons/diagram/default.svg?url";
+import diagramEllipseIconUrl from "../icons/diagram/ellipse.svg?url";
+import diagramHandIconUrl from "../icons/diagram/hand.svg?url";
+import diagramLineIconUrl from "../icons/diagram/line.svg?url";
+import diagramMagnetIconUrl from "../icons/diagram/magnet.svg?url";
+import diagramPenIconUrl from "../icons/diagram/pen.svg?url";
+import diagramPointerIconUrl from "../icons/diagram/pointer.svg?url";
+import diagramPolygonIconUrl from "../icons/diagram/polygon.svg?url";
+import diagramRectIconUrl from "../icons/diagram/rect.svg?url";
+import diagramZoomInIconUrl from "../icons/diagram/zoom-in.svg?url";
+import diagramZoomOutIconUrl from "../icons/diagram/zoom-out.svg?url";
 import { normalizeDiagramFileName } from "./diagramFiles";
 
 interface DiagramEditorProps {
@@ -2656,46 +2669,46 @@ export class DiagramEditorErrorBoundary extends Component<
 
 function DiagramToolIcon({ tool }: { tool: DiagramTool }) {
   if (tool === "zoom") {
-    return <DiagramIcon src="/icons/diagram/zoom-in.svg" alt="Zoom in" />;
+    return <DiagramIcon src={diagramZoomInIconUrl} alt="Zoom in" />;
   }
 
   if (tool === "hand") {
-    return <DiagramIcon src="/icons/diagram/hand.svg" alt="Hand" />;
+    return <DiagramIcon src={diagramHandIconUrl} alt="Hand" />;
   }
 
   if (tool === "pointer") {
-    return <DiagramIcon src="/icons/diagram/pointer.svg" alt="Pointer" />;
+    return <DiagramIcon src={diagramPointerIconUrl} alt="Pointer" />;
   }
 
   if (tool === "crop") {
-    return <DiagramIcon src="/icons/diagram/crop.svg" alt="Crop" />;
+    return <DiagramIcon src={diagramCropIconUrl} alt="Crop" />;
   }
 
   if (tool === "pen") {
-    return <DiagramIcon src="/icons/diagram/pen.svg" alt="Pen" />;
+    return <DiagramIcon src={diagramPenIconUrl} alt="Pen" />;
   }
 
   if (tool === "rect") {
-    return <DiagramIcon src="/icons/diagram/rect.svg" alt="Rectangle" />;
+    return <DiagramIcon src={diagramRectIconUrl} alt="Rectangle" />;
   }
 
   if (tool === "ellipse") {
-    return <DiagramIcon src="/icons/diagram/ellipse.svg" alt="Ellipse" />;
+    return <DiagramIcon src={diagramEllipseIconUrl} alt="Ellipse" />;
   }
 
   if (tool === "line") {
-    return <DiagramIcon src="/icons/diagram/line.svg" alt="Line" />;
+    return <DiagramIcon src={diagramLineIconUrl} alt="Line" />;
   }
 
   if (tool === "bezier") {
-    return <DiagramIcon src="/icons/diagram/bezier.svg" alt="Bezier" />;
+    return <DiagramIcon src={diagramBezierIconUrl} alt="Bezier" />;
   }
 
   if (tool === "polygon") {
-    return <DiagramIcon src="/icons/diagram/polygon.svg" alt="Polygon" />;
+    return <DiagramIcon src={diagramPolygonIconUrl} alt="Polygon" />;
   }
 
-  return <DiagramIcon src="/icons/diagram/default.svg" alt="Shape" />;
+  return <DiagramIcon src={diagramDefaultIconUrl} alt="Shape" />;
 }
 
 function DiagramIcon({ src, alt }: { src: string; alt: string }) {
@@ -2770,7 +2783,7 @@ function EndpointIcon({
 }
 
 function MagnetIcon() {
-  return <DiagramIcon src="/icons/diagram/magnet.svg" alt="Snap" />;
+  return <DiagramIcon src={diagramMagnetIconUrl} alt="Snap" />;
 }
 
 function DiagramMarkerDefs() {
@@ -3901,7 +3914,12 @@ function hitTestDiagramEntity(diagram: DiagramAsset, point: DiagramPoint): Diagr
 }
 
 function ZoomToolIcon({ isZoomOut }: { isZoomOut: boolean }) {
-  return <DiagramIcon src={isZoomOut ? "/icons/diagram/zoom-out.svg" : "/icons/diagram/zoom-in.svg"} alt={isZoomOut ? "Zoom out" : "Zoom in"} />;
+  return (
+    <DiagramIcon
+      src={isZoomOut ? diagramZoomOutIconUrl : diagramZoomInIconUrl}
+      alt={isZoomOut ? "Zoom out" : "Zoom in"}
+    />
+  );
 }
 
 function createZoomCursorDataUrl(isZoomOut: boolean): string {

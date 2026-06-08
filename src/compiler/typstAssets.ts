@@ -1,26 +1,41 @@
+import dejaVuSansMonoBoldUrl from "./fonts/DejaVuSansMono-Bold.ttf?url";
+import dejaVuSansMonoBoldObliqueUrl from "./fonts/DejaVuSansMono-BoldOblique.ttf?url";
+import dejaVuSansMonoObliqueUrl from "./fonts/DejaVuSansMono-Oblique.ttf?url";
+import dejaVuSansMonoUrl from "./fonts/DejaVuSansMono.ttf?url";
+import libertinusSerifBoldUrl from "./fonts/LibertinusSerif-Bold.otf?url";
+import libertinusSerifBoldItalicUrl from "./fonts/LibertinusSerif-BoldItalic.otf?url";
+import libertinusSerifItalicUrl from "./fonts/LibertinusSerif-Italic.otf?url";
+import libertinusSerifRegularUrl from "./fonts/LibertinusSerif-Regular.otf?url";
+import libertinusSerifSemiboldUrl from "./fonts/LibertinusSerif-Semibold.otf?url";
+import libertinusSerifSemiboldItalicUrl from "./fonts/LibertinusSerif-SemiboldItalic.otf?url";
+import newCm10BoldUrl from "./fonts/NewCM10-Bold.otf?url";
+import newCm10BoldItalicUrl from "./fonts/NewCM10-BoldItalic.otf?url";
+import newCm10ItalicUrl from "./fonts/NewCM10-Italic.otf?url";
+import newCm10RegularUrl from "./fonts/NewCM10-Regular.otf?url";
+import newCmMathBookUrl from "./fonts/NewCMMath-Book.otf?url";
+import newCmMathRegularUrl from "./fonts/NewCMMath-Regular.otf?url";
+
 export const MAIN_FILE_PATH = "/main.typ";
 export const TYPST_FONT_CACHE_NAME = "typst-font-assets";
-export const FONT_ASSET_BASE_URL =
-  "https://cdn.jsdelivr.net/gh/typst/typst-assets@v0.13.1/files/fonts/";
 
 export const CORE_FONT_URLS = [
-  "LibertinusSerif-Regular.otf",
-  "LibertinusSerif-Bold.otf",
-  "LibertinusSerif-Italic.otf",
-  "LibertinusSerif-BoldItalic.otf",
-  "LibertinusSerif-Semibold.otf",
-  "LibertinusSerif-SemiboldItalic.otf",
-  "NewCM10-Regular.otf",
-  "NewCM10-Bold.otf",
-  "NewCM10-Italic.otf",
-  "NewCM10-BoldItalic.otf",
-  "NewCMMath-Regular.otf",
-  "NewCMMath-Book.otf",
-  "DejaVuSansMono.ttf",
-  "DejaVuSansMono-Bold.ttf",
-  "DejaVuSansMono-Oblique.ttf",
-  "DejaVuSansMono-BoldOblique.ttf"
-].map((fontFile) => `${FONT_ASSET_BASE_URL}${fontFile}`);
+  libertinusSerifRegularUrl,
+  libertinusSerifBoldUrl,
+  libertinusSerifItalicUrl,
+  libertinusSerifBoldItalicUrl,
+  libertinusSerifSemiboldUrl,
+  libertinusSerifSemiboldItalicUrl,
+  newCm10RegularUrl,
+  newCm10BoldUrl,
+  newCm10ItalicUrl,
+  newCm10BoldItalicUrl,
+  newCmMathRegularUrl,
+  newCmMathBookUrl,
+  dejaVuSansMonoUrl,
+  dejaVuSansMonoBoldUrl,
+  dejaVuSansMonoObliqueUrl,
+  dejaVuSansMonoBoldObliqueUrl
+];
 
 export async function warmTypstOfflineAssets(): Promise<void> {
   if (

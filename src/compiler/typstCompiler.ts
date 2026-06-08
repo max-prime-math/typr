@@ -3,6 +3,7 @@ import type {
   CompilerWorkerResponse
 } from "./protocol";
 import { createMainThreadTypstCompiler } from "./typstCompilerMainThread";
+import { TYPST_WORKER_REQUEST_TIMEOUT_MS } from "./typstTimeouts";
 import type {
   CompileAssetFile,
   CompilerStatus,
@@ -67,7 +68,7 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private nextRequestId = 1;
   private workerAvailable = true;
-  private readonly workerRequestTimeoutMs = 12000;
+  private readonly workerRequestTimeoutMs = TYPST_WORKER_REQUEST_TIMEOUT_MS;
   private readonly notifyStatus: (status: CompilerStatus) => void;
 
   constructor(options: TypstCompilerOptions) {

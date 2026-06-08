@@ -14,9 +14,8 @@ export default defineConfig(({ command }) => {
         registerType: "autoUpdate",
         injectRegister: false,
         includeAssets: [
+          "favicon.svg",
           "apple-touch-icon.png",
-          "icons/icon-192.svg",
-          "icons/icon-512.svg",
           "icons/icon-192.png",
           "icons/icon-512.png"
         ],
@@ -49,6 +48,9 @@ export default defineConfig(({ command }) => {
     ],
     worker: {
       format: "es"
+    },
+    build: {
+      assetsInlineLimit: 8 * 1024
     },
     resolve: {
       alias: {

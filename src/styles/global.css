@@ -285,38 +285,38 @@ button {
 }
 
 .activity-icon--files {
-  mask-image: url("/icons/sidebar/files.svg");
-  -webkit-mask-image: url("/icons/sidebar/files.svg");
+  mask-image: url("../icons/sidebar/files.svg");
+  -webkit-mask-image: url("../icons/sidebar/files.svg");
 }
 
 .activity-icon--search {
-  mask-image: url("/icons/sidebar/search.svg");
-  -webkit-mask-image: url("/icons/sidebar/search.svg");
+  mask-image: url("../icons/sidebar/search.svg");
+  -webkit-mask-image: url("../icons/sidebar/search.svg");
 }
 
 .activity-icon--outline {
-  mask-image: url("/icons/sidebar/outline.svg");
-  -webkit-mask-image: url("/icons/sidebar/outline.svg");
+  mask-image: url("../icons/sidebar/outline.svg");
+  -webkit-mask-image: url("../icons/sidebar/outline.svg");
 }
 
 .activity-icon--sync {
-  mask-image: url("/icons/sidebar/sync.svg");
-  -webkit-mask-image: url("/icons/sidebar/sync.svg");
+  mask-image: url("../icons/sidebar/sync.svg");
+  -webkit-mask-image: url("../icons/sidebar/sync.svg");
 }
 
 .activity-icon--debug {
-  mask-image: url("/icons/sidebar/debug.svg");
-  -webkit-mask-image: url("/icons/sidebar/debug.svg");
+  mask-image: url("../icons/sidebar/debug.svg");
+  -webkit-mask-image: url("../icons/sidebar/debug.svg");
 }
 
 .activity-icon--diagram {
-  mask-image: url("/icons/sidebar/diagram.svg");
-  -webkit-mask-image: url("/icons/sidebar/diagram.svg");
+  mask-image: url("../icons/sidebar/diagram.svg");
+  -webkit-mask-image: url("../icons/sidebar/diagram.svg");
 }
 
 .activity-icon--graph {
-  mask-image: url("/icons/sidebar/graph.svg");
-  -webkit-mask-image: url("/icons/sidebar/graph.svg");
+  mask-image: url("../icons/sidebar/graph.svg");
+  -webkit-mask-image: url("../icons/sidebar/graph.svg");
 }
 
 .menubar__cluster {
@@ -529,13 +529,13 @@ button {
 }
 
 .status-pill__icon--online {
-  mask-image: url("/icons/status/internet.svg");
-  -webkit-mask-image: url("/icons/status/internet.svg");
+  mask-image: url("../icons/status/internet.svg");
+  -webkit-mask-image: url("../icons/status/internet.svg");
 }
 
 .status-pill__icon--offline {
-  mask-image: url("/icons/status/internet-offline.svg");
-  -webkit-mask-image: url("/icons/status/internet-offline.svg");
+  mask-image: url("../icons/status/internet-offline.svg");
+  -webkit-mask-image: url("../icons/status/internet-offline.svg");
 }
 
 .workspace {
@@ -984,98 +984,98 @@ button {
 }
 
 .toolbar-icon--bold {
-  mask-image: url("/icons/toolbar/bold.svg");
-  -webkit-mask-image: url("/icons/toolbar/bold.svg");
+  mask-image: url("../icons/toolbar/bold.svg");
+  -webkit-mask-image: url("../icons/toolbar/bold.svg");
 }
 
 .toolbar-icon--italic {
-  mask-image: url("/icons/toolbar/italic.svg");
-  -webkit-mask-image: url("/icons/toolbar/italic.svg");
+  mask-image: url("../icons/toolbar/italic.svg");
+  -webkit-mask-image: url("../icons/toolbar/italic.svg");
 }
 
 .toolbar-icon--underline {
-  mask-image: url("/icons/toolbar/underline.svg");
-  -webkit-mask-image: url("/icons/toolbar/underline.svg");
+  mask-image: url("../icons/toolbar/underline.svg");
+  -webkit-mask-image: url("../icons/toolbar/underline.svg");
 }
 
 .toolbar-icon--bullet-list {
-  mask-image: url("/icons/toolbar/bullet-list.svg");
-  -webkit-mask-image: url("/icons/toolbar/bullet-list.svg");
+  mask-image: url("../icons/toolbar/bullet-list.svg");
+  -webkit-mask-image: url("../icons/toolbar/bullet-list.svg");
 }
 
 .toolbar-icon--numbered-list {
-  mask-image: url("/icons/toolbar/numbered-list.svg");
-  -webkit-mask-image: url("/icons/toolbar/numbered-list.svg");
+  mask-image: url("../icons/toolbar/numbered-list.svg");
+  -webkit-mask-image: url("../icons/toolbar/numbered-list.svg");
 }
 
 .toolbar-icon--math {
-  mask-image: url("/icons/toolbar/math.svg");
-  -webkit-mask-image: url("/icons/toolbar/math.svg");
+  mask-image: url("../icons/toolbar/math.svg");
+  -webkit-mask-image: url("../icons/toolbar/math.svg");
 }
 
 .toolbar-icon--heading {
-  mask-image: url("/icons/toolbar/heading.svg");
-  -webkit-mask-image: url("/icons/toolbar/heading.svg");
+  mask-image: url("../icons/toolbar/heading.svg");
+  -webkit-mask-image: url("../icons/toolbar/heading.svg");
 }
 
 .toolbar-icon--matrix {
-  mask-image: url("/icons/toolbar/matrix.svg");
-  -webkit-mask-image: url("/icons/toolbar/matrix.svg");
+  mask-image: url("../icons/toolbar/matrix.svg");
+  -webkit-mask-image: url("../icons/toolbar/matrix.svg");
 }
 
 .toolbar-icon--table {
-  mask-image: url("/icons/toolbar/table.svg");
-  -webkit-mask-image: url("/icons/toolbar/table.svg");
+  mask-image: url("../icons/toolbar/table.svg");
+  -webkit-mask-image: url("../icons/toolbar/table.svg");
 }
 
 .toolbar-icon--symbols {
-  mask-image: url("/icons/toolbar/symbols.svg");
-  -webkit-mask-image: url("/icons/toolbar/symbols.svg");
+  mask-image: url("../icons/toolbar/symbols.svg");
+  -webkit-mask-image: url("../icons/toolbar/symbols.svg");
 }
 
 .toolbar-icon--snippets {
-  mask-image: url("/icons/toolbar/snippets.svg");
-  -webkit-mask-image: url("/icons/toolbar/snippets.svg");
+  mask-image: url("../icons/toolbar/snippets.svg");
+  -webkit-mask-image: url("../icons/toolbar/snippets.svg");
 }
 
 .toolbar-icon--vim {
-  mask-image: url("/icons/toolbar/vim.svg");
-  -webkit-mask-image: url("/icons/toolbar/vim.svg");
+  mask-image: url("../icons/toolbar/vim.svg");
+  -webkit-mask-image: url("../icons/toolbar/vim.svg");
 }
 
 .toolbar-icon--toggle {
-  mask-image: url("/icons/toolbar/toggle.svg");
-  -webkit-mask-image: url("/icons/toolbar/toggle.svg");
+  mask-image: url("../icons/toolbar/toggle.svg");
+  -webkit-mask-image: url("../icons/toolbar/toggle.svg");
 }
 
 .toolbar-icon--new-file {
-  mask-image: url("/icons/toolbar/new-file.svg");
-  -webkit-mask-image: url("/icons/toolbar/new-file.svg");
+  mask-image: url("../icons/toolbar/new-file.svg");
+  -webkit-mask-image: url("../icons/toolbar/new-file.svg");
 }
 
 .toolbar-icon--sync {
-  mask-image: url("/icons/sidebar/sync.svg");
-  -webkit-mask-image: url("/icons/sidebar/sync.svg");
+  mask-image: url("../icons/sidebar/sync.svg");
+  -webkit-mask-image: url("../icons/sidebar/sync.svg");
 }
 
 .toolbar-icon--new-folder {
-  mask-image: url("/icons/toolbar/new-folder.svg");
-  -webkit-mask-image: url("/icons/toolbar/new-folder.svg");
+  mask-image: url("../icons/toolbar/new-folder.svg");
+  -webkit-mask-image: url("../icons/toolbar/new-folder.svg");
 }
 
 .toolbar-icon--upload {
-  mask-image: url("/icons/toolbar/upload.svg");
-  -webkit-mask-image: url("/icons/toolbar/upload.svg");
+  mask-image: url("../icons/toolbar/upload.svg");
+  -webkit-mask-image: url("../icons/toolbar/upload.svg");
 }
 
 .toolbar-icon--trash {
-  mask-image: url("/icons/toolbar/trash.svg");
-  -webkit-mask-image: url("/icons/toolbar/trash.svg");
+  mask-image: url("../icons/toolbar/trash.svg");
+  -webkit-mask-image: url("../icons/toolbar/trash.svg");
 }
 
 .toolbar-icon--reset {
-  mask-image: url("/icons/toolbar/reset.svg");
-  -webkit-mask-image: url("/icons/toolbar/reset.svg");
+  mask-image: url("../icons/toolbar/reset.svg");
+  -webkit-mask-image: url("../icons/toolbar/reset.svg");
 }
 
 .pane__toolbar {
@@ -1858,11 +1858,11 @@ button {
   height: 1rem;
   flex: 0 0 1rem;
   background-color: currentColor;
-  mask-image: url("/icons/files/disclosure.svg");
+  mask-image: url("../icons/files/disclosure.svg");
   mask-repeat: no-repeat;
   mask-position: center;
   mask-size: contain;
-  -webkit-mask-image: url("/icons/files/disclosure.svg");
+  -webkit-mask-image: url("../icons/files/disclosure.svg");
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-position: center;
   -webkit-mask-size: contain;
@@ -1884,15 +1884,15 @@ button {
 }
 
 .file-tree__folder-icon--closed {
-  background-image: url("/icons/files/folder.svg");
+  background-image: url("../icons/files/folder.svg");
 }
 
 .file-tree__folder-icon--open {
-  background-image: url("/icons/files/folder.svg");
+  background-image: url("../icons/files/folder.svg");
 }
 
 .file-tree__folder-icon--empty {
-  background-image: url("/icons/files/folder.svg");
+  background-image: url("../icons/files/folder.svg");
   opacity: 0.62;
 }
 
@@ -1967,27 +1967,27 @@ button {
 }
 
 .file-tree__file-icon--typ {
-  background-image: url("/icons/files/file-typst.svg");
+  background-image: url("../icons/files/file-typst.svg");
 }
 
 .file-tree__file-icon--tex {
-  background-image: url("/icons/files/tex.svg");
+  background-image: url("../icons/files/tex.svg");
 }
 
 .file-tree__file-icon--img {
-  background-image: url("/icons/files/image.svg");
+  background-image: url("../icons/files/image.svg");
 }
 
 .file-tree__file-icon--pdf {
-  background-image: url("/icons/files/pdf.svg");
+  background-image: url("../icons/files/pdf.svg");
 }
 
 .file-tree__file-icon--txt {
-  background-image: url("/icons/files/default.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--bin {
-  background-image: url("/icons/files/default.svg");
+  background-image: url("../icons/files/default.svg");
   opacity: 0.76;
 }
 
@@ -2052,14 +2052,14 @@ button {
 
 .preview-status-icon--live {
   color: var(--accent);
-  mask-image: url("/icons/status/live.svg");
-  -webkit-mask-image: url("/icons/status/live.svg");
+  mask-image: url("../icons/status/live.svg");
+  -webkit-mask-image: url("../icons/status/live.svg");
 }
 
 .preview-status-icon--compiling {
   color: var(--warning);
-  mask-image: url("/icons/status/compiling.svg");
-  -webkit-mask-image: url("/icons/status/compiling.svg");
+  mask-image: url("../icons/status/compiling.svg");
+  -webkit-mask-image: url("../icons/status/compiling.svg");
 }
 
 .pane__meta--status {
@@ -2576,11 +2576,11 @@ button {
   height: 1rem;
   flex: 0 0 auto;
   background-color: currentColor;
-  mask-image: url("/icons/files/disclosure.svg");
+  mask-image: url("../icons/files/disclosure.svg");
   mask-repeat: no-repeat;
   mask-position: center;
   mask-size: contain;
-  -webkit-mask-image: url("/icons/files/disclosure.svg");
+  -webkit-mask-image: url("../icons/files/disclosure.svg");
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-position: center;
   -webkit-mask-size: contain;
