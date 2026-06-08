@@ -6,7 +6,11 @@ import { createMockCompiler } from "./mockCompiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { loadFonts } from "@myriaddreamin/typst.ts/options.init";
-import { loadCoreFontData, MAIN_FILE_PATH } from "./typstAssets";
+import {
+  loadCoreFontData,
+  MAIN_FILE_PATH,
+  type TypstFontLoadProgress
+} from "./typstAssets";
 import { normalizeTypstDiagnostic } from "./diagnostics";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import { extractTypstPackageReferencesFromCompileInputs } from "./typstPackages";
@@ -91,7 +95,7 @@ function emitStatus(id: number, status: CompilerStatus): void {
   });
 }
 
-async function loadTypstModule(): Promise<TypstSnippetModule> {
+async function loadTypstModule(requestId: number): Promise<TypstSnippetModule> {
   const module = (await import("@myriaddreamin/typst.ts/contrib/snippet")) as unknown as TypstSnippetModule;
 
   if (!initConfigured) {
@@ -101,7 +105,12 @@ async function loadTypstModule(): Promise<TypstSnippetModule> {
     module.$typst.setRendererInitOptions({
       getModule: () => typstRendererWasmUrl
     });
-    const coreFontData = await loadCoreFontData();
+    const coreFontData = await loadCoreFontData({
+      onProgress: (progress) => emitFontLoadStatus(requestId, progress)
+    });
+    if (initConfigured) {
+      return module;
+    }
     module.$typst.use(createCoreFontProvider(coreFontData));
     module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
     module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));
@@ -111,9 +120,9 @@ async function loadTypstModule(): Promise<TypstSnippetModule> {
   return module;
 }
 
-async function getCompilerDriver(): Promise<TypstCompilerDriver> {
+async function getCompilerDriver(requestId: number): Promise<TypstCompilerDriver> {
   if (!compilerDriverPromise) {
-    compilerDriverPromise = loadTypstModule().then((module) => module.$typst.getCompiler());
+    compilerDriverPromise = loadTypstModule(requestId).then((module) => module.$typst.getCompiler());
   }
 
   return compilerDriverPromise;
@@ -131,7 +140,7 @@ async function warmCompiler(requestId: number): Promise<void> {
       mode: "worker",
       label: "Loading Typst runtime"
     });
-    await getCompilerDriver();
+    await getCompilerDriver(requestId);
   } catch (error) {
     bootstrapFailed = true;
     fallbackWarning = {
@@ -174,21 +183,12 @@ async function compileWithTypst(
           });
         }
 
-        const module = await loadTypstModule();
-        const compiler = await getCompilerDriver();
+        const module = await loadTypstModule(requestId);
+        const compiler = await getCompilerDriver(requestId);
         compiler.resetShadow();
         compiler.addSource(MAIN_FILE_PATH, source);
         for (const asset of assets) {
           compiler.mapShadow(asset.path, asset.content);
-        }
-
-        if (!fontsPrimed) {
-          emitStatus(requestId, {
-            phase: "loading-fonts",
-            mode: "worker",
-            label: "Loading Typst fonts",
-            detail: "Fetching core text fonts"
-          });
         }
 
         emitStatus(requestId, {
@@ -334,6 +334,20 @@ function createCoreFontProvider(coreFontData: Uint8Array[]): unknown {
     forRoles: ["compiler", "renderer"],
     provides: [loadFonts(coreFontData, { assets: false })]
   };
+}
+
+function emitFontLoadStatus(requestId: number, progress: TypstFontLoadProgress): void {
+  emitStatus(requestId, {
+    phase: "loading-fonts",
+    mode: "worker",
+    label: "Loading Typst fonts",
+    detail: `${progress.name} (${progress.loaded}/${progress.total})`,
+    progress: {
+      current: progress.loaded,
+      total: progress.total,
+      label: progress.name
+    }
+  });
 }
 
 function withTimeout<T>(

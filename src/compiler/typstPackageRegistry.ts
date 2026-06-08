@@ -220,6 +220,7 @@ async function ensureTypstPackage(
     packageMemoryCache.set(key, data);
     await savePackageToCache(key, data);
     await ensurePackageDependencies(reference, data, seen, options);
+    emitPackageLoadStatus(reference, "cached", options, `Downloaded package ${formatTypstPackageReference(reference)}`);
     return data;
   })();
 

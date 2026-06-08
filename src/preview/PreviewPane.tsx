@@ -60,6 +60,7 @@ export function PreviewPane({
   const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const currentZoom = zoom ?? internalZoom;
   const setZoom = onZoomChange ?? setInternalZoom;
+  const showCompilerActivity = shouldShowCompilerActivity(isCompiling, compilerStatus);
 
   if (workspacePreview) {
     return (
@@ -85,9 +86,10 @@ export function PreviewPane({
               label={isCompiling ? compilerStatus.label : "Preparing preview"}
             />
           </p>
-          {compilerStatus.detail ? (
-            <p className="preview-status__detail">{compilerStatus.detail}</p>
-          ) : null}
+          <PreviewActivityStatus
+            centered
+            status={showCompilerActivity ? compilerStatus : null}
+          />
         </div>
       </div>
     );
@@ -107,6 +109,9 @@ export function PreviewPane({
                   zoom={currentZoom}
                 />
               </div>
+            ) : null}
+            {showCompilerActivity ? (
+              <PreviewActivityStatus status={compilerStatus} />
             ) : null}
             {shouldUseChromiumCanvasPreview(fallbackResult) ? (
               <ChromiumCanvasPreview
@@ -152,6 +157,9 @@ export function PreviewPane({
               zoom={currentZoom}
             />
           </div>
+        ) : null}
+        {showCompilerActivity ? (
+          <PreviewActivityStatus status={compilerStatus} />
         ) : null}
         {shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
@@ -237,6 +245,85 @@ export function PreviewStatusIcon({
       <span className="visually-hidden">{label}</span>
     </span>
   );
+}
+
+function PreviewActivityStatus({
+  centered = false,
+  status
+}: {
+  centered?: boolean;
+  status: CompilerStatus | null;
+}) {
+  if (!status) {
+    return null;
+  }
+
+  const progress = normalizeProgress(status.progress);
+  const progressText = progress
+    ? `${progress.current}/${progress.total}`
+    : null;
+
+  return (
+    <div
+      className={`preview-activity ${centered ? "preview-activity--centered" : ""}`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="preview-activity__row">
+        <span className="preview-activity__label">{status.label}</span>
+        {progressText ? (
+          <span className="preview-activity__count">{progressText}</span>
+        ) : null}
+      </div>
+      {status.detail ? (
+        <p className="preview-activity__detail">{status.detail}</p>
+      ) : null}
+      <div
+        className={`preview-activity__bar ${
+          progress ? "" : "preview-activity__bar--indeterminate"
+        }`}
+        role="progressbar"
+        aria-label={status.label}
+        aria-valuemin={progress ? 0 : undefined}
+        aria-valuemax={progress ? progress.total : undefined}
+        aria-valuenow={progress ? progress.current : undefined}
+      >
+        <span
+          className="preview-activity__bar-fill"
+          style={progress ? { width: `${progress.percent}%` } : undefined}
+        />
+      </div>
+    </div>
+  );
+}
+
+function shouldShowCompilerActivity(
+  isCompiling: boolean,
+  status: CompilerStatus
+): boolean {
+  return (
+    isCompiling &&
+    status.phase !== "idle" &&
+    status.phase !== "ready" &&
+    status.phase !== "error"
+  );
+}
+
+function normalizeProgress(
+  progress: CompilerStatus["progress"] | undefined
+): { current: number; total: number; percent: number } | null {
+  if (!progress || progress.total <= 0) {
+    return null;
+  }
+
+  const total = Math.max(1, Math.round(progress.total));
+  const current = Math.max(0, Math.min(total, Math.round(progress.current)));
+
+  return {
+    current,
+    total,
+    percent: (current / total) * 100
+  };
 }
 
 function PreviewDocument({

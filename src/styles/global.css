@@ -4897,6 +4897,68 @@ button {
   color: var(--text-muted);
 }
 
+.preview-activity {
+  width: min(100%, 34rem);
+  margin: 0 auto;
+  color: var(--text);
+}
+
+.preview-activity--centered {
+  margin-top: 0.75rem;
+}
+
+.preview-activity__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.preview-activity__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-activity__count {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-activity__detail {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.preview-activity__bar {
+  position: relative;
+  height: 0.45rem;
+  margin-top: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 68%, transparent);
+}
+
+.preview-activity__bar-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--accent) 76%, var(--text) 12%);
+  transition: width 180ms ease;
+}
+
+.preview-activity__bar--indeterminate .preview-activity__bar-fill {
+  position: absolute;
+  width: 42%;
+  animation: previewActivityIndeterminate 1.15s ease-in-out infinite;
+}
+
 .preview-surface {
   display: flex;
   flex-direction: column;
@@ -5111,6 +5173,16 @@ button {
 
 .preview-canvas-error {
   color: var(--danger);
+}
+
+@keyframes previewActivityIndeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  100% {
+    transform: translateX(250%);
+  }
 }
 
 .preview-debug-toggle {

@@ -19,6 +19,7 @@ export function createTypstPackageStatusReporter(
     references.map((reference) => [reference.key, "pending"])
   );
   let failedReference: TypstPackageReference | null = null;
+  let latestDetail: string | null = null;
 
   function emitSummary(): void {
     const counts = {
@@ -42,7 +43,11 @@ export function createTypstPackageStatusReporter(
       return;
     }
 
+    const completedCount = counts.cached + counts.failed;
+    const totalCount = trackedStates.size;
     const detailParts = [
+      latestDetail,
+      totalCount > 0 ? `${completedCount}/${totalCount} ready` : null,
       counts.cached > 0 ? `${counts.cached} cached` : null,
       counts.downloading > 0 ? `${counts.downloading} downloading` : null,
       counts.pending > 0 ? `${counts.pending} pending` : null
@@ -57,7 +62,14 @@ export function createTypstPackageStatusReporter(
           : counts.pending > 0
             ? "Loading Typst packages"
             : "Using cached Typst packages",
-      detail: detailParts.join(", ")
+      detail: detailParts.join(", "),
+      progress:
+        totalCount > 0
+          ? {
+              current: completedCount,
+              total: totalCount
+            }
+          : undefined
     });
   }
 
@@ -67,6 +79,7 @@ export function createTypstPackageStatusReporter(
     },
     handle(status: TypstPackageLoadStatus): void {
       trackedStates.set(status.reference.key, status.state);
+      latestDetail = status.detail;
       if (status.state === "failed") {
         failedReference = status.reference;
       }

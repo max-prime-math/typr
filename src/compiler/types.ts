@@ -17,6 +17,11 @@ export interface CompilerStatus {
   mode: CompilerMode;
   label: string;
   detail?: string;
+  progress?: {
+    current: number;
+    total: number;
+    label?: string;
+  };
 }
 
 export interface CompileDiagnostic {

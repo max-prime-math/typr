@@ -3,7 +3,11 @@ import { createMockCompiler } from "./mockCompiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { loadFonts } from "@myriaddreamin/typst.ts/options.init";
-import { loadCoreFontData, MAIN_FILE_PATH } from "./typstAssets";
+import {
+  loadCoreFontData,
+  MAIN_FILE_PATH,
+  type TypstFontLoadProgress
+} from "./typstAssets";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import { extractTypstPackageReferencesFromCompileInputs } from "./typstPackages";
 import { normalizeTypstDiagnostic } from "./diagnostics";
@@ -99,7 +103,12 @@ export function createMainThreadTypstCompiler(
       module.$typst.setRendererInitOptions({
         getModule: () => typstRendererWasmUrl
       });
-      const coreFontData = await loadCoreFontData();
+      const coreFontData = await loadCoreFontData({
+        onProgress: (progress) => emitStatus(createFontLoadStatus(progress))
+      });
+      if (initConfigured) {
+        return module;
+      }
       module.$typst.use(createCoreFontProvider(coreFontData));
       module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
       module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));
@@ -198,14 +207,6 @@ export function createMainThreadTypstCompiler(
               compiler.mapShadow(asset.path, asset.content);
             }
 
-            if (!fontsPrimed) {
-              emitStatus({
-                phase: "loading-fonts",
-                mode: "main-thread",
-                label: "Loading Typst fonts",
-                detail: "Fetching core text fonts"
-              });
-            }
             emitStatus({
               phase: "compiling",
               mode: "main-thread",
@@ -329,6 +330,20 @@ function createCoreFontProvider(coreFontData: Uint8Array[]): unknown {
     key: "typr-core-fonts",
     forRoles: ["compiler", "renderer"],
     provides: [loadFonts(coreFontData, { assets: false })]
+  };
+}
+
+function createFontLoadStatus(progress: TypstFontLoadProgress): CompilerStatus {
+  return {
+    phase: "loading-fonts",
+    mode: "main-thread",
+    label: "Loading Typst fonts",
+    detail: `${progress.name} (${progress.loaded}/${progress.total})`,
+    progress: {
+      current: progress.loaded,
+      total: progress.total,
+      label: progress.name
+    }
   };
 }
 

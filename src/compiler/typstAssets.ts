@@ -39,24 +39,90 @@ const CORE_FONT_ASSETS = [
 
 export const CORE_FONT_URLS = CORE_FONT_ASSETS.map((font) => font.url);
 
-let coreFontDataPromise: Promise<Uint8Array[]> | null = null;
+export interface TypstFontLoadProgress {
+  name: string;
+  loaded: number;
+  total: number;
+}
 
-export function loadCoreFontData(): Promise<Uint8Array[]> {
-  if (!coreFontDataPromise) {
-    coreFontDataPromise = loadCoreFontDataSequentially();
+interface LoadCoreFontDataOptions {
+  onProgress?: (progress: TypstFontLoadProgress) => void;
+}
+
+let coreFontDataPromise: Promise<Uint8Array[]> | null = null;
+let coreFontDataResult: Uint8Array[] | null = null;
+let lastCoreFontProgress: TypstFontLoadProgress | null = null;
+const coreFontProgressListeners = new Set<(progress: TypstFontLoadProgress) => void>();
+
+export function loadCoreFontData(
+  options: LoadCoreFontDataOptions = {}
+): Promise<Uint8Array[]> {
+  if (options.onProgress) {
+    coreFontProgressListeners.add(options.onProgress);
+    if (lastCoreFontProgress) {
+      options.onProgress(lastCoreFontProgress);
+    }
   }
 
-  return coreFontDataPromise;
+  if (coreFontDataResult) {
+    emitCoreFontProgress({
+      name: "Core fonts ready",
+      loaded: CORE_FONT_ASSETS.length,
+      total: CORE_FONT_ASSETS.length
+    });
+    if (options.onProgress) {
+      coreFontProgressListeners.delete(options.onProgress);
+    }
+    return Promise.resolve(coreFontDataResult);
+  }
+
+  if (!coreFontDataPromise) {
+    coreFontDataPromise = loadCoreFontDataSequentially().then((fonts) => {
+      coreFontDataResult = fonts;
+      return fonts;
+    });
+  }
+
+  if (!options.onProgress) {
+    return coreFontDataPromise;
+  }
+
+  return coreFontDataPromise.finally(() => {
+    coreFontProgressListeners.delete(options.onProgress!);
+  });
 }
 
 async function loadCoreFontDataSequentially(): Promise<Uint8Array[]> {
   const fonts: Uint8Array[] = [];
 
-  for (const font of CORE_FONT_ASSETS) {
+  emitCoreFontProgress({
+    name: "Preparing bundled fonts",
+    loaded: 0,
+    total: CORE_FONT_ASSETS.length
+  });
+
+  for (const [index, font] of CORE_FONT_ASSETS.entries()) {
+    emitCoreFontProgress({
+      name: font.name,
+      loaded: index,
+      total: CORE_FONT_ASSETS.length
+    });
     fonts.push(await fetchFontDataWithRetry(font));
+    emitCoreFontProgress({
+      name: font.name,
+      loaded: index + 1,
+      total: CORE_FONT_ASSETS.length
+    });
   }
 
   return fonts;
+}
+
+function emitCoreFontProgress(progress: TypstFontLoadProgress): void {
+  lastCoreFontProgress = progress;
+  for (const listener of coreFontProgressListeners) {
+    listener(progress);
+  }
 }
 
 async function fetchFontDataWithRetry(font: { name: string; url: string }): Promise<Uint8Array> {
