@@ -5,7 +5,7 @@ import { ensureTypstQueueMicrotask } from "./typstPolyfills";
 import { createMockCompiler } from "./mockCompiler";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
-import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
+import { loadCoreFontData, MAIN_FILE_PATH } from "./typstAssets";
 import { normalizeTypstDiagnostic } from "./diagnostics";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import { extractTypstPackageReferencesFromCompileInputs } from "./typstPackages";
@@ -102,8 +102,9 @@ async function loadTypstModule(): Promise<TypstSnippetModule> {
     module.$typst.setRendererInitOptions({
       getModule: () => typstRendererWasmUrl
     });
+    const coreFontData = await loadCoreFontData();
     module.$typst.use(
-      module.TypstSnippet.preloadFonts(CORE_FONT_URLS),
+      module.TypstSnippet.preloadFonts(coreFontData),
       module.TypstSnippet.disableDefaultFontAssets()
     );
     module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));

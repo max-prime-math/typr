@@ -1,7 +1,7 @@
 import { ensureTypstQueueMicrotask } from "./typstPolyfills";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
-import { CORE_FONT_URLS, MAIN_FILE_PATH } from "./typstAssets";
+import { loadCoreFontData, MAIN_FILE_PATH } from "./typstAssets";
 import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import type { CompileAssetFile } from "./types";
 import type { TypstCompiler, TypstRenderer } from "@myriaddreamin/typst.ts";
@@ -16,8 +16,9 @@ export async function getTypstCompiler(): Promise<TypstCompiler> {
     const { createTypstCompiler: createTypstCompilerImpl, loadFonts } = await import("@myriaddreamin/typst.ts");
     const { disableDefaultFontAssets } = await import("@myriaddreamin/typst.ts/options.init");
     const compiler = createTypstCompilerImpl();
+    const coreFontData = await loadCoreFontData();
     compilerPromise = compiler.init({
-      beforeBuild: [loadFonts(CORE_FONT_URLS), disableDefaultFontAssets()],
+      beforeBuild: [loadFonts(coreFontData), disableDefaultFontAssets()],
       getModule: () => typstCompilerWasmUrl
     }).then(() => compiler);
   }
@@ -30,8 +31,9 @@ export async function getTypstRenderer(): Promise<TypstRenderer> {
     const { createTypstRenderer: createTypstRendererImpl, loadFonts } = await import("@myriaddreamin/typst.ts");
     const { disableDefaultFontAssets } = await import("@myriaddreamin/typst.ts/options.init");
     const renderer = createTypstRendererImpl();
+    const coreFontData = await loadCoreFontData();
     rendererPromise = renderer.init({
-      beforeBuild: [loadFonts(CORE_FONT_URLS), disableDefaultFontAssets()],
+      beforeBuild: [loadFonts(coreFontData), disableDefaultFontAssets()],
       getModule: () => typstRendererWasmUrl
     }).then(() => renderer);
   }
