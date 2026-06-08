@@ -322,9 +322,9 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "files", label: "Files" },
   { id: "search", label: "Search" },
   { id: "outline", label: "Outline" },
-  { id: "mitex", label: "MiTeX" },
   { id: "diagram", label: "Diagram" },
   { id: "graph", label: "Graph" },
+  { id: "mitex", label: "MiTeX" },
   { id: "sync", label: "Git" },
   { id: "debug", label: "Debug" }
 ];
