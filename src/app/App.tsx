@@ -112,6 +112,7 @@ import {
   PreviewStatusIcon,
   type WorkspacePreviewFile
 } from "../preview/PreviewPane";
+import { MitexPanel } from "../mitex/MitexPanel";
 import {
   DiagramEditor,
   DiagramEditorErrorBoundary,
@@ -321,6 +322,7 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "files", label: "Files" },
   { id: "search", label: "Search" },
   { id: "outline", label: "Outline" },
+  { id: "mitex", label: "MiTeX" },
   { id: "diagram", label: "Diagram" },
   { id: "graph", label: "Graph" },
   { id: "sync", label: "Git" },
@@ -350,7 +352,15 @@ const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
-type SidebarTool = "files" | "search" | "outline" | "sync" | "debug" | "diagram" | "graph";
+type SidebarTool =
+  | "files"
+  | "search"
+  | "outline"
+  | "mitex"
+  | "sync"
+  | "debug"
+  | "diagram"
+  | "graph";
 type DiagramPaneMode = "sidebar" | "source" | "preview";
 type GraphPaneMode = "sidebar" | "source" | "preview";
 type GitMergePaneMode = "sidebar" | "source" | "preview";
@@ -6914,6 +6924,9 @@ export function App() {
             <button className="menu-action" onClick={() => handleOpenSidebarTool("graph")} type="button">
               Graph
             </button>
+            <button className="menu-action" onClick={() => handleOpenSidebarTool("mitex")} type="button">
+              MiTeX
+            </button>
             <button className="menu-action" onClick={() => setFullscreenMode("editor")} type="button">
               Editor
             </button>
@@ -7509,6 +7522,17 @@ export function App() {
                       Add Typst headings like <code>= Section</code> to build an outline.
                     </div>
                   )}
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "mitex" ? (
+                <section className="sidebar-section sidebar-section--scrollable sidebar-section--mitex">
+                  <MitexPanel
+                    canInsert={isSourceFileEditable}
+                    compiler={compiler}
+                    compilerStatus={compilerStatus}
+                    onInsert={handleInsertEditorText}
+                  />
                 </section>
               ) : null}
 
@@ -10381,6 +10405,8 @@ function getSidebarToolTitle(tool: SidebarTool): string {
       return "Search";
     case "outline":
       return "Outline";
+    case "mitex":
+      return "MiTeX";
     case "diagram":
       return "Diagram";
     case "graph":
@@ -10400,6 +10426,8 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
       return "";
     case "outline":
       return "Document structure";
+    case "mitex":
+      return "LaTeX to Typst";
     case "diagram":
       return "Freehand SVG sketch";
     case "graph":

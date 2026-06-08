@@ -299,6 +299,11 @@ button {
   -webkit-mask-image: url("../icons/sidebar/outline.svg");
 }
 
+.activity-icon--mitex {
+  mask-image: url("../icons/sidebar/mitex.svg");
+  -webkit-mask-image: url("../icons/sidebar/mitex.svg");
+}
+
 .activity-icon--sync {
   mask-image: url("../icons/sidebar/sync.svg");
   -webkit-mask-image: url("../icons/sidebar/sync.svg");
@@ -1632,6 +1637,10 @@ button {
 
 .sidebar-section--files {
   position: relative;
+}
+
+.sidebar-section--mitex {
+  padding: 0;
 }
 
 .sidebar-section--pane-editor {
@@ -3619,6 +3628,151 @@ button {
 .sync-field textarea:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
   border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.mitex-panel {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.85rem;
+}
+
+.mitex-panel__mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-muted) 82%, transparent);
+}
+
+.mitex-panel__mode-button {
+  min-height: 2.15rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.mitex-panel__mode-button:hover,
+.mitex-panel__mode-button:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  color: var(--text);
+  outline: none;
+}
+
+.mitex-panel__mode-button--active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: var(--surface-strong);
+  color: var(--accent-strong);
+}
+
+.mitex-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.mitex-field > span {
+  display: flex;
+  min-height: 1.15rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.mitex-field em {
+  color: var(--warning);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 700;
+  text-align: right;
+}
+
+.mitex-field textarea {
+  width: 100%;
+  min-height: 9rem;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--editor-background);
+  color: var(--editor-foreground);
+  padding: 0.7rem 0.75rem;
+  font-family: "DejaVu Sans Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  tab-size: 2;
+}
+
+.mitex-field--output textarea {
+  min-height: 7.2rem;
+  background: color-mix(in srgb, var(--editor-background) 86%, var(--accent-soft));
+}
+
+.mitex-field textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.mitex-panel__convert {
+  width: 100%;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent);
+  color: var(--surface-strong);
+  font-weight: 800;
+}
+
+.mitex-panel__convert:hover,
+.mitex-panel__convert:focus-visible {
+  background: var(--accent-strong);
+}
+
+.mitex-panel__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.mitex-panel__actions .pane__button {
+  width: 100%;
+}
+
+.mitex-panel__feedback {
+  min-height: 1.2rem;
+  margin: -0.25rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.mitex-preview {
+  display: flex;
+  min-height: 14rem;
+  max-height: 22rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.mitex-preview .preview-layout {
+  width: 100%;
+  padding: 0.45rem;
+}
+
+.mitex-preview .preview-surface {
+  gap: 0;
+}
+
+.mitex-preview .preview-state {
+  min-height: 13rem;
+  padding: 0.85rem;
+  font-size: 0.86rem;
 }
 
 .sync-token-row {
