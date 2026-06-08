@@ -5128,6 +5128,23 @@ button {
   z-index: 1;
 }
 
+.preview-document__loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  min-height: 16rem;
+  padding: 1rem;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-strong) 84%, transparent);
+}
+
+.preview-document__loading--error {
+  color: var(--danger);
+  text-align: center;
+}
+
 .preview-interaction-layer {
   position: absolute;
   inset: 0;

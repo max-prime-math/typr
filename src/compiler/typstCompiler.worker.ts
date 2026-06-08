@@ -243,11 +243,6 @@ async function compileWithTypst(
           await module.$typst.svg({ vectorData: compileOutput.result })
         );
 
-        emitStatus(requestId, {
-          phase: "ready",
-          mode: "worker",
-          label: "Preview ready"
-        });
         return {
           ok: true,
           engine: "typst-ts",

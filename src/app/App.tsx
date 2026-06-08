@@ -2461,6 +2461,14 @@ export function App() {
         setLastSuccessfulResult(result);
       }
 
+      if (result.ok) {
+        setCompilerStatus((currentStatus) => ({
+          phase: "ready",
+          mode: currentStatus.mode,
+          label: "Preview ready"
+        }));
+      }
+
       logCompileTiming({
         durationMs: compileDurationMs,
         changed: nextResult === result,

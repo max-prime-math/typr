@@ -354,6 +354,10 @@ function PreviewDocument({
   const displayMarkup = normalizedMarkup;
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [imageState, setImageState] = useState<{
+    blobUrl: string;
+    status: "loading" | "loaded" | "error";
+  } | null>(null);
   const dimensions = useMemo(
     () => extractSvgDimensions(displayMarkup),
     [displayMarkup]
@@ -412,6 +416,8 @@ function PreviewDocument({
       : Math.max(240, viewportSize.width || 0);
   const hasMeasuredViewport = viewportSize.width > 0;
   const hasStablePreviewLayout = hasMeasuredViewport && dimensions !== null;
+  const currentImageStatus =
+    imageState?.blobUrl === blobUrl ? imageState.status : "loading";
 
   return (
     <div
@@ -430,8 +436,28 @@ function PreviewDocument({
           alt="Typst preview document"
           className="preview-document__object"
           draggable={false}
+          onError={() => setImageState({ blobUrl, status: "error" })}
+          onLoad={() => setImageState({ blobUrl, status: "loaded" })}
           src={blobUrl}
         />
+        {currentImageStatus === "loading" ? (
+          <div className="preview-document__loading">
+            <PreviewActivityStatus
+              centered
+              status={{
+                phase: "rendering",
+                mode: "worker",
+                label: "Loading rendered page",
+                detail: "Preparing the preview image"
+              }}
+            />
+          </div>
+        ) : null}
+        {currentImageStatus === "error" ? (
+          <div className="preview-document__loading preview-document__loading--error">
+            Preview image failed to load.
+          </div>
+        ) : null}
         {artifactData && onSourceJump ? (
           <PreviewSourceMappingOverlay
             artifactData={artifactData}

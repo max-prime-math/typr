@@ -261,11 +261,6 @@ export function createMainThreadTypstCompiler(
               await module.$typst.svg({ vectorData: compileOutput.result })
             );
 
-            emitStatus({
-              phase: "ready",
-              mode: "main-thread",
-              label: "Preview ready"
-            });
             return {
               ok: true,
               engine: "typst-ts",
