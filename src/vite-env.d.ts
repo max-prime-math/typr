@@ -15,6 +15,8 @@ declare module "mitex-wasm/mitex_wasm_bg.js" {
 }
 
 declare module "mitex-wasm/mitex_wasm_bg.wasm?init" {
-  const init: () => Promise<WebAssembly.Instance>;
+  const init: (
+    imports?: WebAssembly.Imports
+  ) => Promise<WebAssembly.Instance>;
   export default init;
 }

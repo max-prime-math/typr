@@ -1,9 +1,5 @@
 import initMitexWasm from "mitex-wasm/mitex_wasm_bg.wasm?init";
-import {
-  __wbg_set_wasm,
-  convert_math,
-  convert_text
-} from "mitex-wasm/mitex_wasm_bg.js";
+import * as mitexBindings from "mitex-wasm/mitex_wasm_bg.js";
 
 export type MitexConversionMode = "math" | "text";
 
@@ -18,14 +14,16 @@ export async function convertLatexToTypst(
   await ensureMitexInitialized();
 
   return mode === "math"
-    ? formatMathOutput(convert_math(source, EMPTY_SPEC))
-    : convert_text(source, EMPTY_SPEC).trim();
+    ? formatMathOutput(mitexBindings.convert_math(source, EMPTY_SPEC))
+    : mitexBindings.convert_text(source, EMPTY_SPEC).trim();
 }
 
 async function ensureMitexInitialized(): Promise<void> {
   if (!mitexInitPromise) {
-    mitexInitPromise = initMitexWasm().then((instance) => {
-      __wbg_set_wasm(instance.exports);
+    mitexInitPromise = initMitexWasm({
+      "./mitex_wasm_bg.js": mitexBindings
+    }).then((instance) => {
+      mitexBindings.__wbg_set_wasm(instance.exports);
     });
   }
 
