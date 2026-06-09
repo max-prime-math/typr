@@ -5,6 +5,7 @@ import {
   convertLatexToTypst,
   type MitexConversionMode
 } from "./mitexWasm";
+import { convertLatexFallback } from "./latexFallback";
 
 interface MitexPanelProps {
   canInsert: boolean;
@@ -51,16 +52,32 @@ export function MitexPanel({
     setFeedback("Converting...");
     convertLatexToTypst(source, mode)
       .then((converted) => {
-        setTypstOutput(converted);
+        const finalOutput = converted.trim() || convertLatexFallback(source, mode);
+        setTypstOutput(finalOutput);
         setLastConvertedLatex(latexInput);
-        setFeedback("Converted.");
+        setFeedback(
+          converted.trim()
+            ? "Converted."
+            : "MiTeX returned no code; used the basic converter."
+        );
       })
       .catch((error) => {
-        setFeedback(
+        const fallbackOutput = convertLatexFallback(source, mode);
+        const message =
           error instanceof Error
             ? error.message
-            : "MiTeX could not convert that snippet."
-        );
+            : "MiTeX could not convert that snippet.";
+
+        if (fallbackOutput) {
+          setTypstOutput(fallbackOutput);
+          setLastConvertedLatex(latexInput);
+          setFeedback(`MiTeX unavailable; used the basic converter. ${message}`);
+          return;
+        }
+
+        setTypstOutput(`// MiTeX conversion failed.\n// ${message}`);
+        setLastConvertedLatex(latexInput);
+        setFeedback(message);
       })
       .finally(() => setIsConverting(false));
   }, [latexInput, mode]);
@@ -207,6 +224,8 @@ export function MitexPanel({
         {isConverting ? "Converting..." : "Convert to Typst code"}
       </button>
 
+      {feedback ? <p className="mitex-panel__feedback">{feedback}</p> : null}
+
       <label className="mitex-field mitex-field--output">
         <span>
           Typst code
@@ -240,8 +259,6 @@ export function MitexPanel({
           Insert
         </button>
       </div>
-
-      {feedback ? <p className="mitex-panel__feedback">{feedback}</p> : null}
 
       <div className="mitex-preview" aria-label="Converted Typst preview">
         <PreviewPane
