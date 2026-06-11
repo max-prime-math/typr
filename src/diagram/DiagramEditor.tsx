@@ -2713,16 +2713,29 @@ function DiagramToolIcon({ tool }: { tool: DiagramTool }) {
 }
 
 function DiagramIcon({ src, alt }: { src: string; alt: string }) {
+  const iconUrl = getPublicAssetUrl(src);
+
   return (
     <span
       aria-hidden="true"
       className="diagram-editor__tool-icon diagram-editor__tool-icon--mask"
       style={{
-        maskImage: `url("${src}")`,
-        WebkitMaskImage: `url("${src}")`
+        maskImage: `url("${iconUrl}")`,
+        WebkitMaskImage: `url("${iconUrl}")`
       } satisfies CSSProperties}
     />
   );
+}
+
+function getPublicAssetUrl(path: string): string {
+  const normalizedPath = path.replace(/^\/+/, "");
+
+  if (import.meta.env.DEV) {
+    return `/${normalizedPath}`;
+  }
+
+  const bundleBase = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
+  return `${bundleBase}../${normalizedPath}`;
 }
 
 function StrokeStyleIcon({ style }: { style: DiagramStrokeStyle }) {
