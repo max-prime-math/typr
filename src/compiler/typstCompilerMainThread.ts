@@ -109,6 +109,12 @@ export function createMainThreadTypstCompiler(
       if (initConfigured) {
         return module;
       }
+      emitStatus({
+        phase: "loading-fonts",
+        mode: "main-thread",
+        label: "Registering Typst fonts",
+        detail: "Preparing loaded fonts for the compiler"
+      });
       module.$typst.use(createCoreFontProvider(coreFontData));
       module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
       module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));

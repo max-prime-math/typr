@@ -42,7 +42,17 @@ export default defineConfig(({ command }) => {
           ]
         },
         workbox: {
-          maximumFileSizeToCacheInBytes: 30 * 1024 * 1024
+          globIgnores: ["**/*.wasm", "**/*.otf", "**/*.ttf"],
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+          runtimeCaching: [
+            {
+              urlPattern: /\/assets\/.*\.(?:wasm|otf|ttf)$/,
+              handler: "CacheFirst",
+              options: {
+                cacheName: "typr-compiler-assets"
+              }
+            }
+          ]
         }
       })
     ],

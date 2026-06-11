@@ -32,6 +32,7 @@ import diagramPolygonIconUrl from "../icons/diagram/polygon.svg?url";
 import diagramRectIconUrl from "../icons/diagram/rect.svg?url";
 import diagramZoomInIconUrl from "../icons/diagram/zoom-in.svg?url";
 import diagramZoomOutIconUrl from "../icons/diagram/zoom-out.svg?url";
+import { createRandomId } from "../utils/randomId";
 import { normalizeDiagramFileName } from "./diagramFiles";
 
 interface DiagramEditorProps {
@@ -2219,7 +2220,7 @@ export function DiagramEditor({
               if (prev.length >= 3 && Math.hypot(point.x - start.x, point.y - start.y) < POLYGON_SNAP_DISTANCE) {
                 const shape: DiagramShape = {
                   kind: "polygon",
-                  id: `shape-${crypto.randomUUID()}`,
+                  id: `shape-${createRandomId()}`,
                   strokeColor: inkColor,
                   strokeWidth,
                   strokeStyle,
@@ -2242,7 +2243,7 @@ export function DiagramEditor({
               if (!prev || prev.length < 3) return null;
               const shape: DiagramShape = {
                 kind: "polygon",
-                id: `shape-${crypto.randomUUID()}`,
+                id: `shape-${createRandomId()}`,
                 strokeColor: inkColor,
                 strokeWidth,
                 strokeStyle,
@@ -5362,7 +5363,7 @@ function createBezierShapeFromHandlePoint(
 ): Extract<DiagramShape, { kind: "bezier" }> {
   return {
     kind: "bezier",
-    id: `shape-${crypto.randomUUID()}`,
+    id: `shape-${createRandomId()}`,
     strokeColor: color,
     strokeWidth: clampStrokeWidthValue(strokeWidth),
     strokeStyle,
@@ -5880,7 +5881,7 @@ function createShapeDraft(
   if (tool === "rect") {
     return {
       kind: "rect",
-      id: `shape-${crypto.randomUUID()}`,
+      id: `shape-${createRandomId()}`,
       strokeColor: color,
       strokeWidth: nextStrokeWidth,
       strokeStyle,
@@ -5899,7 +5900,7 @@ function createShapeDraft(
   if (tool === "ellipse") {
     return {
       kind: "ellipse",
-      id: `shape-${crypto.randomUUID()}`,
+      id: `shape-${createRandomId()}`,
       strokeColor: color,
       strokeWidth: nextStrokeWidth,
       strokeStyle,
@@ -5918,7 +5919,7 @@ function createShapeDraft(
   if (tool === "bezier") {
     return {
       kind: "bezier",
-      id: `shape-${crypto.randomUUID()}`,
+      id: `shape-${createRandomId()}`,
       strokeColor: color,
       strokeWidth: nextStrokeWidth,
       strokeStyle,
@@ -5931,7 +5932,7 @@ function createShapeDraft(
 
   return {
     kind: "line",
-    id: `shape-${crypto.randomUUID()}`,
+    id: `shape-${createRandomId()}`,
     strokeColor: color,
     strokeWidth: nextStrokeWidth,
     strokeStyle,
@@ -6034,7 +6035,7 @@ function createStroke(
   point: DiagramPoint
 ): DiagramStroke {
   return {
-    id: `stroke-${crypto.randomUUID()}`,
+    id: `stroke-${createRandomId()}`,
     color,
     width: clampStrokeWidthValue(width),
     strokeStyle,

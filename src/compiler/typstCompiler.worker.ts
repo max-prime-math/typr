@@ -111,6 +111,12 @@ async function loadTypstModule(requestId: number): Promise<TypstSnippetModule> {
     if (initConfigured) {
       return module;
     }
+    emitStatus(requestId, {
+      phase: "loading-fonts",
+      mode: "worker",
+      label: "Registering Typst fonts",
+      detail: "Preparing loaded fonts for the compiler"
+    });
     module.$typst.use(createCoreFontProvider(coreFontData));
     module.$typst.use(module.TypstSnippet.withAccessModel(packageRegistry.am));
     module.$typst.use(module.TypstSnippet.withPackageRegistry(packageRegistry));
@@ -375,40 +381,19 @@ function postMessageToMain(message: CompilerWorkerResponse) {
 self.addEventListener("message", (event: MessageEvent<CompilerWorkerRequest>) => {
   const request = event.data;
 
-  if (request.type === "warmup") {
-    void warmCompiler(request.id)
-      .then(() => {
-        postMessageToMain({
-          id: request.id,
-          type: "warmup-result",
-          ok: true
-        });
-      })
-      .catch((error) => {
-        postMessageToMain({
-          id: request.id,
-          type: "error",
-          message: formatUnknownError(error)
-        });
+  void compileWithTypst(request.id, request.source, request.assets ?? [])
+    .then((result) => {
+      postMessageToMain({
+        id: request.id,
+        type: "compile-result",
+        result
       });
-    return;
-  }
-
-  if (request.type === "compile") {
-    void compileWithTypst(request.id, request.source, request.assets ?? [])
-      .then((result) => {
-        postMessageToMain({
-          id: request.id,
-          type: "compile-result",
-          result
-        });
-      })
-      .catch((error) => {
-        postMessageToMain({
-          id: request.id,
-          type: "error",
-          message: formatUnknownError(error)
-        });
+    })
+    .catch((error) => {
+      postMessageToMain({
+        id: request.id,
+        type: "error",
+        message: formatUnknownError(error)
       });
-  }
+    });
 });

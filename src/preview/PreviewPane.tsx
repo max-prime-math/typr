@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
+import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
@@ -137,9 +138,10 @@ export function PreviewPane({
           <div className="preview-state">
             <div className="preview-status">
               <p>The preview could not be generated.</p>
-              {compilerStatus.detail ? (
-                <p className="preview-status__detail">{compilerStatus.detail}</p>
-              ) : null}
+              <PreviewFailureDetails
+                detail={compilerStatus.detail}
+                errors={result.errors}
+              />
             </div>
           </div>
         )}
@@ -176,6 +178,34 @@ export function PreviewPane({
             />
         )}
       </div>
+    </div>
+  );
+}
+
+function PreviewFailureDetails({
+  detail,
+  errors
+}: {
+  detail?: string;
+  errors: CompileDiagnostic[];
+}) {
+  const messages = [
+    ...errors.map((error) => error.message),
+    detail
+  ].filter((message): message is string => Boolean(message?.trim()));
+  const uniqueMessages = Array.from(new Set(messages));
+
+  if (uniqueMessages.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="preview-status__details">
+      {uniqueMessages.map((message) => (
+        <p className="preview-status__detail" key={message}>
+          {message}
+        </p>
+      ))}
     </div>
   );
 }

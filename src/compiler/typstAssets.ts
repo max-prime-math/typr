@@ -17,6 +17,7 @@ import newCmMathRegularUrl from "./fonts/NewCMMath-Regular.otf?url";
 
 export const MAIN_FILE_PATH = "/main.typ";
 export const TYPST_FONT_CACHE_NAME = "typst-font-assets";
+const CORE_FONT_LOAD_CONCURRENCY = 4;
 
 const CORE_FONT_ASSETS = [
   { name: "LibertinusSerif-Regular.otf", url: libertinusSerifRegularUrl },
@@ -34,7 +35,7 @@ const CORE_FONT_ASSETS = [
   { name: "DejaVuSansMono.ttf", url: dejaVuSansMonoUrl },
   { name: "DejaVuSansMono-Bold.ttf", url: dejaVuSansMonoBoldUrl },
   { name: "DejaVuSansMono-Oblique.ttf", url: dejaVuSansMonoObliqueUrl },
-  { name: "DejaVuSansMono-BoldOblique.ttf", url: dejaVuSansMonoBoldObliqueUrl }
+  { name: "DejaVuSansMono-BoldOblique.ttf", url: dejaVuSansMonoBoldObliqueUrl },
 ];
 
 export const CORE_FONT_URLS = CORE_FONT_ASSETS.map((font) => font.url);
@@ -77,7 +78,7 @@ export function loadCoreFontData(
   }
 
   if (!coreFontDataPromise) {
-    coreFontDataPromise = loadCoreFontDataSequentially().then((fonts) => {
+    coreFontDataPromise = loadCoreFontDataConcurrently().then((fonts) => {
       coreFontDataResult = fonts;
       return fonts;
     });
@@ -92,8 +93,10 @@ export function loadCoreFontData(
   });
 }
 
-async function loadCoreFontDataSequentially(): Promise<Uint8Array[]> {
-  const fonts: Uint8Array[] = [];
+async function loadCoreFontDataConcurrently(): Promise<Uint8Array[]> {
+  const fonts = new Array<Uint8Array>(CORE_FONT_ASSETS.length);
+  let nextIndex = 0;
+  let loaded = 0;
 
   emitCoreFontProgress({
     name: "Preparing bundled fonts",
@@ -101,19 +104,35 @@ async function loadCoreFontDataSequentially(): Promise<Uint8Array[]> {
     total: CORE_FONT_ASSETS.length
   });
 
-  for (const [index, font] of CORE_FONT_ASSETS.entries()) {
-    emitCoreFontProgress({
-      name: font.name,
-      loaded: index,
-      total: CORE_FONT_ASSETS.length
-    });
-    fonts.push(await fetchFontDataWithRetry(font));
-    emitCoreFontProgress({
-      name: font.name,
-      loaded: index + 1,
-      total: CORE_FONT_ASSETS.length
-    });
+  async function loadNextFont(): Promise<void> {
+    while (nextIndex < CORE_FONT_ASSETS.length) {
+      const fontIndex = nextIndex;
+      nextIndex += 1;
+      const font = CORE_FONT_ASSETS[fontIndex];
+
+      emitCoreFontProgress({
+        name: font.name,
+        loaded,
+        total: CORE_FONT_ASSETS.length
+      });
+
+      fonts[fontIndex] = await fetchFontDataWithRetry(font);
+      loaded += 1;
+
+      emitCoreFontProgress({
+        name: font.name,
+        loaded,
+        total: CORE_FONT_ASSETS.length
+      });
+    }
   }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CORE_FONT_LOAD_CONCURRENCY, CORE_FONT_ASSETS.length) },
+      loadNextFont
+    )
+  );
 
   return fonts;
 }

@@ -1,3 +1,5 @@
+import { createRandomId } from "../utils/randomId";
+
 export type ThemeMode = "light" | "dark";
 export const AUTO_THEME_ID = "auto";
 
@@ -453,7 +455,7 @@ export function createThemeId(name: string): string {
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")}-${crypto.randomUUID().slice(0, 8)}`;
+    .replace(/^-+|-+$/g, "")}-${createRandomId().slice(0, 8)}`;
 }
 
 export function createCustomTheme(

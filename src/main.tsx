@@ -7,8 +7,6 @@ import ReactDOM from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./app/App";
 import { AuthGate } from "./auth/AuthGate";
-import { warmTypstOfflineAssets } from "./compiler/typstAssets";
-import { primeTypstCompiler } from "./compiler/typstCompiler";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import "./styles/global.css";
 
@@ -24,11 +22,6 @@ if (import.meta.env.PROD) {
 }
 
 function TyprApp() {
-  React.useEffect(() => {
-    primeTypstCompiler();
-    void warmTypstOfflineAssets();
-  }, []);
-
   return <App />;
 }
 

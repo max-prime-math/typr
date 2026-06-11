@@ -11,6 +11,7 @@ import {
   createCloudContainerBackendPlaceholder,
   createLocalAgentBackendPlaceholder
 } from "./browserBackend";
+import { createRandomId } from "../utils/randomId";
 import { buildProjectWorkspaceEntriesFromProject } from "../workspace/workspaceTree";
 import type { TerminalBackend, TerminalProjectRuntime } from "./types";
 
@@ -107,7 +108,7 @@ export function TerminalDrawer({ isOpen, runtime, onClose }: TerminalDrawerProps
       initializedRef.current = true;
       setEntries([
         {
-          id: crypto.randomUUID(),
+          id: createRandomId(),
           tone: "system",
           text: `Browser Shell ready in ${browserBackend.getCwd()}`
         }
@@ -161,7 +162,7 @@ export function TerminalDrawer({ isOpen, runtime, onClose }: TerminalDrawerProps
     setEntries((current) => [
       ...current,
       {
-        id: crypto.randomUUID(),
+        id: createRandomId(),
         tone: "command",
         text: `${PROMPT_SYMBOL} ${command}`
       }
@@ -186,7 +187,7 @@ export function TerminalDrawer({ isOpen, runtime, onClose }: TerminalDrawerProps
 
         if (result.stdout.trim().length > 0) {
           next.push({
-            id: crypto.randomUUID(),
+            id: createRandomId(),
             tone: "stdout",
             text: result.stdout.replace(/\n$/, "")
           });
@@ -194,7 +195,7 @@ export function TerminalDrawer({ isOpen, runtime, onClose }: TerminalDrawerProps
 
         if (result.stderr.trim().length > 0) {
           next.push({
-            id: crypto.randomUUID(),
+            id: createRandomId(),
             tone: "stderr",
             text: result.stderr.replace(/\n$/, "")
           });

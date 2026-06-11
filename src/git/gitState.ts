@@ -1,4 +1,5 @@
 import type { TerminalBackendId } from "../terminal/types";
+import { createPrefixedId } from "../utils/randomId";
 
 export const GIT_STATE_VERSION = 2;
 
@@ -33,7 +34,7 @@ export function createEmptyGitManagedProject(options: {
   projectName: string;
 }): GitManagedProject {
   return {
-    id: `git-project-${crypto.randomUUID()}`,
+    id: createPrefixedId("git-project"),
     name: options.projectName,
     projectId: options.projectId,
     backendId: "browser",
@@ -117,7 +118,7 @@ export function normalizeManagedProject(
   fallbackProjectName: string
 ): GitManagedProject {
   return {
-    id: project.id?.trim() || `git-project-${crypto.randomUUID()}`,
+    id: project.id?.trim() || createPrefixedId("git-project"),
     name: project.name?.trim() || fallbackProjectName,
     projectId: project.projectId?.trim() || fallbackProjectId,
     backendId: normalizeBackendId(project.backendId),

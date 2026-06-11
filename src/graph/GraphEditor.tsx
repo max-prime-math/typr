@@ -13,6 +13,7 @@ import {
 import { InlinePaneExpandControls } from "../app/InlinePaneExpandControls";
 import { PreviewPane } from "../preview/PreviewPane";
 import type { GraphAsset, GraphStyle } from "../app/appState";
+import { createRandomId } from "../utils/randomId";
 import {
   analyzeSimplePlotFunctions,
   buildSimplePlotPreviewDocument,
@@ -850,7 +851,7 @@ function createFunctionRows(functions: SimplePlotFunctionEntry[]): GraphFunction
 
 function createFunctionRow(entry: SimplePlotFunctionEntry): GraphFunctionRow {
   return {
-    id: crypto.randomUUID(),
+    id: createRandomId(),
     expression: entry.expression,
     visible: entry.visible,
     color: entry.color,

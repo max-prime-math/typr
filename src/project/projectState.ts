@@ -8,6 +8,7 @@ import type {
 } from "../app/appState";
 import { createDefaultDiagram, createDefaultGraph } from "../app/appState";
 import { getGraphFilePath } from "../graph/graphFiles";
+import { createPrefixedId } from "../utils/randomId";
 import { buildProjectWorkspaceEntries, normalizeWorkspacePath } from "../workspace/workspaceTree";
 
 export const PROJECT_STORAGE_VERSION = 1;
@@ -916,9 +917,5 @@ function withEntries(
 }
 
 function createId(prefix: string): string {
-  const randomId =
-    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `${prefix}-${randomId}`;
+  return createPrefixedId(prefix);
 }

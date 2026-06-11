@@ -42,10 +42,6 @@ export function createTypstCompiler(options: TypstCompilerOptions = {}): TypstCo
   };
 }
 
-export function primeTypstCompiler(): void {
-  getSharedCompilerInstance();
-}
-
 function getSharedCompilerInstance(): WorkerBackedTypstCompiler {
   if (!sharedCompilerInstance) {
     sharedCompilerInstance = new WorkerBackedTypstCompiler({
@@ -88,13 +84,6 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
       this.handleWorkerMessage as EventListener
     );
     this.worker.addEventListener("error", this.handleWorkerError);
-
-    this.sendRequest({
-      id: this.createRequestId(),
-      type: "warmup"
-    }).catch(() => {
-      // Warmup is opportunistic. The first real compile will surface failures.
-    });
   }
 
   compileDocument(source: string, assets: CompileAssetFile[] = []): Promise<CompileResult> {
@@ -180,11 +169,6 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
 
     if (response.type === "error") {
       pendingRequest.reject(new Error(response.message));
-      return;
-    }
-
-    if (response.type === "warmup-result") {
-      pendingRequest.resolve();
       return;
     }
 

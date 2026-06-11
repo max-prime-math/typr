@@ -2,11 +2,6 @@ import type { CompileResult } from "./types";
 import type { CompilerStatus } from "./types";
 import type { CompileAssetFile } from "./types";
 
-export interface CompilerWarmupRequest {
-  id: number;
-  type: "warmup";
-}
-
 export interface CompilerCompileRequest {
   id: number;
   type: "compile";
@@ -14,15 +9,7 @@ export interface CompilerCompileRequest {
   assets?: CompileAssetFile[];
 }
 
-export type CompilerWorkerRequest =
-  | CompilerWarmupRequest
-  | CompilerCompileRequest;
-
-export interface CompilerWarmupResponse {
-  id: number;
-  type: "warmup-result";
-  ok: true;
-}
+export type CompilerWorkerRequest = CompilerCompileRequest;
 
 export interface CompilerCompileResponse {
   id: number;
@@ -43,7 +30,6 @@ export interface CompilerWorkerStatusResponse {
 }
 
 export type CompilerWorkerResponse =
-  | CompilerWarmupResponse
   | CompilerCompileResponse
   | CompilerWorkerStatusResponse
   | CompilerWorkerErrorResponse;

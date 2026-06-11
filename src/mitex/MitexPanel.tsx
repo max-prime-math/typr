@@ -12,6 +12,7 @@ interface MitexPanelProps {
   compiler: TypstCompiler;
   compilerStatus: CompilerStatus;
   onInsert: (typstCode: string) => void;
+  paperView: boolean;
 }
 
 const PREVIEW_COMPILE_DELAY_MS = 180;
@@ -20,7 +21,8 @@ export function MitexPanel({
   canInsert,
   compiler,
   compilerStatus,
-  onInsert
+  onInsert,
+  paperView
 }: MitexPanelProps) {
   const [mode, setMode] = useState<MitexConversionMode>("math");
   const [latexInput, setLatexInput] = useState("");
@@ -260,16 +262,19 @@ export function MitexPanel({
         </button>
       </div>
 
-      <div className="mitex-preview" aria-label="Converted Typst preview">
+      <div
+        className={`mitex-preview ${paperView ? "mitex-preview--paper" : ""}`}
+        aria-label="Converted Typst preview"
+      >
         <PreviewPane
           compilerStatus={compilerStatus}
           isCompiling={isPreviewCompiling}
           isErrorSettled={isErrorSettled}
           lastSuccessfulResult={lastSuccessfulPreview}
-          paperView
+          paperView={paperView}
           result={previewResult}
           showToolbar={false}
-          viewportPadding={12}
+          viewportPadding={0}
         />
       </div>
     </div>
@@ -277,5 +282,5 @@ export function MitexPanel({
 }
 
 function createPreviewSource(source: string): string {
-  return `#set page(margin: 16pt)\n${source}`;
+  return `#set page(width: auto, height: auto, margin: 8pt)\n${source}`;
 }

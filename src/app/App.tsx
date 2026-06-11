@@ -6773,7 +6773,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <header className="menubar">
+      <header className={`menubar ${isMobileWorkspace ? "menubar--mobile-hidden" : ""}`}>
         <nav
           aria-label="Workspace menus"
           className="menu-strip"
@@ -7061,29 +7061,31 @@ export function App() {
                 Preview
               </button>
             </div>
-            <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
-              {SIDEBAR_TOOLS.map((tool) => (
-                <button
-                  key={tool.id}
-                  aria-label={tool.label}
-                  aria-pressed={activeSidebarTool === tool.id}
-                  className={`activity-bar__button ${
-                    activeSidebarTool === tool.id
-                      ? "activity-bar__button--active"
-                      : ""
-                  }`}
-                  onClick={() => handleOpenSidebarTool(tool.id)}
-                  title={tool.label}
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className={`activity-icon activity-icon--${tool.id}`}
-                  />
-                  <span className="visually-hidden">{tool.label}</span>
-                </button>
-              ))}
-            </div>
+            {mobileWorkspaceTab === "files" ? (
+              <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
+                {SIDEBAR_TOOLS.map((tool) => (
+                  <button
+                    key={tool.id}
+                    aria-label={tool.label}
+                    aria-pressed={activeSidebarTool === tool.id}
+                    className={`activity-bar__button ${
+                      activeSidebarTool === tool.id
+                        ? "activity-bar__button--active"
+                        : ""
+                    }`}
+                    onClick={() => handleOpenSidebarTool(tool.id)}
+                    title={tool.label}
+                    type="button"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`activity-icon activity-icon--${tool.id}`}
+                    />
+                    <span className="visually-hidden">{tool.label}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </>
         ) : null}
 
@@ -7557,6 +7559,7 @@ export function App() {
                     compiler={compiler}
                     compilerStatus={compilerStatus}
                     onInsert={handleInsertEditorText}
+                    paperView={isPaperView}
                   />
                 </section>
               ) : null}
