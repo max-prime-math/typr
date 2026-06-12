@@ -44,7 +44,7 @@ interface EnsureTypstPackageReferencesOptions {
   onStatus?: (status: TypstPackageLoadStatus) => void;
 }
 
-const DATABASE_NAME = "wrytr-typst-packages";
+const DATABASE_NAME = "typr-typst-packages";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "packages";
 

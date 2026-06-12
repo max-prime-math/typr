@@ -5,7 +5,7 @@ import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
 import type { TypstSnippet } from "../snippets/snippets";
 
-const DATABASE_NAME = "wrytr";
+const DATABASE_NAME = "typr";
 const DATABASE_VERSION = 2;
 const STORE_NAME = "app";
 const GIT_FILE_STORE_NAME = "git-files";

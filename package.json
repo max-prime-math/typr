@@ -1,5 +1,5 @@
 {
-  "name": "wrytr",
+  "name": "typr",
   "version": "0.1.0",
   "private": false,
   "description": "A local-first, browser-based Typst editor for iPad and desktop.",
