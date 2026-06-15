@@ -242,14 +242,12 @@ const SYNC_PROGRESS_UPDATE_INTERVAL_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
 const MOVE_HOVER_EXPAND_DELAY_MS = 1000;
 const PANEL_LAYOUT_STORAGE_KEY = "typr.panel-layout";
-const PANEL_LAYOUT_VERSION = 5;
+const PANEL_LAYOUT_VERSION = 6;
 const MOBILE_WORKSPACE_THRESHOLD = 1080;
 const SIDEBAR_DEFAULT_WIDTH = 300;
 const SIDEBAR_MIN_WIDTH = 240;
-const SIDEBAR_MAX_WIDTH = 460;
 const PREVIEW_MIN_WIDTH = 320;
-const PANEL_COLLAPSED_WIDTH = 56;
-const PANEL_HANDLE_WIDTH = 8;
+const PANEL_HANDLE_WIDTH = 14;
 const EDITOR_MIN_WIDTH = 420;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
@@ -456,6 +454,7 @@ interface MergeFilePreview {
 interface StoredPanelLayout {
   version?: number;
   isSidebarCollapsed?: boolean;
+  isSourcePaneHidden?: boolean;
   isPreviewCollapsed?: boolean;
   sidebarWidth?: number;
   previewRatio?: number;
@@ -557,16 +556,27 @@ function getPreviewPaneWidth(
   workspaceWidth: number,
   sidebarWidth: number,
   handleWidthTotal: number,
-  previewRatio: number
+  previewRatio: number,
+  sourceMinWidth: number
 ) {
   const availableWidth = Math.max(0, workspaceWidth - sidebarWidth - handleWidthTotal);
+  const maxWidth = Math.max(0, availableWidth - sourceMinWidth);
+  const minWidth = Math.min(PREVIEW_MIN_WIDTH, maxWidth);
   const idealWidth = Math.round(availableWidth * previewRatio);
 
-  return clampPanelWidth(idealWidth, PREVIEW_MIN_WIDTH, availableWidth);
+  return clampPanelWidth(idealWidth, minWidth, maxWidth);
 }
 
 function isMobileWorkspaceViewport(width: number) {
   return width > 0 && width <= MOBILE_WORKSPACE_THRESHOLD;
+}
+
+function getCurrentViewportWidth() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  return window.visualViewport?.width ?? window.innerWidth;
 }
 
 function getWorkspaceParentPath(path: string): string | null {
@@ -855,6 +865,11 @@ export function App() {
       ? storedPanelLayout.isSidebarCollapsed
       : false
   );
+  const [isSourcePaneHidden, setIsSourcePaneHidden] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      Boolean(storedPanelLayout.isSourcePaneHidden)
+  );
   const [isPreviewCollapsed, setIsPreviewCollapsed] = useState(
     () => storedPanelLayout?.version === PANEL_LAYOUT_VERSION && storedPanelLayout.isPreviewCollapsed
       ? storedPanelLayout.isPreviewCollapsed
@@ -864,7 +879,7 @@ export function App() {
     () =>
       storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
       typeof storedPanelLayout.sidebarWidth === "number"
-        ? clampPanelWidth(storedPanelLayout.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+        ? Math.max(SIDEBAR_MIN_WIDTH, storedPanelLayout.sidebarWidth)
         : SIDEBAR_DEFAULT_WIDTH
   );
   const [previewRatio, setPreviewRatio] = useState(
@@ -874,6 +889,7 @@ export function App() {
         ? clampPreviewRatio(storedPanelLayout.previewRatio)
         : getViewportBalancedPreviewRatio()
   );
+  const [viewportWidth, setViewportWidth] = useState(getCurrentViewportWidth);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>("editor");
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
@@ -1921,6 +1937,25 @@ export function App() {
       return;
     }
 
+    const updateViewportWidth = () => {
+      setViewportWidth(getCurrentViewportWidth());
+    };
+
+    updateViewportWidth();
+    window.addEventListener("resize", updateViewportWidth);
+    window.visualViewport?.addEventListener("resize", updateViewportWidth);
+
+    return () => {
+      window.removeEventListener("resize", updateViewportWidth);
+      window.visualViewport?.removeEventListener("resize", updateViewportWidth);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
     const workspace = workspaceRef.current;
     if (!workspace || typeof ResizeObserver === "undefined") {
       return;
@@ -2133,7 +2168,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!isMobileWorkspaceViewport(workspaceWidth)) {
+    if (!isMobileWorkspaceViewport(viewportWidth)) {
       return;
     }
 
@@ -2150,7 +2185,7 @@ export function App() {
     if (workspaceMode === "editor") {
       setMobileWorkspaceTab("editor");
     }
-  }, [workspaceMode, workspaceWidth]);
+  }, [viewportWidth, workspaceMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2162,12 +2197,13 @@ export function App() {
       JSON.stringify({
         version: PANEL_LAYOUT_VERSION,
         isSidebarCollapsed,
+        isSourcePaneHidden,
         isPreviewCollapsed,
         sidebarWidth,
         previewRatio
       })
     );
-  }, [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth]);
+  }, [isPreviewCollapsed, isSidebarCollapsed, isSourcePaneHidden, previewRatio, sidebarWidth]);
 
   const runAppKeybindingCommand = useCallback(
     (commandId: KeybindingCommandId): boolean => {
@@ -5932,13 +5968,60 @@ export function App() {
     [openMenuImmediately]
   );
 
-  function handlePanelToggle(panel: "sidebar" | "preview") {
+  function getVisibleDesktopPaneCount() {
+    return [showDesktopSidebar, showSourcePane, showPreviewPane].filter(Boolean).length;
+  }
+
+  function restoreWorkspacePane(panel: "sidebar" | "source" | "preview") {
+    setWorkspaceMode("split");
+
     if (panel === "sidebar") {
-      setIsSidebarCollapsed((current) => !current);
+      setIsSidebarCollapsed(false);
       return;
     }
 
-    setIsPreviewCollapsed((current) => !current);
+    if (panel === "source") {
+      setIsSourcePaneHidden(false);
+      return;
+    }
+
+    setIsPreviewCollapsed(false);
+  }
+
+  function hideWorkspacePane(panel: "sidebar" | "source" | "preview") {
+    if (getVisibleDesktopPaneCount() <= 1) {
+      return;
+    }
+
+    if (panel === "sidebar") {
+      setIsSidebarCollapsed(true);
+      return;
+    }
+
+    if (panel === "source") {
+      setIsSourcePaneHidden(true);
+      return;
+    }
+
+    setIsPreviewCollapsed(true);
+  }
+
+  function handlePanelToggle(panel: "sidebar" | "preview") {
+    if (panel === "sidebar") {
+      if (isSidebarCollapsed) {
+        restoreWorkspacePane("sidebar");
+      } else {
+        hideWorkspacePane("sidebar");
+      }
+
+      return;
+    }
+
+    if (isPreviewCollapsed) {
+      restoreWorkspacePane("preview");
+    } else {
+      hideWorkspacePane("preview");
+    }
   }
 
   function resetPanelWidths() {
@@ -5947,6 +6030,14 @@ export function App() {
   }
 
   function setFullscreenMode(mode: WorkspaceMode) {
+    if (mode === "sidebar") {
+      setIsSidebarCollapsed(false);
+    } else if (mode === "editor") {
+      setIsSourcePaneHidden(false);
+    } else if (mode === "preview") {
+      setIsPreviewCollapsed(false);
+    }
+
     setWorkspaceMode(mode);
   }
 
@@ -6094,11 +6185,7 @@ export function App() {
         return;
       }
 
-      if (isMobileWorkspaceViewport(workspace.getBoundingClientRect().width)) {
-        return;
-      }
-
-      if (typeof window !== "undefined" && window.matchMedia("(max-width: 1080px)").matches) {
+      if (isMobileWorkspaceViewport(viewportWidth)) {
         return;
       }
 
@@ -6106,13 +6193,32 @@ export function App() {
 
       const workspaceWidth = workspace.getBoundingClientRect().width;
       const sidebarPaneWidth = isSidebarCollapsed ? 0 : sidebarWidth;
-      const handleWidthTotal =
-        (isSidebarCollapsed ? 0 : PANEL_HANDLE_WIDTH) + PANEL_HANDLE_WIDTH;
+      const sidebarInlineExpandedDuringResize =
+        !isSidebarCollapsed &&
+        workspaceMode === "split" &&
+        (
+          (activeSidebarTool === "diagram" && diagramPaneMode !== "sidebar") ||
+          (activeSidebarTool === "graph" && graphPaneMode !== "sidebar") ||
+          (activeSidebarTool === "sync" && Boolean(activeMergeState) && gitMergePaneMode !== "sidebar")
+        );
+      const previewExpandedDuringResize =
+        sidebarInlineExpandedDuringResize &&
+        (
+          (activeSidebarTool === "diagram" && diagramPaneMode === "preview") ||
+          (activeSidebarTool === "graph" && graphPaneMode === "preview") ||
+          (activeSidebarTool === "sync" && gitMergePaneMode === "preview")
+        );
+      const sourcePaneVisibleDuringResize =
+        !sidebarInlineExpandedDuringResize && isSourceFileEditable && !isSourcePaneHidden;
+      const previewPaneVisibleDuringResize = !previewExpandedDuringResize && !isPreviewCollapsed;
+      const openPaneCount = [!isSidebarCollapsed, sourcePaneVisibleDuringResize, previewPaneVisibleDuringResize].filter(Boolean).length;
+      const handleWidthTotal = Math.max(0, openPaneCount - 1) * PANEL_HANDLE_WIDTH;
       const remainingWidth = Math.max(0, workspaceWidth - sidebarPaneWidth - handleWidthTotal);
+      const sourceMinWidth = sourcePaneVisibleDuringResize ? EDITOR_MIN_WIDTH : 0;
       const startWidth =
         edge === "sidebar"
           ? sidebarWidth
-          : getPreviewPaneWidth(workspaceWidth, sidebarPaneWidth, handleWidthTotal, previewRatio);
+          : getPreviewPaneWidth(workspaceWidth, sidebarPaneWidth, handleWidthTotal, previewRatio, sourceMinWidth);
       panelResizeRef.current = {
         edge,
         startX: event.clientX,
@@ -6132,21 +6238,26 @@ export function App() {
             : resizeState.startWidth - delta;
 
         if (edge === "sidebar") {
+          const otherMinimumWidth =
+            (sourcePaneVisibleDuringResize ? EDITOR_MIN_WIDTH : 0) +
+            (previewPaneVisibleDuringResize ? PREVIEW_MIN_WIDTH : 0);
           const maxWidth = Math.max(
             SIDEBAR_MIN_WIDTH,
-            workspaceWidth - PANEL_HANDLE_WIDTH * 2 - PREVIEW_MIN_WIDTH
+            workspaceWidth - handleWidthTotal - otherMinimumWidth
           );
           const clampedWidth = clampPanelWidth(
             nextWidth,
             SIDEBAR_MIN_WIDTH,
-            Math.min(SIDEBAR_MAX_WIDTH, maxWidth)
+            maxWidth
           );
           setSidebarWidth(clampedWidth);
           if (isSidebarCollapsed) {
             setIsSidebarCollapsed(false);
           }
         } else {
-          const clampedWidth = clampPanelWidth(nextWidth, PREVIEW_MIN_WIDTH, Math.max(PREVIEW_MIN_WIDTH, remainingWidth));
+          const maxWidth = Math.max(0, remainingWidth - sourceMinWidth);
+          const minWidth = Math.min(PREVIEW_MIN_WIDTH, maxWidth);
+          const clampedWidth = clampPanelWidth(nextWidth, minWidth, maxWidth);
           setPreviewRatio(remainingWidth > 0 ? clampPreviewRatio(clampedWidth / remainingWidth) : previewRatio);
           if (isPreviewCollapsed) {
             setIsPreviewCollapsed(false);
@@ -6171,7 +6282,21 @@ export function App() {
       window.addEventListener("pointerup", stopResize);
       window.addEventListener("pointercancel", stopResize);
     },
-    [isPreviewCollapsed, isSidebarCollapsed, previewRatio, sidebarWidth, workspaceMode]
+    [
+      activeMergeState,
+      activeSidebarTool,
+      diagramPaneMode,
+      gitMergePaneMode,
+      graphPaneMode,
+      isPreviewCollapsed,
+      isSidebarCollapsed,
+      isSourceFileEditable,
+      isSourcePaneHidden,
+      previewRatio,
+      sidebarWidth,
+      viewportWidth,
+      workspaceMode
+    ]
   );
 
   const canPullRemote =
@@ -6368,9 +6493,8 @@ export function App() {
   const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
   const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
   const effectiveWorkspaceWidth =
-    workspaceWidth > 0 ? workspaceWidth : typeof window !== "undefined" ? window.innerWidth : 0;
-  const isMobileWorkspace =
-    effectiveWorkspaceWidth > 0 && effectiveWorkspaceWidth <= MOBILE_WORKSPACE_THRESHOLD;
+    workspaceWidth > 0 ? workspaceWidth : viewportWidth;
+  const isMobileWorkspace = isMobileWorkspaceViewport(viewportWidth);
   const showDesktopSidebar = !isMobileWorkspace && !isSidebarCollapsed;
   const isDiagramInlineExpanded =
     showDesktopSidebar &&
@@ -6392,26 +6516,33 @@ export function App() {
   const isGraphPreviewExpanded = isGraphInlineExpanded && graphPaneMode === "preview";
   const isGitMergePreviewExpanded = isGitMergeInlineExpanded && gitMergePaneMode === "preview";
   const isSidebarInlineExpanded = isDiagramInlineExpanded || isGraphInlineExpanded || isGitMergeInlineExpanded;
-  const showSourcePane = !isSidebarInlineExpanded && isSourceFileEditable;
-  const showPreviewPane = !isDiagramPreviewExpanded && !isGraphPreviewExpanded && !isGitMergePreviewExpanded;
+  const showSourcePane =
+    !isSidebarInlineExpanded &&
+    isSourceFileEditable &&
+    (isMobileWorkspace || !isSourcePaneHidden);
+  const showPreviewPane =
+    !isDiagramPreviewExpanded &&
+    !isGraphPreviewExpanded &&
+    !isGitMergePreviewExpanded &&
+    (isMobileWorkspace || !isPreviewCollapsed);
   const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
-  const baseSidebarHandleWidth = showDesktopSidebar ? PANEL_HANDLE_WIDTH : 0;
-  const basePreviewHandleWidth = isMobileWorkspace ? 0 : PANEL_HANDLE_WIDTH;
-  const baseHandleWidthTotal = baseSidebarHandleWidth + basePreviewHandleWidth;
-  const sidebarPreviewGapWidth = showDesktopSidebar && !showSourcePane ? PANEL_HANDLE_WIDTH : 0;
-  const previewPaneWidth = isPreviewCollapsed
-    ? PANEL_COLLAPSED_WIDTH
+  const sidebarHandleWidth =
+    !isMobileWorkspace && showDesktopSidebar && (showSourcePane || showPreviewPane)
+      ? PANEL_HANDLE_WIDTH
+      : 0;
+  const previewHandleWidth = !isMobileWorkspace && showPreviewPane && showSourcePane ? PANEL_HANDLE_WIDTH : 0;
+  const handleWidthTotal = sidebarHandleWidth + previewHandleWidth;
+  const previewPaneWidth = !showPreviewPane
+    ? 0
     : showSourcePane || isSidebarInlineExpanded
     ? getPreviewPaneWidth(
         effectiveWorkspaceWidth,
         sidebarPaneWidth,
-        baseHandleWidthTotal,
-        previewRatio
+        handleWidthTotal,
+        previewRatio,
+        showSourcePane ? EDITOR_MIN_WIDTH : 0
       )
-    : Math.max(0, effectiveWorkspaceWidth - sidebarPaneWidth - sidebarPreviewGapWidth - baseSidebarHandleWidth);
-  const sidebarHandleWidth = showDesktopSidebar && showSourcePane ? PANEL_HANDLE_WIDTH : 0;
-  const previewHandleWidth = !isMobileWorkspace && showPreviewPane && showSourcePane ? PANEL_HANDLE_WIDTH : 0;
-  const handleWidthTotal = sidebarHandleWidth + previewHandleWidth;
+    : Math.max(0, effectiveWorkspaceWidth - sidebarPaneWidth - sidebarHandleWidth);
   const sourcePaneWidth =
     showSourcePane && workspaceMode === "split" && effectiveWorkspaceWidth > 0
       ? Math.max(
@@ -6438,13 +6569,13 @@ export function App() {
         }
       : workspaceMode === "split"
       ? {
-          gridTemplateColumns: showDesktopSidebar
-            ? showSourcePane
-              ? `${sidebarPaneWidth}px ${sidebarHandleWidth}px ${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
-              : `${sidebarPaneWidth}px ${sidebarPreviewGapWidth}px ${previewPaneWidth}px`
-            : showSourcePane
-            ? `${sourcePaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
-            : `${previewPaneWidth}px`
+          gridTemplateColumns: [
+            showDesktopSidebar ? `${sidebarPaneWidth}px` : null,
+            showDesktopSidebar && (showSourcePane || showPreviewPane) ? `${sidebarHandleWidth}px` : null,
+            showSourcePane ? `${sourcePaneWidth}px` : null,
+            showSourcePane && showPreviewPane ? `${previewHandleWidth}px` : null,
+            showPreviewPane ? `${previewPaneWidth}px` : null
+          ].filter(Boolean).join(" ") || "minmax(0, 1fr)"
         }
       : {
           gridTemplateColumns: "minmax(0, 1fr)"
@@ -6465,9 +6596,26 @@ export function App() {
       : "pane--mobile-hidden"
     : "";
   const sidebarPaneCollapsed = !isMobileWorkspace && !showDesktopSidebar;
-  const previewPaneCollapsed = isPreviewCollapsed && !isMobileWorkspace && showPreviewPane;
+  const visibleDesktopPaneCount = getVisibleDesktopPaneCount();
+  const canHideDesktopPane = visibleDesktopPaneCount > 1;
+  const showDesktopPaneRestoreBar =
+    !isMobileWorkspace &&
+    (isSidebarCollapsed || (isSourcePaneHidden && isSourceFileEditable) || isPreviewCollapsed);
   const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
   const filesPanelTitle = activeSidebarTool === "files" && isTrashViewOpen ? "Trash" : sidebarToolTitle;
+
+  useEffect(() => {
+    if (isMobileWorkspace || workspaceMode !== "split" || visibleDesktopPaneCount > 0) {
+      return;
+    }
+
+    if (isSourceFileEditable) {
+      setIsSourcePaneHidden(false);
+      return;
+    }
+
+    setIsPreviewCollapsed(false);
+  }, [isMobileWorkspace, isSourceFileEditable, visibleDesktopPaneCount, workspaceMode]);
 
   useEffect(() => {
     if (
@@ -6513,7 +6661,12 @@ export function App() {
     (tool: SidebarTool) => {
       const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
 
-      if (!isMobileWorkspace && activeSidebarTool === tool && !isSidebarCollapsed) {
+      if (
+        !isMobileWorkspace &&
+        activeSidebarTool === tool &&
+        !isSidebarCollapsed &&
+        visibleDesktopPaneCount > 1
+      ) {
         setIsSidebarCollapsed(true);
       } else {
         setActiveSidebarTool(tool);
@@ -6544,7 +6697,7 @@ export function App() {
         });
       }
     },
-    [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, openSearchPane, workspaceMode]
+    [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, openSearchPane, visibleDesktopPaneCount, workspaceMode]
   );
 
   const handleOpenWorkspaceDiagram = useCallback(
@@ -7016,6 +7169,37 @@ export function App() {
       )}
 
       <div className="workspace-main">
+      {showDesktopPaneRestoreBar ? (
+        <div className="pane-restore-bar" aria-label="Hidden panes">
+          {isSidebarCollapsed ? (
+            <button
+              className="pane__button pane__button--compact"
+              onClick={() => restoreWorkspacePane("sidebar")}
+              type="button"
+            >
+              Show files
+            </button>
+          ) : null}
+          {isSourcePaneHidden && isSourceFileEditable ? (
+            <button
+              className="pane__button pane__button--compact"
+              onClick={() => restoreWorkspacePane("source")}
+              type="button"
+            >
+              Show source
+            </button>
+          ) : null}
+          {isPreviewCollapsed ? (
+            <button
+              className="pane__button pane__button--compact"
+              onClick={() => restoreWorkspacePane("preview")}
+              type="button"
+            >
+              Show preview
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       <main
         className={`workspace workspace--triple workspace--${workspaceMode} ${
@@ -7185,6 +7369,18 @@ export function App() {
                       type="button"
                     >
                       Compile
+                    </button>
+                  ) : null}
+                  {!isMobileWorkspace ? (
+                    <button
+                      aria-label="Hide files pane"
+                      className="pane__button pane__button--compact pane__icon-button"
+                      disabled={!canHideDesktopPane}
+                      onClick={() => hideWorkspacePane("sidebar")}
+                      title="Hide files pane"
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--pane-hide" />
                     </button>
                   ) : null}
                 </div>
@@ -8284,15 +8480,13 @@ export function App() {
           </aside>
         ) : null}
 
-        {showDesktopSidebar && showSourcePane ? (
+        {showDesktopSidebar && (showSourcePane || showPreviewPane) ? (
           <button
             aria-label="Resize sidebar"
             className="workspace-handle workspace-handle--left"
             onPointerDown={beginPanelResize("sidebar")}
             type="button"
           />
-        ) : showDesktopSidebar && !showSourcePane ? (
-          <div aria-hidden="true" className="workspace-gap workspace-gap--sidebar-preview" />
         ) : null}
 
         {showSourcePane ? (
@@ -8331,6 +8525,18 @@ export function App() {
                   }`}
                 />
               </button>
+              {!isMobileWorkspace ? (
+                <button
+                  aria-label="Hide source pane"
+                  className="pane__button pane__button--compact pane__icon-button"
+                  disabled={!canHideDesktopPane}
+                  onClick={() => hideWorkspacePane("source")}
+                  title="Hide source pane"
+                  type="button"
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--pane-hide" />
+                </button>
+              ) : null}
             </div>
           </div>
           {isSourceToolbarVisible && isSourceFileEditable ? (
@@ -8808,62 +9014,60 @@ export function App() {
 
         {showPreviewPane ? (
         <section
-          className={`pane pane--preview ${
-            previewPaneCollapsed ? "pane--collapsed" : ""
-          } ${previewVisibilityClass}`}
+          className={`pane pane--preview ${previewVisibilityClass}`}
           aria-label="Typst preview"
         >
-          {previewPaneCollapsed ? (
-            <button
-              className="pane__collapsed-toggle"
-              onClick={() => handlePanelToggle("preview")}
-              type="button"
-            >
-              Preview
-            </button>
-          ) : (
-            <>
-              <div className="pane__header pane__header--preview">
-                <div className="pane__header-group">
-                  <h2>Preview</h2>
-                </div>
-                <div className="pane__header-center">
-                  <PreviewZoomControls
-                    onZoomChange={setPreviewZoom}
-                    zoom={previewZoom}
-                  />
-                </div>
-                <div className="pane__header-actions">
-                  <span className="pane__meta pane__meta--status">
-                    <PreviewStatusIcon
-                      kind={isCompiling ? "compiling" : "live"}
-                      label={isCompiling ? compilerStatus.label : "Live"}
-                    />
-                  </span>
-                  <button
-                    aria-pressed={isPaperView}
-                    className="pane__button pane__button--quiet"
-                    onClick={togglePaperView}
-                    type="button"
-                  >
-                    Paper
-                  </button>
-                </div>
-              </div>
-              <PreviewPane
-                compilerStatus={compilerStatus}
-                isErrorSettled={isErrorSettled}
-                isCompiling={isCompiling}
-                lastSuccessfulResult={lastSuccessfulResult}
-                paperView={isPaperView}
-                showToolbar={false}
+          <div className="pane__header pane__header--preview">
+            <div className="pane__header-group">
+              <h2>Preview</h2>
+            </div>
+            <div className="pane__header-center">
+              <PreviewZoomControls
                 onZoomChange={setPreviewZoom}
-                result={compileResult}
-                workspacePreview={selectedWorkspacePreview}
                 zoom={previewZoom}
               />
-            </>
-          )}
+            </div>
+            <div className="pane__header-actions">
+              <span className="pane__meta pane__meta--status">
+                <PreviewStatusIcon
+                  kind={isCompiling ? "compiling" : "live"}
+                  label={isCompiling ? compilerStatus.label : "Live"}
+                />
+              </span>
+              <button
+                aria-pressed={isPaperView}
+                className="pane__button pane__button--quiet"
+                onClick={togglePaperView}
+                type="button"
+              >
+                Paper
+              </button>
+              {!isMobileWorkspace ? (
+                <button
+                  aria-label="Hide preview pane"
+                  className="pane__button pane__button--compact pane__icon-button"
+                  disabled={!canHideDesktopPane}
+                  onClick={() => hideWorkspacePane("preview")}
+                  title="Hide preview pane"
+                  type="button"
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--pane-hide" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <PreviewPane
+            compilerStatus={compilerStatus}
+            isErrorSettled={isErrorSettled}
+            isCompiling={isCompiling}
+            lastSuccessfulResult={lastSuccessfulResult}
+            paperView={isPaperView}
+            showToolbar={false}
+            onZoomChange={setPreviewZoom}
+            result={compileResult}
+            workspacePreview={selectedWorkspacePreview}
+            zoom={previewZoom}
+          />
         </section>
         ) : null}
       </main>

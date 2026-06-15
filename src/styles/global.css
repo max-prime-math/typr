@@ -213,6 +213,20 @@ button {
   min-height: 0;
 }
 
+.pane-restore-bar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.55rem;
+}
+
+.pane-restore-bar .pane__button {
+  min-height: 1.85rem;
+  padding-inline: 0.65rem;
+}
+
 .menubar {
   position: relative;
   z-index: 50;
@@ -681,15 +695,6 @@ button {
   display: none;
 }
 
-.workspace-gap {
-  min-width: 0;
-  min-height: 0;
-}
-
-.workspace-gap--sidebar-preview {
-  width: 0;
-}
-
 .pane {
   min-width: 0;
   min-height: 0;
@@ -1078,6 +1083,11 @@ button {
 .toolbar-icon--toggle {
   mask-image: url("../icons/toolbar/toggle.svg");
   -webkit-mask-image: url("../icons/toolbar/toggle.svg");
+}
+
+.toolbar-icon--pane-hide {
+  mask-image: url("../icons/toolbar/pane-hide.svg");
+  -webkit-mask-image: url("../icons/toolbar/pane-hide.svg");
 }
 
 .toolbar-icon--new-file {
@@ -1525,20 +1535,6 @@ button {
   font-size: 0.7rem;
 }
 
-.pane__collapsed-toggle {
-  width: 100%;
-  min-height: 100%;
-  border: 1px dashed color-mix(in srgb, var(--border) 75%, var(--accent-soft));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-strong) 90%, var(--accent-soft));
-  color: var(--text);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  transform: rotate(180deg);
-}
-
 .editor-root {
   flex: 1 1 auto;
   min-height: 0;
@@ -1592,6 +1588,7 @@ button {
 }
 
 .workspace-handle {
+  position: relative;
   border: 0;
   background: transparent;
   padding: 0;
@@ -1603,9 +1600,30 @@ button {
   touch-action: none;
 }
 
+.workspace-handle::after {
+  content: "";
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
+  left: 50%;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-strong) 70%, transparent);
+  transform: translateX(-50%);
+  transition:
+    background 120ms ease,
+    width 120ms ease;
+}
+
 .workspace-handle:hover,
 .workspace-handle:focus-visible {
   background: color-mix(in srgb, var(--accent-soft) 56%, transparent);
+}
+
+.workspace-handle:hover::after,
+.workspace-handle:focus-visible::after {
+  width: 3px;
+  background: color-mix(in srgb, var(--accent) 72%, var(--border-strong));
 }
 
 .workspace-handle:focus-visible {
