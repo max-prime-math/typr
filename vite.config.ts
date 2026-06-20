@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
+const INLINE_ASSET_LIMIT = 8 * 1024;
 
 export default defineConfig(({ command }) => {
   const base = command === "build" ? DEPLOYED_BASE : "/";
@@ -42,6 +43,7 @@ export default defineConfig(({ command }) => {
           ]
         },
         workbox: {
+          globPatterns: ["**/*.{js,css,html}", "assets/**/*.svg"],
           globIgnores: ["**/*.wasm", "**/*.otf", "**/*.ttf"],
           maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
           runtimeCaching: [
@@ -60,7 +62,13 @@ export default defineConfig(({ command }) => {
       format: "es"
     },
     build: {
-      assetsInlineLimit: 8 * 1024
+      assetsInlineLimit(filePath, content) {
+        if (filePath.endsWith(".svg")) {
+          return false;
+        }
+
+        return content.length < INLINE_ASSET_LIMIT;
+      }
     },
     resolve: {
       alias: {
