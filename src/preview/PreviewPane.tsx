@@ -3,6 +3,7 @@ import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
+import { renderPdfArtifactToCanvas } from "./pdfCanvasRenderer";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
 import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
 
@@ -117,6 +118,7 @@ export function PreviewPane({
             {fallbackResult.output.kind === "pdf" && fallbackResult.output.artifactData ? (
               <PdfPreview
                 artifactData={fallbackResult.output.artifactData}
+                darkMode={theme.mode === "dark"}
                 isFaulted={isErrorSettled}
                 paperView={paperView}
               />
@@ -170,7 +172,11 @@ export function PreviewPane({
           <PreviewActivityStatus status={compilerStatus} />
         ) : null}
         {result.output.kind === "pdf" && result.output.artifactData ? (
-          <PdfPreview artifactData={result.output.artifactData} paperView={paperView} />
+          <PdfPreview
+            artifactData={result.output.artifactData}
+            darkMode={theme.mode === "dark"}
+            paperView={paperView}
+          />
         ) : shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
         ) : (
@@ -683,84 +689,69 @@ function ChromiumCanvasPreview({
 
 function PdfPreview({
   artifactData,
+  darkMode = false,
   paperView = false,
   isFaulted = false
 }: {
   artifactData: Uint8Array;
+  darkMode?: boolean;
   paperView?: boolean;
   isFaulted?: boolean;
 }) {
-  const [pdfObject, setPdfObject] = useState(() => createPdfObjectUrl(artifactData));
-  const pdfObjectRef = useRef(pdfObject);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
   useEffect(() => {
-    const nextSignature = getByteContentSignature(artifactData);
-    const current = pdfObjectRef.current;
+    const container = containerRef.current;
 
-    if (current.signature === nextSignature) {
+    if (!container) {
       return;
     }
 
-    const next = createPdfObjectUrl(artifactData, nextSignature);
-    pdfObjectRef.current = next;
-    setPdfObject(next);
-    URL.revokeObjectURL(current.blobUrl);
-  }, [artifactData]);
+    let cancelled = false;
+    const renderStartedAt =
+      typeof performance === "undefined" ? 0 : performance.now();
+    setRenderError(null);
 
-  useEffect(() => {
-    logPreviewTiming("pdf", pdfObject.blobStartedAt);
-  }, [pdfObject]);
+    void renderPdfArtifactToCanvas(container, artifactData, {
+      darkMode,
+      paperView
+    })
+      .then(() => {
+        if (!cancelled) {
+          logPreviewTiming("pdf-canvas", renderStartedAt);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRenderError(
+            error instanceof Error ? error.message : "PDF canvas preview failed."
+          );
+        }
+      });
 
-  useEffect(() => {
     return () => {
-      URL.revokeObjectURL(pdfObjectRef.current.blobUrl);
+      cancelled = true;
+      container.innerHTML = "";
     };
-  }, []);
+  }, [artifactData, darkMode, paperView]);
+
+  if (renderError) {
+    return (
+      <div className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}>
+        <div className="preview-canvas-error">{renderError}</div>
+      </div>
+    );
+  }
 
   return (
     <div
-      className={`preview-document preview-document--pdf ${
+      className={`preview-document preview-document--canvas preview-document--pdf-canvas ${
         paperView ? "preview-document--pdf-paper" : ""
       } ${isFaulted ? "preview-document--faulted" : ""}`}
-    >
-      <object
-        aria-label="LaTeX PDF preview"
-        className="preview-document__pdf"
-        data={pdfObject.blobUrl}
-        type="application/pdf"
-      >
-        <a href={pdfObject.blobUrl} rel="noreferrer" target="_blank">
-          Open PDF preview
-        </a>
-      </object>
-    </div>
+      ref={containerRef}
+    />
   );
-}
-
-function createPdfObjectUrl(artifactData: Uint8Array, signature = getByteContentSignature(artifactData)) {
-  const startedAt =
-    typeof performance === "undefined" ? 0 : performance.now();
-  const bytes = new Uint8Array(artifactData);
-  const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)], {
-    type: "application/pdf"
-  });
-
-  return {
-    blobUrl: URL.createObjectURL(blob),
-    blobStartedAt: startedAt,
-    signature
-  };
-}
-
-function getByteContentSignature(bytes: Uint8Array): string {
-  let hash = 0x811c9dc5;
-
-  for (let index = 0; index < bytes.byteLength; index += 1) {
-    hash ^= bytes[index];
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  return `${bytes.byteLength}:${(hash >>> 0).toString(16)}`;
 }
 
 function parseZoomSelection(value: string): PreviewZoomState {
@@ -1004,7 +995,7 @@ function shouldUseChromiumCanvasPreview(
   return false;
 }
 
-function logPreviewTiming(mode: "svg" | "canvas" | "pdf", startedAt: number): void {
+function logPreviewTiming(mode: "svg" | "canvas" | "pdf-canvas", startedAt: number): void {
   if (typeof console === "undefined" || typeof performance === "undefined") {
     return;
   }
