@@ -1,5 +1,10 @@
 import { defineCommand, type Command } from "just-bash";
-import type { GitCommandAdapter, TerminalCommandResult, TypstCommandAdapter } from "./types";
+import type {
+  GitCommandAdapter,
+  LatexCommandAdapter,
+  TerminalCommandResult,
+  TypstCommandAdapter
+} from "./types";
 
 function formatResult(result: TerminalCommandResult) {
   return {
@@ -11,6 +16,7 @@ function formatResult(result: TerminalCommandResult) {
 
 export function createTerminalCommands(options: {
   typst: TypstCommandAdapter;
+  latex: LatexCommandAdapter;
   git: GitCommandAdapter;
 }): Command[] {
   return [
@@ -20,6 +26,7 @@ export function createTerminalCommands(options: {
         "Filesystem: pwd cd ls tree cat less head tail wc mkdir touch rm cp mv",
         "Search/text: grep rg find sort uniq sed",
         "Typst: typst compile|watch|query|fonts|--version",
+        "LaTeX: latex compile [--quick|--full]|--version",
         "Project helpers: build clean export sync doctor help",
         "Git: git status add reset commit branch switch log remote fetch push pull sync merge --abort merge --continue",
         "Limitations: figure assets are read-only, rebase is unavailable in Browser Shell"
@@ -78,6 +85,27 @@ export function createTerminalCommands(options: {
       return {
         stdout: "",
         stderr: `typst: unsupported subcommand '${subcommand}' in Browser Shell.\n`,
+        exitCode: 1
+      };
+    }),
+    defineCommand("latex", async (args) => {
+      const [subcommand, ...rest] = args;
+      if (!subcommand || subcommand === "help") {
+        return {
+          stdout: "latex commands: compile [--quick|--full], --version\n",
+          stderr: "",
+          exitCode: 0
+        };
+      }
+      if (subcommand === "compile") {
+        return formatResult(await options.latex.compile(rest));
+      }
+      if (subcommand === "--version" || subcommand === "version") {
+        return formatResult(await options.latex.version(rest));
+      }
+      return {
+        stdout: "",
+        stderr: `latex: unsupported subcommand '${subcommand}' in Browser Shell.\n`,
         exitCode: 1
       };
     }),

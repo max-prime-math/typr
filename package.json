@@ -14,7 +14,8 @@
     "build": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "busytex:assets": "texlyre-busytex download-assets public/core"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.6",
@@ -30,6 +31,7 @@
     "@replit/codemirror-vim": "^6.3.0",
     "@wterm/just-bash": "^0.3.0",
     "@wterm/react": "^0.3.0",
+    "codemirror-lang-latex": "^0.4.1",
     "fflate": "^0.8.3",
     "gnuplot-wasm": "^0.1.0",
     "idb": "^8.0.3",
@@ -37,7 +39,8 @@
     "mitex-wasm": "^0.2.5",
     "plotly.js-dist-min": "^3.5.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "texlyre-busytex": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

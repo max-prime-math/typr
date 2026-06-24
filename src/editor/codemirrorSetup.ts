@@ -36,9 +36,11 @@ import {
   type ViewUpdate
 } from "@codemirror/view";
 import { getCM, vim } from "@replit/codemirror-vim";
+import { latex } from "codemirror-lang-latex";
 import type { StyleSpec } from "style-mod";
 import type { KeybindingMap } from "../app/keybindings";
 import { toCodeMirrorKeybinding } from "../app/keybindings";
+import type { SourceLanguage } from "../compiler/sourceFileTypes";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { toggleMathDelimiterCommand } from "./mathActions";
@@ -59,6 +61,7 @@ interface EditorSetupOptions {
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
+  language: SourceLanguage;
   snippetSource: CompletionSource;
   onSearchRequested: () => void;
   onCompileRequested: () => void;
@@ -189,6 +192,7 @@ export function createEditorExtensions({
   theme,
   diagnostics,
   highlightErrors,
+  language,
   snippetSource,
   onSearchRequested,
   onCompileRequested
@@ -271,7 +275,7 @@ export function createEditorExtensions({
       override: [snippetSource]
     }),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-    typstLanguage(),
+    createLanguageExtension(language),
     keymap.of([
       { key: "$", run: mathDelimiterCommand },
       { key: "Tab", run: tabCommand },
@@ -293,6 +297,24 @@ export function createEditorExtensions({
     }),
     ...(vimMode ? [vim()] : [])
   ];
+}
+
+function createLanguageExtension(language: SourceLanguage): Extension {
+  if (language === "latex") {
+    return latex({
+      autoCloseTags: false,
+      enableAutocomplete: false,
+      enableLinting: false,
+      enableTooltips: false,
+      autoCloseBrackets: false
+    });
+  }
+
+  if (language === "typst") {
+    return typstLanguage();
+  }
+
+  return [];
 }
 
 function shouldHandleMathDelimiterShortcut(view: EditorView, vimMode: boolean): boolean {

@@ -27,6 +27,7 @@ import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
+import type { SourceLanguage } from "../compiler/sourceFileTypes";
 import type { KeybindingMap } from "../app/keybindings";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import {
@@ -47,6 +48,7 @@ interface TypstEditorProps {
   theme: ThemeDefinition;
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
+  language?: SourceLanguage;
   snippets: TypstSnippet[];
   onSearchRequested: () => void;
   onCompileRequested: () => void;
@@ -116,6 +118,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   theme,
   diagnostics,
   highlightErrors,
+  language = "typst",
   snippets,
   onSearchRequested,
   onCompileRequested,
@@ -414,6 +417,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         theme,
         diagnostics,
         highlightErrors,
+        language,
         snippetSource: snippetCompletionSource,
         onSearchRequested,
         onCompileRequested
@@ -422,13 +426,20 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     });
 
     if (preservedViewState) {
-      view.dispatch({
-        selection: EditorSelection.create(
-          preservedViewState.selectionRanges.map((range) =>
-            EditorSelection.range(range.anchor, range.head)
-          ),
-          preservedViewState.mainSelectionIndex
+      const documentLength = view.state.doc.length;
+      const selectionRanges = preservedViewState.selectionRanges.map((range) =>
+        EditorSelection.range(
+          clampDocumentOffset(range.anchor, documentLength),
+          clampDocumentOffset(range.head, documentLength)
         )
+      );
+      const mainSelectionIndex = Math.min(
+        preservedViewState.mainSelectionIndex,
+        Math.max(0, selectionRanges.length - 1)
+      );
+
+      view.dispatch({
+        selection: EditorSelection.create(selectionRanges, mainSelectionIndex)
       });
       view.scrollDOM.scrollTop = preservedViewState.scrollTop;
       view.scrollDOM.scrollLeft = preservedViewState.scrollLeft;
@@ -461,6 +472,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     cursorSmooth,
     editorFontSize,
     keybindings,
+    language,
     onCompileRequested,
     onSelectionChange,
     readOnly,
@@ -530,6 +542,14 @@ function applyEditorChanges(
   currentValueRef.current = nextValue;
 
   return nextValue;
+}
+
+function clampDocumentOffset(offset: number, documentLength: number): number {
+  if (!Number.isFinite(offset)) {
+    return 0;
+  }
+
+  return Math.min(documentLength, Math.max(0, offset));
 }
 
 function insertTextIntoView(

@@ -695,6 +695,10 @@ async function importTree(
   }
   const entries = [];
   for (const entry of tree.tree) {
+    if (entry.type === "commit" && entry.path) {
+      throw new Error(`Remote repository contains unsupported submodule entry: ${entry.path}`);
+    }
+
     if (entry.type !== "blob" || !entry.sha || !entry.path) {
       continue;
     }
@@ -719,7 +723,7 @@ async function importTree(
     entries.push({
       path: entry.path,
       oid: entry.sha,
-      mode: entry.mode === "100755" ? "100755" as const : "100644" as const,
+      mode: normalizeGitHubFileMode(entry.mode, entry.path),
       size: entry.size ?? 0
     });
   }
@@ -730,6 +734,18 @@ async function importTree(
   if (writtenTree.value !== treeSha) {
     throw new Error(`Remote tree ${treeSha.slice(0, 7)} could not be reconstructed locally.`);
   }
+}
+
+function normalizeGitHubFileMode(mode: string | undefined, path: string): RepoTreeEntry["mode"] {
+  if (mode === "100644" || mode === "100755" || mode === "120000") {
+    return mode;
+  }
+
+  if (!mode) {
+    return "100644";
+  }
+
+  throw new Error(`Remote file ${path} uses unsupported git mode ${mode}.`);
 }
 
 async function importCommitBlobs(

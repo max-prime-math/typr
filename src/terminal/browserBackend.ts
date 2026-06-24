@@ -17,6 +17,7 @@ export function createBrowserBackend(runtime: TerminalProjectRuntime): TerminalB
     cwd: PROJECT_ROOT,
     customCommands: createTerminalCommands({
       typst: createTypstAdapter(runtime),
+      latex: createLatexAdapter(runtime),
       git: createGitAdapter(runtime)
     })
   });
@@ -38,6 +39,7 @@ export function createBrowserBackend(runtime: TerminalProjectRuntime): TerminalB
             "Filesystem: pwd cd ls tree cat less head tail wc mkdir touch rm cp mv",
             "Search/text: grep rg find sort uniq sed",
             "Typst: typst compile|watch|query|fonts|--version",
+            "LaTeX: latex compile [--quick|--full]|--version",
             "Project helpers: build clean export sync doctor help",
             "Git: git status add reset commit branch switch log remote fetch push pull sync merge --abort merge --continue"
           ].join("\n") + "\n",
@@ -90,7 +92,14 @@ function createTypstAdapter(runtime: TerminalProjectRuntime) {
   return {
     async compile(args: string[]): Promise<TerminalCommandResult> {
       const target = args[0] ?? "active document";
-      const result = await runtime.compileActiveDocument();
+      const result = await runtime.compileProjectFile(args[0]);
+      if (result.engine !== "typst-ts" && result.engine !== "mock") {
+        return {
+          stdout: "",
+          stderr: `${target} is not a Typst file. Use latex compile for LaTeX sources.\n`,
+          exitCode: 1
+        };
+      }
       return result.ok
         ? {
             stdout: `Compiled ${target} successfully.\n`,
@@ -132,7 +141,18 @@ function createTypstAdapter(runtime: TerminalProjectRuntime) {
       };
     },
     async build(): Promise<TerminalCommandResult> {
-      return this.compile(["main.typ"]);
+      const result = await runtime.compileProjectFile();
+      return result.ok
+        ? {
+            stdout: "Built active document successfully.\n",
+            stderr: "",
+            exitCode: 0
+          }
+        : {
+            stdout: "",
+            stderr: `${formatCompileErrors(result)}\n`,
+            exitCode: 1
+          };
     },
     async clean(): Promise<TerminalCommandResult> {
       const fs = runtime.getSnapshot();
@@ -187,6 +207,42 @@ function createTypstAdapter(runtime: TerminalProjectRuntime) {
           }`,
           "limitations: no host shell, no external git transport in Browser Shell, no typst watch/query transport"
         ].join("\n") + "\n",
+        stderr: "",
+        exitCode: 0
+      };
+    }
+  };
+}
+
+function createLatexAdapter(runtime: TerminalProjectRuntime) {
+  return {
+    async compile(args: string[]): Promise<TerminalCommandResult> {
+      const mode = args.includes("--quick") ? "quick" : "full";
+      const targetPath = args.find((arg) => !arg.startsWith("--"));
+      const target = targetPath ?? "active document";
+      const result = await runtime.compileProjectFile(targetPath, { latexMode: mode });
+      if (result.engine !== "busytex") {
+        return {
+          stdout: "",
+          stderr: `${target} is not a LaTeX file. Use typst compile for Typst sources.\n`,
+          exitCode: 1
+        };
+      }
+      return result.ok
+        ? {
+            stdout: `Compiled ${target} successfully (${mode} mode).\n`,
+            stderr: "",
+            exitCode: 0
+          }
+        : {
+            stdout: "",
+            stderr: `${formatCompileErrors(result)}\n`,
+            exitCode: 1
+          };
+    },
+    async version(): Promise<TerminalCommandResult> {
+      return {
+        stdout: "BusyTeX (browser runtime)\n",
         stderr: "",
         exitCode: 0
       };

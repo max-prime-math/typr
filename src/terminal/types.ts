@@ -33,6 +33,7 @@ export interface TerminalProjectRuntime {
   getCompileResult(): CompileResult | null;
   getCompilerStatus(): CompilerStatus;
   getIsOnline(): boolean;
+  compileProjectFile(path?: string, options?: { latexMode?: "quick" | "full" }): Promise<CompileResult>;
   compileActiveDocument(): Promise<CompileResult>;
   exportActiveDocument(): Promise<{ ok: true; fileName: string } | { ok: false; message: string }>;
   syncProject(): Promise<{ ok: true; message: string } | { ok: false; message: string }>;
@@ -50,6 +51,11 @@ export interface TypstCommandAdapter {
   export(): Promise<TerminalCommandResult>;
   sync(): Promise<TerminalCommandResult>;
   doctor(): Promise<TerminalCommandResult>;
+}
+
+export interface LatexCommandAdapter {
+  compile(args: string[]): Promise<TerminalCommandResult>;
+  version(args: string[]): Promise<TerminalCommandResult>;
 }
 
 export interface GitCommandAdapter {

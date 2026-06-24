@@ -53,6 +53,13 @@ export default defineConfig(({ command }) => {
               options: {
                 cacheName: "typr-compiler-assets"
               }
+            },
+            {
+              urlPattern: /\/core\/busytex\/.*\.(?:js|wasm|data)$/,
+              handler: "CacheFirst",
+              options: {
+                cacheName: "typr-busytex-assets"
+              }
             }
           ]
         }

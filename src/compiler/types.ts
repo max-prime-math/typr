@@ -1,9 +1,10 @@
-export type CompilerEngine = "mock" | "typst-ts";
+export type CompilerEngine = "mock" | "typst-ts" | "busytex";
 export type CompilerMode = "worker" | "main-thread" | "mock";
 export type CompilerPhase =
   | "idle"
   | "worker-starting"
   | "loading-typst"
+  | "loading-latex"
   | "loading-packages"
   | "loading-fonts"
   | "compiling"
@@ -37,9 +38,45 @@ export interface CompileDiagnostic {
 }
 
 export interface CompileOutput {
-  kind: "svg" | "html" | "placeholder";
+  kind: "svg" | "html" | "pdf" | "placeholder";
   content: string;
   artifactData?: Uint8Array;
+}
+
+export interface CompileTiming {
+  label: string;
+  durationMs: number;
+}
+
+export interface CompileMetadata {
+  timings?: CompileTiming[];
+  fileSync?: {
+    changedFiles: number;
+    deletedFiles: number;
+    cachedFiles: number;
+    compileFiles: number;
+  };
+  dirty?: {
+    status: "initial" | "changed" | "unchanged";
+    requiresFullCompile: boolean;
+    reason: string;
+    changedFiles: number;
+    deletedFiles: number;
+    categories: Array<{
+      category: string;
+      count: number;
+    }>;
+    samplePaths: string[];
+  };
+  strategy?: {
+    requestedMode: string;
+    effectiveMode: string;
+    previewKind: string;
+    activeFilePath: string;
+    mainFilePath: string;
+    reason: string;
+    fallbackUsed?: boolean;
+  };
 }
 
 export interface CompileAssetFile {
@@ -52,12 +89,15 @@ export interface CompileSuccess {
   engine: CompilerEngine;
   diagnostics: CompileDiagnostic[];
   output: CompileOutput;
+  metadata?: CompileMetadata;
 }
 
 export interface CompileFailure {
   ok: false;
   engine: CompilerEngine;
   errors: CompileDiagnostic[];
+  output?: CompileOutput;
+  metadata?: CompileMetadata;
 }
 
 export type CompileResult = CompileSuccess | CompileFailure;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultSnapshot } from "../app/appState";
 import {
+  createEmptyProjectRepository,
   createProjectStorageFromSnapshot,
   getSelectedProjectRepository,
   writeProjectFile
@@ -395,6 +396,164 @@ describe("remoteGitService", () => {
     expect(result.ok).toBe(true);
     const ref = await backend.getRef(init.value, "refs/remotes/origin/main");
     expect(ref.ok && ref.value).toBe(remoteSha);
+  });
+
+  it("imports remote trees that contain symlinks", async () => {
+    const backend = createRepoBackend(createMemoryGitFileStorage());
+    const fileText = "\\documentclass{article}\n\\begin{document}\nHello\n\\end{document}\n";
+    const symlinkTarget = "main.tex";
+    const fileSha = await gitObjectSha("blob", fileText);
+    const symlinkSha = await gitObjectSha("blob", symlinkTarget);
+    const treeContent = concatBytes([
+      new TextEncoder().encode("120000 linked-main.tex\0"),
+      hexToBytes(symlinkSha),
+      new TextEncoder().encode("100644 main.tex\0"),
+      hexToBytes(fileSha)
+    ]);
+    const treeSha = await gitObjectShaBytes("tree", treeContent);
+    const remoteSha = await gitObjectSha("commit", [
+      `tree ${treeSha}`,
+      "author A <a@example.com> 1710000000 +0000",
+      "committer A <a@example.com> 1710000000 +0000",
+      "",
+      "latex with symlink",
+      ""
+    ].join("\n"));
+    const service = createRemoteGitService({
+      repoBackend: backend,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/repos/owner/repo")) {
+          return jsonResponse({});
+        }
+        if (url.includes("/git/ref/heads/main")) {
+          return jsonResponse({ object: { sha: remoteSha } });
+        }
+        if (url.includes(`/git/commits/${remoteSha}`)) {
+          return jsonResponse({
+            sha: remoteSha,
+            message: "latex with symlink",
+            tree: { sha: treeSha },
+            parents: [],
+            author: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" },
+            committer: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" }
+          });
+        }
+        if (url.includes(`/git/trees/${treeSha}`)) {
+          return jsonResponse({
+            sha: treeSha,
+            tree: [
+              { type: "blob", sha: symlinkSha, path: "linked-main.tex", mode: "120000", size: symlinkTarget.length },
+              { type: "blob", sha: fileSha, path: "main.tex", mode: "100644", size: fileText.length }
+            ]
+          });
+        }
+        if (url.includes(`/git/blobs/${fileSha}`)) {
+          return jsonResponse({ content: btoa(fileText), encoding: "base64" });
+        }
+        if (url.includes(`/git/blobs/${symlinkSha}`)) {
+          return jsonResponse({ content: btoa(symlinkTarget), encoding: "base64" });
+        }
+        return jsonResponse({ message: `unexpected request ${url}` }, 500);
+      }
+    });
+    const init = await backend.initRepository(createEmptyProjectRepository({
+      displayName: "Imported LaTeX",
+      defaultFileName: null
+    }));
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+
+    const result = await service.pull(
+      init.value,
+      { owner: "owner", repo: "repo", branch: "main", remoteName: "origin" },
+      () => "token"
+    );
+
+    if (!result.ok) {
+      throw new Error(result.message);
+    }
+    expect(result.ok && result.project?.filesystem.entries["main.tex"]?.kind).toBe("file");
+    expect(result.ok && result.project?.filesystem.entries["linked-main.tex"]?.kind).toBe("file");
+  });
+
+  it("imports remote trees using git bytewise tree ordering", async () => {
+    const backend = createRepoBackend(createMemoryGitFileStorage());
+    const upperText = "\\documentclass{article}\n";
+    const lowerText = "\\begin{document}\nHello\n\\end{document}\n";
+    const upperSha = await gitObjectSha("blob", upperText);
+    const lowerSha = await gitObjectSha("blob", lowerText);
+    const treeContent = concatBytes([
+      new TextEncoder().encode("100644 A.tex\0"),
+      hexToBytes(upperSha),
+      new TextEncoder().encode("100644 a.tex\0"),
+      hexToBytes(lowerSha)
+    ]);
+    const treeSha = await gitObjectShaBytes("tree", treeContent);
+    const remoteSha = await gitObjectSha("commit", [
+      `tree ${treeSha}`,
+      "author A <a@example.com> 1710000000 +0000",
+      "committer A <a@example.com> 1710000000 +0000",
+      "",
+      "mixed case latex files",
+      ""
+    ].join("\n"));
+    const service = createRemoteGitService({
+      repoBackend: backend,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/repos/owner/repo")) {
+          return jsonResponse({});
+        }
+        if (url.includes("/git/ref/heads/main")) {
+          return jsonResponse({ object: { sha: remoteSha } });
+        }
+        if (url.includes(`/git/commits/${remoteSha}`)) {
+          return jsonResponse({
+            sha: remoteSha,
+            message: "mixed case latex files",
+            tree: { sha: treeSha },
+            parents: [],
+            author: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" },
+            committer: { name: "A", email: "a@example.com", date: "2024-03-09T16:00:00Z" }
+          });
+        }
+        if (url.includes(`/git/trees/${treeSha}`)) {
+          return jsonResponse({
+            sha: treeSha,
+            tree: [
+              { type: "blob", sha: upperSha, path: "A.tex", mode: "100644", size: upperText.length },
+              { type: "blob", sha: lowerSha, path: "a.tex", mode: "100644", size: lowerText.length }
+            ]
+          });
+        }
+        if (url.includes(`/git/blobs/${upperSha}`)) {
+          return jsonResponse({ content: btoa(upperText), encoding: "base64" });
+        }
+        if (url.includes(`/git/blobs/${lowerSha}`)) {
+          return jsonResponse({ content: btoa(lowerText), encoding: "base64" });
+        }
+        return jsonResponse({ message: `unexpected request ${url}` }, 500);
+      }
+    });
+    const init = await backend.initRepository(createEmptyProjectRepository({
+      displayName: "Imported LaTeX",
+      defaultFileName: null
+    }));
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+
+    const result = await service.pull(
+      init.value,
+      { owner: "owner", repo: "repo", branch: "main", remoteName: "origin" },
+      () => "token"
+    );
+
+    if (!result.ok) {
+      throw new Error(result.message);
+    }
+    expect(result.project?.filesystem.entries["A.tex"]?.kind).toBe("file");
+    expect(result.project?.filesystem.entries["a.tex"]?.kind).toBe("file");
   });
 
   it("aligns local refs to the commit sha GitHub creates during push", async () => {

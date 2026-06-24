@@ -29,6 +29,17 @@ function createRuntime(snapshot: AppSnapshot): TerminalProjectRuntime {
       label: "Ready"
     }),
     getIsOnline: () => true,
+    async compileProjectFile() {
+      return {
+        ok: true,
+        engine: "typst-ts",
+        diagnostics: [],
+        output: {
+          kind: "placeholder",
+          content: "ok"
+        }
+      };
+    },
     async compileActiveDocument() {
       return {
         ok: true,

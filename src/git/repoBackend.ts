@@ -132,7 +132,7 @@ export interface RepoCommitDetails extends RepoCommit {
 export interface RepoTreeEntry {
   path: string;
   oid: string;
-  mode: "100644" | "100755";
+  mode: RepoFileMode;
   size: number;
 }
 
@@ -1223,7 +1223,9 @@ async function writeTreeNode(
   node: TreeNode
 ): Promise<string> {
   const chunks: Uint8Array[] = [];
-  const children = [...node.children.entries()].sort(([left], [right]) => left.localeCompare(right));
+  const children = [...node.children.entries()].sort(([leftName, leftChild], [rightName, rightChild]) =>
+    compareGitTreeNames(leftName, leftChild.kind === "tree", rightName, rightChild.kind === "tree")
+  );
 
   for (const [name, child] of children) {
     if (child.kind === "file") {
@@ -1293,14 +1295,26 @@ async function collectTreeFiles(
 
     if (mode === "40000") {
       await collectTreeFiles(storage, projectId, oid, path, result);
-    } else {
+    } else if (isRepoFileMode(mode)) {
       const bytes = await storage.readFile(projectId, objectShaToObjectPath(oid));
       result.set(path, {
         path,
         oid,
-        mode: "100644",
+        mode,
         size: bytes ? unzlibObjectContentSize(bytes) : 0
       });
+    } else if (mode === "160000") {
+      throw repoFailure(
+        "unsupported",
+        `Git submodule entry '${path}' is not supported by the browser repository backend.`,
+        true
+      );
+    } else {
+      throw repoFailure(
+        "unsupported",
+        `Git tree entry '${path}' uses unsupported mode ${mode}.`,
+        true
+      );
     }
   }
 }
@@ -1599,9 +1613,13 @@ function parseIndex(bytes: Uint8Array): IndexEntry[] {
     const path = decodeUtf8(bytes.slice(pathStart, pathStart + pathLength));
     const entryLength = 62 + pathLength + 1;
     offset += entryLength + ((8 - (entryLength % 8)) % 8);
-    entries.push({ path, oid, mode: mode === "100755" ? "100755" : "100644", size });
+    entries.push({ path, oid, mode: isRepoFileMode(mode) ? mode : "100644", size });
   }
   return entries.sort(comparePathEntries);
+}
+
+function isRepoFileMode(mode: string): mode is RepoFileMode {
+  return mode === "100644" || mode === "100755" || mode === "120000";
 }
 
 async function getHeadSha(storage: GitFileStorage, projectId: string): Promise<string | null> {
@@ -1818,7 +1836,45 @@ function compareIndexEntries(left: IndexEntry | null, right: IndexEntry | null):
 }
 
 function comparePathEntries(left: { path: string }, right: { path: string }): number {
-  return left.path.localeCompare(right.path);
+  return compareByteStrings(left.path, right.path);
+}
+
+function compareGitTreeNames(
+  left: string,
+  leftIsTree: boolean,
+  right: string,
+  rightIsTree: boolean
+): number {
+  const leftBytes = encodeUtf8(left);
+  const rightBytes = encodeUtf8(right);
+  const max = Math.max(leftBytes.byteLength, rightBytes.byteLength);
+
+  for (let index = 0; index < max; index += 1) {
+    const leftByte =
+      index < leftBytes.byteLength ? leftBytes[index] : leftIsTree ? 0x2f : 0x00;
+    const rightByte =
+      index < rightBytes.byteLength ? rightBytes[index] : rightIsTree ? 0x2f : 0x00;
+
+    if (leftByte !== rightByte) {
+      return leftByte - rightByte;
+    }
+  }
+
+  return 0;
+}
+
+function compareByteStrings(left: string, right: string): number {
+  const leftBytes = encodeUtf8(left);
+  const rightBytes = encodeUtf8(right);
+  const length = Math.min(leftBytes.byteLength, rightBytes.byteLength);
+
+  for (let index = 0; index < length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) {
+      return leftBytes[index] - rightBytes[index];
+    }
+  }
+
+  return leftBytes.byteLength - rightBytes.byteLength;
 }
 
 function validateCommitMessage(message: string): string {
@@ -2055,9 +2111,11 @@ function formatTimezoneOffset(date: Date): string {
 interface IndexEntry {
   path: string;
   oid: string;
-  mode: "100644" | "100755";
+  mode: RepoFileMode;
   size: number;
 }
+
+type RepoFileMode = "100644" | "100755" | "120000";
 
 interface TreeNode {
   children: Map<string, { kind: "file"; entry: IndexEntry } | { kind: "tree"; node: TreeNode }>;

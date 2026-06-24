@@ -114,7 +114,13 @@ export function PreviewPane({
             {showCompilerActivity ? (
               <PreviewActivityStatus status={compilerStatus} />
             ) : null}
-            {shouldUseChromiumCanvasPreview(fallbackResult) ? (
+            {fallbackResult.output.kind === "pdf" && fallbackResult.output.artifactData ? (
+              <PdfPreview
+                artifactData={fallbackResult.output.artifactData}
+                isFaulted={isErrorSettled}
+                paperView={paperView}
+              />
+            ) : shouldUseChromiumCanvasPreview(fallbackResult) ? (
               <ChromiumCanvasPreview
                 artifactData={fallbackResult.output.artifactData!}
                 isFaulted={isErrorSettled}
@@ -163,7 +169,9 @@ export function PreviewPane({
         {showCompilerActivity ? (
           <PreviewActivityStatus status={compilerStatus} />
         ) : null}
-        {shouldUseChromiumCanvasPreview(result) ? (
+        {result.output.kind === "pdf" && result.output.artifactData ? (
+          <PdfPreview artifactData={result.output.artifactData} paperView={paperView} />
+        ) : shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
         ) : (
             <PreviewDocument
@@ -673,6 +681,88 @@ function ChromiumCanvasPreview({
   );
 }
 
+function PdfPreview({
+  artifactData,
+  paperView = false,
+  isFaulted = false
+}: {
+  artifactData: Uint8Array;
+  paperView?: boolean;
+  isFaulted?: boolean;
+}) {
+  const [pdfObject, setPdfObject] = useState(() => createPdfObjectUrl(artifactData));
+  const pdfObjectRef = useRef(pdfObject);
+
+  useEffect(() => {
+    const nextSignature = getByteContentSignature(artifactData);
+    const current = pdfObjectRef.current;
+
+    if (current.signature === nextSignature) {
+      return;
+    }
+
+    const next = createPdfObjectUrl(artifactData, nextSignature);
+    pdfObjectRef.current = next;
+    setPdfObject(next);
+    URL.revokeObjectURL(current.blobUrl);
+  }, [artifactData]);
+
+  useEffect(() => {
+    logPreviewTiming("pdf", pdfObject.blobStartedAt);
+  }, [pdfObject]);
+
+  useEffect(() => {
+    return () => {
+      URL.revokeObjectURL(pdfObjectRef.current.blobUrl);
+    };
+  }, []);
+
+  return (
+    <div
+      className={`preview-document preview-document--pdf ${
+        paperView ? "preview-document--pdf-paper" : ""
+      } ${isFaulted ? "preview-document--faulted" : ""}`}
+    >
+      <object
+        aria-label="LaTeX PDF preview"
+        className="preview-document__pdf"
+        data={pdfObject.blobUrl}
+        type="application/pdf"
+      >
+        <a href={pdfObject.blobUrl} rel="noreferrer" target="_blank">
+          Open PDF preview
+        </a>
+      </object>
+    </div>
+  );
+}
+
+function createPdfObjectUrl(artifactData: Uint8Array, signature = getByteContentSignature(artifactData)) {
+  const startedAt =
+    typeof performance === "undefined" ? 0 : performance.now();
+  const bytes = new Uint8Array(artifactData);
+  const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)], {
+    type: "application/pdf"
+  });
+
+  return {
+    blobUrl: URL.createObjectURL(blob),
+    blobStartedAt: startedAt,
+    signature
+  };
+}
+
+function getByteContentSignature(bytes: Uint8Array): string {
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    hash ^= bytes[index];
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return `${bytes.byteLength}:${(hash >>> 0).toString(16)}`;
+}
+
 function parseZoomSelection(value: string): PreviewZoomState {
   if (value === "fit-width" || value === "fit-height" || value === "fit-page") {
     return {
@@ -853,7 +943,7 @@ export function PreviewDebugPanel({ markup }: { markup: string }) {
         </div>
       </div>
       <details className="preview-debug-markup">
-        <summary>Markup excerpt</summary>
+        <summary>Output excerpt</summary>
         <pre>{debugInfo.excerpt}</pre>
       </details>
     </section>
@@ -890,8 +980,22 @@ function analyzePreviewMarkup(markup: string) {
     height: extractAttribute(markup, "height"),
     dataWidth: extractAttribute(markup, "data-width"),
     dataHeight: extractAttribute(markup, "data-height"),
-    excerpt: markup.slice(0, 2500)
+    excerpt: formatPreviewDebugExcerpt(markup)
   };
+}
+
+function formatPreviewDebugExcerpt(markup: string): string {
+  const limit = 2500;
+
+  if (markup.length <= limit * 2) {
+    return markup;
+  }
+
+  return [
+    markup.slice(0, limit),
+    "\n\n... output truncated ...\n\n",
+    markup.slice(-limit)
+  ].join("");
 }
 
 function shouldUseChromiumCanvasPreview(
@@ -900,7 +1004,7 @@ function shouldUseChromiumCanvasPreview(
   return false;
 }
 
-function logPreviewTiming(mode: "svg" | "canvas", startedAt: number): void {
+function logPreviewTiming(mode: "svg" | "canvas" | "pdf", startedAt: number): void {
   if (typeof console === "undefined" || typeof performance === "undefined") {
     return;
   }

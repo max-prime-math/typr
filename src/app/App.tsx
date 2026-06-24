@@ -85,7 +85,20 @@ import {
   type CompilerStatus,
   type CompileResult
 } from "../compiler/typstCompiler";
-import type { CompileAssetFile } from "../compiler/types";
+import {
+  cancelLatexCompile,
+  compileLatexDocument,
+  type LatexCompileMode
+} from "../compiler/latexCompiler";
+import {
+  getSourceLanguage,
+  isCompilableSourceFile,
+  isLatexMainSourceFile,
+  isTypstSourceFile,
+  normalizeCompilerPath,
+  type SourceLanguage
+} from "../compiler/sourceFileTypes";
+import type { CompileAssetFile, CompileMetadata } from "../compiler/types";
 import { exportTypstPdf } from "../compiler/typstRuntime";
 import {
   clearTypstPackageCache,
@@ -238,6 +251,7 @@ import { shouldIgnorePath } from "../git/pathFilters";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
+const OUTLINE_DEBOUNCE_MS = 180;
 const SYNC_PROGRESS_UPDATE_INTERVAL_MS = 250;
 const MENU_CLOSE_DELAY_MS = 140;
 const MOVE_HOVER_EXPAND_DELAY_MS = 1000;
@@ -589,6 +603,30 @@ function getWorkspaceBaseName(path: string): string {
   return normalizeWorkspacePath(path).split("/").filter(Boolean).at(-1) ?? path;
 }
 
+function getProjectWorkspaceStructureKey(project: TyprProjectRepository): string {
+  return [
+    project.id,
+    ...Object.values(project.filesystem.entries)
+      .map((entry) => {
+        const source = entry.source;
+        return `${entry.kind}:${entry.path}:${source.kind}:${source.id}`;
+      })
+      .sort()
+  ].join("|");
+}
+
+function getSnapshotWorkspaceStructureKey(snapshot: AppSnapshot): string {
+  return [
+    snapshot.project.id,
+    ...buildProjectWorkspaceEntries(snapshot)
+      .map((entry) => {
+        const source = entry.source;
+        return `${entry.kind}:${entry.path}:${source.kind}:${source.id}`;
+      })
+      .sort()
+  ].join("|");
+}
+
 function joinWorkspacePath(path: string | null, name: string): string {
   const normalizedPath = normalizeWorkspacePath(path ?? "");
   return normalizedPath ? `${normalizedPath}/${name}` : name;
@@ -753,6 +791,10 @@ export function App() {
   } | null>(null);
   const compileRequestRef = useRef(0);
   const pendingSourceRef = useRef("");
+  const pendingSourcePathRef = useRef("main.typ");
+  const activeSourcePathRef = useRef("main.typ");
+  const activeSourceLanguageRef = useRef<SourceLanguage>("typst");
+  const isActiveSourceCompilableRef = useRef(true);
   const previewSourceDraftRef = useRef("");
   const diagramAssetsRevisionRef = useRef("");
   const diagramAssetsRef = useRef<CompileAssetFile[]>([]);
@@ -769,6 +811,11 @@ export function App() {
   const compileResultRef = useRef<CompileResult | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
   const compileInFlightRef = useRef(false);
+  const compileInFlightLanguageRef = useRef<SourceLanguage | null>(null);
+  const compileInFlightSourceRef = useRef("");
+  const compileInFlightSourcePathRef = useRef("");
+  const compileInFlightDiagramRevisionRef = useRef("");
+  const compileInFlightGraphRevisionRef = useRef("");
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -837,6 +884,7 @@ export function App() {
     {}
   );
   const [currentEditorLineNumber, setCurrentEditorLineNumber] = useState(1);
+  const [outlineSourceContent, setOutlineSourceContent] = useState("");
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [customSnippets, setCustomSnippets] = useState<TypstSnippet[]>([]);
   const [snippetImportText, setSnippetImportText] = useState(
@@ -921,6 +969,7 @@ export function App() {
     () => getSelectedProjectRepository(projectStorage),
     [projectStorage]
   );
+  const selectedProjectRepositoryRef = useRef<TyprProjectRepository | null>(selectedProjectRepository);
   const setSnapshot = useCallback<Dispatch<SetStateAction<AppSnapshot>>>((snapshotAction) => {
     setRawSnapshot((currentSnapshot) => {
       const nextSnapshot =
@@ -1425,6 +1474,9 @@ export function App() {
     [normalizedSelectedWorkspacePath, visibleWorkspaceTree]
   );
   const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
+  const workspaceStructureKey = selectedProjectRepository
+    ? getProjectWorkspaceStructureKey(selectedProjectRepository)
+    : getSnapshotWorkspaceStructureKey(snapshot);
   const inspectedGraph = useMemo(() => {
     if (
       !sourceWorkspaceNode ||
@@ -1445,6 +1497,13 @@ export function App() {
   );
   const isInspectingGraphSource = inspectedGraph !== null;
   const sourceEditorValue = isInspectingGraphSource ? inspectedGraphSource : activeDocumentTextContent;
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setOutlineSourceContent(activeDocumentTextContent);
+    }, OUTLINE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(handle);
+  }, [activeDocumentTextContent]);
   const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -1536,6 +1595,46 @@ export function App() {
     sourceWorkspaceNode === null ||
     isInspectingGraphSource ||
     (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path));
+  const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument.name;
+  const activeSourceLanguage = getSourceLanguage(activeSourcePath);
+  const isActiveSourceCompilable = isCompilableSourceFile(activeSourcePath);
+  useEffect(() => {
+    selectedProjectRepositoryRef.current = selectedProjectRepository;
+  }, [selectedProjectRepository]);
+  useEffect(() => {
+    activeSourcePathRef.current = activeSourcePath;
+    activeSourceLanguageRef.current = activeSourceLanguage;
+    isActiveSourceCompilableRef.current = isActiveSourceCompilable;
+  }, [activeSourceLanguage, activeSourcePath, isActiveSourceCompilable]);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    if (compileTimerRef.current !== null) {
+      window.clearTimeout(compileTimerRef.current);
+      compileTimerRef.current = null;
+    }
+
+    compileRequestRef.current += 1;
+    setIsCompiling(false);
+    setCompileResult(null);
+    setLastSuccessfulResult(null);
+    setCompilerStatus({
+      phase: "idle",
+      mode: "worker",
+      label: isActiveSourceCompilable
+        ? activeSourceLanguage === "latex"
+          ? "LaTeX ready"
+          : "Typst ready"
+        : "No compiler for active file",
+      detail:
+        activeSourceLanguage === "latex"
+          ? "Press Compile or Ctrl+Enter to update the PDF preview."
+          : undefined
+    });
+  }, [activeSourceLanguage, activeSourcePath, isActiveSourceCompilable, isHydrated]);
   const showGraphInspectWarning = isInspectingGraphSource;
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
@@ -1615,15 +1714,16 @@ export function App() {
       return;
     }
 
+    const currentProjectRepository = selectedProjectRepositoryRef.current;
     const fallbackTree = buildWorkspaceTree(
-      selectedProjectRepository
-        ? buildProjectWorkspaceEntriesFromProject(selectedProjectRepository)
+      currentProjectRepository
+        ? buildProjectWorkspaceEntriesFromProject(currentProjectRepository)
         : buildProjectWorkspaceEntries(snapshot)
     );
     setWorkspaceTree(fallbackTree);
     setWorkspaceLoadError(null);
 
-    if (!isOpfsAvailable() || !selectedProjectRepository) {
+    if (!isOpfsAvailable() || !currentProjectRepository) {
       return;
     }
 
@@ -1631,7 +1731,7 @@ export function App() {
     const handle = window.setTimeout(() => {
       const syncWorkspace = async () => {
         try {
-          await syncProjectToOpfs(selectedProjectRepository);
+          await syncProjectToOpfs(currentProjectRepository);
         } catch (error) {
           if (!cancelled) {
             setWorkspaceLoadError(
@@ -1648,7 +1748,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [isHydrated, selectedProjectRepository, snapshot]);
+  }, [isHydrated, workspaceStructureKey]);
 
   const refreshLocalRepoState = useCallback(
     async (project: TyprProjectRepository | null = selectedProjectRepository) => {
@@ -2473,6 +2573,8 @@ export function App() {
     }
 
     const source = pendingSourceRef.current;
+    const sourcePath = pendingSourcePathRef.current;
+    const sourceLanguage = getSourceLanguage(sourcePath);
     const diagramRevision = diagramAssetsRevisionRef.current;
     const diagramAssets = diagramAssetsRef.current;
     const graphRevision = graphAssetsRevisionRef.current;
@@ -2480,11 +2582,51 @@ export function App() {
     const requestId = compileRequestRef.current + 1;
     compileRequestRef.current = requestId;
     compileInFlightRef.current = true;
+    compileInFlightLanguageRef.current = sourceLanguage;
+    compileInFlightSourceRef.current = source;
+    compileInFlightSourcePathRef.current = sourcePath;
+    compileInFlightDiagramRevisionRef.current = diagramRevision;
+    compileInFlightGraphRevisionRef.current = graphRevision;
     const compileStartedAt =
       typeof performance === "undefined" ? 0 : performance.now();
 
     try {
-      const result = await compiler.compileDocument(source, [...diagramAssets, ...graphAssets]);
+      const compileAssets = [...diagramAssets, ...graphAssets];
+      const result =
+        sourceLanguage === "latex"
+          ? selectedProjectRepositoryRef.current
+            ? await compileLatexDocument({
+                mainFilePath: sourcePath,
+                source,
+                project: selectedProjectRepositoryRef.current,
+                assets: compileAssets,
+                compileMode: "quick",
+                onStatusChange: setCompilerStatus
+              })
+            : ({
+                ok: false,
+                engine: "busytex",
+                errors: [
+                  {
+                    message: "Project filesystem is unavailable for LaTeX compilation.",
+                    severity: "error",
+                    path: sourcePath
+                  }
+                ]
+              } satisfies CompileResult)
+          : sourceLanguage === "typst"
+            ? await compiler.compileDocument(source, compileAssets)
+            : ({
+                ok: false,
+                engine: "mock",
+                errors: [
+                  {
+                    message: "This file type does not have a compiler.",
+                    severity: "error",
+                    path: sourcePath
+                  }
+                ]
+              } satisfies CompileResult);
 
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
         return;
@@ -2495,31 +2637,31 @@ export function App() {
           ? 0
           : performance.now() - compileStartedAt;
       const currentCompileResult = compileResultRef.current;
-      const nextResult = shouldReuseCompileResult(currentCompileResult, result)
-        ? currentCompileResult
-        : result;
+      const nextResult = reuseCompileOutputIfUnchanged(currentCompileResult, result);
+      const changedPreview = nextResult === result && didCompileOutputChange(currentCompileResult, result);
 
-      if (nextResult === result) {
-        setCompileResult(result);
+      if (!shouldReuseCompileResult(currentCompileResult, nextResult)) {
+        setCompileResult(nextResult);
       }
 
-      if (result.ok && nextResult === result) {
-        setLastSuccessfulResult(result);
+      if (nextResult.ok) {
+        setLastSuccessfulResult(nextResult);
       }
 
       if (result.ok) {
         setCompilerStatus((currentStatus) => ({
           phase: "ready",
           mode: currentStatus.mode,
-          label: "Preview ready"
+          label: result.output.kind === "pdf" ? "PDF preview ready" : "Preview ready"
         }));
       }
 
       logCompileTiming({
         durationMs: compileDurationMs,
-        changed: nextResult === result,
+        changed: changedPreview,
         ok: result.ok,
-        diagnosticsCount: result.ok ? result.diagnostics.length : result.errors.length
+        diagnosticsCount: result.ok ? result.diagnostics.length : result.errors.length,
+        metadata: result.metadata
       });
     } catch (error) {
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
@@ -2528,19 +2670,26 @@ export function App() {
 
       setCompileResult({
         ok: false,
-        engine: "typst-ts",
+        engine: sourceLanguage === "latex" ? "busytex" : "typst-ts",
         errors: [
           {
             message:
               error instanceof Error
                 ? error.message
-                : "Typst compiler worker failed.",
+                : sourceLanguage === "latex"
+                  ? "LaTeX compiler failed."
+                  : "Typst compiler worker failed.",
             severity: "error"
           }
         ]
       } satisfies CompileResult);
     } finally {
       compileInFlightRef.current = false;
+      compileInFlightLanguageRef.current = null;
+      compileInFlightSourceRef.current = "";
+      compileInFlightSourcePathRef.current = "";
+      compileInFlightDiagramRevisionRef.current = "";
+      compileInFlightGraphRevisionRef.current = "";
 
       if (!isMountedRef.current) {
         return;
@@ -2558,20 +2707,66 @@ export function App() {
     }
   }, [compiler, isHydrated]);
 
+  const shouldCancelInFlightLatexCompile = useCallback(
+    ({
+      source,
+      sourcePath,
+      diagramRevision,
+      graphRevision
+    }: {
+      source: string;
+      sourcePath: string;
+      diagramRevision: string;
+      graphRevision: string;
+    }) => {
+      return (
+        compileInFlightLanguageRef.current === "latex" &&
+        (compileInFlightSourceRef.current !== source ||
+          compileInFlightSourcePathRef.current !== sourcePath ||
+          compileInFlightDiagramRevisionRef.current !== diagramRevision ||
+          compileInFlightGraphRevisionRef.current !== graphRevision)
+      );
+    },
+    []
+  );
+
   const queueCompile = useCallback((debounced: boolean) => {
     if (compileTimerRef.current !== null) {
       window.clearTimeout(compileTimerRef.current);
       compileTimerRef.current = null;
     }
 
-    pendingSourceRef.current = createThemedPreviewSource(
-      previewSourceDraftRef.current,
-      themeRef.current ?? theme,
-      isPaperView
-    );
+    const sourcePath = activeSourcePathRef.current;
+    const sourceLanguage = getSourceLanguage(sourcePath);
+
+    pendingSourcePathRef.current = sourcePath;
+    pendingSourceRef.current =
+      sourceLanguage === "typst"
+        ? createThemedPreviewSource(
+            previewSourceDraftRef.current,
+            themeRef.current ?? theme,
+            isPaperView
+          )
+        : previewSourceDraftRef.current;
     setIsCompiling(true);
 
     if (compileInFlightRef.current) {
+      if (shouldCancelInFlightLatexCompile({
+        source: pendingSourceRef.current,
+        sourcePath,
+        diagramRevision: diagramAssetsRevisionRef.current,
+        graphRevision: graphAssetsRevisionRef.current
+      })) {
+        compileRequestRef.current += 1;
+        setCompilerStatus({
+          phase: "compiling",
+          mode: "worker",
+          label: "Cancelling stale LaTeX compile",
+          detail: "A newer edit is ready; stopping the current BusyTeX worker"
+        });
+        cancelLatexCompile();
+      }
+
       return;
     }
 
@@ -2584,7 +2779,7 @@ export function App() {
       compileTimerRef.current = null;
       void runCompile();
     }, COMPILE_DEBOUNCE_MS);
-  }, [isPaperView, runCompile]);
+  }, [isPaperView, runCompile, shouldCancelInFlightLatexCompile]);
 
   const handleCompile = useCallback(() => {
     queueCompile(false);
@@ -2600,15 +2795,43 @@ export function App() {
     }
 
     previewSourceDraftRef.current = sourceEditorValue;
+    if (!isActiveSourceCompilable) {
+      if (compileTimerRef.current !== null) {
+        window.clearTimeout(compileTimerRef.current);
+        compileTimerRef.current = null;
+      }
+      compileRequestRef.current += 1;
+      setIsCompiling(false);
+      setCompileResult(null);
+      setCompilerStatus({
+        phase: "idle",
+        mode: "worker",
+        label: "No compiler for active file"
+      });
+      return;
+    }
+
+    if (activeSourceLanguage !== "typst") {
+      if (compileTimerRef.current !== null) {
+        window.clearTimeout(compileTimerRef.current);
+        compileTimerRef.current = null;
+      }
+      setIsCompiling(false);
+      return;
+    }
+
     if (compileResult === null || snapshot.preferences.liveCompilation) {
       queueCompile(compileResult !== null);
     }
   }, [
+    activeSourceLanguage,
+    activeSourcePath,
     sourceEditorValue,
     diagramAssetsRevision,
     compileResult,
     graphAssetsRevision,
     isHydrated,
+    isActiveSourceCompilable,
     queueCompile,
     snapshot.preferences.liveCompilation
   ]);
@@ -4907,12 +5130,38 @@ export function App() {
     setIsExportingPdf(true);
 
     try {
-      const pdfBytes = await exportTypstPdf(activeDocumentTextContent, [
-        ...diagramShadowAssets,
-        ...graphShadowAssets
-      ]);
-      const baseName = activeDocument.name.replace(/\.typ$/i, "");
+      const baseName = activeSourcePath.replace(/\.(typ|typst|tex|ltx|latex)$/i, "");
       const pdfName = `${baseName || activeDocument.name}.pdf`;
+      let pdfBytes: Uint8Array;
+
+      if (isLatexMainSourceFile(activeSourcePath)) {
+        if (!selectedProjectRepository) {
+          throw new Error("Project filesystem is unavailable for LaTeX export.");
+        }
+
+        const result = await compileLatexDocument({
+          mainFilePath: activeSourcePath,
+          source: sourceEditorValue,
+          project: selectedProjectRepository,
+          assets: [...diagramShadowAssets, ...graphShadowAssets],
+          compileMode: "full",
+          onStatusChange: setCompilerStatus
+        });
+
+        if (!result.ok || result.output.kind !== "pdf" || !result.output.artifactData) {
+          throw new Error(result.ok ? "LaTeX export produced no PDF." : formatSourceError(result));
+        }
+
+        pdfBytes = result.output.artifactData;
+      } else if (isTypstSourceFile(activeSourcePath)) {
+        pdfBytes = await exportTypstPdf(sourceEditorValue, [
+          ...diagramShadowAssets,
+          ...graphShadowAssets
+        ]);
+      } else {
+        throw new Error("The active file cannot be exported as PDF.");
+      }
+
       const pdfBuffer = Uint8Array.from(pdfBytes).buffer;
       downloadBlob(
         pdfName,
@@ -4930,11 +5179,102 @@ export function App() {
       setIsExportingPdf(false);
     }
   }, [
+    activeSourcePath,
     activeDocumentTextContent,
     activeDocument.name,
     diagramShadowAssets,
     graphShadowAssets,
-    isExportingPdf
+    isExportingPdf,
+    selectedProjectRepository,
+    sourceEditorValue
+  ]);
+
+  const compileProjectFile = useCallback(async (
+    requestedPath?: string,
+    options: { latexMode?: LatexCompileMode } = {}
+  ): Promise<CompileResult> => {
+    const sourcePath = normalizeCompilerPath(requestedPath ?? activeSourcePathRef.current);
+    const sourceLanguage = getSourceLanguage(sourcePath);
+    const project = selectedProjectRepositoryRef.current;
+
+    if (!isCompilableSourceFile(sourcePath)) {
+      const result = {
+        ok: false,
+        engine: "mock",
+        errors: [
+          {
+            message: "This file type does not have a compiler.",
+            severity: "error",
+            path: sourcePath
+          }
+        ]
+      } satisfies CompileResult;
+      setCompileResult(result);
+      return result;
+    }
+
+    if (!project) {
+      const result = {
+        ok: false,
+        engine: sourceLanguage === "latex" ? "busytex" : "typst-ts",
+        errors: [
+          {
+            message: "Project filesystem is unavailable.",
+            severity: "error",
+            path: sourcePath
+          }
+        ]
+      } satisfies CompileResult;
+      setCompileResult(result);
+      return result;
+    }
+
+    const activePath = normalizeCompilerPath(activeSourcePathRef.current);
+    const source =
+      sourcePath === activePath
+        ? sourceEditorValue
+        : decodeProjectTextFile(project, sourcePath);
+    const compileAssets = [...diagramShadowAssets, ...graphShadowAssets];
+    setIsCompiling(true);
+
+    try {
+      const result =
+        sourceLanguage === "latex"
+          ? await compileLatexDocument({
+              mainFilePath: sourcePath,
+              source,
+              project,
+              assets: compileAssets,
+              compileMode: options.latexMode ?? "full",
+              onStatusChange: setCompilerStatus
+            })
+          : await compiler.compileDocument(
+              createThemedPreviewSource(source, themeRef.current ?? theme, isPaperView),
+              compileAssets
+            );
+
+      setCompileResult(result);
+
+      if (result.ok) {
+        setLastSuccessfulResult(result);
+        setCompilerStatus((currentStatus) => ({
+          phase: "ready",
+          mode: currentStatus.mode,
+          label: result.output.kind === "pdf" ? "PDF preview ready" : "Preview ready"
+        }));
+      }
+
+      return result;
+    } finally {
+      setIsCompiling(false);
+    }
+  }, [
+    compiler,
+    diagramShadowAssets,
+    graphShadowAssets,
+    isPaperView,
+    sourceEditorValue,
+    theme
   ]);
 
   const handleUndo = () => editorRef.current?.undo();
@@ -5487,6 +5827,7 @@ export function App() {
       getCompileResult: () => compileResultRef.current,
       getCompilerStatus: () => compilerStatus,
       getIsOnline: () => isOnline,
+      compileProjectFile,
       async compileActiveDocument() {
         await runCompile();
         return (
@@ -5504,11 +5845,33 @@ export function App() {
       },
       async exportActiveDocument() {
         try {
-          const pdfBytes = await exportTypstPdf(activeDocumentTextContent, [
-            ...diagramShadowAssets,
-            ...graphShadowAssets
-          ]);
-          const baseName = activeDocument.name.replace(/\.typ$/i, "");
+          const sourcePath = activeSourcePathRef.current;
+          const baseName = sourcePath.replace(/\.(typ|typst|tex|ltx|latex)$/i, "");
+          let pdfBytes: Uint8Array;
+
+          if (isLatexMainSourceFile(sourcePath)) {
+            const result = await compileProjectFile(sourcePath);
+
+            if (!result.ok || result.output.kind !== "pdf" || !result.output.artifactData) {
+              return {
+                ok: false as const,
+                message: result.ok ? "LaTeX export produced no PDF." : formatSourceError(result)
+              };
+            }
+
+            pdfBytes = result.output.artifactData;
+          } else if (isTypstSourceFile(sourcePath)) {
+            pdfBytes = await exportTypstPdf(sourceEditorValue, [
+              ...diagramShadowAssets,
+              ...graphShadowAssets
+            ]);
+          } else {
+            return {
+              ok: false as const,
+              message: "The active file cannot be exported as PDF."
+            };
+          }
+
           const fileName = `${baseName || activeDocument.name}.pdf`;
           downloadBlob(
             fileName,
@@ -5890,6 +6253,7 @@ export function App() {
     [
       activeDocument.name,
       activeDocumentTextContent,
+      compileProjectFile,
       compilerStatus,
       diagramShadowAssets,
       graphShadowAssets,
@@ -5910,6 +6274,7 @@ export function App() {
       selectedProjectRepository,
       setProjectRepository,
       snapshot,
+      sourceEditorValue,
       upstreamTracking,
       updateGitManagedProject,
       updateSelectedGitProject
@@ -6479,8 +6844,8 @@ export function App() {
     [filteredRepositoryPackages, packageSearchVisibleCount]
   );
   const flatOutlineEntries = useMemo(
-    () => collectOutlineEntries(activeDocumentTextContent),
-    [activeDocumentTextContent]
+    () => collectOutlineEntries(outlineSourceContent),
+    [outlineSourceContent]
   );
   const outlineEntries = useMemo(
     () => buildOutlineTree(flatOutlineEntries),
@@ -8437,9 +8802,9 @@ export function App() {
                       <div className="sidebar-preview-debug">
                         <PreviewDebugPanel
                           markup={
-                            compileResult?.ok
-                              ? compileResult.output.content
-                              : lastSuccessfulResult?.output.content ?? ""
+                            compileResult?.output?.content ??
+                            lastSuccessfulResult?.output.content ??
+                            ""
                           }
                         />
                       </div>
@@ -8454,6 +8819,68 @@ export function App() {
                         {compilerStatus.detail ?? "Live preview pipeline is active."}
                       </p>
                     </div>
+
+                    {compileResult?.metadata ? (
+                      <div className="sidebar-card">
+                        <div className="sidebar-card__row">
+                          <span>Compile performance</span>
+                          <span className="pane__meta">
+                            {formatCompileTimingTotal(compileResult.metadata)}
+                          </span>
+                        </div>
+                        {compileResult.metadata.strategy ? (
+                          <p className="sidebar-card__copy">
+                            {formatCompileStrategySummary(compileResult.metadata)}
+                          </p>
+                        ) : null}
+                        <ul className="sidebar-card__list">
+                          {compileResult.metadata.timings?.map((timing) => (
+                            <li key={`${timing.label}-${timing.durationMs}`}>
+                              <span>{timing.label}</span>
+                              <span>{formatDurationMs(timing.durationMs)}</span>
+                            </li>
+                          ))}
+                          {compileResult.metadata.fileSync ? (
+                            <li>
+                              <span>Worker file cache</span>
+                              <span>
+                                {compileResult.metadata.fileSync.changedFiles} changed ·{" "}
+                                {compileResult.metadata.fileSync.deletedFiles} deleted ·{" "}
+                                {compileResult.metadata.fileSync.cachedFiles} cached ·{" "}
+                                {compileResult.metadata.fileSync.compileFiles} compiled
+                              </span>
+                            </li>
+                          ) : null}
+                          {compileResult.metadata.dirty ? (
+                            <>
+                              <li>
+                                <span>Dirty state</span>
+                                <span>
+                                  {compileResult.metadata.dirty.status}
+                                  {compileResult.metadata.dirty.requiresFullCompile ? " · full required" : ""}
+                                </span>
+                              </li>
+                              {compileResult.metadata.dirty.categories.length > 0 ? (
+                                <li>
+                                  <span>Changed categories</span>
+                                  <span>
+                                    {compileResult.metadata.dirty.categories
+                                      .map((entry) => `${entry.category} ${entry.count}`)
+                                      .join(" · ")}
+                                  </span>
+                                </li>
+                              ) : null}
+                              {compileResult.metadata.dirty.samplePaths.length > 0 ? (
+                                <li>
+                                  <span>Changed paths</span>
+                                  <span>{compileResult.metadata.dirty.samplePaths.join(", ")}</span>
+                                </li>
+                              ) : null}
+                            </>
+                          ) : null}
+                        </ul>
+                      </div>
+                    ) : null}
 
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
@@ -8492,14 +8919,16 @@ export function App() {
         {showSourcePane ? (
         <section
           className={`pane pane--editor ${editorVisibilityClass}`}
-          aria-label="Typst source editor"
+          aria-label="Source editor"
         >
           <div className="pane__header">
             <div className="pane__header-group">
               <h2>Source</h2>
             </div>
             <div className="pane__header-actions">
-              {snapshot.preferences.liveCompilation || !isSourceFileEditable ? null : (
+              {(activeSourceLanguage === "typst" && snapshot.preferences.liveCompilation) ||
+              !isSourceFileEditable ||
+              !isActiveSourceCompilable ? null : (
                 <button
                   className="pane__button"
                   onClick={handleCompile}
@@ -8948,7 +9377,8 @@ export function App() {
                 ref={editorRef}
                 diagnostics={editorDiagnostics}
                 highlightErrors={isErrorSettled}
-                snippets={allSnippets}
+                language={activeSourceLanguage}
+                snippets={activeSourceLanguage === "typst" ? allSnippets : []}
                 onCompileRequested={handleCompile}
                 onSearchRequested={openSearchPane}
                 onSelectionChange={setCurrentEditorLineNumber}
@@ -9015,7 +9445,7 @@ export function App() {
         {showPreviewPane ? (
         <section
           className={`pane pane--preview ${previewVisibilityClass}`}
-          aria-label="Typst preview"
+          aria-label="Document preview"
         >
           <div className="pane__header pane__header--preview">
             <div className="pane__header-group">
@@ -10503,15 +10933,86 @@ function shouldReuseCompileResult(
     return (
       current.output.kind === next.output.kind &&
       current.output.content === next.output.content &&
-      areDiagnosticsEqual(current.diagnostics, next.diagnostics)
+      areDiagnosticsEqual(current.diagnostics, next.diagnostics) &&
+      areCompileMetadataEqual(current.metadata, next.metadata)
     );
   }
 
   if (!current.ok && !next.ok) {
-    return areDiagnosticsEqual(current.errors, next.errors);
+    return (
+      areDiagnosticsEqual(current.errors, next.errors) &&
+      areCompileMetadataEqual(current.metadata, next.metadata)
+    );
   }
 
   return false;
+}
+
+function reuseCompileOutputIfUnchanged(
+  current: CompileResult | null,
+  next: CompileResult
+): CompileResult {
+  if (!current?.ok || !next.ok || current.engine !== next.engine) {
+    return next;
+  }
+
+  if (!areCompileOutputsEqual(current, next)) {
+    return next;
+  }
+
+  return {
+    ...next,
+    output:
+      next.output.kind === "pdf"
+        ? {
+            ...next.output,
+            artifactData: current.output.artifactData
+          }
+        : current.output
+  };
+}
+
+function didCompileOutputChange(
+  current: CompileResult | null,
+  next: CompileResult
+): boolean {
+  if (!current?.ok || !next.ok || current.engine !== next.engine) {
+    return true;
+  }
+
+  return !areCompileOutputsEqual(current, next);
+}
+
+function areCompileOutputsEqual(
+  current: Extract<CompileResult, { ok: true }>,
+  next: Extract<CompileResult, { ok: true }>
+): boolean {
+  if (current.output.kind !== next.output.kind) {
+    return false;
+  }
+
+  if (current.output.kind !== "pdf" && current.output.content !== next.output.content) {
+    return false;
+  }
+
+  return getCompileArtifactSignature(current) === getCompileArtifactSignature(next);
+}
+
+function getCompileArtifactSignature(result: Extract<CompileResult, { ok: true }>): string {
+  const artifactData = result.output.artifactData;
+
+  if (!artifactData) {
+    return "none";
+  }
+
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < artifactData.byteLength; index += 1) {
+    hash ^= artifactData[index];
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return `${artifactData.byteLength}:${(hash >>> 0).toString(16)}`;
 }
 
 function areDiagnosticsEqual(
@@ -10559,24 +11060,110 @@ function areDiagnosticsEqual(
   });
 }
 
+function areCompileMetadataEqual(
+  current: CompileMetadata | undefined,
+  next: CompileMetadata | undefined
+): boolean {
+  if (!current && !next) {
+    return true;
+  }
+
+  if (!current || !next) {
+    return false;
+  }
+
+  const currentTimings = current.timings ?? [];
+  const nextTimings = next.timings ?? [];
+
+  if (currentTimings.length !== nextTimings.length) {
+    return false;
+  }
+
+  for (let index = 0; index < currentTimings.length; index += 1) {
+    if (
+      currentTimings[index].label !== nextTimings[index].label ||
+      Math.round(currentTimings[index].durationMs) !== Math.round(nextTimings[index].durationMs)
+    ) {
+      return false;
+    }
+  }
+
+  const currentFileSync = current.fileSync;
+  const nextFileSync = next.fileSync;
+
+  return (
+    currentFileSync?.changedFiles === nextFileSync?.changedFiles &&
+    currentFileSync?.deletedFiles === nextFileSync?.deletedFiles &&
+    currentFileSync?.cachedFiles === nextFileSync?.cachedFiles &&
+    currentFileSync?.compileFiles === nextFileSync?.compileFiles &&
+    JSON.stringify(current.dirty ?? null) === JSON.stringify(next.dirty ?? null) &&
+    JSON.stringify(current.strategy ?? null) === JSON.stringify(next.strategy ?? null)
+  );
+}
+
+function formatCompileTimingTotal(metadata: CompileMetadata): string {
+  const totalMs = (metadata.timings ?? []).reduce((total, timing) => total + timing.durationMs, 0);
+  return totalMs > 0 ? formatDurationMs(totalMs) : "No timings";
+}
+
+function formatCompileStrategySummary(metadata: CompileMetadata): string {
+  const strategy = metadata.strategy;
+
+  if (!strategy) {
+    return "No compile strategy metadata.";
+  }
+
+  const mode =
+    strategy.requestedMode === strategy.effectiveMode
+      ? strategy.effectiveMode
+      : `${strategy.requestedMode} -> ${strategy.effectiveMode}`;
+  const fallback = strategy.fallbackUsed ? " · fallback used" : "";
+  return `${mode} · ${strategy.previewKind} · ${strategy.mainFilePath}${fallback}. ${strategy.reason}`;
+}
+
+function formatDurationMs(durationMs: number): string {
+  if (durationMs >= 1000) {
+    return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 1 : 2)}s`;
+  }
+
+  return `${Math.max(0, durationMs).toFixed(0)}ms`;
+}
+
 function logCompileTiming({
   durationMs,
   changed,
   ok,
-  diagnosticsCount
+  diagnosticsCount,
+  metadata
 }: {
   durationMs: number;
   changed: boolean;
   ok: boolean;
   diagnosticsCount: number;
+  metadata?: CompileMetadata;
 }): void {
   if (typeof console === "undefined") {
     return;
   }
 
+  const fileSync = metadata?.fileSync
+    ? `, ${metadata.fileSync.changedFiles} changed/${metadata.fileSync.cachedFiles} cached files`
+    : "";
+  const strategy = metadata?.strategy
+    ? `, strategy ${metadata.strategy.requestedMode}->${metadata.strategy.effectiveMode}/${metadata.strategy.previewKind}`
+    : "";
+  const dirty = metadata?.dirty
+    ? `, dirty ${metadata.dirty.status}${metadata.dirty.requiresFullCompile ? "/full" : ""}`
+    : "";
+  const stages = metadata?.timings?.length
+    ? `, ${metadata.timings
+        .map((timing) => `${timing.label} ${formatDurationMs(timing.durationMs)}`)
+        .join(", ")}`
+    : "";
+
   console.debug(
     `[typr] compile ${ok ? "ok" : "error"} in ${durationMs.toFixed(1)}ms` +
-      ` (${changed ? "updated preview" : "unchanged output"}, ${diagnosticsCount} diagnostics)`
+      ` (${changed ? "updated preview" : "unchanged output"}, ${diagnosticsCount} diagnostics${fileSync}${strategy}${dirty}${stages})`
   );
 }
 
@@ -10627,6 +11214,16 @@ function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
     result.errors.length > 1 ? ` (+${result.errors.length - 1} more)` : "";
 
   return `Compile error: ${prefix}${firstError.message}${suffix}`;
+}
+
+function decodeProjectTextFile(project: TyprProjectRepository, path: string): string {
+  const bytes = readProjectFileBytes(project, path);
+
+  if (!bytes) {
+    throw new Error(`File not found: ${path}`);
+  }
+
+  return new TextDecoder().decode(bytes);
 }
 
 function getSidebarToolTitle(tool: SidebarTool): string {

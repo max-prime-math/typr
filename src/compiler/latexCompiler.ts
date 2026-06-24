@@ -1,0 +1,1032 @@
+import type { FileInput } from "texlyre-busytex";
+import type { TyprProjectRepository } from "../project/projectState";
+import { listProjectFiles } from "../project/projectState";
+import { BusyTexWorkerRunner, type BusyTexCompileResultWithMetadata } from "./busytexWorkerRunner";
+import type {
+  CompileAssetFile,
+  CompileFailure,
+  CompileMetadata,
+  CompileResult,
+  CompileSuccess,
+  CompilerStatus
+} from "./types";
+import { normalizeCompilerPath } from "./sourceFileTypes";
+
+const BUSYTEX_REMOTE_ENDPOINT = "https://texlive2026.texlyre.org";
+const BUSYTEX_DATA_PACKAGE_NAMES = ["texlive-basic", "texlive-recommended", "texlive-extra"] as const;
+const BUSYTEX_COMPILE_TIMEOUT_MS = 10 * 60_000;
+const MAX_LATEX_ERROR_LINES = 90;
+const MAX_LATEX_LOG_TAIL_LINES = 40;
+const LATEX_PREVIEW_WRAPPER_FILE_NAME = ".typr-preview.tex";
+
+let sharedRunner: BusyTexWorkerRunner | null = null;
+let sharedBasePath: string | null = null;
+let preferFullBusyTexPackages = false;
+const disabledSubfilePreviewKeys = new Set<string>();
+let lastLatexFileSnapshot: Map<string, LatexFileSnapshotEntry> | null = null;
+
+type BusyTexPackageProfile = "standard" | "full";
+export type LatexCompileMode = "quick" | "full";
+type LatexPreviewKind = "document" | "subfile-wrapper";
+type LatexDirtyStatus = "initial" | "changed" | "unchanged";
+type LatexDirtyCategory =
+  | "tex-body"
+  | "tex-preamble"
+  | "references"
+  | "bibliography"
+  | "style"
+  | "graphics"
+  | "binary"
+  | "deleted"
+  | "other";
+
+interface LatexCompilePlan {
+  files: FileInput[];
+  mainFilePath: string;
+  previewKind: LatexPreviewKind;
+  reason: string;
+  fallback?: {
+    files: FileInput[];
+    mainFilePath: string;
+    disabledKey: string;
+  };
+}
+
+interface LatexDirtyAnalysis {
+  status: LatexDirtyStatus;
+  requiresFullCompile: boolean;
+  reason: string;
+  changedFiles: number;
+  deletedFiles: number;
+  categories: Array<{
+    category: LatexDirtyCategory;
+    count: number;
+  }>;
+  samplePaths: string[];
+}
+
+interface LatexCompileStrategy {
+  requestedMode: LatexCompileMode;
+  effectiveMode: LatexCompileMode;
+  previewKind: LatexPreviewKind;
+  activeFilePath: string;
+  mainFilePath: string;
+  reason: string;
+  fallbackUsed?: boolean;
+}
+
+interface LatexFileSnapshotEntry {
+  signature: string;
+  content: string | Uint8Array;
+}
+
+export interface LatexCompileOptions {
+  mainFilePath: string;
+  source: string;
+  project: TyprProjectRepository;
+  assets?: CompileAssetFile[];
+  compileMode?: LatexCompileMode;
+  onStatusChange?: (status: CompilerStatus) => void;
+}
+
+export async function compileLatexDocument({
+  mainFilePath,
+  source,
+  project,
+  assets = [],
+  compileMode = "quick",
+  onStatusChange
+}: LatexCompileOptions): Promise<CompileResult> {
+  const normalizedMainFilePath = normalizeCompilerPath(mainFilePath);
+
+  if (!normalizedMainFilePath) {
+    return fail("No LaTeX file is selected.");
+  }
+
+  try {
+    const collectStartedAt = getNow();
+    const files = collectLatexFiles(project, normalizedMainFilePath, source, assets);
+    const dirtyAnalysis = analyzeLatexDirtyState(files);
+    const effectiveCompileMode = chooseLatexCompileMode(compileMode, dirtyAnalysis);
+    const compilePlan = createLatexCompilePlan(files, normalizedMainFilePath, effectiveCompileMode);
+    const strategy = createLatexCompileStrategy(
+      compileMode,
+      effectiveCompileMode,
+      normalizedMainFilePath,
+      compilePlan
+    );
+    const collectTiming = {
+      label: "Collect project files",
+      durationMs: getNow() - collectStartedAt
+    };
+    const metadata = createLatexMetadata(dirtyAnalysis, strategy, collectTiming);
+    const result = await compileLatexPlan(compilePlan, effectiveCompileMode, metadata, onStatusChange);
+    rememberLatexFileSnapshot(files);
+
+    if (result.ok) {
+      return result;
+    }
+
+    if (compilePlan.fallback) {
+      disabledSubfilePreviewKeys.add(compilePlan.fallback.disabledKey);
+      onStatusChange?.({
+        phase: "compiling",
+        mode: "worker",
+        label: "Compiling full LaTeX document",
+        detail: "Subfile preview failed; falling back to the root document"
+      });
+
+      return compileLatexPlan(
+        {
+          files: compilePlan.fallback.files,
+          mainFilePath: compilePlan.fallback.mainFilePath,
+          previewKind: "document",
+          reason: "Subfile preview failed; falling back to the root document"
+        },
+        effectiveCompileMode,
+        createLatexMetadata(
+          dirtyAnalysis,
+          {
+            ...strategy,
+            fallbackUsed: true,
+            previewKind: "document",
+            mainFilePath: compilePlan.fallback.mainFilePath,
+            reason: "Subfile preview failed; fell back to the root document"
+          },
+          collectTiming
+        ),
+        onStatusChange
+      );
+    }
+
+    return result;
+  } catch (error) {
+    const message = formatLatexError(error);
+    return fail(message, normalizedMainFilePath, message);
+  }
+}
+
+export function disposeLatexCompiler(): void {
+  sharedRunner?.terminate();
+  sharedRunner = null;
+  sharedBasePath = null;
+  preferFullBusyTexPackages = false;
+  disabledSubfilePreviewKeys.clear();
+  lastLatexFileSnapshot = null;
+}
+
+export function cancelLatexCompile(reason = "LaTeX compile was cancelled because a newer compile was requested."): void {
+  sharedRunner?.terminate(reason);
+  sharedRunner = null;
+  sharedBasePath = null;
+}
+
+function collectLatexFiles(
+  project: TyprProjectRepository,
+  mainFilePath: string,
+  source: string,
+  assets: CompileAssetFile[]
+): FileInput[] {
+  const files = new Map<string, string | Uint8Array>();
+
+  for (const file of listProjectFiles(project)) {
+    const path = normalizeCompilerPath(file.path);
+
+    if (!path || path.startsWith(".git/") || path === ".git") {
+      continue;
+    }
+
+    files.set(path, file.content);
+  }
+
+  files.set(mainFilePath, source);
+
+  for (const asset of assets) {
+    const path = normalizeCompilerPath(asset.path);
+
+    if (path) {
+      files.set(path, asset.content);
+    }
+  }
+
+  return [...files.entries()].map(([path, content]) => ({ path, content }));
+}
+
+function analyzeLatexDirtyState(
+  files: FileInput[],
+  previousSnapshot: Map<string, LatexFileSnapshotEntry> | null = lastLatexFileSnapshot
+): LatexDirtyAnalysis {
+  const currentSnapshot = createLatexFileSnapshot(files);
+
+  if (!previousSnapshot) {
+    return {
+      status: "initial",
+      requiresFullCompile: false,
+      reason: "First LaTeX compile in this session",
+      changedFiles: currentSnapshot.size,
+      deletedFiles: 0,
+      categories: currentSnapshot.size > 0 ? [{ category: "other", count: currentSnapshot.size }] : [],
+      samplePaths: [...currentSnapshot.keys()].slice(0, 8)
+    };
+  }
+
+  const categoryCounts = new Map<LatexDirtyCategory, number>();
+  const samplePaths: string[] = [];
+  let changedFiles = 0;
+  let deletedFiles = 0;
+
+  const addCategory = (category: LatexDirtyCategory, path: string) => {
+    categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+
+    if (samplePaths.length < 8) {
+      samplePaths.push(path);
+    }
+  };
+
+  for (const [path, current] of currentSnapshot) {
+    const previous = previousSnapshot.get(path);
+
+    if (!previous || previous.signature !== current.signature) {
+      changedFiles += 1;
+      addCategory(classifyLatexFileChange(path, previous?.content, current.content), path);
+    }
+  }
+
+  for (const path of previousSnapshot.keys()) {
+    if (!currentSnapshot.has(path)) {
+      deletedFiles += 1;
+      addCategory("deleted", path);
+    }
+  }
+
+  const categories = [...categoryCounts.entries()]
+    .map(([category, count]) => ({ category, count }))
+    .sort((left, right) => right.count - left.count || left.category.localeCompare(right.category));
+  const status: LatexDirtyStatus = changedFiles === 0 && deletedFiles === 0 ? "unchanged" : "changed";
+  const requiresFullCompile = categories.some(({ category }) =>
+    ["tex-preamble", "references", "bibliography", "style", "deleted"].includes(category)
+  );
+
+  return {
+    status,
+    requiresFullCompile,
+    reason:
+      status === "unchanged"
+        ? "No project file changes since the last LaTeX compile"
+        : requiresFullCompile
+          ? "Dirty analysis found changes that can affect document-wide state"
+          : "Dirty analysis found only local/body or asset changes",
+    changedFiles,
+    deletedFiles,
+    categories,
+    samplePaths
+  };
+}
+
+export function analyzeLatexDirtyStateForTest(
+  files: FileInput[],
+  previousFiles: FileInput[] | null
+): LatexDirtyAnalysis {
+  return analyzeLatexDirtyState(files, previousFiles ? createLatexFileSnapshot(previousFiles) : null);
+}
+
+function chooseLatexCompileMode(requestedMode: LatexCompileMode, dirtyAnalysis: LatexDirtyAnalysis): LatexCompileMode {
+  if (requestedMode === "full" || dirtyAnalysis.requiresFullCompile) {
+    return "full";
+  }
+
+  return "quick";
+}
+
+function createLatexCompileStrategy(
+  requestedMode: LatexCompileMode,
+  effectiveMode: LatexCompileMode,
+  activeFilePath: string,
+  compilePlan: LatexCompilePlan
+): LatexCompileStrategy {
+  return {
+    requestedMode,
+    effectiveMode,
+    previewKind: compilePlan.previewKind,
+    activeFilePath,
+    mainFilePath: compilePlan.mainFilePath,
+    reason:
+      requestedMode !== effectiveMode
+        ? "Dirty analysis escalated this compile to full mode"
+        : compilePlan.reason
+  };
+}
+
+function createLatexMetadata(
+  dirtyAnalysis: LatexDirtyAnalysis,
+  strategy: LatexCompileStrategy,
+  collectTiming: { label: string; durationMs: number }
+): CompileMetadata {
+  return {
+    timings: [collectTiming],
+    dirty: dirtyAnalysis,
+    strategy
+  };
+}
+
+function rememberLatexFileSnapshot(files: FileInput[]): void {
+  lastLatexFileSnapshot = createLatexFileSnapshot(files);
+}
+
+function createLatexFileSnapshot(files: FileInput[]): Map<string, LatexFileSnapshotEntry> {
+  const snapshot = new Map<string, LatexFileSnapshotEntry>();
+
+  for (const file of files) {
+    if (file.path === LATEX_PREVIEW_WRAPPER_FILE_NAME || file.path.endsWith(`/${LATEX_PREVIEW_WRAPPER_FILE_NAME}`)) {
+      continue;
+    }
+
+    snapshot.set(file.path, {
+      signature: getFileContentSignature(file.content),
+      content: file.content
+    });
+  }
+
+  return snapshot;
+}
+
+function classifyLatexFileChange(
+  path: string,
+  previousContent: string | Uint8Array | undefined,
+  currentContent: string | Uint8Array
+): LatexDirtyCategory {
+  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+
+  if (extension === "bib") {
+    return "bibliography";
+  }
+
+  if (extension === "sty" || extension === "cls") {
+    return "style";
+  }
+
+  if (["png", "jpg", "jpeg", "pdf", "svg", "webp", "eps"].includes(extension)) {
+    return "graphics";
+  }
+
+  if (typeof currentContent !== "string") {
+    return "binary";
+  }
+
+  if (isLatexTexPath(path)) {
+    if (
+      typeof previousContent === "string" &&
+      isStandaloneLatexDocument(currentContent) &&
+      extractLatexPreamble(previousContent) !== extractLatexPreamble(currentContent)
+    ) {
+      return "tex-preamble";
+    }
+
+    if (latexReferenceSensitiveContentChanged(previousContent, currentContent)) {
+      return "references";
+    }
+
+    return "tex-body";
+  }
+
+  return "other";
+}
+
+function latexReferenceSensitiveContentChanged(
+  previousContent: string | Uint8Array | undefined,
+  currentContent: string
+): boolean {
+  if (!containsReferenceSensitiveLatex(currentContent)) {
+    return false;
+  }
+
+  if (typeof previousContent !== "string") {
+    return true;
+  }
+
+  return extractReferenceSensitiveLatex(previousContent) !== extractReferenceSensitiveLatex(currentContent);
+}
+
+function containsReferenceSensitiveLatex(content: string): boolean {
+  return /\\(?:label|ref|pageref|eqref|cite\w*|bibliography|printbibliography|addcontentsline|tableofcontents|makeindex|index)\b/.test(
+    content
+  );
+}
+
+function extractReferenceSensitiveLatex(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .filter((line) => containsReferenceSensitiveLatex(line))
+    .join("\n");
+}
+
+async function compileLatexPlan(
+  compilePlan: LatexCompilePlan,
+  compileMode: LatexCompileMode,
+  metadata: CompileMetadata,
+  onStatusChange?: (status: CompilerStatus) => void
+): Promise<CompileResult> {
+  const initialProfile: BusyTexPackageProfile = preferFullBusyTexPackages ? "full" : "standard";
+
+  const result = await runBusyTexCompile(
+    initialProfile,
+    compilePlan.files,
+    compilePlan.mainFilePath,
+    compileMode,
+    onStatusChange,
+    { previewKind: compilePlan.previewKind }
+  );
+  result.metadata = mergeCompileMetadata(result.metadata, metadata);
+
+  if (!result.success || !result.pdf || result.pdf.length === 0) {
+    if (initialProfile === "standard" && shouldRetryWithFullBusyTexPackages(result.log)) {
+      const retryResult = await runBusyTexCompile(
+        "full",
+        compilePlan.files,
+        compilePlan.mainFilePath,
+        compileMode,
+        onStatusChange,
+        {
+          isPackageRetry: true,
+          previewKind: compilePlan.previewKind
+        }
+      );
+      retryResult.metadata = mergeCompileMetadata(retryResult.metadata, metadata);
+
+      if (retryResult.success && retryResult.pdf && retryResult.pdf.length > 0) {
+        preferFullBusyTexPackages = true;
+        return {
+          ok: true,
+          engine: "busytex",
+          diagnostics: [
+            {
+              severity: "warning",
+              message:
+                "LaTeX compiled after retrying with all local BusyTeX data packages. This document may need the full package profile."
+            }
+          ],
+          output: {
+            kind: "pdf",
+            content: retryResult.log,
+            artifactData: retryResult.pdf
+          },
+          metadata: retryResult.metadata
+        } satisfies CompileSuccess;
+      }
+
+      return fail(
+        formatLatexFailureLog(retryResult.log, { retriedFullDataPackages: true }),
+        compilePlan.mainFilePath,
+        retryResult.log,
+        retryResult.metadata
+      );
+    }
+
+    return fail(formatLatexFailureLog(result.log), compilePlan.mainFilePath, result.log, result.metadata);
+  }
+
+  return {
+    ok: true,
+    engine: "busytex",
+    diagnostics: [],
+    output: {
+      kind: "pdf",
+      content: result.log,
+      artifactData: result.pdf
+    },
+    metadata: result.metadata
+  } satisfies CompileSuccess;
+}
+
+export function createLatexQuickPreviewPlan(
+  files: FileInput[],
+  activeFilePath: string,
+  compileMode: LatexCompileMode
+): LatexCompilePlan {
+  return createLatexCompilePlan(files, activeFilePath, compileMode);
+}
+
+export function createLatexCompilePlan(
+  files: FileInput[],
+  activeFilePath: string,
+  compileMode: LatexCompileMode
+): LatexCompilePlan {
+  if (compileMode !== "quick" || !isLatexTexPath(activeFilePath)) {
+    const activeContent = readTextFile(files, activeFilePath);
+    const rootFile = activeContent && !isStandaloneLatexDocument(activeContent)
+      ? findLatexRootFile(files, activeFilePath)
+      : null;
+
+    return {
+      files,
+      mainFilePath: rootFile?.path ?? activeFilePath,
+      previewKind: "document",
+      reason: rootFile
+        ? "Full compile requested for an included file; using the detected root document"
+        : "Compiling the active document"
+    };
+  }
+
+  const activeContent = readTextFile(files, activeFilePath);
+
+  if (!activeContent || isStandaloneLatexDocument(activeContent)) {
+    return {
+      files,
+      mainFilePath: activeFilePath,
+      previewKind: "document",
+      reason: activeContent
+        ? "Active file is a standalone LaTeX document"
+        : "Active file content is unavailable; compiling the active path"
+    };
+  }
+
+  const rootFile = findLatexRootFile(files, activeFilePath);
+
+  if (!rootFile) {
+    return {
+      files,
+      mainFilePath: activeFilePath,
+      previewKind: "document",
+      reason: "No root document was detected for subfile preview"
+    };
+  }
+
+  const disabledKey = `${rootFile.path}\u0000${activeFilePath}`;
+
+  if (disabledSubfilePreviewKeys.has(disabledKey)) {
+    return {
+      files,
+      mainFilePath: rootFile.path,
+      previewKind: "document",
+      reason: "Subfile preview was disabled after a previous wrapper failure"
+    };
+  }
+
+  const preamble = extractLatexPreamble(rootFile.content);
+
+  if (!preamble) {
+    return {
+      files,
+      mainFilePath: rootFile.path,
+      previewKind: "document",
+      reason: "Root document preamble could not be extracted"
+    };
+  }
+
+  const wrapperPath = joinCompilerPath(getCompilerDirname(rootFile.path), LATEX_PREVIEW_WRAPPER_FILE_NAME);
+  const inputPath = getLatexRelativeInputPath(getCompilerDirname(wrapperPath), activeFilePath);
+  const wrapperContent = [
+    "% Generated by Typr for quick subfile preview.",
+    preamble.trimEnd(),
+    "",
+    "\\begin{document}",
+    `\\input{${inputPath}}`,
+    "\\end{document}",
+    ""
+  ].join("\n");
+
+  return {
+    files: [...files, { path: wrapperPath, content: wrapperContent }],
+    mainFilePath: wrapperPath,
+    previewKind: "subfile-wrapper",
+    reason: "Quick preview can compile the active included file with the root preamble",
+    fallback: {
+      files,
+      mainFilePath: rootFile.path,
+      disabledKey
+    }
+  };
+}
+
+async function runBusyTexCompile(
+  profile: BusyTexPackageProfile,
+  files: FileInput[],
+  mainFilePath: string,
+  compileMode: LatexCompileMode,
+  onStatusChange?: (status: CompilerStatus) => void,
+  options: { isPackageRetry?: boolean; previewKind?: LatexPreviewKind } = {}
+): Promise<BusyTexCompileResultWithMetadata> {
+  onStatusChange?.({
+    phase: profile === "full" ? "loading-packages" : "loading-latex",
+    mode: "worker",
+    label:
+      profile === "full" && options.isPackageRetry
+        ? "Loading full BusyTeX packages"
+        : "Loading BusyTeX runtime",
+    detail:
+      profile === "full" && options.isPackageRetry
+        ? "Retrying with basic, recommended, and extra TeX Live data packages"
+        : "Preparing the browser LaTeX engine with local package catalogs"
+  });
+
+  const runner = await getBusyTexRunner();
+
+  onStatusChange?.({
+    phase: "compiling",
+    mode: "worker",
+    label: options.isPackageRetry ? "Retrying LaTeX compile" : "Compiling LaTeX document",
+    detail:
+      options.previewKind === "subfile-wrapper"
+        ? "Quick subfile preview: compiling the active file with the root preamble"
+        : compileMode === "quick"
+        ? "Quick preview mode: one TeX pass, bibliography and index passes skipped"
+        : options.isPackageRetry
+          ? "Using all local BusyTeX data packages"
+          : "Full mode: bibliography, index, and rerun passes enabled"
+  });
+
+  const compilePasses = getLatexCompilePassOptions(compileMode);
+
+  return runner.compile(
+    files,
+    mainFilePath,
+    compilePasses.bibtex,
+    compilePasses.makeindex,
+    compilePasses.rerun,
+    "silent",
+    "pdftex_bibtex8",
+    profile === "full" ? getBusyTexDataPackageUrls(getBusyTexBasePath()) : null,
+    BUSYTEX_REMOTE_ENDPOINT
+  );
+}
+
+function getLatexCompilePassOptions(compileMode: LatexCompileMode): {
+  bibtex: boolean | null;
+  makeindex: boolean | null;
+  rerun: boolean | null;
+} {
+  if (compileMode === "full") {
+    return {
+      bibtex: null,
+      makeindex: null,
+      rerun: true
+    };
+  }
+
+  return {
+    bibtex: false,
+    makeindex: false,
+    rerun: false
+  };
+}
+
+async function getBusyTexRunner(): Promise<BusyTexWorkerRunner> {
+  const busytexBasePath = getBusyTexBasePath();
+
+  if (!sharedRunner || sharedBasePath !== busytexBasePath) {
+    sharedRunner?.terminate();
+    sharedBasePath = busytexBasePath;
+    const dataPackageUrls = getBusyTexDataPackageUrls(busytexBasePath);
+    sharedRunner = new BusyTexWorkerRunner({
+      busytexBasePath,
+      preloadDataPackages: [dataPackageUrls[0]],
+      catalogDataPackages: dataPackageUrls,
+      compileTimeoutMs: BUSYTEX_COMPILE_TIMEOUT_MS
+    });
+  }
+
+  if (!sharedRunner.isInitialized()) {
+    await sharedRunner.initialize();
+  }
+
+  return sharedRunner;
+}
+
+function getBusyTexDataPackageUrls(busytexBasePath: string): string[] {
+  return BUSYTEX_DATA_PACKAGE_NAMES.map((packageName) => `${busytexBasePath}/${packageName}.js`);
+}
+
+function getBusyTexBasePath(): string {
+  const normalizedPath = "core/busytex";
+
+  if (import.meta.env.DEV) {
+    return `/${normalizedPath}`;
+  }
+
+  const bundleBase = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
+  return `${bundleBase}../${normalizedPath}`;
+}
+
+function fail(message: string, path?: string, log?: string, metadata?: CompileMetadata): CompileFailure {
+  return {
+    ok: false,
+    engine: "busytex",
+    errors: [
+      {
+        message,
+        severity: "error",
+        path
+      }
+    ],
+    output: log
+      ? {
+          kind: "placeholder",
+          content: log
+        }
+      : undefined,
+    metadata
+  };
+}
+
+function mergeCompileMetadata(
+  metadata: CompileMetadata | undefined,
+  additions: CompileMetadata
+): CompileMetadata {
+  return {
+    timings: [...(additions.timings ?? []), ...(metadata?.timings ?? [])],
+    fileSync: metadata?.fileSync ?? additions.fileSync,
+    dirty: metadata?.dirty ?? additions.dirty,
+    strategy: metadata?.strategy ?? additions.strategy
+  };
+}
+
+function getNow(): number {
+  return typeof performance === "undefined" ? 0 : performance.now();
+}
+
+function isLatexTexPath(path: string): boolean {
+  return /\.(?:tex|ltx|latex)$/i.test(path);
+}
+
+function readTextFile(files: FileInput[], path: string): string | null {
+  const file = files.find((candidate) => candidate.path === path);
+  return typeof file?.content === "string" ? file.content : null;
+}
+
+function isStandaloneLatexDocument(content: string): boolean {
+  return /\\documentclass(?:\s*\[[^\]]*])?\s*\{[^}]+}/.test(content) || /\\begin\s*\{document}/.test(content);
+}
+
+function findLatexRootFile(files: FileInput[], activeFilePath: string): { path: string; content: string } | null {
+  const activePathWithoutExtension = stripTexExtension(activeFilePath);
+  const activeBasenameWithoutExtension = stripTexExtension(getCompilerBasename(activeFilePath));
+  const candidates = files
+    .filter((file): file is FileInput & { content: string } => {
+      return (
+        file.path !== activeFilePath &&
+        isLatexTexPath(file.path) &&
+        typeof file.content === "string" &&
+        isStandaloneLatexDocument(file.content) &&
+        /\\begin\s*\{document}/.test(file.content)
+      );
+    })
+    .map((file) => ({
+      path: file.path,
+      content: file.content,
+      score: scoreLatexRootCandidate(file.path, file.content, activePathWithoutExtension, activeBasenameWithoutExtension)
+    }))
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+  return candidates[0] ? { path: candidates[0].path, content: candidates[0].content } : null;
+}
+
+function scoreLatexRootCandidate(
+  candidatePath: string,
+  candidateContent: string,
+  activePathWithoutExtension: string,
+  activeBasenameWithoutExtension: string
+): number {
+  const basename = getCompilerBasename(candidatePath).toLowerCase();
+  let score = 0;
+
+  if (/^(?:main|root|book|document)\.tex$/i.test(basename)) {
+    score += 30;
+  }
+
+  if (latexDocumentReferencesPath(candidateContent, activePathWithoutExtension)) {
+    score += 100;
+  } else if (latexDocumentReferencesPath(candidateContent, activeBasenameWithoutExtension)) {
+    score += 25;
+  }
+
+  score -= candidatePath.split("/").length;
+  return score;
+}
+
+function latexDocumentReferencesPath(content: string, pathWithoutExtension: string): boolean {
+  const escapedPath = escapeRegExp(pathWithoutExtension);
+  return new RegExp(`\\\\(?:input|include|subfile)\\s*\\{${escapedPath}(?:\\.tex)?}`, "i").test(content);
+}
+
+function extractLatexPreamble(content: string): string | null {
+  const match = content.match(/\\begin\s*\{document}/);
+  return match ? content.slice(0, match.index).trimEnd() : null;
+}
+
+function stripTexExtension(path: string): string {
+  return path.replace(/\.(?:tex|ltx|latex)$/i, "");
+}
+
+function getCompilerDirname(path: string): string {
+  const segments = path.split("/");
+  segments.pop();
+  return segments.join("/");
+}
+
+function getCompilerBasename(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+function joinCompilerPath(dirname: string, basename: string): string {
+  return dirname ? `${dirname}/${basename}` : basename;
+}
+
+function getLatexRelativeInputPath(fromDir: string, toPath: string): string {
+  const fromParts = fromDir ? fromDir.split("/").filter(Boolean) : [];
+  const toParts = toPath.split("/").filter(Boolean);
+
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+
+  return [...fromParts.map(() => ".."), ...toParts].join("/");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getFileContentSignature(content: string | Uint8Array): string {
+  if (typeof content === "string") {
+    return `text:${content.length}:${hashString(content)}`;
+  }
+
+  return `bytes:${content.byteLength}:${hashBytes(content)}`;
+}
+
+function hashString(value: string): string {
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return (hash >>> 0).toString(16);
+}
+
+function hashBytes(value: Uint8Array): string {
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < value.byteLength; index += 1) {
+    hash ^= value[index];
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return (hash >>> 0).toString(16);
+}
+
+export function formatLatexFailureLog(
+  log: string,
+  options: { retriedFullDataPackages?: boolean } = {}
+): string {
+  const rawLines = log.split(/\r?\n/);
+  const lines = rawLines.map((line) => line.trimEnd());
+  const selected = new Map<number, string>();
+
+  const addLine = (index: number) => {
+    if (index >= 0 && index < lines.length) {
+      selected.set(index, lines[index]);
+    }
+  };
+  const addContext = (index: number, before = 2, after = 8) => {
+    for (let offset = -before; offset <= after; offset += 1) {
+      addLine(index + offset);
+    }
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+
+    if (line.startsWith("! ")) {
+      addContext(index, 1, 10);
+      continue;
+    }
+
+    if (isLatexImportantLogLine(line)) {
+      addContext(index, 1, 4);
+    }
+  }
+
+  if (selected.size === 0) {
+    const start = Math.max(0, lines.length - MAX_LATEX_LOG_TAIL_LINES);
+    for (let index = start; index < lines.length; index += 1) {
+      addLine(index);
+    }
+  }
+
+  const importantLines = [...selected.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, line]) => line)
+    .filter((line, index, allLines) => line.trim() || allLines[index - 1]?.trim() || allLines[index + 1]?.trim())
+    .slice(0, MAX_LATEX_ERROR_LINES);
+
+  const tail = lines
+    .slice(Math.max(0, lines.length - MAX_LATEX_LOG_TAIL_LINES))
+    .filter((line) => line.trim());
+
+  const sections = [
+    "LaTeX failed to produce a PDF.",
+    formatBusyTexDiagnostics(log, options),
+    importantLines.length > 0
+      ? ["Relevant log excerpt:", ...importantLines].join("\n")
+      : null,
+    tail.length > 0
+      ? ["Log tail:", ...tail].join("\n")
+      : null
+  ].filter(Boolean);
+
+  return sections.join("\n\n") || "LaTeX compilation failed, but BusyTeX returned an empty log.";
+}
+
+function isLatexImportantLogLine(line: string): boolean {
+  return (
+    /fatal error|emergency stop|undefined control sequence|missing .*begin\{document\}|no output pdf file produced/i.test(line) ||
+    /LaTeX Error|Package .* Error|Class .* Error|pdfTeX error|Runaway argument/i.test(line) ||
+    /mktex(?:pk|tfm|mf)|fork\(\): Function not implemented|Font .* not found|missfont/i.test(line) ||
+    /TeX packages(?: unresolved)?|Data packages used|enabling all available data packages/i.test(line) ||
+    /File `[^`]+` not found|I can't find file|Cannot determine size of graphic|Unknown graphics extension/i.test(line) ||
+    /^l\.\d+\b/.test(line)
+  );
+}
+
+export function shouldRetryWithFullBusyTexPackages(log: string): boolean {
+  return (
+    isRuntimeFontGenerationFailure(log) ||
+    /TeX packages unresolved: \[[^\]]+\]/i.test(log) ||
+    /Because of unresolved TeX packages, enabling all available data packages/i.test(log)
+  );
+}
+
+export function isRuntimeFontGenerationFailure(log: string): boolean {
+  return (
+    /mktex(?:pk|tfm|mf)/i.test(log) ||
+    /kpathsea:\s*Running mktex/i.test(log) ||
+    /fork\(\): Function not implemented/i.test(log) ||
+    /Font [^\n]+ not found/i.test(log)
+  );
+}
+
+function formatBusyTexDiagnostics(log: string, options: { retriedFullDataPackages?: boolean }): string | null {
+  const diagnostics: string[] = [];
+  const packageLines = collectMatchingLines(log, [
+    /^TeX packages:/i,
+    /^TeX packages local:/i,
+    /^TeX packages unresolved:/i,
+    /^Data packages used/i,
+    /^Because of unresolved TeX packages/i
+  ]);
+
+  if (isRuntimeFontGenerationFailure(log)) {
+    diagnostics.push(
+      "BusyTeX tried to generate or locate a TeX font at runtime. WebAssembly cannot run external helpers such as mktexpk/mktextfm, so the fix is usually to load a prebuilt font/package bundle or change the document font setup."
+    );
+  }
+
+  if (/shell escape|write18|minted|biber|makeglossaries|external tool/i.test(log)) {
+    diagnostics.push(
+      "This document may require an external LaTeX tool or shell escape. BusyTeX runs in the browser and cannot invoke arbitrary host programs."
+    );
+  }
+
+  if (options.retriedFullDataPackages) {
+    diagnostics.push("Typr already retried this compile with the local basic, recommended, and extra BusyTeX data packages preloaded.");
+  } else if (shouldRetryWithFullBusyTexPackages(log)) {
+    diagnostics.push("Typr will retry matching failures with the full local BusyTeX data package set.");
+  }
+
+  if (packageLines.length > 0) {
+    diagnostics.push(["BusyTeX package resolver:", ...packageLines].join("\n"));
+  }
+
+  return diagnostics.length > 0 ? ["BusyTeX diagnostic:", ...diagnostics].join("\n") : null;
+}
+
+function collectMatchingLines(log: string, patterns: RegExp[]): string[] {
+  const uniqueLines = new Set<string>();
+
+  for (const rawLine of log.split(/\r?\n/)) {
+    const line = rawLine.trim();
+
+    if (line && patterns.some((pattern) => pattern.test(line))) {
+      uniqueLines.add(line);
+    }
+  }
+
+  return [...uniqueLines].slice(0, 20);
+}
+
+function formatLatexError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Unknown LaTeX compilation error.";
+
+  if (
+    /busytex_worker\.js|busytex\.wasm|texlive-(?:basic|recommended|extra)\.js|failed to initialize busytex/i.test(
+      message
+    )
+  ) {
+    return `${message}\n\nBusyTeX assets are required under public/core/busytex. Run npm run busytex:assets before using LaTeX compilation.`;
+  }
+
+  return message;
+}
