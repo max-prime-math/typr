@@ -833,6 +833,12 @@ export function updateActiveDocument(
   snapshot: AppSnapshot,
   content: string
 ): AppSnapshot {
+  const activeDocument = getActiveDocument(snapshot.project);
+
+  if (activeDocument.content === content) {
+    return snapshot;
+  }
+
   const now = new Date().toISOString();
 
   return {

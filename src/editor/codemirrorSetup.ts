@@ -15,7 +15,7 @@ import {
   historyKeymap,
   indentMore
 } from "@codemirror/commands";
-import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import {
   search as searchExtension,
   searchKeymap,
@@ -38,6 +38,7 @@ import {
 import { getCM, vim } from "@replit/codemirror-vim";
 import { latex } from "codemirror-lang-latex";
 import type { StyleSpec } from "style-mod";
+import { tags } from "@lezer/highlight";
 import type { KeybindingMap } from "../app/keybindings";
 import { toCodeMirrorKeybinding } from "../app/keybindings";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
@@ -68,6 +69,57 @@ interface EditorSetupOptions {
 }
 
 export const diagnosticsCompartment = new Compartment();
+
+const editorHighlightStyle = HighlightStyle.define([
+  {
+    tag: tags.comment,
+    color: "var(--text-muted)",
+    fontStyle: "italic"
+  },
+  {
+    tag: [tags.keyword, tags.definitionKeyword, tags.processingInstruction],
+    color: "var(--accent)",
+    fontWeight: "700"
+  },
+  {
+    tag: tags.heading,
+    color: "var(--accent-strong)",
+    fontWeight: "700"
+  },
+  {
+    tag: [tags.className, tags.atom, tags.variableName],
+    color: "color-mix(in srgb, var(--accent) 84%, var(--editor-foreground))"
+  },
+  {
+    tag: tags.string,
+    color: "color-mix(in srgb, var(--accent) 68%, var(--editor-foreground))"
+  },
+  {
+    tag: [tags.labelName, tags.quote, tags.number],
+    color: "color-mix(in srgb, var(--warning) 84%, var(--editor-foreground))"
+  },
+  {
+    tag: [tags.meta, tags.monospace],
+    color: "color-mix(in srgb, var(--text-muted) 64%, var(--editor-foreground))"
+  },
+  {
+    tag: [tags.operator, tags.bracket, tags.punctuation],
+    color: "color-mix(in srgb, var(--text-muted) 76%, var(--editor-foreground))"
+  },
+  {
+    tag: tags.invalid,
+    color: "var(--danger)",
+    textDecoration: "underline wavy color-mix(in srgb, var(--danger) 60%, transparent)"
+  },
+  {
+    tag: tags.strong,
+    fontWeight: "700"
+  },
+  {
+    tag: tags.emphasis,
+    fontStyle: "italic"
+  }
+]);
 
 function createEditorTheme(
   theme: ThemeDefinition,
@@ -274,7 +326,7 @@ export function createEditorExtensions({
     autocompletion({
       override: [snippetSource]
     }),
-    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    syntaxHighlighting(editorHighlightStyle, { fallback: true }),
     createLanguageExtension(language),
     keymap.of([
       { key: "$", run: mathDelimiterCommand },

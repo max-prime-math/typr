@@ -5431,16 +5431,17 @@ button {
 }
 
 .preview-document--pdf-canvas .pdf-page.canvas {
-  background: #ffffff;
+  background: var(--pdf-page-background, var(--surface-strong));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--border) 68%, transparent);
+  max-width: none;
+}
+
+.preview-document--pdf-canvas {
+  scrollbar-gutter: stable;
 }
 
 .preview-document--pdf-canvas .pdf-page.canvas + .pdf-page.canvas {
   margin-top: 1.1rem;
-}
-
-.preview-document--pdf-canvas-dark .pdf-page.canvas canvas {
-  filter: invert(0.88) hue-rotate(180deg) contrast(0.92) brightness(1.05);
 }
 
 .preview-document--canvas .typst-html-semantics {

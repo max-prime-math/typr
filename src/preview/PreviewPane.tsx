@@ -3,7 +3,7 @@ import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
-import { renderPdfArtifactToCanvas } from "./pdfCanvasRenderer";
+import { applyPdfCanvasZoom, renderPdfArtifactToCanvas } from "./pdfCanvasRenderer";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
 import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
 
@@ -118,9 +118,10 @@ export function PreviewPane({
             {fallbackResult.output.kind === "pdf" && fallbackResult.output.artifactData ? (
               <PdfPreview
                 artifactData={fallbackResult.output.artifactData}
-                darkMode={theme.mode === "dark"}
                 isFaulted={isErrorSettled}
                 paperView={paperView}
+                theme={theme}
+                zoom={currentZoom}
               />
             ) : shouldUseChromiumCanvasPreview(fallbackResult) ? (
               <ChromiumCanvasPreview
@@ -174,8 +175,9 @@ export function PreviewPane({
         {result.output.kind === "pdf" && result.output.artifactData ? (
           <PdfPreview
             artifactData={result.output.artifactData}
-            darkMode={theme.mode === "dark"}
             paperView={paperView}
+            theme={theme}
+            zoom={currentZoom}
           />
         ) : shouldUseChromiumCanvasPreview(result) ? (
           <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
@@ -689,17 +691,24 @@ function ChromiumCanvasPreview({
 
 function PdfPreview({
   artifactData,
-  darkMode = false,
   paperView = false,
-  isFaulted = false
+  isFaulted = false,
+  theme,
+  zoom
 }: {
   artifactData: Uint8Array;
-  darkMode?: boolean;
   paperView?: boolean;
   isFaulted?: boolean;
+  theme: ThemeDefinition;
+  zoom: PreviewZoomState;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const zoomRef = useRef(zoom);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [hasMeasuredViewport, setHasMeasuredViewport] = useState(false);
+
+  zoomRef.current = zoom;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -708,17 +717,80 @@ function PdfPreview({
       return;
     }
 
+    let frame = 0;
+    const updateViewportSize = () => {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+      }
+
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const next = {
+          width: container.clientWidth,
+          height: container.clientHeight
+        };
+
+        if (next.width > 0 && next.height > 0) {
+          setHasMeasuredViewport(true);
+        }
+
+        setViewportSize((current) => {
+          return current.width === next.width && current.height === next.height
+            ? current
+            : next;
+        });
+      });
+    };
+
+    updateViewportSize();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateViewportSize);
+
+      return () => {
+        if (frame) {
+          window.cancelAnimationFrame(frame);
+        }
+        window.removeEventListener("resize", updateViewportSize);
+      };
+    }
+
+    const observer = new ResizeObserver(updateViewportSize);
+    observer.observe(container);
+
+    return () => {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+      }
+      observer.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+
+    if (!container || !hasMeasuredViewport) {
+      return;
+    }
+
     let cancelled = false;
+    const abortController = new AbortController();
     const renderStartedAt =
       typeof performance === "undefined" ? 0 : performance.now();
     setRenderError(null);
 
     void renderPdfArtifactToCanvas(container, artifactData, {
-      darkMode,
-      paperView
+      paperView,
+      signal: abortController.signal,
+      themeColors: {
+        background: theme.palette.editorBackground,
+        foreground: theme.palette.editorForeground
+      },
+      zoom: zoomRef.current
     })
       .then(() => {
         if (!cancelled) {
+          applyPdfCanvasZoom(container, zoomRef.current);
           logPreviewTiming("pdf-canvas", renderStartedAt);
         }
       })
@@ -732,9 +804,25 @@ function PdfPreview({
 
     return () => {
       cancelled = true;
-      container.innerHTML = "";
+      abortController.abort();
     };
-  }, [artifactData, darkMode, paperView]);
+  }, [
+    artifactData,
+    hasMeasuredViewport,
+    paperView,
+    theme.palette.editorBackground,
+    theme.palette.editorForeground
+  ]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+
+    if (!container || viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return;
+    }
+
+    applyPdfCanvasZoom(container, zoom);
+  }, [viewportSize.height, viewportSize.width, zoom]);
 
   if (renderError) {
     return (

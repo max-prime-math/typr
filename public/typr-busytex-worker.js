@@ -18,7 +18,16 @@ function applyProjectFileSync(changedFiles, deletedPaths) {
 self.onmessage = async ({ data }) => {
   try {
     if (data.busytex_pipeline_js) {
-      importScripts(data.busytex_pipeline_js);
+      try {
+        importScripts(data.busytex_pipeline_js);
+      } catch (error) {
+        throw new Error(
+          "Failed to load BusyTeX pipeline script at " +
+            data.busytex_pipeline_js +
+            ". BusyTeX assets are missing or unreachable. Run npm run busytex:assets, then restart the dev server or rebuild the app. " +
+            (error && error.toString ? error.toString() : String(error))
+        );
+      }
       pipeline = new BusytexPipeline(
         data.busytex_js,
         data.busytex_wasm,

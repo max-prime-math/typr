@@ -38,6 +38,7 @@ interface BusyTexWorkerMessage {
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 120_000;
 const DEFAULT_COMPILE_TIMEOUT_MS = 10 * 60_000;
 const MAX_RECENT_MESSAGES = 30;
+const REQUIRED_BUSY_TEX_RUNTIME_FILES = ["busytex_pipeline.js", "busytex.js", "busytex.wasm"];
 
 export type BusyTexCompileResultWithMetadata = CompileResult & {
   metadata?: CompileMetadata;
@@ -59,6 +60,8 @@ export class BusyTexWorkerRunner {
     if (this.initialized) {
       return;
     }
+
+    await assertBusyTexAssetsAvailable(this.config);
 
     const workerPath = getTyprBusyTexWorkerPath();
     const worker = new Worker(workerPath);
@@ -256,6 +259,47 @@ export class BusyTexWorkerRunner {
 function getTyprBusyTexWorkerPath(): string {
   const baseUrl = import.meta.env.BASE_URL || "/";
   return `${baseUrl.replace(/\/?$/, "/")}typr-busytex-worker.js`;
+}
+
+async function assertBusyTexAssetsAvailable(config: BusyTexWorkerRunnerConfig): Promise<void> {
+  const urls = [
+    ...REQUIRED_BUSY_TEX_RUNTIME_FILES.map((fileName) => `${config.busytexBasePath}/${fileName}`),
+    ...config.preloadDataPackages,
+    ...config.catalogDataPackages
+  ];
+  const failures = (await Promise.all([...new Set(urls)].map(checkBusyTexAsset))).filter(
+    (failure): failure is string => Boolean(failure)
+  );
+
+  if (failures.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    [
+      "BusyTeX assets are missing or unavailable.",
+      "Required assets must be present under public/core/busytex.",
+      "Run npm run busytex:assets, then restart the dev server or rebuild the app.",
+      "",
+      "Unavailable assets:",
+      ...failures.map((failure) => `- ${failure}`)
+    ].join("\n")
+  );
+}
+
+async function checkBusyTexAsset(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+
+    if (response.ok) {
+      return null;
+    }
+
+    return `${url} (HTTP ${response.status})`;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return `${url} (${reason})`;
+  }
 }
 
 function createCompileMetadata(stats: BusyTexWorkerStats | undefined): CompileMetadata | undefined {

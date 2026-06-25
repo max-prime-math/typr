@@ -14,6 +14,9 @@ import { buildProjectWorkspaceEntries, normalizeWorkspacePath } from "../workspa
 export const PROJECT_STORAGE_VERSION = 1;
 export const PROJECT_FILESYSTEM_VERSION = 1;
 export const DEFAULT_PROJECT_ROOT_PATH = "/";
+export const DEFAULT_PROJECT_GITIGNORE_PATH = ".gitignore";
+export const DEFAULT_PROJECT_GITIGNORE_CONTENT = "*.pdf\n";
+export const GENERATED_LATEX_PDF_SOURCE_ID = "latex-preview-pdf";
 
 export type ProjectFileContent = string | Uint8Array;
 export type ProjectFilesystemEntryKind = "file" | "folder";
@@ -265,18 +268,32 @@ export function createEmptyProjectRepository(options: {
     : normalizeProjectPath(options.defaultFileName ?? "main.typ");
   const fileId = defaultFileName ? createId("file") : null;
   const documentId = defaultFileName ? createId("doc") : null;
-  const entries = defaultFileName && fileId && documentId
-    ? {
-        [defaultFileName]: {
-          id: fileId,
-          kind: "file" as const,
-          path: defaultFileName,
-          content: options.defaultContent ?? "",
-          source: { kind: "document" as const, id: documentId },
-          updatedAt: now
+  const entries = {
+    ...(defaultFileName
+      ? {
+          [DEFAULT_PROJECT_GITIGNORE_PATH]: {
+            id: createId("file"),
+            kind: "file" as const,
+            path: DEFAULT_PROJECT_GITIGNORE_PATH,
+            content: DEFAULT_PROJECT_GITIGNORE_CONTENT,
+            source: { kind: "virtual" as const, id: DEFAULT_PROJECT_GITIGNORE_PATH },
+            updatedAt: now
+          }
         }
-      }
-    : {};
+      : {}),
+    ...(defaultFileName && fileId && documentId
+      ? {
+          [defaultFileName]: {
+            id: fileId,
+            kind: "file" as const,
+            path: defaultFileName,
+            content: options.defaultContent ?? "",
+            source: { kind: "document" as const, id: documentId },
+            updatedAt: now
+          }
+        }
+      : {})
+  };
   const documents = defaultFileName && documentId
     ? [
         {
@@ -669,7 +686,35 @@ function createRepositoryFromLegacyProject(
             kind: "folder",
             source: toProjectEntrySource(entry.source),
             updatedAt: getLegacyEntryUpdatedAt(snapshot.project, entry.source) ?? now
-          };
+        };
+  }
+
+  for (const existingEntry of Object.values(existingProject?.filesystem.entries ?? {})) {
+    if (existingEntry.source.kind !== "virtual") {
+      continue;
+    }
+
+    const path = normalizeProjectPath(existingEntry.path);
+
+    if (!path || entries[path]) {
+      continue;
+    }
+
+    entries[path] = {
+      ...existingEntry,
+      path
+    };
+  }
+
+  if (!entries[DEFAULT_PROJECT_GITIGNORE_PATH]) {
+    entries[DEFAULT_PROJECT_GITIGNORE_PATH] = {
+      id: createId("file"),
+      path: DEFAULT_PROJECT_GITIGNORE_PATH,
+      kind: "file",
+      content: DEFAULT_PROJECT_GITIGNORE_CONTENT,
+      source: { kind: "virtual", id: DEFAULT_PROJECT_GITIGNORE_PATH },
+      updatedAt: now
+    };
   }
 
   const activeDocument = snapshot.project.documents.find(

@@ -1,6 +1,7 @@
 import { unzlib, unzlibSync, zlib, zlibSync } from "fflate";
 import {
   deleteProjectPath,
+  DEFAULT_PROJECT_GITIGNORE_PATH,
   ensureProjectFolder,
   isReservedGitPath,
   listProjectEntries,
@@ -18,6 +19,7 @@ import {
   readProjectGitFile,
   writeProjectGitFile
 } from "../storage/indexedDbStorage";
+import { shouldIgnorePath } from "./pathFilters";
 
 const DEFAULT_BRANCH = "main";
 const MERGE_STATE_FILE = "MERGE_STATE.json";
@@ -527,6 +529,7 @@ async function getStatus(storage: GitFileStorage, project: TyprProjectRepository
   const headFiles = headSha ? await readCommitTreeFiles(storage, project.id, headSha) : new Map<string, IndexEntry>();
   const index = await readIndex(storage, project.id);
   const workingFiles = await buildWorkingFileMap(storage, project);
+  const ignorePatterns = readProjectGitignorePatterns(project);
   const paths = new Set([...headFiles.keys(), ...index.map((entry) => entry.path), ...workingFiles.keys()]);
   const entries: RepoStatusEntry[] = [];
 
@@ -534,6 +537,11 @@ async function getStatus(storage: GitFileStorage, project: TyprProjectRepository
     const headEntry = headFiles.get(path) ?? null;
     const indexEntry = index.find((entry) => entry.path === path) ?? null;
     const workEntry = workingFiles.get(path) ?? null;
+
+    if (!headEntry && !indexEntry && workEntry && shouldIgnorePath(path, ignorePatterns)) {
+      continue;
+    }
+
     const staged = compareIndexEntries(indexEntry, headEntry) ? null : classifyChange(indexEntry, headEntry);
     const worktree = compareIndexEntries(workEntry, indexEntry) ? null : classifyWorktreeChange(workEntry, indexEntry);
 
@@ -543,6 +551,19 @@ async function getStatus(storage: GitFileStorage, project: TyprProjectRepository
   }
 
   return { branch, headSha, entries, mergeState: await readMergeState(storage, project.id) };
+}
+
+function readProjectGitignorePatterns(project: TyprProjectRepository): string[] {
+  const bytes = readProjectFileBytes(project, DEFAULT_PROJECT_GITIGNORE_PATH);
+
+  if (!bytes) {
+    return [];
+  }
+
+  return decodeUtf8(bytes)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#") && !line.startsWith("!"));
 }
 
 async function stagePaths(

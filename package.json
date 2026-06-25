@@ -10,12 +10,14 @@
     "url": "https://github.com/max-prime-math/typr.git"
   },
   "scripts": {
+    "predev": "npm run busytex:assets",
     "dev": "vite",
+    "prebuild": "npm run busytex:assets",
     "build": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
-    "busytex:assets": "texlyre-busytex download-assets public/core"
+    "busytex:assets": "node scripts/ensure-busytex-assets.cjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.6",

@@ -1,5 +1,7 @@
 node_modules
 dist
+public/core/busytex/
+public/core/busytex-assets.tar.gz
 .assistant
 .claude
 .DS_Store

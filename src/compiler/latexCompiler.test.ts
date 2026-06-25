@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeLatexDirtyStateForTest,
   createLatexQuickPreviewPlan,
+  formatLatexErrorForTest,
   formatLatexFailureLog,
   isRuntimeFontGenerationFailure,
   shouldRetryWithFullBusyTexPackages
@@ -35,6 +36,17 @@ describe("LaTeX compiler diagnostics", () => {
     expect(message).toContain("BusyTeX package resolver");
     expect(message).toContain("tcrm1200");
     expect(message).toContain("mktexpk");
+  });
+
+  it("explains missing BusyTeX runtime assets", () => {
+    const message = formatLatexErrorForTest(
+      new Error(
+        "Exception in Typr BusyTeX worker: NetworkError: A network error occurred. Stack: self.onmessage@http://localhost:5173/typr-busytex-worker.js:21:20"
+      )
+    );
+
+    expect(message).toContain("BusyTeX assets are required under public/core/busytex");
+    expect(message).toContain("npm run busytex:assets");
   });
 });
 

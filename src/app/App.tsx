@@ -173,9 +173,12 @@ import {
 import {
   addProjectRepository,
   createEmptyProjectRepository,
+  DEFAULT_PROJECT_GITIGNORE_CONTENT,
+  DEFAULT_PROJECT_GITIGNORE_PATH,
   createProjectStorageFromSnapshot,
   deleteProjectPath,
   ensureProjectFolder,
+  GENERATED_LATEX_PDF_SOURCE_ID,
   getSelectedProjectRepository,
   listProjectEntries,
   normalizeProjectStorageState,
@@ -1598,6 +1601,17 @@ export function App() {
   const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument.name;
   const activeSourceLanguage = getSourceLanguage(activeSourcePath);
   const isActiveSourceCompilable = isCompilableSourceFile(activeSourcePath);
+  const projectGitignoreContent = useMemo(
+    () =>
+      selectedProjectRepository
+        ? readProjectTextFileOrDefault(
+            selectedProjectRepository,
+            DEFAULT_PROJECT_GITIGNORE_PATH,
+            ""
+          )
+        : DEFAULT_PROJECT_GITIGNORE_CONTENT,
+    [selectedProjectRepository]
+  );
   useEffect(() => {
     selectedProjectRepositoryRef.current = selectedProjectRepository;
   }, [selectedProjectRepository]);
@@ -1708,6 +1722,45 @@ export function App() {
   useEffect(() => {
     compileResultRef.current = compileResult;
   }, [compileResult]);
+
+  useEffect(() => {
+    if (
+      !isHydrated ||
+      compileResult !== null ||
+      activeSourceLanguage !== "latex" ||
+      !isActiveSourceCompilable ||
+      !selectedProjectRepository
+    ) {
+      return;
+    }
+
+    const savedResult = loadSavedLatexPdfCompileResult({
+      allowStale: true,
+      project: selectedProjectRepository,
+      source: sourceEditorValue,
+      sourcePath: activeSourcePath
+    });
+
+    if (!savedResult || !savedResult.ok) {
+      return;
+    }
+
+    setCompileResult(savedResult);
+    setLastSuccessfulResult(savedResult);
+    setCompilerStatus({
+      phase: "ready",
+      mode: "worker",
+      label: "Saved PDF preview ready"
+    });
+  }, [
+    activeSourceLanguage,
+    activeSourcePath,
+    compileResult,
+    isActiveSourceCompilable,
+    isHydrated,
+    selectedProjectRepository,
+    sourceEditorValue
+  ]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -2567,6 +2620,25 @@ export function App() {
     );
   }, [isSourceToolbarVisible]);
 
+  const saveGeneratedLatexPdfToProject = useCallback(
+    ({
+      projectId,
+      result,
+      sourcePath
+    }: {
+      projectId: string;
+      result: Extract<CompileResult, { ok: true }>;
+      sourcePath: string;
+    }) => {
+      setProjectRepository((project) =>
+        project.id === projectId
+          ? writeGeneratedLatexPdfFile(project, sourcePath, result)
+          : project
+      );
+    },
+    [setProjectRepository]
+  );
+
   const runCompile = useCallback(async () => {
     if (compileInFlightRef.current || !isHydrated) {
       return;
@@ -2592,44 +2664,79 @@ export function App() {
 
     try {
       const compileAssets = [...diagramAssets, ...graphAssets];
-      const result =
-        sourceLanguage === "latex"
-          ? selectedProjectRepositoryRef.current
-            ? await compileLatexDocument({
-                mainFilePath: sourcePath,
-                source,
-                project: selectedProjectRepositoryRef.current,
-                assets: compileAssets,
-                compileMode: "quick",
-                onStatusChange: setCompilerStatus
-              })
-            : ({
-                ok: false,
-                engine: "busytex",
-                errors: [
-                  {
-                    message: "Project filesystem is unavailable for LaTeX compilation.",
-                    severity: "error",
-                    path: sourcePath
-                  }
-                ]
-              } satisfies CompileResult)
-          : sourceLanguage === "typst"
-            ? await compiler.compileDocument(source, compileAssets)
-            : ({
-                ok: false,
-                engine: "mock",
-                errors: [
-                  {
-                    message: "This file type does not have a compiler.",
-                    severity: "error",
-                    path: sourcePath
-                  }
-                ]
-              } satisfies CompileResult);
+      let result: CompileResult;
+      let generatedLatexPdf: {
+        projectId: string;
+        result: Extract<CompileResult, { ok: true }>;
+        sourcePath: string;
+      } | null = null;
+
+      if (sourceLanguage === "latex") {
+        const project = selectedProjectRepositoryRef.current;
+
+        if (project) {
+          const savedResult = loadSavedLatexPdfCompileResult({
+            allowStale: false,
+            project,
+            source,
+            sourcePath
+          });
+
+          if (savedResult) {
+            result = savedResult;
+          } else {
+            result = await compileLatexDocument({
+              mainFilePath: sourcePath,
+              source,
+              project,
+              assets: compileAssets,
+              compileMode: "quick",
+              onStatusChange: setCompilerStatus
+            });
+
+            if (result.ok && result.output.kind === "pdf") {
+              generatedLatexPdf = {
+                projectId: project.id,
+                result,
+                sourcePath
+              };
+            }
+          }
+        } else {
+          result = {
+            ok: false,
+            engine: "busytex",
+            errors: [
+              {
+                message: "Project filesystem is unavailable for LaTeX compilation.",
+                severity: "error",
+                path: sourcePath
+              }
+            ]
+          } satisfies CompileResult;
+        }
+      } else if (sourceLanguage === "typst") {
+        result = await compiler.compileDocument(source, compileAssets);
+      } else {
+        result = {
+          ok: false,
+          engine: "mock",
+          errors: [
+            {
+              message: "This file type does not have a compiler.",
+              severity: "error",
+              path: sourcePath
+            }
+          ]
+        } satisfies CompileResult;
+      }
 
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
         return;
+      }
+
+      if (generatedLatexPdf) {
+        saveGeneratedLatexPdfToProject(generatedLatexPdf);
       }
 
       const compileDurationMs =
@@ -2705,7 +2812,7 @@ export function App() {
         setIsCompiling(false);
       }
     }
-  }, [compiler, isHydrated]);
+  }, [compiler, isHydrated, saveGeneratedLatexPdfToProject]);
 
   const shouldCancelInFlightLatexCompile = useCallback(
     ({
@@ -2841,8 +2948,13 @@ export function App() {
       return;
     }
 
+    if (activeSourceLanguage !== "typst") {
+      return;
+    }
+
     queueCompile(false);
   }, [
+    activeSourceLanguage,
     isHydrated,
     isPaperView,
     queueCompile,
@@ -3737,6 +3849,20 @@ export function App() {
       }));
     },
     [updateSelectedGitProject]
+  );
+
+  const handleProjectGitignoreChange = useCallback(
+    (value: string) => {
+      setProjectRepository((project) =>
+        writeProjectFile(
+          project,
+          DEFAULT_PROJECT_GITIGNORE_PATH,
+          value,
+          { kind: "virtual", id: DEFAULT_PROJECT_GITIGNORE_PATH }
+        )
+      );
+    },
+    [setProjectRepository]
   );
 
   const handleStageGitPaths = useCallback(
@@ -9961,7 +10087,18 @@ export function App() {
                   </div>
 
                   <label className="sync-field">
-                    <span>Ignore patterns</span>
+                    <span>Project .gitignore</span>
+                    <textarea
+                      disabled={!selectedProjectRepository}
+                      onChange={(event) => handleProjectGitignoreChange(event.target.value)}
+                      placeholder={"*.pdf\n.env\nbuild/"}
+                      rows={6}
+                      value={projectGitignoreContent}
+                    />
+                  </label>
+
+                  <label className="sync-field">
+                    <span>Status ignore patterns</span>
                     <textarea
                       onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
                       placeholder={"figures/\n*.pdf\nnotes/private/**"}
@@ -10921,6 +11058,158 @@ function MenuDropdown({
   );
 }
 
+interface SavedLatexPdfOptions {
+  allowStale: boolean;
+  project: TyprProjectRepository;
+  sourcePath: string;
+  source: string;
+}
+
+function loadSavedLatexPdfCompileResult(
+  options: SavedLatexPdfOptions
+): CompileResult | null {
+  const pdfPath = getLatexPdfOutputPath(options.sourcePath);
+  const pdfEntry = options.project.filesystem.entries[pdfPath];
+
+  if (!pdfEntry || pdfEntry.kind !== "file") {
+    return null;
+  }
+
+  const sourceEntry = options.project.filesystem.entries[
+    normalizeCompilerPath(options.sourcePath) || options.sourcePath
+  ];
+
+  if (
+    sourceEntry?.kind === "file" &&
+    typeof sourceEntry.content === "string" &&
+    sourceEntry.content !== options.source
+  ) {
+    return null;
+  }
+
+  if (
+    !options.allowStale &&
+    !isSavedLatexPdfFresh(options.project, pdfPath, pdfEntry.updatedAt)
+  ) {
+    return null;
+  }
+
+  return {
+    ok: true,
+    engine: "busytex",
+    diagnostics: [],
+    output: {
+      kind: "pdf",
+      content: "",
+      artifactData:
+        typeof pdfEntry.content === "string"
+          ? new TextEncoder().encode(pdfEntry.content)
+          : new Uint8Array(pdfEntry.content)
+    },
+    metadata: {
+      timings: [{ label: "Load saved PDF", durationMs: 0 }]
+    }
+  } satisfies CompileResult;
+}
+
+function writeGeneratedLatexPdfFile(
+  project: TyprProjectRepository,
+  sourcePath: string,
+  result: Extract<CompileResult, { ok: true }>
+): TyprProjectRepository {
+  if (result.output.kind !== "pdf" || !result.output.artifactData) {
+    return project;
+  }
+
+  const pdfPath = getLatexPdfOutputPath(
+    getLatexPdfSourcePathForResult(sourcePath, result)
+  );
+  const existingBytes = readProjectFileBytes(project, pdfPath);
+  const nextBytes = new Uint8Array(result.output.artifactData);
+
+  if (existingBytes && areBytesEqual(existingBytes, nextBytes)) {
+    return project;
+  }
+
+  return writeProjectFile(
+    project,
+    pdfPath,
+    nextBytes,
+    { kind: "virtual", id: GENERATED_LATEX_PDF_SOURCE_ID }
+  );
+}
+
+function isSavedLatexPdfFresh(
+  project: TyprProjectRepository,
+  pdfPath: string,
+  pdfUpdatedAt: string
+): boolean {
+  const pdfUpdatedAtMs = Date.parse(pdfUpdatedAt);
+
+  if (!Number.isFinite(pdfUpdatedAtMs)) {
+    return false;
+  }
+
+  for (const entry of listProjectEntries(project)) {
+    if (
+      entry.kind !== "file" ||
+      entry.path === pdfPath ||
+      entry.path === ".git" ||
+      entry.path.startsWith(".git/") ||
+      (entry.source.kind === "virtual" && entry.source.id === GENERATED_LATEX_PDF_SOURCE_ID)
+    ) {
+      continue;
+    }
+
+    const entryUpdatedAtMs = Date.parse(entry.updatedAt);
+
+    if (!Number.isFinite(entryUpdatedAtMs) || entryUpdatedAtMs > pdfUpdatedAtMs) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function getLatexPdfSourcePathForResult(
+  sourcePath: string,
+  result: Extract<CompileResult, { ok: true }>
+): string {
+  const strategy = result.metadata?.strategy;
+
+  if (!strategy) {
+    return sourcePath;
+  }
+
+  return strategy.previewKind === "subfile-wrapper"
+    ? strategy.activeFilePath
+    : strategy.mainFilePath;
+}
+
+function getLatexPdfOutputPath(sourcePath: string): string {
+  const normalizedSourcePath = normalizeCompilerPath(sourcePath) || sourcePath;
+
+  if (/\.(tex|ltx|latex)$/i.test(normalizedSourcePath)) {
+    return normalizedSourcePath.replace(/\.(tex|ltx|latex)$/i, ".pdf");
+  }
+
+  return `${normalizedSourcePath}.pdf`;
+}
+
+function areBytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function shouldReuseCompileResult(
   current: CompileResult | null,
   next: CompileResult
@@ -11224,6 +11513,16 @@ function decodeProjectTextFile(project: TyprProjectRepository, path: string): st
   }
 
   return new TextDecoder().decode(bytes);
+}
+
+function readProjectTextFileOrDefault(
+  project: TyprProjectRepository,
+  path: string,
+  fallback: string
+): string {
+  const bytes = readProjectFileBytes(project, path);
+
+  return bytes ? new TextDecoder().decode(bytes) : fallback;
 }
 
 function getSidebarToolTitle(tool: SidebarTool): string {

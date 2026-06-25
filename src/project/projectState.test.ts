@@ -4,10 +4,14 @@ import {
   addProjectRepository,
   createProjectStorageFromSnapshot,
   createEmptyProjectRepository,
+  DEFAULT_PROJECT_GITIGNORE_CONTENT,
+  DEFAULT_PROJECT_GITIGNORE_PATH,
+  GENERATED_LATEX_PDF_SOURCE_ID,
   getSelectedProjectRepository,
   isReservedGitPath,
   normalizeProjectStorageState,
-  removeProjectRepository
+  removeProjectRepository,
+  writeProjectFile
 } from "./projectState";
 
 describe("projectState", () => {
@@ -18,6 +22,11 @@ describe("projectState", () => {
 
     expect(project?.id).toBe(snapshot.project.id);
     expect(project?.filesystem.entries["main.typ"]?.kind).toBe("file");
+    const gitignore = project?.filesystem.entries[DEFAULT_PROJECT_GITIGNORE_PATH];
+    expect(gitignore?.kind).toBe("file");
+    expect(gitignore?.kind === "file" && gitignore.content).toBe(
+      DEFAULT_PROJECT_GITIGNORE_CONTENT
+    );
     expect(project?.git.backend).toBe("browser-git");
     expect(project?.git.status).toBe("not-initialized");
     expect(storage.migration.legacySnapshotRetained).toBe(true);
@@ -59,6 +68,40 @@ describe("projectState", () => {
 
     expect(normalizedProject?.filesystem.entries["../escape.typ"]).toBeUndefined();
     expect(normalizedProject?.legacyRecovery.project.id).toBe(snapshot.project.id);
+  });
+
+  it("preserves virtual generated files when rebuilding from the legacy snapshot", () => {
+    const snapshot = createDefaultSnapshot();
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const project = getSelectedProjectRepository(storage);
+    expect(project).not.toBeNull();
+    if (!project) return;
+
+    const updatedProject = writeProjectFile(
+      writeProjectFile(
+        project,
+        "main.pdf",
+        new Uint8Array([1, 2, 3]),
+        { kind: "virtual", id: GENERATED_LATEX_PDF_SOURCE_ID }
+      ),
+      DEFAULT_PROJECT_GITIGNORE_PATH,
+      "*.pdf\nbuild/\n",
+      { kind: "virtual", id: DEFAULT_PROJECT_GITIGNORE_PATH }
+    );
+    const rebuilt = createProjectStorageFromSnapshot(snapshot, {
+      ...storage,
+      projects: [updatedProject]
+    });
+    const rebuiltProject = getSelectedProjectRepository(rebuilt);
+    const generatedPdf = rebuiltProject?.filesystem.entries["main.pdf"];
+    const gitignore = rebuiltProject?.filesystem.entries[DEFAULT_PROJECT_GITIGNORE_PATH];
+
+    expect(generatedPdf?.kind).toBe("file");
+    expect(generatedPdf?.source).toEqual({
+      kind: "virtual",
+      id: GENERATED_LATEX_PDF_SOURCE_ID
+    });
+    expect(gitignore?.kind === "file" && gitignore.content).toBe("*.pdf\nbuild/\n");
   });
 
   it("recognizes reserved git paths as non-workspace content", () => {

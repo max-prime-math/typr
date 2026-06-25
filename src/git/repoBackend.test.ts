@@ -100,6 +100,16 @@ describe("repoBackend", () => {
     }
   });
 
+  it("ignores untracked files matched by project .gitignore", async () => {
+    let { backend, project } = await initAndCommitDefault();
+
+    project = writeProjectFile(project, "main.pdf", new Uint8Array([1, 2, 3]));
+
+    const status = await backend.status(project);
+
+    expect(status.ok && status.value.entries).toEqual([]);
+  });
+
   it("blocks unsafe branch switches with local changes", async () => {
     const backend = createRepoBackend(createMemoryGitFileStorage());
     let project = createProject();

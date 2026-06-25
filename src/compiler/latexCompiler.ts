@@ -1,6 +1,9 @@
 import type { FileInput } from "texlyre-busytex";
-import type { TyprProjectRepository } from "../project/projectState";
-import { listProjectFiles } from "../project/projectState";
+import {
+  GENERATED_LATEX_PDF_SOURCE_ID,
+  listProjectFiles,
+  type TyprProjectRepository
+} from "../project/projectState";
 import { BusyTexWorkerRunner, type BusyTexCompileResultWithMetadata } from "./busytexWorkerRunner";
 import type {
   CompileAssetFile,
@@ -193,6 +196,13 @@ function collectLatexFiles(
     const path = normalizeCompilerPath(file.path);
 
     if (!path || path.startsWith(".git/") || path === ".git") {
+      continue;
+    }
+
+    if (
+      file.source.kind === "virtual" &&
+      file.source.id === GENERATED_LATEX_PDF_SOURCE_ID
+    ) {
       continue;
     }
 
@@ -1021,12 +1031,18 @@ function formatLatexError(error: unknown): string {
   const message = error instanceof Error ? error.message : "Unknown LaTeX compilation error.";
 
   if (
-    /busytex_worker\.js|busytex\.wasm|texlive-(?:basic|recommended|extra)\.js|failed to initialize busytex/i.test(
+    /typr-busytex-worker\.js|busytex_worker\.js|busytex_pipeline\.js|busytex\.js|busytex\.wasm|texlive-(?:basic|recommended|extra)\.js|failed to initialize busytex|busytex assets/i.test(
       message
     )
   ) {
+    if (/npm run busytex:assets/i.test(message)) {
+      return message;
+    }
+
     return `${message}\n\nBusyTeX assets are required under public/core/busytex. Run npm run busytex:assets before using LaTeX compilation.`;
   }
 
   return message;
 }
+
+export const formatLatexErrorForTest = formatLatexError;
