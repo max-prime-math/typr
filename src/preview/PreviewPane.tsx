@@ -82,12 +82,11 @@ export function PreviewPane({
     return (
       <div className={`preview-state ${paperView ? "preview-state--paper" : ""}`}>
         <div className="preview-status">
-          <p>
-            <PreviewStatusIcon
-              kind={isCompiling ? "compiling" : "live"}
-              label={isCompiling ? compilerStatus.label : "Preparing preview"}
-            />
-          </p>
+          {isCompiling ? (
+            <p>
+              <PreviewStatusIcon kind="compiling" label={compilerStatus.label} />
+            </p>
+          ) : null}
           <PreviewActivityStatus
             centered
             status={showCompilerActivity ? compilerStatus : null}
@@ -811,7 +810,11 @@ function PdfPreview({
     hasMeasuredViewport,
     paperView,
     theme.palette.editorBackground,
-    theme.palette.editorForeground
+    theme.palette.editorForeground,
+    viewportSize.height,
+    viewportSize.width,
+    zoom.mode,
+    zoom.percent
   ]);
 
   useEffect(() => {

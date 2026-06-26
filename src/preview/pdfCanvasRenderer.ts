@@ -36,6 +36,7 @@ export async function renderPdfArtifactToCanvas(
     const scrollAnchor = capturePdfScrollAnchor(container);
     const renderedPages: HTMLElement[] = [];
     const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
+    const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
     container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
     container.style.setProperty("--pdf-page-foreground", themeColors?.foregroundCss ?? "#000000");
 
@@ -49,25 +50,28 @@ export async function renderPdfArtifactToCanvas(
         cssViewport.height,
         options.zoom
       );
-      const viewport = page.getViewport({
-        scale: getPdfInitialRenderScale(container, cssViewport.width, cssViewport.height)
-      });
+      const viewport = page.getViewport({ scale: geometry.displayScale });
+      const outputScale = getPdfOutputScale();
       const pageElement = document.createElement("div");
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d", {
-        alpha: false
+        alpha: false,
+        willReadFrequently: Boolean(themeColors)
       });
 
       if (!context) {
         throw new Error("Unable to create PDF canvas context.");
       }
 
-      canvas.width = Math.max(1, Math.ceil(viewport.width));
-      canvas.height = Math.max(1, Math.ceil(viewport.height));
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      canvas.width = Math.max(1, Math.ceil(viewport.width * outputScale));
+      canvas.height = Math.max(1, Math.ceil(viewport.height * outputScale));
       canvas.style.display = "block";
       canvas.style.width = `${geometry.displayWidth}px`;
       canvas.style.height = `${geometry.displayHeight}px`;
       canvas.style.imageRendering = "auto";
+      canvas.style.filter = "none";
 
       pageElement.className = "pdf-page canvas";
       pageElement.dataset.pdfNaturalWidth = String(cssViewport.width);
@@ -85,6 +89,7 @@ export async function renderPdfArtifactToCanvas(
         canvas,
         canvasContext: context,
         background: "#ffffff",
+        transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
         viewport
       });
       const abortRender = () => renderTask.cancel();
@@ -100,7 +105,7 @@ export async function renderPdfArtifactToCanvas(
       assertNotAborted(options.signal);
 
       if (themeColors) {
-        rethemePdfCanvas(canvas, context, themeColors);
+        rethemePdfCanvas(canvas, context, themeColors, useDarkRetheme);
       }
     }
 
@@ -160,6 +165,7 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
 interface PdfPageGeometry {
   displayWidth: number;
   displayHeight: number;
+  displayScale: number;
 }
 
 function getPdfPageGeometry(
@@ -175,24 +181,9 @@ function getPdfPageGeometry(
 
   return {
     displayWidth,
-    displayHeight
+    displayHeight,
+    displayScale
   };
-}
-
-function getPdfInitialRenderScale(
-  container: HTMLElement,
-  pageNaturalWidth: number,
-  pageNaturalHeight: number
-): number {
-  const viewport = getPdfViewportSize(container, pageNaturalWidth, pageNaturalHeight);
-  const fitWidthScale = getPdfDisplayScale(
-    viewport,
-    pageNaturalWidth,
-    pageNaturalHeight,
-    { mode: "fit-width", percent: 100 }
-  );
-
-  return getPdfRenderScale(fitWidthScale);
 }
 
 function getPdfViewportSize(
@@ -242,14 +233,13 @@ function getPdfDisplayScale(
   return viewport.width / pageNaturalWidth;
 }
 
-function getPdfRenderScale(displayScale: number): number {
+function getPdfOutputScale(): number {
   if (typeof window === "undefined") {
-    return Math.max(1, displayScale * 2);
+    return 2;
   }
 
   const deviceScale = Math.max(1, window.devicePixelRatio || 1);
-  const outputScale = Math.min(3, Math.max(2, deviceScale));
-  return Math.min(4, Math.max(2, displayScale * outputScale));
+  return Math.min(3, Math.max(2, deviceScale));
 }
 
 async function destroyPdfDocument(document: PDFDocumentProxy): Promise<void> {
@@ -378,21 +368,27 @@ function parsePdfThemeColors(
 function rethemePdfCanvas(
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
-  colors: PdfThemeColors
+  colors: PdfThemeColors,
+  forceLuminance: boolean
 ): void {
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
   const data = image.data;
+  const sourceData = forceLuminance ? new Uint8ClampedArray(data) : null;
 
   for (let index = 0; index < data.length; index += 4) {
     const r = data[index]!;
     const g = data[index + 1]!;
     const b = data[index + 2]!;
 
-    if (!isNeutralPixel(r, g, b)) {
+    if (!forceLuminance && !isNeutralPixel(r, g, b)) {
       continue;
     }
 
-    const ink = 1 - getPerceivedBrightness({ r, g, b });
+    const brightness =
+      forceLuminance && sourceData
+        ? getLightlySmoothedBrightness(sourceData, canvas.width, canvas.height, index)
+        : getPerceivedBrightness({ r, g, b });
+    const ink = 1 - brightness;
     const mapped = mixRgb(colors.background, colors.foreground, ink);
     data[index] = mapped.r;
     data[index + 1] = mapped.g;
@@ -400,6 +396,47 @@ function rethemePdfCanvas(
   }
 
   context.putImageData(image, 0, 0);
+}
+
+function shouldUsePdfDarkRetheme(colors: PdfThemeColors): boolean {
+  return getPerceivedBrightness(colors.background) < getPerceivedBrightness(colors.foreground);
+}
+
+function getLightlySmoothedBrightness(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  index: number
+): number {
+  const center = getPixelBrightness(data, index);
+
+  if (center <= 0.04 || center >= 0.96) {
+    return center;
+  }
+
+  const pixelIndex = index / 4;
+  const x = pixelIndex % width;
+  const y = Math.floor(pixelIndex / width);
+
+  if (x <= 0 || y <= 0 || x >= width - 1 || y >= height - 1) {
+    return center;
+  }
+
+  return (
+    center * 0.82 +
+    getPixelBrightness(data, index - 4) * 0.045 +
+    getPixelBrightness(data, index + 4) * 0.045 +
+    getPixelBrightness(data, index - width * 4) * 0.045 +
+    getPixelBrightness(data, index + width * 4) * 0.045
+  );
+}
+
+function getPixelBrightness(data: Uint8ClampedArray, index: number): number {
+  return getPerceivedBrightness({
+    r: data[index]!,
+    g: data[index + 1]!,
+    b: data[index + 2]!
+  });
 }
 
 function isNeutralPixel(r: number, g: number, b: number): boolean {

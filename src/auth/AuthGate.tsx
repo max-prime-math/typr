@@ -1,6 +1,7 @@
 import {
   type FormEvent,
   type ReactNode,
+  useEffect,
   useMemo,
   useState
 } from "react";
@@ -80,6 +81,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (unlocked) {
+      return;
+    }
+
+    window.dispatchEvent(new CustomEvent("typr:boot-progress", { detail: { progress: 1 } }));
+    window.dispatchEvent(new Event("typr:app-ready"));
+  }, [unlocked]);
 
   if (unlocked) {
     return children;

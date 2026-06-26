@@ -90,6 +90,32 @@
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
+
+      .boot-splash__progress {
+        --boot-splash-progress: 8%;
+        position: relative;
+        width: 148px;
+        height: 3px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(28, 35, 31, 0.14);
+      }
+
+      .boot-splash__progress-bar {
+        width: var(--boot-splash-progress);
+        height: 100%;
+        border-radius: inherit;
+        background: #176f5f;
+        transition: width 220ms ease;
+      }
+
+      :root[data-theme="dark"] .boot-splash__progress {
+        background: rgba(246, 243, 235, 0.18);
+      }
+
+      :root[data-theme="dark"] .boot-splash__progress-bar {
+        background: var(--accent, #67c7b3);
+      }
     </style>
     <script>
       (function () {
@@ -150,6 +176,16 @@
       <div class="boot-splash__stack">
         <img class="boot-splash__logo" src="%BASE_URL%apple-touch-icon.png" alt="" />
         <div class="boot-splash__wordmark">Typr</div>
+        <div
+          class="boot-splash__progress"
+          role="progressbar"
+          aria-label="Loading Typr"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="8"
+        >
+          <div class="boot-splash__progress-bar"></div>
+        </div>
       </div>
     </div>
     <div id="root"></div>

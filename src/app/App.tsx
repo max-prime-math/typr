@@ -271,6 +271,17 @@ const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
 const APP_VERSION = packageJson.version;
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
+const WORKSPACE_OPEN_FOLDERS_STORAGE_KEY = "typr.workspace-open-folders.v1";
+
+type WorkspaceOpenFolderStorage = Record<string, string[]>;
+
+function reportBootProgress(progress: number) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent("typr:boot-progress", { detail: { progress } }));
+}
 
 function isApplePlatform(): boolean {
   if (typeof navigator === "undefined") {
@@ -559,6 +570,68 @@ function readStoredPanelLayout(): StoredPanelLayout | null {
   } catch {
     return null;
   }
+}
+
+function readStoredWorkspaceOpenFolders(): WorkspaceOpenFolderStorage {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const stored = window.localStorage.getItem(WORKSPACE_OPEN_FOLDERS_STORAGE_KEY);
+    if (!stored) {
+      return {};
+    }
+
+    const parsed = JSON.parse(stored);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.entries(parsed).reduce<WorkspaceOpenFolderStorage>((next, [key, value]) => {
+      if (Array.isArray(value)) {
+        next[key] = normalizeWorkspaceOpenFolderPaths(value);
+      }
+
+      return next;
+    }, {});
+  } catch {
+    return {};
+  }
+}
+
+function normalizeWorkspaceOpenFolderPaths(paths: readonly unknown[]): string[] {
+  return Array.from(
+    new Set(
+      paths
+        .filter((path): path is string => typeof path === "string")
+        .map((path) => (path === WORKSPACE_ROOT_PATH ? WORKSPACE_ROOT_PATH : normalizeWorkspacePath(path)))
+        .filter(Boolean)
+    )
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function collectWorkspaceFolderPaths(nodes: WorkspaceTreeNode[]): string[] {
+  const paths: string[] = [];
+
+  for (const node of nodes) {
+    if (node.kind !== "folder") {
+      continue;
+    }
+
+    paths.push(node.path);
+    paths.push(...collectWorkspaceFolderPaths(node.children));
+  }
+
+  return paths;
+}
+
+function arePathListsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((path, index) => path === right[index]);
 }
 
 function clampPreviewRatio(value: number) {
@@ -868,7 +941,8 @@ export function App() {
   const [diagramStrokeWidth, setDiagramStrokeWidth] = useState(2.5);
   const [diagramStartMarker, setDiagramStartMarker] = useState<DiagramEndpoint>("none");
   const [diagramEndMarker, setDiagramEndMarker] = useState<DiagramEndpoint>("none");
-  const [collapsedFileFolders, setCollapsedFileFolders] = useState<Record<string, boolean>>({});
+  const [workspaceOpenFoldersByProject, setWorkspaceOpenFoldersByProject] =
+    useState<WorkspaceOpenFolderStorage>(() => readStoredWorkspaceOpenFolders());
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
   const [isTrashViewOpen, setIsTrashViewOpen] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
@@ -1016,6 +1090,7 @@ export function App() {
     projects: []
   });
   const [isHydrated, setIsHydrated] = useState(false);
+  const [hasHydrationError, setHasHydrationError] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
   const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
     Extract<CompileResult, { ok: true }> | null
@@ -1465,6 +1540,48 @@ export function App() {
     [snapshot.project.trash]
   );
   const visibleWorkspaceTree = isTrashViewOpen ? trashWorkspaceTree : workspaceTree;
+  const workspaceFolderStorageKey = `${selectedProjectRepository?.id ?? snapshot.project.id}:${
+    isTrashViewOpen ? "trash" : "files"
+  }`;
+  const workspaceFolderPaths = useMemo(
+    () => collectWorkspaceFolderPaths(visibleWorkspaceTree),
+    [visibleWorkspaceTree]
+  );
+  const openFileFolders = useMemo(() => {
+    const storedPaths = workspaceOpenFoldersByProject[workspaceFolderStorageKey];
+    return new Set(normalizeWorkspaceOpenFolderPaths(storedPaths ?? [WORKSPACE_ROOT_PATH]));
+  }, [workspaceFolderStorageKey, workspaceOpenFoldersByProject]);
+  const collapsedFileFolders = useMemo(() => {
+    const nextCollapsedFolders: Record<string, boolean> = {
+      [WORKSPACE_ROOT_PATH]: !openFileFolders.has(WORKSPACE_ROOT_PATH)
+    };
+
+    for (const path of workspaceFolderPaths) {
+      nextCollapsedFolders[path] = !openFileFolders.has(path);
+    }
+
+    return nextCollapsedFolders;
+  }, [openFileFolders, workspaceFolderPaths]);
+  const updateWorkspaceOpenFolders = useCallback(
+    (updater: (currentPaths: Set<string>) => Set<string>) => {
+      setWorkspaceOpenFoldersByProject((current) => {
+        const currentPaths = normalizeWorkspaceOpenFolderPaths(
+          current[workspaceFolderStorageKey] ?? [WORKSPACE_ROOT_PATH]
+        );
+        const nextPaths = normalizeWorkspaceOpenFolderPaths(Array.from(updater(new Set(currentPaths))));
+
+        if (arePathListsEqual(currentPaths, nextPaths)) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [workspaceFolderStorageKey]: nextPaths
+        };
+      });
+    },
+    [workspaceFolderStorageKey]
+  );
   const [inspectedWorkspacePath, setInspectedWorkspacePath] = useState<string | null>(null);
   const normalizedSelectedWorkspacePath = selectedWorkspacePath
     ? normalizeWorkspacePath(selectedWorkspacePath)
@@ -2145,76 +2262,91 @@ export function App() {
     let cancelled = false;
 
     async function hydrate() {
-      const [storedSnapshot, storedProjectStorage, storedGitWorkspace, storedGitHubConfig, storedGitCredentials] = await Promise.all([
-        loadSnapshot(),
-        loadProjectStorage(),
-        loadGitWorkspace(),
-        loadGitHubConfig(),
-        loadGitCredentialMap()
-      ]);
-      const storedSnippets = await loadCustomSnippets();
+      try {
+        reportBootProgress(0.34);
+        const [storedSnapshot, storedProjectStorage, storedGitWorkspace, storedGitHubConfig, storedGitCredentials] = await Promise.all([
+          loadSnapshot(),
+          loadProjectStorage(),
+          loadGitWorkspace(),
+          loadGitHubConfig(),
+          loadGitCredentialMap()
+        ]);
+        reportBootProgress(0.58);
+        const storedSnippets = await loadCustomSnippets();
+        reportBootProgress(0.68);
 
-      if (cancelled) {
-        return;
-      }
+        if (cancelled) {
+          return;
+        }
 
-      const nextSnapshot = storedSnapshot
-        ? normalizeSnapshot(storedSnapshot)
-        : createDefaultSnapshot();
-      const nextProjectStorage = normalizeProjectStorageState(
-        storedProjectStorage,
-        nextSnapshot
-      );
-      const selectedProject = getSelectedProjectRepository(nextProjectStorage);
-      const hydratedSnapshot = selectedProject
-        ? {
-            ...nextSnapshot,
-            project: projectRepositoryToLegacyProject(selectedProject, nextSnapshot.project)
+        const nextSnapshot = storedSnapshot
+          ? normalizeSnapshot(storedSnapshot)
+          : createDefaultSnapshot();
+        const nextProjectStorage = normalizeProjectStorageState(
+          storedProjectStorage,
+          nextSnapshot
+        );
+        reportBootProgress(0.76);
+        const selectedProject = getSelectedProjectRepository(nextProjectStorage);
+        const hydratedSnapshot = selectedProject
+          ? {
+              ...nextSnapshot,
+              project: projectRepositoryToLegacyProject(selectedProject, nextSnapshot.project)
+            }
+          : nextSnapshot;
+        const migratedWorkspace = normalizeGitWorkspaceState(
+          storedGitWorkspace ?? {
+            version: 1,
+            selectedProjectId: null,
+            projects: storedGitHubConfig
+              ? [
+                  {
+                    ...createEmptyGitManagedProject({
+                      projectId: hydratedSnapshot.project.id,
+                      projectName: hydratedSnapshot.project.name
+                    }),
+                    owner: storedGitHubConfig.owner,
+                    repo: storedGitHubConfig.repo,
+                    branch: storedGitHubConfig.branch || "main"
+                  }
+                ]
+              : [],
+            selectedProjectIdsByTyprProjectId: {}
+          },
+          {
+            projectId: hydratedSnapshot.project.id,
+            projectName: hydratedSnapshot.project.name
           }
-        : nextSnapshot;
-      const migratedWorkspace = normalizeGitWorkspaceState(
-        storedGitWorkspace ?? {
-          version: 1,
-          selectedProjectId: null,
-          projects: storedGitHubConfig
-            ? [
-                {
-                  ...createEmptyGitManagedProject({
-                    projectId: hydratedSnapshot.project.id,
-                    projectName: hydratedSnapshot.project.name
-                  }),
-                  owner: storedGitHubConfig.owner,
-                  repo: storedGitHubConfig.repo,
-                  branch: storedGitHubConfig.branch || "main"
-                }
-              ]
-            : [],
-          selectedProjectIdsByTyprProjectId: {}
-        },
-        {
-          projectId: hydratedSnapshot.project.id,
-          projectName: hydratedSnapshot.project.name
+        );
+        const migratedCredentials = { ...storedGitCredentials };
+        for (const project of storedGitWorkspace?.projects ?? []) {
+          const legacyToken = (project as Partial<GitManagedProject> & { token?: string }).token?.trim();
+          if (project.id && legacyToken && !migratedCredentials[project.id]) {
+            migratedCredentials[project.id] = legacyToken;
+          }
         }
-      );
-      const migratedCredentials = { ...storedGitCredentials };
-      for (const project of storedGitWorkspace?.projects ?? []) {
-        const legacyToken = (project as Partial<GitManagedProject> & { token?: string }).token?.trim();
-        if (project.id && legacyToken && !migratedCredentials[project.id]) {
-          migratedCredentials[project.id] = legacyToken;
+        if (storedGitHubConfig?.token?.trim()) {
+          const selectedId = migratedWorkspace.selectedProjectId ?? migratedWorkspace.projects[0]?.id;
+          if (selectedId && !migratedCredentials[selectedId]) {
+            migratedCredentials[selectedId] = storedGitHubConfig.token.trim();
+          }
         }
+        setRawSnapshot(hydratedSnapshot);
+        setProjectStorage(nextProjectStorage);
+        setTheme(hydratedSnapshot.preferences.theme);
+        setGitWorkspace(migratedWorkspace);
+        setGitCredentials(migratedCredentials);
+        setCustomSnippets(storedSnippets ?? []);
+        reportBootProgress(0.9);
+      } catch (error) {
+        console.error("Unable to hydrate Typr workspace.", error);
+        if (cancelled) {
+          return;
+        }
+        setHasHydrationError(true);
+        setStorageStatus("error");
+        reportBootProgress(0.9);
       }
-      if (storedGitHubConfig?.token?.trim()) {
-        const selectedId = migratedWorkspace.selectedProjectId ?? migratedWorkspace.projects[0]?.id;
-        if (selectedId && !migratedCredentials[selectedId]) {
-          migratedCredentials[selectedId] = storedGitHubConfig.token.trim();
-        }
-      }
-      setRawSnapshot(hydratedSnapshot);
-      setProjectStorage(nextProjectStorage);
-      setTheme(hydratedSnapshot.preferences.theme);
-      setGitWorkspace(migratedWorkspace);
-      setGitCredentials(migratedCredentials);
-      setCustomSnippets(storedSnippets ?? []);
       setIsHydrated(true);
     }
 
@@ -2543,6 +2675,14 @@ export function App() {
       return;
     }
 
+    window.dispatchEvent(new Event("typr:app-ready"));
+  }, [isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated || hasHydrationError) {
+      return;
+    }
+
     const handle = window.setTimeout(() => {
       setStorageStatus("saving");
       Promise.all([saveSnapshot(snapshot), saveProjectStorage(projectStorage)])
@@ -2551,10 +2691,10 @@ export function App() {
     }, SAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(handle);
-  }, [isHydrated, projectStorage, snapshot]);
+  }, [hasHydrationError, isHydrated, projectStorage, snapshot]);
 
   useEffect(() => {
-    if (!isHydrated) {
+    if (!isHydrated || hasHydrationError) {
       return;
     }
 
@@ -2582,10 +2722,10 @@ export function App() {
     }, SAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(handle);
-  }, [gitCredentials, gitWorkspace, isHydrated, selectedGitProject]);
+  }, [gitCredentials, gitWorkspace, hasHydrationError, isHydrated, selectedGitProject]);
 
   useEffect(() => {
-    if (!isHydrated) {
+    if (!isHydrated || hasHydrationError) {
       return;
     }
 
@@ -2599,7 +2739,7 @@ export function App() {
     }, SAVE_DEBOUNCE_MS);
 
     return () => window.clearTimeout(handle);
-  }, [customSnippets, isHydrated]);
+  }, [customSnippets, hasHydrationError, isHydrated]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2619,6 +2759,17 @@ export function App() {
       String(isSourceToolbarVisible)
     );
   }, [isSourceToolbarVisible]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(
+      WORKSPACE_OPEN_FOLDERS_STORAGE_KEY,
+      JSON.stringify(workspaceOpenFoldersByProject)
+    );
+  }, [workspaceOpenFoldersByProject]);
 
   const saveGeneratedLatexPdfToProject = useCallback(
     ({
@@ -3490,14 +3641,15 @@ export function App() {
       }
 
       workspaceHoverExpandTimerRef.current = window.setTimeout(() => {
-        setCollapsedFileFolders((current) => ({
-          ...current,
-          [path]: false
-        }));
+        updateWorkspaceOpenFolders((currentPaths) => {
+          const nextPaths = new Set(currentPaths);
+          nextPaths.add(path);
+          return nextPaths;
+        });
         workspaceHoverExpandTimerRef.current = null;
       }, MOVE_HOVER_EXPAND_DELAY_MS);
     },
-    [collapsedFileFolders]
+    [collapsedFileFolders, updateWorkspaceOpenFolders]
   );
 
   const handleWorkspaceDropAtRoot = useCallback(() => {
@@ -5132,11 +5284,21 @@ export function App() {
   }, []);
 
   const handleToggleFolder = useCallback((folderId: string) => {
-    setCollapsedFileFolders((current) => ({
-      ...current,
-      [folderId]: !current[folderId]
-    }));
-  }, []);
+    const normalizedFolderId =
+      folderId === WORKSPACE_ROOT_PATH ? WORKSPACE_ROOT_PATH : normalizeWorkspacePath(folderId);
+
+    updateWorkspaceOpenFolders((currentPaths) => {
+      const nextPaths = new Set(currentPaths);
+
+      if (nextPaths.has(normalizedFolderId)) {
+        nextPaths.delete(normalizedFolderId);
+        return nextPaths;
+      }
+
+      nextPaths.add(normalizedFolderId);
+      return nextPaths;
+    });
+  }, [updateWorkspaceOpenFolders]);
 
   const handleNewDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) => createNextDiagramSnapshot(currentSnapshot));
@@ -7088,7 +7250,6 @@ export function App() {
     : "";
   const sidebarPaneCollapsed = !isMobileWorkspace && !showDesktopSidebar;
   const visibleDesktopPaneCount = getVisibleDesktopPaneCount();
-  const canHideDesktopPane = visibleDesktopPaneCount > 1;
   const showDesktopPaneRestoreBar =
     !isMobileWorkspace &&
     (isSidebarCollapsed || (isSourcePaneHidden && isSourceFileEditable) || isPreviewCollapsed);
@@ -7611,25 +7772,6 @@ export function App() {
             </button>
           </MenuDropdown>
         </nav>
-
-        <div className="menubar__cluster menubar__cluster--right">
-          <span
-            aria-label={isOnline ? "Online" : "Offline"}
-            className={`status-pill status-pill--icon ${
-              isOnline ? "status-pill--online" : "status-pill--offline"
-            }`}
-            title={isOnline ? "Online" : "Offline"}
-          >
-            <span
-              aria-hidden="true"
-              className={`status-pill__icon ${
-                isOnline
-                  ? "status-pill__icon--online"
-                  : "status-pill__icon--offline"
-              }`}
-            />
-          </span>
-        </div>
       </header>
 
       <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""}`}>
@@ -7860,18 +8002,6 @@ export function App() {
                       type="button"
                     >
                       Compile
-                    </button>
-                  ) : null}
-                  {!isMobileWorkspace ? (
-                    <button
-                      aria-label="Hide files pane"
-                      className="pane__button pane__button--compact pane__icon-button"
-                      disabled={!canHideDesktopPane}
-                      onClick={() => hideWorkspacePane("sidebar")}
-                      title="Hide files pane"
-                      type="button"
-                    >
-                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--pane-hide" />
                     </button>
                   ) : null}
                 </div>
@@ -9080,18 +9210,6 @@ export function App() {
                   }`}
                 />
               </button>
-              {!isMobileWorkspace ? (
-                <button
-                  aria-label="Hide source pane"
-                  className="pane__button pane__button--compact pane__icon-button"
-                  disabled={!canHideDesktopPane}
-                  onClick={() => hideWorkspacePane("source")}
-                  title="Hide source pane"
-                  type="button"
-                >
-                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--pane-hide" />
-                </button>
-              ) : null}
             </div>
           </div>
           {isSourceToolbarVisible && isSourceFileEditable ? (
@@ -9584,12 +9702,11 @@ export function App() {
               />
             </div>
             <div className="pane__header-actions">
-              <span className="pane__meta pane__meta--status">
-                <PreviewStatusIcon
-                  kind={isCompiling ? "compiling" : "live"}
-                  label={isCompiling ? compilerStatus.label : "Live"}
-                />
-              </span>
+              {isCompiling ? (
+                <span className="pane__meta pane__meta--status">
+                  <PreviewStatusIcon kind="compiling" label={compilerStatus.label} />
+                </span>
+              ) : null}
               <button
                 aria-pressed={isPaperView}
                 className="pane__button pane__button--quiet"
@@ -9598,18 +9715,6 @@ export function App() {
               >
                 Paper
               </button>
-              {!isMobileWorkspace ? (
-                <button
-                  aria-label="Hide preview pane"
-                  className="pane__button pane__button--compact pane__icon-button"
-                  disabled={!canHideDesktopPane}
-                  onClick={() => hideWorkspacePane("preview")}
-                  title="Hide preview pane"
-                  type="button"
-                >
-                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--pane-hide" />
-                </button>
-              ) : null}
             </div>
           </div>
           <PreviewPane

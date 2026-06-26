@@ -12,6 +12,31 @@ import "./styles/global.css";
 
 ensureTypstQueueMicrotask();
 
+const APP_READY_EVENT = "typr:app-ready";
+const BOOT_PROGRESS_EVENT = "typr:boot-progress";
+let bootProgress = 0.08;
+
+function updateBootProgress(progress: number) {
+  const splashProgress = document.querySelector<HTMLElement>(".boot-splash__progress");
+  if (!splashProgress) {
+    return;
+  }
+
+  bootProgress = Math.max(bootProgress, Math.min(1, Math.max(0, progress)));
+  splashProgress.style.setProperty("--boot-splash-progress", `${Math.round(bootProgress * 100)}%`);
+  splashProgress.setAttribute("aria-valuenow", String(Math.round(bootProgress * 100)));
+}
+
+window.addEventListener(BOOT_PROGRESS_EVENT, (event) => {
+  const progress =
+    event instanceof CustomEvent && typeof event.detail?.progress === "number"
+      ? event.detail.progress
+      : bootProgress;
+  updateBootProgress(progress);
+});
+
+updateBootProgress(0.18);
+
 if (import.meta.env.PROD) {
   registerSW({
     immediate: true,
@@ -47,8 +72,11 @@ function dismissBootSplash() {
   }, 220);
 }
 
-window.requestAnimationFrame(() => {
-  window.requestAnimationFrame(() => {
-    dismissBootSplash();
-  });
-});
+window.addEventListener(APP_READY_EVENT, () => {
+  updateBootProgress(1);
+  window.setTimeout(() => {
+    window.requestAnimationFrame(() => {
+      dismissBootSplash();
+    });
+  }, 160);
+}, { once: true });

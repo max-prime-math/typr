@@ -5448,12 +5448,18 @@ button {
   display: none !important;
 }
 
-.preview-document--canvas canvas,
-.preview-document--pdf-canvas canvas {
+.preview-document--canvas canvas {
   display: block;
   width: 100%;
   height: auto;
   image-rendering: crisp-edges;
+}
+
+.preview-document--pdf-canvas canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: auto;
 }
 
 .preview-document--pdf {
