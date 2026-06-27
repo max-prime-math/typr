@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ChangeEvent,
   type Dispatch,
@@ -65,6 +66,7 @@ import {
   updateKeybindingsPreference,
   updateLiveCompilationPreference,
   updateRelativeLineNumbersPreference,
+  updateSidebarFontSizePreference,
   updateThemePreference,
   updateVimPreference,
   type AppSnapshot,
@@ -77,6 +79,7 @@ import {
   formatKeybinding,
   keybindingFromKeyboardEvent,
   matchesKeybinding,
+  type KeybindingMap,
   type KeybindingCommandId
 } from "./keybindings";
 import { InlinePaneExpandControls } from "./InlinePaneExpandControls";
@@ -266,6 +269,12 @@ const SIDEBAR_MIN_WIDTH = 240;
 const PREVIEW_MIN_WIDTH = 320;
 const PANEL_HANDLE_WIDTH = 14;
 const EDITOR_MIN_WIDTH = 420;
+const ZEN_DEFAULT_WIDTH = 760;
+const ZEN_DEFAULT_HEIGHT = 640;
+const ZEN_DEFAULT_HEIGHT_RATIO = 0.8;
+const ZEN_MIN_WIDTH = 420;
+const ZEN_MAX_WIDTH = 980;
+const ZEN_MIN_HEIGHT = 320;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const SNIPPET_TEMPLATE_FILENAME = "typr-snippets.json";
 const APP_VERSION = packageJson.version;
@@ -376,7 +385,18 @@ type WorkspaceContextMenuState =
 
 const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
 type MenuLabel = (typeof MENU_ITEMS)[number];
-type WorkspaceMode = "split" | "sidebar" | "editor" | "preview";
+type WorkspaceMode = "split" | "sidebar" | "editor" | "preview" | "zen";
+type ZenResizeEdge = "zen-left" | "zen-right" | "zen-top" | "zen-bottom";
+type ZoomPaneTarget = "sidebar" | "source" | "preview";
+type PreviewScrollAction =
+  | "left"
+  | "down"
+  | "up"
+  | "right"
+  | "next-page"
+  | "previous-page"
+  | "top"
+  | "bottom";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
 type SidebarTool =
   | "files"
@@ -486,6 +506,8 @@ interface StoredPanelLayout {
   isPreviewCollapsed?: boolean;
   sidebarWidth?: number;
   previewRatio?: number;
+  zenWidth?: number;
+  zenHeight?: number;
 }
 
 interface OutlineEntry {
@@ -638,6 +660,41 @@ function clampPreviewRatio(value: number) {
   return Math.min(1, Math.max(0, value));
 }
 
+function clampZenWidth(value: number, workspaceWidth = Number.POSITIVE_INFINITY) {
+  const maxViewportWidth = Number.isFinite(workspaceWidth)
+    ? Math.max(280, workspaceWidth - PANEL_HANDLE_WIDTH * 2)
+    : ZEN_MAX_WIDTH;
+  const maxWidth = Math.min(ZEN_MAX_WIDTH, maxViewportWidth);
+  const minWidth = Math.min(ZEN_MIN_WIDTH, maxWidth);
+
+  return clampPanelWidth(value, minWidth, maxWidth);
+}
+
+function getCurrentViewportHeight() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  return window.visualViewport?.height ?? window.innerHeight;
+}
+
+function clampZenHeight(value: number, viewportHeight = getCurrentViewportHeight()) {
+  const maxViewportHeight =
+    Number.isFinite(viewportHeight) && viewportHeight > 0
+      ? Math.max(240, viewportHeight - PANEL_HANDLE_WIDTH * 2)
+      : Number.POSITIVE_INFINITY;
+  const minHeight = Math.min(ZEN_MIN_HEIGHT, maxViewportHeight);
+
+  return clampPanelWidth(value, minHeight, maxViewportHeight);
+}
+
+function getDefaultZenHeight(viewportHeight = getCurrentViewportHeight()) {
+  const defaultHeight =
+    viewportHeight > 0 ? viewportHeight * ZEN_DEFAULT_HEIGHT_RATIO : ZEN_DEFAULT_HEIGHT;
+
+  return clampZenHeight(defaultHeight, viewportHeight);
+}
+
 function getViewportBalancedPreviewRatio() {
   return 0.5;
 }
@@ -723,6 +780,105 @@ function isTypingTarget(target: EventTarget | null) {
 
   const tag = target.tagName.toLowerCase();
   return tag === "input" || tag === "textarea" || tag === "select";
+}
+
+function resolveZoomPaneTarget(target: EventTarget | null): ZoomPaneTarget | null {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+
+  const pane = target.closest<HTMLElement>("[data-zoom-pane]");
+  const zoomPane = pane?.dataset.zoomPane;
+  return zoomPane === "sidebar" || zoomPane === "source" || zoomPane === "preview"
+    ? zoomPane
+    : null;
+}
+
+function getKeyboardZoomDirection(
+  event: KeyboardEvent,
+  keybindings: KeybindingMap,
+  apple: boolean
+): -1 | 1 | null {
+  if (matchesKeybinding(event, keybindings.increaseActivePaneZoom, apple)) {
+    return 1;
+  }
+
+  if (matchesKeybinding(event, keybindings.decreaseActivePaneZoom, apple)) {
+    return -1;
+  }
+
+  return null;
+}
+
+function getVimPaneFocusTarget(
+  event: KeyboardEvent,
+  keybindings: KeybindingMap,
+  apple: boolean
+): "source" | "preview" | null {
+  if (matchesKeybinding(event, keybindings.focusSourcePane, apple)) {
+    return "source";
+  }
+
+  if (matchesKeybinding(event, keybindings.focusPreviewPane, apple)) {
+    return "preview";
+  }
+
+  return null;
+}
+
+function getPreviewScrollContainer(previewPane: HTMLElement | null): HTMLElement | null {
+  return (
+    previewPane?.querySelector<HTMLElement>(".preview-document") ??
+    previewPane?.querySelector<HTMLElement>(".preview-file-preview") ??
+    null
+  );
+}
+
+function getPreviewPageTops(scroller: HTMLElement): number[] {
+  const scrollerRect = scroller.getBoundingClientRect();
+  const pages = Array.from(
+    scroller.querySelectorAll<HTMLElement>(".typst-page.canvas, .pdf-page.canvas")
+  );
+
+  return pages
+    .map((page) => scroller.scrollTop + page.getBoundingClientRect().top - scrollerRect.top)
+    .filter((top) => Number.isFinite(top))
+    .sort((left, right) => left - right);
+}
+
+function scrollPreviewToAdjacentPage(scroller: HTMLElement, direction: -1 | 1): boolean {
+  const pageTops = getPreviewPageTops(scroller);
+  if (pageTops.length === 0) {
+    return false;
+  }
+
+  const currentTop = scroller.scrollTop;
+  const threshold = 2;
+  const targetTop = direction > 0
+    ? pageTops.find((top) => top > currentTop + threshold)
+    : findPreviousPreviewPageTop(pageTops, currentTop - threshold);
+
+  if (targetTop === undefined) {
+    return true;
+  }
+
+  scroller.scrollTo({ top: Math.max(0, targetTop), behavior: "auto" });
+  return true;
+}
+
+function findPreviousPreviewPageTop(pageTops: number[], beforeTop: number): number | undefined {
+  for (let index = pageTops.length - 1; index >= 0; index -= 1) {
+    const top = pageTops[index];
+    if (top !== undefined && top < beforeTop) {
+      return top;
+    }
+  }
+
+  return undefined;
+}
+
+function getKeybindingSequenceParts(binding: string): string[] {
+  return binding.trim().split(/\s+/).filter(Boolean);
 }
 
 function clampTooltipPosition(x: number, y: number) {
@@ -850,20 +1006,29 @@ export function App() {
   const menuStripRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
+  const previewPaneRef = useRef<HTMLElement | null>(null);
   const shouldFocusEditorAfterVimToggleRef = useRef(false);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
   const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
   const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const filesSectionRef = useRef<HTMLElement | null>(null);
+  const lastZoomPaneTargetRef = useRef<ZoomPaneTarget>("source");
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
   const compileTimerRef = useRef<number | null>(null);
+  const previewPendingGTimerRef = useRef<number | null>(null);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   const panelResizeRef = useRef<{
-    edge: "sidebar" | "preview";
+    edge: "sidebar" | "preview" | ZenResizeEdge;
     startX: number;
+    startY: number;
     startWidth: number;
+    startHeight: number;
+  } | null>(null);
+  const preZenLayoutRef = useRef<{
+    workspaceMode: Exclude<WorkspaceMode, "zen">;
+    isSourcePaneHidden: boolean;
   } | null>(null);
   const compileRequestRef = useRef(0);
   const pendingSourceRef = useRef("");
@@ -1014,7 +1179,22 @@ export function App() {
         ? clampPreviewRatio(storedPanelLayout.previewRatio)
         : getViewportBalancedPreviewRatio()
   );
+  const [zenWidth, setZenWidth] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      typeof storedPanelLayout.zenWidth === "number"
+        ? clampZenWidth(storedPanelLayout.zenWidth)
+        : ZEN_DEFAULT_WIDTH
+  );
+  const [zenHeight, setZenHeight] = useState(
+    () =>
+      storedPanelLayout?.version === PANEL_LAYOUT_VERSION &&
+      typeof storedPanelLayout.zenHeight === "number"
+        ? clampZenHeight(storedPanelLayout.zenHeight)
+        : getDefaultZenHeight()
+  );
   const [viewportWidth, setViewportWidth] = useState(getCurrentViewportWidth);
+  const [viewportHeight, setViewportHeight] = useState(getCurrentViewportHeight);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>("editor");
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
@@ -1213,6 +1393,30 @@ export function App() {
   const setEditorFontSize = useCallback((editorFontSize: number) => {
     setSnapshot((currentSnapshot) =>
       updateEditorFontSizePreference(currentSnapshot, editorFontSize)
+    );
+  }, []);
+
+  const adjustZoomPaneTarget = useCallback((pane: ZoomPaneTarget, direction: -1 | 1) => {
+    if (pane === "preview") {
+      setPreviewZoom((currentZoom) => nextZoomStep(currentZoom, direction));
+      return;
+    }
+
+    if (pane === "sidebar") {
+      setSnapshot((currentSnapshot) =>
+        updateSidebarFontSizePreference(
+          currentSnapshot,
+          currentSnapshot.preferences.sidebarFontSize + direction
+        )
+      );
+      return;
+    }
+
+    setSnapshot((currentSnapshot) =>
+      updateEditorFontSizePreference(
+        currentSnapshot,
+        currentSnapshot.preferences.editorFontSize + direction
+      )
     );
   }, []);
 
@@ -2207,17 +2411,18 @@ export function App() {
       return;
     }
 
-    const updateViewportWidth = () => {
+    const updateViewportSize = () => {
       setViewportWidth(getCurrentViewportWidth());
+      setViewportHeight(getCurrentViewportHeight());
     };
 
-    updateViewportWidth();
-    window.addEventListener("resize", updateViewportWidth);
-    window.visualViewport?.addEventListener("resize", updateViewportWidth);
+    updateViewportSize();
+    window.addEventListener("resize", updateViewportSize);
+    window.visualViewport?.addEventListener("resize", updateViewportSize);
 
     return () => {
-      window.removeEventListener("resize", updateViewportWidth);
-      window.visualViewport?.removeEventListener("resize", updateViewportWidth);
+      window.removeEventListener("resize", updateViewportSize);
+      window.visualViewport?.removeEventListener("resize", updateViewportSize);
     };
   }, []);
 
@@ -2485,10 +2690,20 @@ export function App() {
         isSourcePaneHidden,
         isPreviewCollapsed,
         sidebarWidth,
-        previewRatio
+        previewRatio,
+        zenWidth,
+        zenHeight
       })
     );
-  }, [isPreviewCollapsed, isSidebarCollapsed, isSourcePaneHidden, previewRatio, sidebarWidth]);
+  }, [
+    isPreviewCollapsed,
+    isSidebarCollapsed,
+    isSourcePaneHidden,
+    previewRatio,
+    sidebarWidth,
+    zenHeight,
+    zenWidth
+  ]);
 
   const runAppKeybindingCommand = useCallback(
     (commandId: KeybindingCommandId): boolean => {
@@ -2502,15 +2717,21 @@ export function App() {
         case "openSearch":
           setActiveSidebarTool("search");
           setIsSidebarCollapsed(false);
-          if (workspaceMode === "editor" || workspaceMode === "preview") {
+          if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
             setWorkspaceMode("split");
           }
           return true;
         case "toggleSidebar":
           handlePanelToggle("sidebar");
           return true;
+        case "toggleSource":
+          handlePanelToggle("source");
+          return true;
         case "togglePreview":
           handlePanelToggle("preview");
+          return true;
+        case "toggleZen":
+          toggleZenMode();
           return true;
         case "resetPanels":
           resetPanelWidths();
@@ -2557,11 +2778,212 @@ export function App() {
     },
     [
       handleVimToggle,
+      isPreviewCollapsed,
+      isSidebarCollapsed,
+      isSourceFileEditable,
+      isSourcePaneHidden,
       setEditorFontSize,
       snapshot.preferences.editorFontSize,
+      viewportWidth,
       workspaceMode
     ]
   );
+
+  const handleGlobalZoomWheel = useCallback(
+    (event: WheelEvent) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.deltaY === 0) {
+        return;
+      }
+
+      const zoomPaneTarget = resolveZoomPaneTarget(event.target);
+      if (!zoomPaneTarget) {
+        return;
+      }
+
+      event.preventDefault();
+      lastZoomPaneTargetRef.current = zoomPaneTarget;
+      adjustZoomPaneTarget(zoomPaneTarget, event.deltaY < 0 ? 1 : -1);
+    },
+    [adjustZoomPaneTarget]
+  );
+
+  const focusSourcePane = useCallback(() => {
+    if (isMobileWorkspaceViewport(viewportWidth)) {
+      setMobileWorkspaceTab("editor");
+    } else if (workspaceMode !== "zen") {
+      setWorkspaceMode("split");
+      setIsSourcePaneHidden(false);
+    }
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        editorRef.current?.focus();
+      });
+    });
+  }, [viewportWidth, workspaceMode]);
+
+  const focusPreviewPane = useCallback(() => {
+    if (isMobileWorkspaceViewport(viewportWidth)) {
+      setMobileWorkspaceTab("preview");
+    } else {
+      if (workspaceMode === "zen") {
+        exitZenMode();
+      } else if (workspaceMode !== "split") {
+        setWorkspaceMode("split");
+      }
+      setIsPreviewCollapsed(false);
+    }
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        previewPaneRef.current?.focus({ preventScroll: true });
+      });
+    });
+  }, [viewportWidth, workspaceMode]);
+
+  const clearPreviewPendingG = useCallback(() => {
+    if (previewPendingGTimerRef.current !== null) {
+      window.clearTimeout(previewPendingGTimerRef.current);
+      previewPendingGTimerRef.current = null;
+    }
+  }, []);
+
+  const scrollPreviewPane = useCallback(
+    (action: PreviewScrollAction) => {
+      const scroller = getPreviewScrollContainer(previewPaneRef.current);
+      if (!scroller) {
+        return;
+      }
+
+      const lineDelta = Math.max(48, Math.round(scroller.clientHeight * 0.08));
+      const horizontalDelta = Math.max(48, Math.round(scroller.clientWidth * 0.08));
+      const pageDelta = Math.max(120, Math.round(scroller.clientHeight * 0.88));
+
+      if (action === "top") {
+        scroller.scrollTo({ top: 0, behavior: "auto" });
+        return;
+      }
+
+      if (action === "bottom") {
+        scroller.scrollTo({ top: scroller.scrollHeight, behavior: "auto" });
+        return;
+      }
+
+      if (action === "next-page" && scrollPreviewToAdjacentPage(scroller, 1)) {
+        return;
+      }
+
+      if (action === "previous-page" && scrollPreviewToAdjacentPage(scroller, -1)) {
+        return;
+      }
+
+      const top =
+        action === "down"
+          ? lineDelta
+          : action === "up"
+            ? -lineDelta
+            : action === "next-page"
+              ? pageDelta
+              : action === "previous-page"
+                ? -pageDelta
+                : 0;
+      const left =
+        action === "right"
+          ? horizontalDelta
+          : action === "left"
+            ? -horizontalDelta
+            : 0;
+
+      scroller.scrollBy({ left, top, behavior: "auto" });
+    },
+    []
+  );
+
+  const handlePreviewPaneKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (
+        !snapshot.preferences.vimMode ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        isTypingTarget(event.target) ||
+        (
+          event.target instanceof HTMLElement &&
+          Boolean(event.target.closest("button, a, input, textarea, select"))
+        )
+      ) {
+        return;
+      }
+
+      const nativeEvent = event.nativeEvent;
+      const previewKeybindings = snapshot.preferences.keybindings;
+      const goTopParts = getKeybindingSequenceParts(previewKeybindings.previewGoTop);
+      const pendingTopSequence = previewPendingGTimerRef.current !== null;
+
+      if (pendingTopSequence) {
+        clearPreviewPendingG();
+
+        if (
+          goTopParts.length > 1 &&
+          goTopParts[1] &&
+          matchesKeybinding(nativeEvent, goTopParts[1], isAppleShortcutPlatform)
+        ) {
+          event.preventDefault();
+          scrollPreviewPane("top");
+          return;
+        }
+      }
+
+      if (
+        goTopParts.length === 1 &&
+        goTopParts[0] &&
+        matchesKeybinding(nativeEvent, goTopParts[0], isAppleShortcutPlatform)
+      ) {
+        event.preventDefault();
+        scrollPreviewPane("top");
+        return;
+      }
+
+      if (
+        goTopParts.length > 1 &&
+        goTopParts[0] &&
+        matchesKeybinding(nativeEvent, goTopParts[0], isAppleShortcutPlatform)
+      ) {
+        event.preventDefault();
+        previewPendingGTimerRef.current = window.setTimeout(() => {
+          previewPendingGTimerRef.current = null;
+        }, 700);
+        return;
+      }
+
+      const scrollBindings: Array<[KeybindingCommandId, PreviewScrollAction]> = [
+        ["previewScrollLeft", "left"],
+        ["previewScrollDown", "down"],
+        ["previewScrollUp", "up"],
+        ["previewScrollRight", "right"],
+        ["previewNextPage", "next-page"],
+        ["previewPreviousPage", "previous-page"],
+        ["previewGoBottom", "bottom"]
+      ];
+
+      for (const [commandId, action] of scrollBindings) {
+        if (matchesKeybinding(nativeEvent, previewKeybindings[commandId], isAppleShortcutPlatform)) {
+          event.preventDefault();
+          scrollPreviewPane(action);
+          return;
+        }
+      }
+    },
+    [
+      clearPreviewPendingG,
+      isAppleShortcutPlatform,
+      scrollPreviewPane,
+      snapshot.preferences.keybindings,
+      snapshot.preferences.vimMode
+    ]
+  );
+
+  useEffect(() => clearPreviewPendingG, [clearPreviewPendingG]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2569,11 +2991,56 @@ export function App() {
     }
 
     function handlePointerDown(event: MouseEvent) {
+      const zoomPaneTarget = resolveZoomPaneTarget(event.target);
+      if (zoomPaneTarget) {
+        lastZoomPaneTargetRef.current = zoomPaneTarget;
+      }
+
       if (!menuStripRef.current?.contains(event.target as Node)) {
         cancelPendingMenuClose();
         cancelPendingMenuOpen();
         setActiveMenu(null);
       }
+    }
+
+    function handleVimShortcutCapture(event: KeyboardEvent) {
+      if (event.defaultPrevented || recordingKeybindingId || isTypingTarget(event.target)) {
+        return;
+      }
+
+      if (
+        matchesKeybinding(
+          event,
+          snapshot.preferences.keybindings.toggleVim,
+          isAppleShortcutPlatform
+        )
+      ) {
+        event.preventDefault();
+        handleVimToggle();
+        return;
+      }
+
+      if (!snapshot.preferences.vimMode) {
+        return;
+      }
+
+      const paneFocusTarget = getVimPaneFocusTarget(
+        event,
+        snapshot.preferences.keybindings,
+        isAppleShortcutPlatform
+      );
+      if (!paneFocusTarget) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (paneFocusTarget === "source") {
+        focusSourcePane();
+        return;
+      }
+
+      focusPreviewPane();
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -2587,6 +3054,17 @@ export function App() {
         return;
       }
 
+      const keyboardZoomDirection = getKeyboardZoomDirection(
+        event,
+        snapshot.preferences.keybindings,
+        isAppleShortcutPlatform
+      );
+      if (keyboardZoomDirection !== null) {
+        event.preventDefault();
+        adjustZoomPaneTarget(lastZoomPaneTargetRef.current, keyboardZoomDirection);
+        return;
+      }
+
       if (event.key === "Escape") {
         cancelPendingMenuClose();
         cancelPendingMenuOpen();
@@ -2594,7 +3072,11 @@ export function App() {
         setIsSettingsOpen(false);
         setDiagramPaneMode("sidebar");
         setGraphPaneMode("sidebar");
-        setWorkspaceMode("split");
+        if (workspaceMode === "zen") {
+          exitZenMode();
+        } else {
+          setWorkspaceMode("split");
+        }
         return;
       }
 
@@ -2626,23 +3108,34 @@ export function App() {
     }
 
     window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("keydown", handleVimShortcutCapture, true);
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("wheel", handleGlobalZoomWheel, { passive: false });
     window.addEventListener("online", updateOnlineStatus);
     window.addEventListener("offline", updateOnlineStatus);
 
     return () => {
       window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("keydown", handleVimShortcutCapture, true);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("wheel", handleGlobalZoomWheel);
       window.removeEventListener("online", updateOnlineStatus);
       window.removeEventListener("offline", updateOnlineStatus);
     };
   }, [
+    adjustZoomPaneTarget,
     cancelPendingMenuClose,
     cancelPendingMenuOpen,
+    focusPreviewPane,
+    focusSourcePane,
+    handleVimToggle,
+    handleGlobalZoomWheel,
     isAppleShortcutPlatform,
     recordingKeybindingId,
     runAppKeybindingCommand,
-      snapshot.preferences.keybindings
+    snapshot.preferences.vimMode,
+    snapshot.preferences.keybindings,
+    workspaceMode
   ]);
 
   useEffect(() => {
@@ -5578,7 +6071,7 @@ export function App() {
     setActiveSidebarTool("search");
     setIsSidebarCollapsed(false);
 
-    if (workspaceMode === "editor" || workspaceMode === "preview") {
+    if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
       setWorkspaceMode("split");
     }
   }, [workspaceMode]);
@@ -6659,7 +7152,7 @@ export function App() {
     setIsPreviewCollapsed(true);
   }
 
-  function handlePanelToggle(panel: "sidebar" | "preview") {
+  function handlePanelToggle(panel: "sidebar" | "source" | "preview") {
     if (panel === "sidebar") {
       if (isSidebarCollapsed) {
         restoreWorkspacePane("sidebar");
@@ -6670,6 +7163,27 @@ export function App() {
       return;
     }
 
+    if (panel === "source") {
+      if (workspaceMode === "zen") {
+        exitZenMode();
+        return;
+      }
+
+      if (isSourcePaneHidden) {
+        restoreWorkspacePane("source");
+      } else {
+        hideWorkspacePane("source");
+      }
+
+      return;
+    }
+
+    if (workspaceMode === "zen") {
+      exitZenMode();
+      setIsPreviewCollapsed(false);
+      return;
+    }
+
     if (isPreviewCollapsed) {
       restoreWorkspacePane("preview");
     } else {
@@ -6677,15 +7191,50 @@ export function App() {
     }
   }
 
+  function toggleZenMode() {
+    if (isMobileWorkspaceViewport(viewportWidth)) {
+      setFullscreenMode("editor");
+      return;
+    }
+
+    if (workspaceMode === "zen") {
+      exitZenMode();
+      return;
+    }
+
+    preZenLayoutRef.current = {
+      workspaceMode,
+      isSourcePaneHidden
+    };
+    setActiveMenu(null);
+    setIsSourcePaneHidden(false);
+    setWorkspaceMode("zen");
+  }
+
+  function exitZenMode() {
+    const previousLayout = preZenLayoutRef.current;
+    preZenLayoutRef.current = null;
+    setWorkspaceMode(previousLayout?.workspaceMode ?? "split");
+    if (previousLayout) {
+      setIsSourcePaneHidden(previousLayout.isSourcePaneHidden);
+    }
+  }
+
   function resetPanelWidths() {
     setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
     setPreviewRatio(0.5);
+    setZenWidth(ZEN_DEFAULT_WIDTH);
+    setZenHeight(getDefaultZenHeight(viewportHeight));
   }
 
   function setFullscreenMode(mode: WorkspaceMode) {
+    if (mode !== "zen") {
+      preZenLayoutRef.current = null;
+    }
+
     if (mode === "sidebar") {
       setIsSidebarCollapsed(false);
-    } else if (mode === "editor") {
+    } else if (mode === "editor" || mode === "zen") {
       setIsSourcePaneHidden(false);
     } else if (mode === "preview") {
       setIsPreviewCollapsed(false);
@@ -6793,7 +7342,7 @@ export function App() {
       return SIDEBAR_TOOLS[nextIndex].id;
     });
 
-    if (workspaceMode === "editor" || workspaceMode === "preview") {
+    if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
       setWorkspaceMode("split");
     }
   }
@@ -6809,6 +7358,10 @@ export function App() {
 
     if (mode === "editor") {
       return "Editor only";
+    }
+
+    if (mode === "zen") {
+      return "Zen";
     }
 
     return "Preview only";
@@ -6875,7 +7428,9 @@ export function App() {
       panelResizeRef.current = {
         edge,
         startX: event.clientX,
-        startWidth
+        startY: event.clientY,
+        startWidth,
+        startHeight: 0
       };
 
       const handleMove = (moveEvent: PointerEvent) => {
@@ -6950,6 +7505,78 @@ export function App() {
       viewportWidth,
       workspaceMode
     ]
+  );
+
+  const beginZenResize = useCallback(
+    (edge: ZenResizeEdge) => (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      if (workspaceMode !== "zen") {
+        return;
+      }
+
+      const workspace = workspaceRef.current;
+      if (!workspace || isMobileWorkspaceViewport(viewportWidth)) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const workspaceWidth = workspace.getBoundingClientRect().width;
+      const effectiveViewportHeight = viewportHeight > 0 ? viewportHeight : getCurrentViewportHeight();
+      const isHorizontalResize = edge === "zen-left" || edge === "zen-right";
+      panelResizeRef.current = {
+        edge,
+        startX: event.clientX,
+        startY: event.clientY,
+        startWidth: clampZenWidth(zenWidth, workspaceWidth),
+        startHeight: clampZenHeight(zenHeight, effectiveViewportHeight)
+      };
+
+      const handleMove = (moveEvent: PointerEvent) => {
+        const resizeState = panelResizeRef.current;
+        if (!resizeState || resizeState.edge !== edge) {
+          return;
+        }
+
+        if (isHorizontalResize) {
+          const delta = moveEvent.clientX - resizeState.startX;
+          const nextWidth =
+            edge === "zen-left"
+              ? resizeState.startWidth - delta * 2
+              : resizeState.startWidth + delta * 2;
+          setZenWidth(clampZenWidth(nextWidth, workspaceWidth));
+          return;
+        }
+
+        const delta = moveEvent.clientY - resizeState.startY;
+        const nextHeight =
+          edge === "zen-top"
+            ? resizeState.startHeight - delta * 2
+            : resizeState.startHeight + delta * 2;
+        setZenHeight(clampZenHeight(nextHeight, effectiveViewportHeight));
+      };
+
+      const stopResize = () => {
+        window.removeEventListener("pointermove", handleMove);
+        window.removeEventListener("pointerup", stopResize);
+        window.removeEventListener("pointercancel", stopResize);
+        panelResizeRef.current = null;
+        panelResizeCleanupRef.current = null;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      panelResizeCleanupRef.current = stopResize;
+      document.body.style.cursor = isHorizontalResize ? "col-resize" : "row-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", handleMove);
+      window.addEventListener("pointerup", stopResize);
+      window.addEventListener("pointercancel", stopResize);
+    },
+    [viewportHeight, viewportWidth, workspaceMode, zenHeight, zenWidth]
   );
 
   const canPullRemote =
@@ -7148,7 +7775,14 @@ export function App() {
   const effectiveWorkspaceWidth =
     workspaceWidth > 0 ? workspaceWidth : viewportWidth;
   const isMobileWorkspace = isMobileWorkspaceViewport(viewportWidth);
-  const showDesktopSidebar = !isMobileWorkspace && !isSidebarCollapsed;
+  const isZenMode = !isMobileWorkspace && workspaceMode === "zen";
+  const zenPaneWidth = isZenMode
+    ? clampZenWidth(zenWidth, effectiveWorkspaceWidth)
+    : 0;
+  const zenPaneHeight = isZenMode
+    ? clampZenHeight(zenHeight, viewportHeight)
+    : 0;
+  const showDesktopSidebar = !isMobileWorkspace && !isZenMode && !isSidebarCollapsed;
   const isDiagramInlineExpanded =
     showDesktopSidebar &&
     workspaceMode === "split" &&
@@ -7171,9 +7805,9 @@ export function App() {
   const isSidebarInlineExpanded = isDiagramInlineExpanded || isGraphInlineExpanded || isGitMergeInlineExpanded;
   const showSourcePane =
     !isSidebarInlineExpanded &&
-    isSourceFileEditable &&
-    (isMobileWorkspace || !isSourcePaneHidden);
+    (isZenMode || (isSourceFileEditable && (isMobileWorkspace || !isSourcePaneHidden)));
   const showPreviewPane =
+    !isZenMode &&
     !isDiagramPreviewExpanded &&
     !isGraphPreviewExpanded &&
     !isGitMergePreviewExpanded &&
@@ -7220,6 +7854,11 @@ export function App() {
       ? {
           gridTemplateColumns: `${expandedSidebarPaneWidth}px ${previewHandleWidth}px ${previewPaneWidth}px`
         }
+      : isZenMode
+      ? {
+          gridTemplateColumns: `${PANEL_HANDLE_WIDTH}px ${zenPaneWidth}px ${PANEL_HANDLE_WIDTH}px`,
+          gridTemplateRows: `${PANEL_HANDLE_WIDTH}px ${zenPaneHeight}px ${PANEL_HANDLE_WIDTH}px`
+        }
       : workspaceMode === "split"
       ? {
           gridTemplateColumns: [
@@ -7252,9 +7891,13 @@ export function App() {
   const visibleDesktopPaneCount = getVisibleDesktopPaneCount();
   const showDesktopPaneRestoreBar =
     !isMobileWorkspace &&
-    (isSidebarCollapsed || (isSourcePaneHidden && isSourceFileEditable) || isPreviewCollapsed);
+    !isZenMode &&
+    ((isSourcePaneHidden && isSourceFileEditable) || isPreviewCollapsed);
   const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
   const filesPanelTitle = activeSidebarTool === "files" && isTrashViewOpen ? "Trash" : sidebarToolTitle;
+  const sidebarPaneStyle = {
+    "--sidebar-font-size": `${snapshot.preferences.sidebarFontSize}px`
+  } as CSSProperties;
 
   useEffect(() => {
     if (isMobileWorkspace || workspaceMode !== "split" || visibleDesktopPaneCount > 0) {
@@ -7327,7 +7970,7 @@ export function App() {
 
       if (isMobileWorkspace) {
         setMobileWorkspaceTab("files");
-      } else if (workspaceMode === "editor" || workspaceMode === "preview") {
+      } else if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
         setWorkspaceMode("split");
       }
 
@@ -7577,7 +8220,8 @@ export function App() {
   );
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""}`}>
+      {isZenMode ? null : (
       <header className={`menubar ${isMobileWorkspace ? "menubar--mobile-hidden" : ""}`}>
         <nav
           aria-label="Workspace menus"
@@ -7773,9 +8417,12 @@ export function App() {
           </MenuDropdown>
         </nav>
       </header>
+      )}
 
-      <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""}`}>
-      {isMobileWorkspace ? null : (
+      <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""} ${
+        isZenMode ? "workspace-shell--zen" : ""
+      }`}>
+      {isMobileWorkspace || isZenMode ? null : (
         <aside className="activity-bar" aria-label="Sidebar tools">
           {SIDEBAR_TOOLS.map((tool) => (
             <button
@@ -7804,15 +8451,6 @@ export function App() {
       <div className="workspace-main">
       {showDesktopPaneRestoreBar ? (
         <div className="pane-restore-bar" aria-label="Hidden panes">
-          {isSidebarCollapsed ? (
-            <button
-              className="pane__button pane__button--compact"
-              onClick={() => restoreWorkspacePane("sidebar")}
-              type="button"
-            >
-              Show files
-            </button>
-          ) : null}
           {isSourcePaneHidden && isSourceFileEditable ? (
             <button
               className="pane__button pane__button--compact"
@@ -7909,7 +8547,9 @@ export function App() {
         {showDesktopSidebar || isMobileWorkspace ? (
           <aside
             className={`pane pane--sidebar ${sidebarVisibilityClass}`}
+            data-zoom-pane="sidebar"
             aria-label="Files and git"
+            style={sidebarPaneStyle}
           >
             <>
               <div className="pane__header">
@@ -8059,7 +8699,7 @@ export function App() {
                           setIsSidebarCollapsed(false);
                           if (isMobileWorkspace) {
                             setMobileWorkspaceTab("files");
-                          } else if (workspaceMode === "editor" || workspaceMode === "preview") {
+                          } else if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
                             setWorkspaceMode("split");
                           }
                           setGitMergePaneMode("sidebar");
@@ -9172,11 +9812,31 @@ export function App() {
           />
         ) : null}
 
+        {isZenMode ? (
+          <button
+            aria-label="Resize zen editor height"
+            className="workspace-handle workspace-handle--zen workspace-handle--zen-horizontal workspace-handle--zen-top"
+            onPointerDown={beginZenResize("zen-top")}
+            type="button"
+          />
+        ) : null}
+
+        {isZenMode ? (
+          <button
+            aria-label="Resize zen editor width"
+            className="workspace-handle workspace-handle--zen workspace-handle--zen-vertical workspace-handle--zen-left"
+            onPointerDown={beginZenResize("zen-left")}
+            type="button"
+          />
+        ) : null}
+
         {showSourcePane ? (
         <section
           className={`pane pane--editor ${editorVisibilityClass}`}
+          data-zoom-pane="source"
           aria-label="Source editor"
         >
+          {isZenMode ? null : (
           <div className="pane__header">
             <div className="pane__header-group">
               <h2>Source</h2>
@@ -9212,7 +9872,8 @@ export function App() {
               </button>
             </div>
           </div>
-          {isSourceToolbarVisible && isSourceFileEditable ? (
+          )}
+          {!isZenMode && isSourceToolbarVisible && isSourceFileEditable ? (
             <div className="pane__toolbar pane__toolbar--source" aria-label="Source toolbar">
               <div className="pane__toolbar-section">
                 <div className="pane__toolbar-group">
@@ -9677,6 +10338,24 @@ export function App() {
         </section>
         ) : null}
 
+        {isZenMode ? (
+          <button
+            aria-label="Resize zen editor width"
+            className="workspace-handle workspace-handle--zen workspace-handle--zen-vertical workspace-handle--zen-right"
+            onPointerDown={beginZenResize("zen-right")}
+            type="button"
+          />
+        ) : null}
+
+        {isZenMode ? (
+          <button
+            aria-label="Resize zen editor height"
+            className="workspace-handle workspace-handle--zen workspace-handle--zen-horizontal workspace-handle--zen-bottom"
+            onPointerDown={beginZenResize("zen-bottom")}
+            type="button"
+          />
+        ) : null}
+
         {!isMobileWorkspace && showPreviewPane && showSourcePane ? (
           <button
             aria-label="Resize preview"
@@ -9689,7 +10368,11 @@ export function App() {
         {showPreviewPane ? (
         <section
           className={`pane pane--preview ${previewVisibilityClass}`}
+          data-zoom-pane="preview"
           aria-label="Document preview"
+          onKeyDown={handlePreviewPaneKeyDown}
+          ref={previewPaneRef}
+          tabIndex={-1}
         >
           <div className="pane__header pane__header--preview">
             <div className="pane__header-group">
@@ -9744,6 +10427,7 @@ export function App() {
           <section
             aria-label="Preview popup"
             className="preview-popup"
+            data-zoom-pane="preview"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="preview-popup__header">
@@ -10528,6 +11212,10 @@ export function App() {
                               ? "Shift+Option+Drag"
                               : "Shift+Alt+Drag"}
                           </kbd>
+                        </div>
+                        <div>
+                          <span>Zoom pane under pointer</span>
+                          <kbd>{isAppleShortcutPlatform ? "Option+Scroll" : "Alt+Scroll"}</kbd>
                         </div>
                       </div>
                     </section>

@@ -65,8 +65,10 @@ export function PreviewPane({
   const showCompilerActivity = shouldShowCompilerActivity(isCompiling, compilerStatus);
 
   if (workspacePreview) {
+    const isPdfPreview = workspacePreview.mimeType === "application/pdf";
+
     return (
-      <div className={`preview-layout ${paperView ? "preview-layout--paper" : ""}`}>
+      <div className={getPreviewLayoutClassName(paperView, isPdfPreview)}>
         <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
           <WorkspaceFilePreview
             file={workspacePreview}
@@ -98,9 +100,10 @@ export function PreviewPane({
 
   if (!result.ok) {
     const fallbackResult = lastSuccessfulResult;
+    const isPdfPreview = fallbackResult?.output.kind === "pdf";
 
     return (
-      <div className={`preview-layout ${paperView ? "preview-layout--paper" : ""}`}>
+      <div className={getPreviewLayoutClassName(paperView, Boolean(isPdfPreview))}>
         {fallbackResult ? (
           <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
             {showToolbar ? (
@@ -110,9 +113,6 @@ export function PreviewPane({
                   zoom={currentZoom}
                 />
               </div>
-            ) : null}
-            {showCompilerActivity ? (
-              <PreviewActivityStatus status={compilerStatus} />
             ) : null}
             {fallbackResult.output.kind === "pdf" && fallbackResult.output.artifactData ? (
               <PdfPreview
@@ -141,6 +141,9 @@ export function PreviewPane({
                 viewportPadding={viewportPadding}
               />
             )}
+            {showCompilerActivity ? (
+              <PreviewActivityStatus docked status={compilerStatus} />
+            ) : null}
           </div>
         ) : (
           <div className="preview-state">
@@ -157,8 +160,10 @@ export function PreviewPane({
     );
   }
 
+  const isPdfPreview = result.output.kind === "pdf";
+
   return (
-    <div className={`preview-layout ${paperView ? "preview-layout--paper" : ""}`}>
+    <div className={getPreviewLayoutClassName(paperView, isPdfPreview)}>
       <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
         {showToolbar ? (
           <div className="preview-toolbar">
@@ -167,9 +172,6 @@ export function PreviewPane({
               zoom={currentZoom}
             />
           </div>
-        ) : null}
-        {showCompilerActivity ? (
-          <PreviewActivityStatus status={compilerStatus} />
         ) : null}
         {result.output.kind === "pdf" && result.output.artifactData ? (
           <PdfPreview
@@ -192,9 +194,18 @@ export function PreviewPane({
               viewportPadding={viewportPadding}
             />
         )}
+        {showCompilerActivity ? (
+          <PreviewActivityStatus docked status={compilerStatus} />
+        ) : null}
       </div>
     </div>
   );
+}
+
+function getPreviewLayoutClassName(paperView: boolean, edgeToEdge: boolean): string {
+  return `preview-layout ${paperView ? "preview-layout--paper" : ""} ${
+    edgeToEdge ? "preview-layout--edge-to-edge" : ""
+  }`;
 }
 
 function PreviewFailureDetails({
@@ -294,48 +305,62 @@ export function PreviewStatusIcon({
 
 function PreviewActivityStatus({
   centered = false,
+  docked = false,
   status
 }: {
   centered?: boolean;
+  docked?: boolean;
   status: CompilerStatus | null;
 }) {
   if (!status) {
     return null;
   }
 
-  const progress = normalizeProgress(status.progress);
-  const progressText = progress
-    ? `${progress.current}/${progress.total}`
-    : null;
+  return (
+    <PreviewActivityStatusBody
+      centered={centered}
+      docked={docked}
+      status={status}
+    />
+  );
+}
+
+function PreviewActivityStatusBody({
+  centered,
+  docked,
+  status
+}: {
+  centered: boolean;
+  docked: boolean;
+  status: CompilerStatus;
+}) {
+  const progress = usePreviewActivityProgress(status);
 
   return (
     <div
-      className={`preview-activity ${centered ? "preview-activity--centered" : ""}`}
+      className={`preview-activity ${centered ? "preview-activity--centered" : ""} ${
+        docked ? "preview-activity--docked" : ""
+      }`}
       role="status"
       aria-live="polite"
     >
       <div className="preview-activity__row">
         <span className="preview-activity__label">{status.label}</span>
-        {progressText ? (
-          <span className="preview-activity__count">{progressText}</span>
-        ) : null}
       </div>
       {status.detail ? (
         <p className="preview-activity__detail">{status.detail}</p>
       ) : null}
       <div
-        className={`preview-activity__bar ${
-          progress ? "" : "preview-activity__bar--indeterminate"
-        }`}
+        className="preview-activity__bar"
         role="progressbar"
         aria-label={status.label}
-        aria-valuemin={progress ? 0 : undefined}
-        aria-valuemax={progress ? progress.total : undefined}
-        aria-valuenow={progress ? progress.current : undefined}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(progress.percent)}
       >
         <span
           className="preview-activity__bar-fill"
-          style={progress ? { width: `${progress.percent}%` } : undefined}
+          style={{ width: `${progress.percent}%` }}
         />
       </div>
     </div>
@@ -354,21 +379,125 @@ function shouldShowCompilerActivity(
   );
 }
 
-function normalizeProgress(
+function usePreviewActivityProgress(
+  status: CompilerStatus
+): { percent: number } {
+  const statusKey = `${status.phase}:${status.label}:${status.detail ?? ""}`;
+  const [progressState, setProgressState] = useState(() => {
+    const startedAt = getPreviewNow();
+
+    return {
+      statusKey,
+      phaseStartedAt: startedAt,
+      visualPercent: resolvePreviewActivityPercent(status, 0)
+    };
+  });
+
+  useEffect(() => {
+    setProgressState((current) => {
+      const now = getPreviewNow();
+      const phaseChanged = current.statusKey !== statusKey;
+      const phaseStartedAt = phaseChanged ? now : current.phaseStartedAt;
+      const elapsedMs = phaseChanged ? 0 : now - phaseStartedAt;
+
+      return {
+        statusKey,
+        phaseStartedAt,
+        visualPercent: Math.max(
+          current.visualPercent,
+          resolvePreviewActivityPercent(status, elapsedMs)
+        )
+      };
+    });
+  }, [statusKey, status]);
+
+  useEffect(() => {
+    let frameId = 0;
+
+    const tick = () => {
+      setProgressState((current) => {
+        const elapsedMs = getPreviewNow() - current.phaseStartedAt;
+
+        return {
+          ...current,
+          visualPercent: Math.max(
+            current.visualPercent,
+            resolvePreviewActivityPercent(status, elapsedMs)
+          )
+        };
+      });
+      frameId = window.setTimeout(tick, 240);
+    };
+
+    tick();
+
+    return () => {
+      window.clearTimeout(frameId);
+    };
+  }, [status]);
+
+  return {
+    percent: Math.max(3, Math.min(98, progressState.visualPercent))
+  };
+}
+
+function resolvePreviewActivityPercent(
+  status: CompilerStatus,
+  elapsedMs: number
+): number {
+  const range = getPreviewActivityPhaseRange(status.phase);
+  const explicitProgress = normalizeExplicitProgress(status.progress);
+
+  if (explicitProgress !== null) {
+    return range.start + (range.end - range.start) * explicitProgress;
+  }
+
+  const phaseProgress = 1 - Math.exp(-elapsedMs / range.durationMs);
+  return range.start + (range.end - range.start) * phaseProgress;
+}
+
+function normalizeExplicitProgress(
   progress: CompilerStatus["progress"] | undefined
-): { current: number; total: number; percent: number } | null {
+): number | null {
   if (!progress || progress.total <= 0) {
     return null;
   }
 
-  const total = Math.max(1, Math.round(progress.total));
-  const current = Math.max(0, Math.min(total, Math.round(progress.current)));
+  const total = Math.max(1, progress.total);
+  const current = Math.max(0, Math.min(total, progress.current));
+  return current / total;
+}
 
-  return {
-    current,
-    total,
-    percent: (current / total) * 100
-  };
+function getPreviewActivityPhaseRange(
+  phase: CompilerStatus["phase"]
+): { start: number; end: number; durationMs: number } {
+  switch (phase) {
+    case "worker-starting":
+      return { start: 3, end: 12, durationMs: 900 };
+    case "loading-typst":
+    case "loading-latex":
+      return { start: 12, end: 32, durationMs: 1800 };
+    case "loading-packages":
+      return { start: 24, end: 48, durationMs: 2400 };
+    case "loading-fonts":
+      return { start: 18, end: 42, durationMs: 1800 };
+    case "fallback-main-thread":
+      return { start: 22, end: 52, durationMs: 1600 };
+    case "compiling":
+      return { start: 42, end: 88, durationMs: 5200 };
+    case "rendering":
+      return { start: 88, end: 96, durationMs: 1100 };
+    case "ready":
+      return { start: 98, end: 98, durationMs: 1 };
+    case "idle":
+    case "error":
+    default:
+      return { start: 3, end: 12, durationMs: 1200 };
+  }
+}
+
+function getPreviewNow(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
 function PreviewDocument({
@@ -541,7 +670,11 @@ function WorkspaceFilePreview({
   const isPdf = file.mimeType === "application/pdf";
 
   return (
-    <div className={`preview-document preview-document--asset ${paperView ? "preview-document--paper" : ""}`}>
+    <div
+      className={`preview-document ${
+        isPdf ? "preview-document--pdf" : "preview-document--asset"
+      } ${paperView ? "preview-document--paper" : ""}`}
+    >
       {isPdf ? (
         <object
           aria-label={file.name}

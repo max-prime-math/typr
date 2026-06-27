@@ -260,6 +260,7 @@ export interface AppPreferences {
   graphProvider: GraphProvider;
   keybindings: KeybindingMap;
   editorFontSize: number;
+  sidebarFontSize: number;
 }
 
 export interface AppSnapshot {
@@ -288,8 +289,11 @@ Start writing your document here.
 
 const DEFAULT_CURSOR_SMEAR = 25;
 export const DEFAULT_EDITOR_FONT_SIZE = 16;
+export const DEFAULT_SIDEBAR_FONT_SIZE = 16;
 const MIN_EDITOR_FONT_SIZE = 12;
 const MAX_EDITOR_FONT_SIZE = 28;
+const MIN_SIDEBAR_FONT_SIZE = 11;
+const MAX_SIDEBAR_FONT_SIZE = 24;
 
 function createId(prefix: string): string {
   return createPrefixedId(prefix);
@@ -384,7 +388,8 @@ export function createDefaultSnapshot(): AppSnapshot {
       autoSyncGitProjects: true,
       graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
-      editorFontSize: DEFAULT_EDITOR_FONT_SIZE
+      editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+      sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE
     }
   };
 }
@@ -444,6 +449,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       ),
       editorFontSize: clampEditorFontSize(
         (snapshot.preferences as Partial<AppPreferences>).editorFontSize
+      ),
+      sidebarFontSize: clampSidebarFontSize(
+        (snapshot.preferences as Partial<AppPreferences>).sidebarFontSize
       )
     },
     project: {
@@ -820,6 +828,12 @@ function clampEditorFontSize(value: unknown): number {
   return typeof value === "number"
     ? Math.max(MIN_EDITOR_FONT_SIZE, Math.min(MAX_EDITOR_FONT_SIZE, Math.round(value)))
     : DEFAULT_EDITOR_FONT_SIZE;
+}
+
+function clampSidebarFontSize(value: unknown): number {
+  return typeof value === "number"
+    ? Math.max(MIN_SIDEBAR_FONT_SIZE, Math.min(MAX_SIDEBAR_FONT_SIZE, Math.round(value)))
+    : DEFAULT_SIDEBAR_FONT_SIZE;
 }
 
 export function getActiveDocument(project: TypstProject): TypstDocumentFile {
@@ -2156,6 +2170,19 @@ export function updateEditorFontSizePreference(
     preferences: {
       ...snapshot.preferences,
       editorFontSize: clampEditorFontSize(editorFontSize)
+    }
+  };
+}
+
+export function updateSidebarFontSizePreference(
+  snapshot: AppSnapshot,
+  sidebarFontSize: number
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      sidebarFontSize: clampSidebarFontSize(sidebarFontSize)
     }
   };
 }
