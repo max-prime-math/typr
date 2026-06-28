@@ -271,20 +271,43 @@ export interface AppSnapshot {
 
 export const DEFAULT_DOCUMENT_NAME = "main.typ";
 
-export const DEFAULT_DOCUMENT_CONTENT = `#set page(margin: 1.2in)
+export const DEFAULT_DOCUMENT_CONTENT = `#set page(margin: 1.15in)
 #set text(font: "New Computer Modern", size: 11pt)
 
-= Typr
+= Typr Starter
 
-A local-first, browser-based Typst editor for iPad and desktop.
+This is a Typst starter document. Edit this source and watch the preview update as you write.
 
-- Edit the source on the left
-- Watch the preview pipeline update on the right
-- Toggle dark mode or Vim bindings from the toolbar
+== Try it
+
+- Use the files pane to switch between the Typst and LaTeX starters.
+- Open latex-starter.tex when you want to try a manual LaTeX compile.
+- Keep writing here, or replace this page with your own notes.
 
 == Next steps
 
 Start writing your document here.
+`;
+
+export const DEFAULT_LATEX_DOCUMENT_NAME = "latex-starter.tex";
+
+export const DEFAULT_LATEX_DOCUMENT_CONTENT = `\\documentclass{article}
+\\usepackage[margin=1in]{geometry}
+
+\\title{Typr LaTeX Starter}
+\\author{}
+\\date{}
+
+\\begin{document}
+\\maketitle
+
+This is a LaTeX starter document. Edit the source, then compile it when you are ready to generate a PDF preview.
+
+\\section{Next steps}
+
+Write your document here.
+
+\\end{document}
 `;
 
 const DEFAULT_CURSOR_SMEAR = 25;
@@ -355,10 +378,16 @@ export function createDefaultGraph(provider: GraphProvider = "simple-plot"): Gra
 
 export function createDefaultSnapshot(): AppSnapshot {
   const now = new Date().toISOString();
-  const document: TypstDocumentFile = {
+  const typstDocument: TypstDocumentFile = {
     id: createId("doc"),
     name: DEFAULT_DOCUMENT_NAME,
     content: DEFAULT_DOCUMENT_CONTENT,
+    updatedAt: now
+  };
+  const latexDocument: TypstDocumentFile = {
+    id: createId("doc"),
+    name: DEFAULT_LATEX_DOCUMENT_NAME,
+    content: DEFAULT_LATEX_DOCUMENT_CONTENT,
     updatedAt: now
   };
 
@@ -367,10 +396,10 @@ export function createDefaultSnapshot(): AppSnapshot {
     project: {
       id: createId("project"),
       name: "Typr Project",
-      documents: [document],
+      documents: [typstDocument, latexDocument],
       folders: [],
       trash: [],
-      activeDocumentId: document.id,
+      activeDocumentId: typstDocument.id,
       createdAt: now,
       updatedAt: now,
       diagram: createDefaultDiagram(),
