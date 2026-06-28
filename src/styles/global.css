@@ -5488,6 +5488,118 @@ button {
   color: var(--text-muted);
 }
 
+.preview-document--markdown {
+  padding: 0;
+  background: var(--editor-background);
+}
+
+.preview-markdown {
+  width: min(100%, 48rem);
+  margin: 0 auto;
+  padding: clamp(1rem, 3vw, 2.25rem);
+  color: var(--editor-foreground);
+  font-family: ui-serif, "New Computer Modern", "Iowan Old Style", Georgia, serif;
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.preview-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.preview-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.preview-markdown h1,
+.preview-markdown h2,
+.preview-markdown h3,
+.preview-markdown h4,
+.preview-markdown h5,
+.preview-markdown h6 {
+  margin: 1.35em 0 0.55em;
+  color: var(--text);
+  font-family: inherit;
+  line-height: 1.18;
+}
+
+.preview-markdown h1 {
+  font-size: 2rem;
+}
+
+.preview-markdown h2 {
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 1.5rem;
+}
+
+.preview-markdown h3 {
+  font-size: 1.22rem;
+}
+
+.preview-markdown p,
+.preview-markdown ul,
+.preview-markdown ol,
+.preview-markdown blockquote,
+.preview-markdown pre {
+  margin: 0.85rem 0;
+}
+
+.preview-markdown ul,
+.preview-markdown ol {
+  padding-left: 1.45rem;
+}
+
+.preview-markdown li + li {
+  margin-top: 0.25rem;
+}
+
+.preview-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.preview-markdown blockquote {
+  padding: 0.05rem 0 0.05rem 1rem;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 52%, var(--border));
+  color: var(--text-muted);
+}
+
+.preview-markdown code {
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--editor-foreground) 8%, transparent);
+  padding: 0.08rem 0.28rem;
+  font-family: "Iosevka Term", "JetBrains Mono", "SFMono-Regular", monospace;
+  font-size: 0.92em;
+}
+
+.preview-markdown__code-block {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0.85rem;
+}
+
+.preview-markdown__code-block code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.preview-markdown hr {
+  height: 1px;
+  margin: 1.4rem 0;
+  border: 0;
+  background: var(--border);
+}
+
+.preview-markdown__empty {
+  color: var(--text-muted);
+}
+
 .preview-layout--paper .preview-document,
 .preview-layout--paper .preview-document--canvas {
   border-color: rgba(123, 104, 72, 0.14);

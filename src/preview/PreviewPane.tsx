@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
@@ -655,6 +655,28 @@ function WorkspaceFilePreview({
   paperView: boolean;
   theme: ThemeDefinition;
 }) {
+  if (file.mimeType === "text/markdown") {
+    return <MarkdownFilePreview file={file} paperView={paperView} />;
+  }
+
+  return (
+    <WorkspaceBinaryFilePreview
+      file={file}
+      paperView={paperView}
+      theme={theme}
+    />
+  );
+}
+
+function WorkspaceBinaryFilePreview({
+  file,
+  paperView,
+  theme
+}: {
+  file: WorkspacePreviewFile;
+  paperView: boolean;
+  theme: ThemeDefinition;
+}) {
   const blobUrl = useMemo(() => {
     const blob = buildWorkspacePreviewBlob(file, paperView, theme);
 
@@ -693,6 +715,335 @@ function WorkspaceFilePreview({
       )}
     </div>
   );
+}
+
+function MarkdownFilePreview({
+  file,
+  paperView
+}: {
+  file: WorkspacePreviewFile;
+  paperView: boolean;
+}) {
+  const source = decodeWorkspaceTextContent(file.content);
+  const blocks = useMemo(() => renderMarkdownBlocks(source), [source]);
+
+  return (
+    <div
+      className={`preview-document preview-document--markdown ${
+        paperView ? "preview-document--paper" : ""
+      }`}
+    >
+      <article className="preview-markdown" aria-label={`${file.name} preview`}>
+        {blocks.length > 0 ? blocks : (
+          <p className="preview-markdown__empty">Empty Markdown file.</p>
+        )}
+      </article>
+    </div>
+  );
+}
+
+function renderMarkdownBlocks(source: string): ReactNode[] {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  let blockIndex = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
+    if (fence) {
+      const fenceMarker = fence[1];
+      const info = fence[2]?.trim();
+      const codeLines: string[] = [];
+      index += 1;
+
+      while (index < lines.length && !lines[index].trimStart().startsWith(fenceMarker)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      if (index < lines.length) {
+        index += 1;
+      }
+
+      blocks.push(
+        <pre className="preview-markdown__code-block" key={`code-${blockIndex}`}>
+          <code data-language={info || undefined}>{codeLines.join("\n")}</code>
+        </pre>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      blocks.push(
+        renderMarkdownHeading(
+          heading[1].length,
+          parseMarkdownInline(heading[2], `heading-${blockIndex}`),
+          `heading-${blockIndex}`
+        )
+      );
+      index += 1;
+      blockIndex += 1;
+      continue;
+    }
+
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      blocks.push(<hr key={`hr-${blockIndex}`} />);
+      index += 1;
+      blockIndex += 1;
+      continue;
+    }
+
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+
+      while (index < lines.length) {
+        const quoteMatch = lines[index].match(/^\s{0,3}>\s?(.*)$/);
+        if (!quoteMatch) {
+          break;
+        }
+        quoteLines.push(quoteMatch[1]);
+        index += 1;
+      }
+
+      blocks.push(
+        <blockquote key={`quote-${blockIndex}`}>
+          <p>{parseMarkdownInline(quoteLines.join(" "), `quote-${blockIndex}`)}</p>
+        </blockquote>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const unorderedListMatch = line.match(/^\s{0,3}[-*+]\s+(.+)$/);
+    if (unorderedListMatch) {
+      const items: string[] = [];
+
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^\s{0,3}[-*+]\s+(.+)$/);
+        if (!itemMatch) {
+          break;
+        }
+        items.push(itemMatch[1]);
+        index += 1;
+      }
+
+      blocks.push(
+        <ul key={`ul-${blockIndex}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`ul-${blockIndex}-${itemIndex}`}>
+              {parseMarkdownInline(item, `ul-${blockIndex}-${itemIndex}`)}
+            </li>
+          ))}
+        </ul>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const orderedListMatch = line.match(/^\s{0,3}\d+[.)]\s+(.+)$/);
+    if (orderedListMatch) {
+      const items: string[] = [];
+
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^\s{0,3}\d+[.)]\s+(.+)$/);
+        if (!itemMatch) {
+          break;
+        }
+        items.push(itemMatch[1]);
+        index += 1;
+      }
+
+      blocks.push(
+        <ol key={`ol-${blockIndex}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`ol-${blockIndex}-${itemIndex}`}>
+              {parseMarkdownInline(item, `ol-${blockIndex}-${itemIndex}`)}
+            </li>
+          ))}
+        </ol>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    if (paragraphLines.length > 0) {
+      blocks.push(
+        <p key={`p-${blockIndex}`}>
+          {parseMarkdownInline(paragraphLines.join(" "), `p-${blockIndex}`)}
+        </p>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  return blocks;
+}
+
+function isMarkdownBlockStart(line: string): boolean {
+  return (
+    /^\s*(```+|~~~+)/.test(line) ||
+    /^\s{0,3}#{1,6}\s+/.test(line) ||
+    /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
+    /^\s{0,3}>\s?/.test(line) ||
+    /^\s{0,3}[-*+]\s+/.test(line) ||
+    /^\s{0,3}\d+[.)]\s+/.test(line)
+  );
+}
+
+function renderMarkdownHeading(level: number, children: ReactNode[], key: string): ReactNode {
+  switch (level) {
+    case 1:
+      return <h1 key={key}>{children}</h1>;
+    case 2:
+      return <h2 key={key}>{children}</h2>;
+    case 3:
+      return <h3 key={key}>{children}</h3>;
+    case 4:
+      return <h4 key={key}>{children}</h4>;
+    case 5:
+      return <h5 key={key}>{children}</h5>;
+    default:
+      return <h6 key={key}>{children}</h6>;
+  }
+}
+
+function parseMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  let nodeIndex = 0;
+
+  const pushText = (value: string) => {
+    if (!value) {
+      return;
+    }
+    nodes.push(value);
+  };
+
+  while (index < text.length) {
+    if (text[index] === "`") {
+      const end = text.indexOf("`", index + 1);
+      if (end > index + 1) {
+        nodes.push(
+          <code key={`${keyPrefix}-code-${nodeIndex}`}>
+            {text.slice(index + 1, end)}
+          </code>
+        );
+        nodeIndex += 1;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    if (text[index] === "[") {
+      const linkMatch = text.slice(index).match(/^\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/);
+      const href = linkMatch ? sanitizeMarkdownHref(linkMatch[2]) : null;
+      if (linkMatch && href) {
+        nodes.push(
+          <a
+            href={href}
+            key={`${keyPrefix}-link-${nodeIndex}`}
+            rel="noreferrer"
+            target={isExternalMarkdownHref(href) ? "_blank" : undefined}
+          >
+            {parseMarkdownInline(linkMatch[1], `${keyPrefix}-link-${nodeIndex}`)}
+          </a>
+        );
+        nodeIndex += 1;
+        index += linkMatch[0].length;
+        continue;
+      }
+    }
+
+    const strongMarker = text.startsWith("**", index) ? "**" : text.startsWith("__", index) ? "__" : null;
+    if (strongMarker) {
+      const end = text.indexOf(strongMarker, index + strongMarker.length);
+      if (end > index + strongMarker.length) {
+        nodes.push(
+          <strong key={`${keyPrefix}-strong-${nodeIndex}`}>
+            {parseMarkdownInline(
+              text.slice(index + strongMarker.length, end),
+              `${keyPrefix}-strong-${nodeIndex}`
+            )}
+          </strong>
+        );
+        nodeIndex += 1;
+        index = end + strongMarker.length;
+        continue;
+      }
+    }
+
+    const emphasisMarker =
+      text[index] === "*" || text[index] === "_" ? text[index] : null;
+    if (emphasisMarker) {
+      const end = text.indexOf(emphasisMarker, index + 1);
+      if (end > index + 1) {
+        nodes.push(
+          <em key={`${keyPrefix}-em-${nodeIndex}`}>
+            {parseMarkdownInline(
+              text.slice(index + 1, end),
+              `${keyPrefix}-em-${nodeIndex}`
+            )}
+          </em>
+        );
+        nodeIndex += 1;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    const nextSpecial = findNextMarkdownInlineSpecial(text, index + 1);
+    pushText(text.slice(index, nextSpecial));
+    index = nextSpecial;
+  }
+
+  return nodes;
+}
+
+function findNextMarkdownInlineSpecial(text: string, start: number): number {
+  const positions = ["`", "[", "*", "_"]
+    .map((marker) => text.indexOf(marker, start))
+    .filter((position) => position >= 0);
+
+  return positions.length > 0 ? Math.min(...positions) : text.length;
+}
+
+function sanitizeMarkdownHref(href: string): string | null {
+  const trimmed = href.trim();
+
+  if (/^(https?:|mailto:)/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (
+    (trimmed.startsWith("#") || trimmed.startsWith("/") || trimmed.startsWith("./") || trimmed.startsWith("../")) &&
+    !trimmed.startsWith("//")
+  ) {
+    return trimmed;
+  }
+
+  return null;
+}
+
+function isExternalMarkdownHref(href: string): boolean {
+  return /^https?:/i.test(href);
 }
 
 function PreviewSourceMappingOverlay({
@@ -1494,12 +1845,12 @@ function buildWorkspacePreviewBlob(
     return new Blob([file.content as BlobPart], { type: file.mimeType });
   }
 
-  const markup = decodeSvgMarkup(file.content);
+  const markup = decodeWorkspaceTextContent(file.content);
   const normalizedMarkup = normalizePreviewSvg(markup, paperView, theme);
   return new Blob([normalizedMarkup], { type: file.mimeType });
 }
 
-function decodeSvgMarkup(content: string | Uint8Array): string {
+function decodeWorkspaceTextContent(content: string | Uint8Array): string {
   if (typeof content === "string") {
     return content;
   }

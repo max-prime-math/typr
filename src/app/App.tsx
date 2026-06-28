@@ -321,6 +321,9 @@ function getWorkspacePreviewMimeType(path: string): string | null {
       return "image/avif";
     case "pdf":
       return "application/pdf";
+    case "md":
+    case "markdown":
+      return "text/markdown";
     default:
       return null;
   }
@@ -1838,14 +1841,24 @@ export function App() {
         return;
       }
 
+      const mimeType = getWorkspacePreviewMimeType(sourceWorkspaceNode.path);
+
+      if (mimeType === "text/markdown") {
+        setSelectedWorkspacePreview({
+          name: sourceWorkspaceNode.name,
+          path: sourceWorkspaceNode.path,
+          content: sourceEditorValue,
+          mimeType
+        });
+        return;
+      }
+
       if (isTextWorkspaceFile(sourceWorkspaceNode.path)) {
         setSelectedWorkspacePreview(null);
         return;
       }
 
       setSelectedWorkspacePreview(null);
-
-      const mimeType = getWorkspacePreviewMimeType(sourceWorkspaceNode.path);
 
       if (!mimeType) {
         setSelectedWorkspacePreview(null);
@@ -1888,7 +1901,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProjectRepository, sourceWorkspaceNode]);
+  }, [selectedProjectRepository, sourceEditorValue, sourceWorkspaceNode]);
   useEffect(() => {
     if (
       sourceWorkspaceNode &&
@@ -1922,6 +1935,11 @@ export function App() {
   const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument.name;
   const activeSourceLanguage = getSourceLanguage(activeSourcePath);
   const isActiveSourceCompilable = isCompilableSourceFile(activeSourcePath);
+  const showSourceCompileButton =
+    isSourceFileEditable &&
+    isActiveSourceCompilable &&
+    activeSourceLanguage !== "markdown" &&
+    !(activeSourceLanguage === "typst" && snapshot.preferences.liveCompilation);
   const projectGitignoreContent = useMemo(
     () =>
       selectedProjectRepository
@@ -3533,6 +3551,10 @@ export function App() {
   }, [isPaperView, runCompile, shouldCancelInFlightLatexCompile]);
 
   const handleCompile = useCallback(() => {
+    if (!isActiveSourceCompilableRef.current) {
+      return;
+    }
+
     queueCompile(false);
   }, [queueCompile]);
 
@@ -4499,12 +4521,7 @@ export function App() {
   const handleProjectGitignoreChange = useCallback(
     (value: string) => {
       setProjectRepository((project) =>
-        writeProjectFile(
-          project,
-          DEFAULT_PROJECT_GITIGNORE_PATH,
-          value,
-          { kind: "virtual", id: DEFAULT_PROJECT_GITIGNORE_PATH }
-        )
+        writeProjectFile(project, DEFAULT_PROJECT_GITIGNORE_PATH, value)
       );
     },
     [setProjectRepository]
@@ -9842,9 +9859,7 @@ export function App() {
               <h2>Source</h2>
             </div>
             <div className="pane__header-actions">
-              {(activeSourceLanguage === "typst" && snapshot.preferences.liveCompilation) ||
-              !isSourceFileEditable ||
-              !isActiveSourceCompilable ? null : (
+              {showSourceCompileButton ? (
                 <button
                   className="pane__button"
                   onClick={handleCompile}
@@ -9853,7 +9868,7 @@ export function App() {
                 >
                   Compile
                 </button>
-              )}
+              ) : null}
                 <button
                   className="pane__button pane__button--quiet"
                   onClick={() => setIsSourceToolbarVisible((current) => !current)}

@@ -280,8 +280,9 @@ This is a Typst starter document. Edit this source and watch the preview update 
 
 == Try it
 
-- Use the files pane to switch between the Typst and LaTeX starters.
+- Use the files pane to switch between the Typst, LaTeX, and Markdown starters.
 - Open latex-starter.tex when you want to try a manual LaTeX compile.
+- Open markdown-starter.md to see instant Markdown preview without compiling.
 - Keep writing here, or replace this page with your own notes.
 
 == Next steps
@@ -308,6 +309,23 @@ This is a LaTeX starter document. Edit the source, then compile it when you are 
 Write your document here.
 
 \\end{document}
+`;
+
+export const DEFAULT_MARKDOWN_DOCUMENT_NAME = "markdown-starter.md";
+
+export const DEFAULT_MARKDOWN_DOCUMENT_CONTENT = `# Typr Markdown Starter
+
+This is a Markdown starter document. Edit the source and the preview updates instantly without compiling.
+
+## Try it
+
+- Write notes with headings, lists, links, and code.
+- Use \`inline code\` or fenced code blocks.
+- Switch back to main.typ or latex-starter.tex when you want document compilation.
+
+## Next steps
+
+Start writing your Markdown here.
 `;
 
 const DEFAULT_CURSOR_SMEAR = 25;
@@ -390,13 +408,19 @@ export function createDefaultSnapshot(): AppSnapshot {
     content: DEFAULT_LATEX_DOCUMENT_CONTENT,
     updatedAt: now
   };
+  const markdownDocument: TypstDocumentFile = {
+    id: createId("doc"),
+    name: DEFAULT_MARKDOWN_DOCUMENT_NAME,
+    content: DEFAULT_MARKDOWN_DOCUMENT_CONTENT,
+    updatedAt: now
+  };
 
   return {
     version: 9,
     project: {
       id: createId("project"),
       name: "Typr Project",
-      documents: [typstDocument, latexDocument],
+      documents: [typstDocument, latexDocument, markdownDocument],
       folders: [],
       trash: [],
       activeDocumentId: typstDocument.id,

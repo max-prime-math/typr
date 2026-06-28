@@ -1,10 +1,11 @@
 import { normalizeWorkspacePath } from "../workspace/workspaceTree";
 
-export type SourceLanguage = "typst" | "latex" | "text";
+export type SourceLanguage = "typst" | "latex" | "markdown" | "text";
 
 const TYPST_EXTENSIONS = new Set(["typ", "typst"]);
 const LATEX_MAIN_EXTENSIONS = new Set(["tex", "ltx", "latex"]);
 const LATEX_SUPPORT_EXTENSIONS = new Set(["sty", "cls", "bib"]);
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown"]);
 
 export function getSourceLanguage(path: string | null | undefined): SourceLanguage {
   const extension = getPathExtension(path);
@@ -15,6 +16,10 @@ export function getSourceLanguage(path: string | null | undefined): SourceLangua
 
   if (extension && (LATEX_MAIN_EXTENSIONS.has(extension) || LATEX_SUPPORT_EXTENSIONS.has(extension))) {
     return "latex";
+  }
+
+  if (extension && MARKDOWN_EXTENSIONS.has(extension)) {
+    return "markdown";
   }
 
   return "text";

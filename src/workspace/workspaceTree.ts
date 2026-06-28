@@ -47,6 +47,7 @@ export type WorkspaceSource =
 const TEXT_FILE_EXTENSIONS = new Set([
   "typ",
   "tex",
+  "markdown",
   "txt",
   "md",
   "json",
@@ -54,6 +55,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
   "yml",
   "csv"
 ]);
+const TEXT_FILE_NAMES = new Set([".gitignore"]);
 const IMAGE_FILE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"]);
 
 export function normalizeWorkspacePath(path: string): string {
@@ -230,7 +232,7 @@ export function flattenVisibleWorkspaceNodes(
 }
 
 export function canEditWorkspaceFile(path: string): boolean {
-  return getWorkspacePathExtension(path) === "typ";
+  return isTextWorkspaceFile(path);
 }
 
 export function canRenameWorkspaceNode(node: WorkspaceTreeNode): boolean {
@@ -262,6 +264,11 @@ export function canMoveWorkspaceNode(node: WorkspaceTreeNode): boolean {
 }
 
 export function isTextWorkspaceFile(path: string): boolean {
+  const fileName = normalizeWorkspacePath(path).split("/").at(-1)?.toLowerCase() ?? "";
+  if (TEXT_FILE_NAMES.has(fileName)) {
+    return true;
+  }
+
   const extension = getWorkspacePathExtension(path);
   return extension !== null && TEXT_FILE_EXTENSIONS.has(extension);
 }

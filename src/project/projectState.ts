@@ -16,6 +16,7 @@ export const PROJECT_FILESYSTEM_VERSION = 1;
 export const DEFAULT_PROJECT_ROOT_PATH = "/";
 export const DEFAULT_PROJECT_GITIGNORE_PATH = ".gitignore";
 export const DEFAULT_PROJECT_GITIGNORE_CONTENT = "*.pdf\n";
+const DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID = "project-gitignore";
 export const GENERATED_LATEX_PDF_SOURCE_ID = "latex-preview-pdf";
 
 export type ProjectFileContent = string | Uint8Array;
@@ -276,7 +277,10 @@ export function createEmptyProjectRepository(options: {
             kind: "file" as const,
             path: DEFAULT_PROJECT_GITIGNORE_PATH,
             content: DEFAULT_PROJECT_GITIGNORE_CONTENT,
-            source: { kind: "virtual" as const, id: DEFAULT_PROJECT_GITIGNORE_PATH },
+            source: {
+              kind: "document" as const,
+              id: DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID
+            },
             updatedAt: now
           }
         }
@@ -296,6 +300,12 @@ export function createEmptyProjectRepository(options: {
   };
   const documents = defaultFileName && documentId
     ? [
+        {
+          id: DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID,
+          name: DEFAULT_PROJECT_GITIGNORE_PATH,
+          content: DEFAULT_PROJECT_GITIGNORE_CONTENT,
+          updatedAt: now
+        },
         {
           id: documentId,
           name: defaultFileName,
@@ -706,13 +716,22 @@ function createRepositoryFromLegacyProject(
     };
   }
 
-  if (!entries[DEFAULT_PROJECT_GITIGNORE_PATH]) {
+  const existingGitignore = entries[DEFAULT_PROJECT_GITIGNORE_PATH];
+  if (existingGitignore?.kind === "file") {
+    entries[DEFAULT_PROJECT_GITIGNORE_PATH] = {
+      ...existingGitignore,
+      source: normalizeProjectGitignoreSource(existingGitignore)
+    };
+  } else {
     entries[DEFAULT_PROJECT_GITIGNORE_PATH] = {
       id: createId("file"),
       path: DEFAULT_PROJECT_GITIGNORE_PATH,
       kind: "file",
       content: DEFAULT_PROJECT_GITIGNORE_CONTENT,
-      source: { kind: "virtual", id: DEFAULT_PROJECT_GITIGNORE_PATH },
+      source: {
+        kind: "document",
+        id: DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID
+      },
       updatedAt: now
     };
   }
@@ -766,15 +785,40 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
       if (!path) {
         continue;
       }
+      const source =
+        path === DEFAULT_PROJECT_GITIGNORE_PATH
+          ? normalizeProjectGitignoreSource(entry)
+          : entry.source;
       entries[path] = {
         ...entry,
         path,
         id: entry.id ?? createId(entry.kind),
+        source,
         updatedAt: entry.updatedAt ?? now
       };
     } catch {
       // Skip invalid persisted paths; legacyRecovery still keeps the previous project.
     }
+  }
+
+  const normalizedGitignore = entries[DEFAULT_PROJECT_GITIGNORE_PATH];
+  if (normalizedGitignore?.kind === "file") {
+    entries[DEFAULT_PROJECT_GITIGNORE_PATH] = {
+      ...normalizedGitignore,
+      source: normalizeProjectGitignoreSource(normalizedGitignore)
+    };
+  } else {
+    entries[DEFAULT_PROJECT_GITIGNORE_PATH] = {
+      id: createId("file"),
+      path: DEFAULT_PROJECT_GITIGNORE_PATH,
+      kind: "file",
+      content: DEFAULT_PROJECT_GITIGNORE_CONTENT,
+      source: {
+        kind: "document",
+        id: DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID
+      },
+      updatedAt: now
+    };
   }
 
   return {
@@ -942,6 +986,19 @@ function toProjectEntrySource(source: {
   return {
     kind: "virtual",
     id: source.id
+  };
+}
+
+function normalizeProjectGitignoreSource(
+  entry: Pick<ProjectFilesystemEntry, "source">
+): ProjectFilesystemEntrySource {
+  if (entry.source.kind === "document") {
+    return entry.source;
+  }
+
+  return {
+    kind: "document",
+    id: DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID
   };
 }
 

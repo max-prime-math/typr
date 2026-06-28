@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultSnapshot } from "../app/appState";
+import {
+  createDefaultSnapshot,
+  DEFAULT_DOCUMENT_NAME,
+  DEFAULT_LATEX_DOCUMENT_NAME,
+  DEFAULT_MARKDOWN_DOCUMENT_NAME
+} from "../app/appState";
 import {
   addProjectRepository,
   createProjectStorageFromSnapshot,
@@ -10,6 +15,7 @@ import {
   getSelectedProjectRepository,
   isReservedGitPath,
   normalizeProjectStorageState,
+  projectRepositoryToLegacyProject,
   removeProjectRepository,
   writeProjectFile
 } from "./projectState";
@@ -21,11 +27,20 @@ describe("projectState", () => {
     const project = getSelectedProjectRepository(storage);
 
     expect(project?.id).toBe(snapshot.project.id);
-    expect(project?.filesystem.entries["main.typ"]?.kind).toBe("file");
+    expect(project?.filesystem.entries[DEFAULT_DOCUMENT_NAME]?.kind).toBe("file");
+    expect(project?.filesystem.entries[DEFAULT_LATEX_DOCUMENT_NAME]?.kind).toBe("file");
+    expect(project?.filesystem.entries[DEFAULT_MARKDOWN_DOCUMENT_NAME]?.kind).toBe("file");
+    expect(snapshot.project.activeDocumentId).toBe(
+      snapshot.project.documents.find((document) => document.name === DEFAULT_DOCUMENT_NAME)?.id
+    );
     const gitignore = project?.filesystem.entries[DEFAULT_PROJECT_GITIGNORE_PATH];
     expect(gitignore?.kind).toBe("file");
     expect(gitignore?.kind === "file" && gitignore.content).toBe(
       DEFAULT_PROJECT_GITIGNORE_CONTENT
+    );
+    expect(gitignore?.source.kind).toBe("document");
+    expect(project?.legacyRecovery.project.documents.map((document) => document.name)).not.toContain(
+      DEFAULT_PROJECT_GITIGNORE_PATH
     );
     expect(project?.git.backend).toBe("browser-git");
     expect(project?.git.status).toBe("not-initialized");
@@ -102,6 +117,23 @@ describe("projectState", () => {
       id: GENERATED_LATEX_PDF_SOURCE_ID
     });
     expect(gitignore?.kind === "file" && gitignore.content).toBe("*.pdf\nbuild/\n");
+    expect(gitignore?.source.kind).toBe("document");
+  });
+
+  it("exposes project .gitignore as an editable legacy document", () => {
+    const snapshot = createDefaultSnapshot();
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const project = getSelectedProjectRepository(storage);
+    expect(project).not.toBeNull();
+    if (!project) return;
+
+    const legacyProject = projectRepositoryToLegacyProject(project, snapshot.project);
+    const gitignoreDocument = legacyProject.documents.find(
+      (document) => document.name === DEFAULT_PROJECT_GITIGNORE_PATH
+    );
+
+    expect(gitignoreDocument?.content).toBe(DEFAULT_PROJECT_GITIGNORE_CONTENT);
+    expect(legacyProject.activeDocumentId).toBe(snapshot.project.activeDocumentId);
   });
 
   it("recognizes reserved git paths as non-workspace content", () => {

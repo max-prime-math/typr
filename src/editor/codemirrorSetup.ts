@@ -36,6 +36,7 @@ import {
   type ViewUpdate
 } from "@codemirror/view";
 import { getCM, vim } from "@replit/codemirror-vim";
+import { markdown } from "@codemirror/lang-markdown";
 import { latex } from "codemirror-lang-latex";
 import type { StyleSpec } from "style-mod";
 import { tags } from "@lezer/highlight";
@@ -364,6 +365,10 @@ function createLanguageExtension(language: SourceLanguage): Extension {
 
   if (language === "typst") {
     return typstLanguage();
+  }
+
+  if (language === "markdown") {
+    return markdown();
   }
 
   return [];
