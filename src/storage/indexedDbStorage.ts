@@ -3,7 +3,10 @@ import type { AppSnapshot } from "../app/appState";
 import type { GitWorkspaceState } from "../git/gitState";
 import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
-import type { TypstSnippet } from "../snippets/snippets";
+import {
+  normalizeSnippetCollections,
+  type SnippetCollections
+} from "../snippets/snippets";
 
 const DATABASE_NAME = "typr";
 const DATABASE_VERSION = 2;
@@ -172,12 +175,13 @@ export async function saveCustomThemes(themes: ThemeDefinition[]): Promise<void>
   await database.put(STORE_NAME, themes, CUSTOM_THEMES_KEY);
 }
 
-export async function loadCustomSnippets(): Promise<TypstSnippet[] | null> {
+export async function loadCustomSnippets(): Promise<SnippetCollections | null> {
   const database = await getDatabase();
-  return (await database.get(STORE_NAME, CUSTOM_SNIPPETS_KEY)) ?? null;
+  const storedSnippets = await database.get(STORE_NAME, CUSTOM_SNIPPETS_KEY);
+  return storedSnippets === undefined ? null : normalizeSnippetCollections(storedSnippets);
 }
 
-export async function saveCustomSnippets(snippets: TypstSnippet[]): Promise<void> {
+export async function saveCustomSnippets(snippets: SnippetCollections): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, snippets, CUSTOM_SNIPPETS_KEY);
 }

@@ -76,7 +76,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   },
   {
     id: "multiCursorLineEnds",
-    label: "Insert cursors at selected line ends",
+    label: "Add cursors to line ends",
     group: "Multiple cursors",
     defaultBinding: "Shift-Alt-i"
   },
@@ -307,20 +307,6 @@ export function matchesKeybinding(
     event.ctrlKey === parsed.ctrl &&
     event.metaKey === parsed.meta
   );
-}
-
-export function findKeybindingConflicts(
-  keybindings: KeybindingMap,
-  commandId: KeybindingCommandId
-): KeybindingCommandId[] {
-  const binding = keybindings[commandId];
-  if (!binding) {
-    return [];
-  }
-
-  return KEYBINDING_DEFINITIONS
-    .filter((definition) => definition.id !== commandId && keybindings[definition.id] === binding)
-    .map((definition) => definition.id);
 }
 
 function parseKeybinding(binding: string, apple: boolean) {

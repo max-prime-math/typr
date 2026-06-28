@@ -31,9 +31,10 @@ import type { SourceLanguage } from "../compiler/sourceFileTypes";
 import type { KeybindingMap } from "../app/keybindings";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import {
-  createSnippetCompletionSource,
+  createLanguageSnippetCompletionSource,
+  isSnippetLanguage,
   isPositionInsideMathMode,
-  type TypstSnippet
+  type SnippetDefinition
 } from "../snippets/snippets";
 
 interface TypstEditorProps {
@@ -49,7 +50,7 @@ interface TypstEditorProps {
   diagnostics: CompileDiagnostic[];
   highlightErrors: boolean;
   language?: SourceLanguage;
-  snippets: TypstSnippet[];
+  snippets: SnippetDefinition[];
   onSearchRequested: () => void;
   onCompileRequested: () => void;
   onSelectionChange: (lineNumber: number) => void;
@@ -133,8 +134,11 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const snippetsRef = useRef(snippets);
   const preservedViewStateRef = useRef<PreservedEditorViewState | null>(null);
   const snippetCompletionSource = useMemo<CompletionSource>(
-    () => (context) => createSnippetCompletionSource(snippetsRef.current)(context),
-    []
+    () => {
+      const snippetLanguage = isSnippetLanguage(language) ? language : "markdown";
+      return (context) => createLanguageSnippetCompletionSource(snippetLanguage, snippetsRef.current)(context);
+    },
+    [language]
   );
 
   useEffect(() => {
