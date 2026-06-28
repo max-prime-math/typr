@@ -10763,315 +10763,289 @@ export function App() {
               </div>
 
               {settingsTab === "git" ? (
-                <div className="settings-panel" role="tabpanel">
-                  <div className="settings-section">
-                    <div className="settings-section__header">
-                      <h3>Project connection</h3>
-                      <span className="pane__meta">{projectStorage.projects.length}</span>
+                <div className="settings-panel settings-panel--git" role="tabpanel">
+                  <div className="git-settings-card git-settings-card--status">
+                    <div className="git-project-connection-row">
+                      <label className="sync-field git-project-connection-row__select">
+                        <span>Project</span>
+                        <select
+                          onChange={(event) => handleSelectGitSettingsProject(event.target.value)}
+                          value={selectedProjectRepository?.id ?? ""}
+                        >
+                          {projectStorage.projects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.displayName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <span
+                        className={`git-project-status ${
+                          selectedGitProjectIsGitHubConnected
+                            ? "git-project-status--connected"
+                            : "git-project-status--disconnected"
+                        }`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`git-project-status__dot ${
+                            selectedGitProjectIsGitHubConnected
+                              ? "git-project-status__dot--connected"
+                              : "git-project-status__dot--disconnected"
+                          }`}
+                        />
+                        {selectedProjectGitConnectionLabel}
+                      </span>
                     </div>
-                    <div className="sidebar-card">
-                      <div className="git-project-connection-row">
-                        <label className="sync-field git-project-connection-row__select">
-                          <span>Project</span>
+                  </div>
+
+                  <div className="git-setup-strip">
+                    <a
+                      aria-label="Open GitHub personal access token settings"
+                      className="git-setup-step git-setup-step--link"
+                      href="https://github.com/settings/personal-access-tokens/new"
+                      rel="noreferrer"
+                      target="_blank"
+                      title="Open GitHub"
+                    >
+                      <span aria-hidden="true" className="git-setup-step__icon toolbar-icon toolbar-icon--sync" />
+                    </a>
+                    <label className="sync-field git-token-field">
+                      <span>Fine-grained token</span>
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) => handleGitCredentialChange(event.target.value)}
+                        placeholder="Paste token"
+                        type="password"
+                        value={selectedGitToken}
+                      />
+                    </label>
+                    <button
+                      className={`pane__button git-connect-button ${
+                        selectedGitProjectIsGitHubConnected ? "pane__button--danger" : ""
+                      }`}
+                      disabled={
+                        !selectedGitProject ||
+                        gitHubDiscovery.status === "loading" ||
+                        (!selectedGitProjectIsGitHubConnected && !selectedGitToken.trim())
+                      }
+                      onClick={() => {
+                        void handleGitHubTokenConnectionAction();
+                      }}
+                      title={
+                        selectedGitProjectIsGitHubConnected
+                          ? "Disconnect this project from GitHub"
+                          : "Connect this project to GitHub"
+                      }
+                      type="button"
+                    >
+                      {selectedGitProjectIsGitHubConnected
+                        ? "Disconnect"
+                        : gitHubDiscovery.status === "loading"
+                          ? "Connecting..."
+                          : "Connect"}
+                    </button>
+                  </div>
+
+                  <div className="git-settings-card">
+                    <div className="sync-grid git-remote-grid">
+                      <label className="sync-field">
+                        <span>Name</span>
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) => handleGitProjectFieldChange("name", event.target.value)}
+                          placeholder="Algebra notes repo"
+                          type="text"
+                          value={selectedGitProject?.name ?? ""}
+                        />
+                      </label>
+                      <label className="sync-field">
+                        <span>Owner</span>
+                        <input
+                          list="github-owner-options"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) =>
+                            handleGitHubOwnerChange(event.target.value)
+                          }
+                          placeholder={
+                            gitHubDiscovery.status === "connected"
+                              ? "Choose or enter an owner"
+                              : "Connect token, then choose owner"
+                          }
+                          type="text"
+                          value={remoteConfig.owner}
+                        />
+                        <datalist id="github-owner-options">
+                          {gitHubDiscovery.owners.map((owner) => (
+                            <option key={owner.login} value={owner.login}>
+                              {owner.type}
+                            </option>
+                          ))}
+                        </datalist>
+                      </label>
+                      <label className="sync-field">
+                        <span>Repo</span>
+                        {gitHubDiscovery.repoMode === "select" ? (
                           <select
-                            onChange={(event) => handleSelectGitSettingsProject(event.target.value)}
-                            value={selectedProjectRepository?.id ?? ""}
+                            disabled={!remoteConfig.owner.trim() || gitHubDiscovery.isLoadingRepos}
+                            onChange={(event) => {
+                              if (event.target.value === "__create__") {
+                                handleGitHubRepoModeChange("create");
+                                return;
+                              }
+                              if (event.target.value === "__manual__") {
+                                handleGitHubRepoModeChange("manual");
+                                return;
+                              }
+                              handleGitHubRepoSelection(event.target.value);
+                            }}
+                            value={
+                              gitHubDiscovery.repos.some((repo) => repo.name === remoteConfig.repo)
+                                ? remoteConfig.repo
+                                : ""
+                            }
                           >
-                            {projectStorage.projects.map((project) => (
-                              <option key={project.id} value={project.id}>
-                                {project.displayName}
+                            <option value="">
+                              {gitHubDiscovery.isLoadingRepos
+                                ? "Loading repositories..."
+                                : "Choose repository"}
+                            </option>
+                            {gitHubDiscovery.repos.map((repo) => (
+                              <option key={repo.fullName} value={repo.name}>
+                                {repo.name}{repo.private ? " (private)" : ""}
+                              </option>
+                            ))}
+                            <option value="__create__">Create new repository...</option>
+                            <option value="__manual__">Enter manually...</option>
+                          </select>
+                        ) : (
+                          <input
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            onChange={(event) =>
+                              handleGitRemoteConfigChange("repo", event.target.value)
+                            }
+                            onPaste={(event) => {
+                              if (handleGitHubUrlPaste(event.clipboardData.getData("text"))) {
+                                event.preventDefault();
+                              }
+                            }}
+                            placeholder={
+                              gitHubDiscovery.repoMode === "create"
+                                ? "New repository name"
+                                : "Repository name or GitHub URL"
+                            }
+                            type="text"
+                            value={remoteConfig.repo}
+                          />
+                        )}
+                        {gitHubDiscovery.repoMode !== "select" ? (
+                          <button
+                            className="pane__button pane__button--compact"
+                            onClick={() => handleGitHubRepoModeChange("select")}
+                            type="button"
+                          >
+                            Choose existing
+                          </button>
+                        ) : null}
+                      </label>
+                      <label className="sync-field">
+                        <span>Branch</span>
+                        {gitHubDiscovery.branches.length > 0 ? (
+                          <select
+                            onChange={(event) =>
+                              handleGitRemoteConfigChange("branch", event.target.value)
+                            }
+                            value={
+                              gitHubDiscovery.branches.some((branch) => branch.name === remoteConfig.branch)
+                                ? remoteConfig.branch
+                                : ""
+                            }
+                          >
+                            <option value="">
+                              {gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "Choose branch"}
+                            </option>
+                            {gitHubDiscovery.branches.map((branch) => (
+                              <option key={branch.name} value={branch.name}>
+                                {branch.name}
                               </option>
                             ))}
                           </select>
-                        </label>
-                        <div className="git-project-connection-row__actions">
-                          <span className="git-project-status">
-                            <span
-                              aria-hidden="true"
-                              className={`git-project-status__dot ${
-                                selectedGitProjectIsGitHubConnected
-                                  ? "git-project-status__dot--connected"
-                                  : "git-project-status__dot--disconnected"
-                              }`}
-                            />
-                            {selectedProjectGitConnectionLabel}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="sidebar-card">
-                    <div className="sidebar-card__row">
-                      <span>Fine-grained token</span>
-                      <a
-                        className="pane__meta"
-                        href="https://github.com/settings/personal-access-tokens/new"
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        Open GitHub
-                      </a>
-                    </div>
-                    <div className="sync-token-row">
-                      <label className="sync-field sync-token-row__field">
-                        <span>Token</span>
+                        ) : (
+                          <input
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            onChange={(event) =>
+                              handleGitRemoteConfigChange("branch", event.target.value)
+                            }
+                            placeholder={gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "main"}
+                            type="text"
+                            value={remoteConfig.branch}
+                          />
+                        )}
+                      </label>
+                      <label className="sync-field">
+                        <span>Remote</span>
                         <input
                           autoCapitalize="none"
                           autoCorrect="off"
-                          onChange={(event) => handleGitCredentialChange(event.target.value)}
-                          placeholder="Paste token"
-                          type="password"
-                          value={selectedGitToken}
+                          onChange={(event) =>
+                            handleGitRemoteConfigChange("remoteName", event.target.value)
+                          }
+                          placeholder="origin"
+                          type="text"
+                          value={remoteConfig.remoteName}
                         />
                       </label>
-                      <button
-                        className={`pane__button pane__button--compact ${
-                          selectedGitProjectIsGitHubConnected ? "pane__button--danger" : ""
-                        }`}
-                        disabled={
-                          !selectedGitProject ||
-                          gitHubDiscovery.status === "loading" ||
-                          (!selectedGitProjectIsGitHubConnected && !selectedGitToken.trim())
-                        }
-                        onClick={() => {
-                          void handleGitHubTokenConnectionAction();
-                        }}
-                        title={
-                          selectedGitProjectIsGitHubConnected
-                            ? "Disconnect this project from GitHub"
-                            : "Connect this project to GitHub"
-                        }
-                        type="button"
-                      >
-                        {selectedGitProjectIsGitHubConnected
-                          ? "Disconnect"
-                          : gitHubDiscovery.status === "loading"
-                            ? "Connecting..."
-                            : "Connect"}
-                      </button>
+                      <label className="sync-field">
+                        <span>Backend</span>
+                        <select
+                          onChange={(event) =>
+                            handleGitProjectBackendChange(
+                              event.target.value as GitManagedProject["backendId"]
+                            )
+                          }
+                          value={selectedGitProject?.backendId ?? "browser"}
+                        >
+                          <option value="browser">Browser</option>
+                          <option value="local-agent">Local Agent</option>
+                          <option value="cloud-container">Cloud Container</option>
+                        </select>
+                      </label>
                     </div>
-                    <ul className="sidebar-card__copy sidebar-card__list">
-                      <li>
-                        Existing repo: select only that repo and grant <strong>Contents</strong>{" "}
-                        read/write.
-                      </li>
-                      <li>
-                        Creating repos from Typr: choose All repositories and also grant{" "}
-                        <strong>Administration</strong> read/write. Use an expiring token, and
-                        turn this broader access off when you are not creating repos.
-                      </li>
-                    </ul>
                   </div>
 
-                  <div className="sync-grid">
-                    <label className="sync-field">
-                      <span>Name</span>
+                  <div className="git-option-grid">
+                    <label className="settings-toggle git-option-tile">
+                      <span>
+                        <strong>Private</strong>
+                      </span>
                       <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) => handleGitProjectFieldChange("name", event.target.value)}
-                        placeholder="Algebra notes repo"
-                        type="text"
-                        value={selectedGitProject?.name ?? ""}
+                        checked={createGitHubRepoPrivate}
+                        onChange={(event) => setCreateGitHubRepoPrivate(event.target.checked)}
+                        type="checkbox"
                       />
                     </label>
-                    <label className="sync-field">
-                      <span>Owner</span>
+
+                    <label className="settings-toggle git-option-tile">
+                      <span>
+                        <strong>Auto-sync</strong>
+                      </span>
                       <input
-                        list="github-owner-options"
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitHubOwnerChange(event.target.value)
-                        }
-                        placeholder={
-                          gitHubDiscovery.status === "connected"
-                            ? "Choose or enter an owner"
-                            : "Connect token, then choose owner"
-                        }
-                        type="text"
-                        value={remoteConfig.owner}
+                        checked={snapshot.preferences.autoSyncGitProjects}
+                        onChange={handleAutoSyncGitProjectsToggle}
+                        type="checkbox"
                       />
-                      <datalist id="github-owner-options">
-                        {gitHubDiscovery.owners.map((owner) => (
-                          <option key={owner.login} value={owner.login}>
-                            {owner.type}
-                          </option>
-                        ))}
-                      </datalist>
-                    </label>
-                    <label className="sync-field">
-                      <span>Repo</span>
-                      {gitHubDiscovery.repoMode === "select" ? (
-                        <select
-                          disabled={!remoteConfig.owner.trim() || gitHubDiscovery.isLoadingRepos}
-                          onChange={(event) => {
-                            if (event.target.value === "__create__") {
-                              handleGitHubRepoModeChange("create");
-                              return;
-                            }
-                            if (event.target.value === "__manual__") {
-                              handleGitHubRepoModeChange("manual");
-                              return;
-                            }
-                            handleGitHubRepoSelection(event.target.value);
-                          }}
-                          value={
-                            gitHubDiscovery.repos.some((repo) => repo.name === remoteConfig.repo)
-                              ? remoteConfig.repo
-                              : ""
-                          }
-                        >
-                          <option value="">
-                            {gitHubDiscovery.isLoadingRepos
-                              ? "Loading repositories..."
-                              : "Choose repository"}
-                          </option>
-                          {gitHubDiscovery.repos.map((repo) => (
-                            <option key={repo.fullName} value={repo.name}>
-                              {repo.name}{repo.private ? " (private)" : ""}
-                            </option>
-                          ))}
-                          <option value="__create__">Create new repository...</option>
-                          <option value="__manual__">Enter manually...</option>
-                        </select>
-                      ) : (
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) =>
-                            handleGitRemoteConfigChange("repo", event.target.value)
-                          }
-                          onPaste={(event) => {
-                            if (handleGitHubUrlPaste(event.clipboardData.getData("text"))) {
-                              event.preventDefault();
-                            }
-                          }}
-                          placeholder={
-                            gitHubDiscovery.repoMode === "create"
-                              ? "New repository name"
-                              : "Repository name or GitHub URL"
-                          }
-                          type="text"
-                          value={remoteConfig.repo}
-                        />
-                      )}
-                      {gitHubDiscovery.repoMode !== "select" ? (
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={() => handleGitHubRepoModeChange("select")}
-                          type="button"
-                        >
-                          Choose existing
-                        </button>
-                      ) : null}
-                    </label>
-                    <label className="sync-field">
-                      <span>Branch</span>
-                      {gitHubDiscovery.branches.length > 0 ? (
-                        <select
-                          onChange={(event) =>
-                            handleGitRemoteConfigChange("branch", event.target.value)
-                          }
-                          value={
-                            gitHubDiscovery.branches.some((branch) => branch.name === remoteConfig.branch)
-                              ? remoteConfig.branch
-                              : ""
-                          }
-                        >
-                          <option value="">
-                            {gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "Choose branch"}
-                          </option>
-                          {gitHubDiscovery.branches.map((branch) => (
-                            <option key={branch.name} value={branch.name}>
-                              {branch.name}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) =>
-                            handleGitRemoteConfigChange("branch", event.target.value)
-                          }
-                          placeholder={gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "main"}
-                          type="text"
-                          value={remoteConfig.branch}
-                        />
-                      )}
-                    </label>
-                    <label className="sync-field">
-                      <span>Remote</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitRemoteConfigChange("remoteName", event.target.value)
-                        }
-                        placeholder="origin"
-                        type="text"
-                        value={remoteConfig.remoteName}
-                      />
-                    </label>
-                    <label className="sync-field">
-                      <span>Backend</span>
-                      <select
-                        onChange={(event) =>
-                          handleGitProjectBackendChange(
-                            event.target.value as GitManagedProject["backendId"]
-                          )
-                        }
-                        value={selectedGitProject?.backendId ?? "browser"}
-                      >
-                        <option value="browser">Browser</option>
-                        <option value="local-agent">Local Agent</option>
-                        <option value="cloud-container">Cloud Container</option>
-                      </select>
                     </label>
                   </div>
 
-                  <label className="settings-toggle">
-                    <span>
-                      <strong>Create new repos as private</strong>
-                      <small>
-                        Applies only when Typr creates a GitHub repository from the current project.
-                      </small>
-                    </span>
-                    <input
-                      checked={createGitHubRepoPrivate}
-                      onChange={(event) => setCreateGitHubRepoPrivate(event.target.checked)}
-                      type="checkbox"
-                    />
-                  </label>
-
-                  <label className="settings-toggle">
-                    <span>
-                      <strong>Auto-sync GitHub projects</strong>
-                      <small>
-                        Pulls and pushes a connected project when Typr opens it or switches to it.
-                        Local uncommitted changes are left alone.
-                      </small>
-                    </span>
-                    <input
-                      checked={snapshot.preferences.autoSyncGitProjects}
-                      onChange={handleAutoSyncGitProjectsToggle}
-                      type="checkbox"
-                    />
-                  </label>
-
-                  <div className="sidebar-card">
-                    <div className="sidebar-card__row">
-                      <span>Connect to GitHub</span>
-                      <span className="pane__meta">Project-safe</span>
-                    </div>
-                    <p className="sidebar-card__copy">
-                      Create a GitHub-backed copy of this project, or import an existing GitHub repo as a separate Typr project.
-                    </p>
-                    <div className="sidebar-card__actions">
+                  <div className="git-settings-card git-settings-card--actions">
+                    <div className="git-action-grid">
                       <button
-                        className="pane__button pane__button--compact"
+                        className="pane__button git-action-button"
                         disabled={isSyncing || !selectedGitProject || !selectedGitToken.trim()}
                         onClick={() => {
                           void handleCreateGitHubRepoFromCurrentProject();
@@ -11081,7 +11055,7 @@ export function App() {
                         Create repo from current project
                       </button>
                       <button
-                        className="pane__button pane__button--compact"
+                        className="pane__button git-action-button"
                         disabled={isSyncing || !selectedGitProject || !selectedGitToken.trim()}
                         onClick={() => {
                           void handleImportExistingGitHubRepoAsProject();
@@ -11093,40 +11067,44 @@ export function App() {
                     </div>
                   </div>
 
-                  <label className="sync-field">
-                    <span>Project .gitignore</span>
-                    <textarea
-                      disabled={!selectedProjectRepository}
-                      onChange={(event) => handleProjectGitignoreChange(event.target.value)}
-                      placeholder={"*.pdf\n.env\nbuild/"}
-                      rows={6}
-                      value={projectGitignoreContent}
-                    />
-                  </label>
+                  <div className="git-settings-card git-settings-card--advanced">
+                    <div className="git-advanced-grid">
+                      <label className="sync-field">
+                        <span>Project .gitignore</span>
+                        <textarea
+                          disabled={!selectedProjectRepository}
+                          onChange={(event) => handleProjectGitignoreChange(event.target.value)}
+                          placeholder={"*.pdf\n.env\nbuild/"}
+                          rows={6}
+                          value={projectGitignoreContent}
+                        />
+                      </label>
 
-                  <label className="sync-field">
-                    <span>Status ignore patterns</span>
-                    <textarea
-                      onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
-                      placeholder={"figures/\n*.pdf\nnotes/private/**"}
-                      rows={4}
-                      value={stringifyIgnorePatterns(selectedGitProject?.ignorePatterns ?? [])}
-                    />
-                  </label>
+                      <label className="sync-field">
+                        <span>Status ignore patterns</span>
+                        <textarea
+                          onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
+                          placeholder={"figures/\n*.pdf\nnotes/private/**"}
+                          rows={4}
+                          value={stringifyIgnorePatterns(selectedGitProject?.ignorePatterns ?? [])}
+                        />
+                      </label>
+                    </div>
 
-                  <label className="sync-field">
-                    <span>Default push message</span>
-                    <input
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      onChange={(event) =>
-                        handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
-                      }
-                      placeholder="Sync project from Typr"
-                      type="text"
-                      value={selectedGitProject?.commitMessageTemplate ?? ""}
-                    />
-                  </label>
+                    <label className="sync-field">
+                      <span>Default push message</span>
+                      <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        onChange={(event) =>
+                          handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
+                        }
+                        placeholder="Sync project from Typr"
+                        type="text"
+                        value={selectedGitProject?.commitMessageTemplate ?? ""}
+                      />
+                    </label>
+                  </div>
 
                 </div>
               ) : settingsTab === "themes" ? (
