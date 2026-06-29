@@ -19,11 +19,25 @@ function getWorkspaceIconTitle(badge: WorkspaceFileBadge): string {
     case "typ":
       return "Typst file";
     case "tex":
-      return "TeX file";
+      return "TeX/LaTeX file";
+    case "md":
+      return "Markdown file";
     case "img":
       return "Image file";
     case "pdf":
       return "PDF file";
+    case "json":
+      return "JSON file";
+    case "yaml":
+      return "YAML file";
+    case "csv":
+      return "CSV file";
+    case "config":
+      return "Configuration file";
+    case "bib":
+      return "Bibliography file";
+    case "code":
+      return "Code file";
     case "txt":
       return "Text file";
     case "bin":

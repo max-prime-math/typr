@@ -13,8 +13,15 @@ export type WorkspaceNodeKind = "file" | "folder";
 export type WorkspaceFileBadge =
   | "typ"
   | "tex"
+  | "md"
   | "img"
   | "pdf"
+  | "json"
+  | "yaml"
+  | "csv"
+  | "config"
+  | "bib"
+  | "code"
   | "txt"
   | "bin"
   | "dir"
@@ -47,16 +54,66 @@ export type WorkspaceSource =
 const TEXT_FILE_EXTENSIONS = new Set([
   "typ",
   "tex",
+  "ltx",
+  "latex",
+  "sty",
+  "cls",
+  "bib",
   "markdown",
   "txt",
   "md",
   "json",
+  "jsonc",
   "yaml",
   "yml",
+  "toml",
+  "ini",
   "csv"
 ]);
 const TEXT_FILE_NAMES = new Set([".gitignore"]);
 const IMAGE_FILE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"]);
+const TEX_FILE_EXTENSIONS = new Set(["tex", "ltx", "latex", "sty", "cls"]);
+const MARKDOWN_FILE_EXTENSIONS = new Set(["md", "markdown"]);
+const JSON_FILE_EXTENSIONS = new Set(["json", "jsonc"]);
+const YAML_FILE_EXTENSIONS = new Set(["yaml", "yml"]);
+const CSV_FILE_EXTENSIONS = new Set(["csv", "tsv"]);
+const CONFIG_FILE_EXTENSIONS = new Set(["toml", "ini", "env", "lock"]);
+const CONFIG_FILE_NAMES = new Set([
+  ".editorconfig",
+  ".env",
+  ".gitignore",
+  ".npmrc",
+  "dockerfile",
+  "makefile",
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "tsconfig.json",
+  "vite.config.js",
+  "vite.config.ts"
+]);
+const CODE_FILE_EXTENSIONS = new Set([
+  "c",
+  "cc",
+  "cpp",
+  "css",
+  "go",
+  "h",
+  "hpp",
+  "html",
+  "java",
+  "js",
+  "jsx",
+  "mjs",
+  "php",
+  "py",
+  "rb",
+  "rs",
+  "sh",
+  "tsx",
+  "ts",
+  "xml"
+]);
 
 export function normalizeWorkspacePath(path: string): string {
   return path
@@ -278,14 +335,27 @@ export function getWorkspaceNodeBadge(node: WorkspaceTreeNode): WorkspaceFileBad
     return node.children.length === 0 ? "empty" : "dir";
   }
 
+  const fileName = normalizeWorkspacePath(node.path).split("/").at(-1)?.toLowerCase() ?? "";
   const extension = getWorkspacePathExtension(node.path);
+
+  if (CONFIG_FILE_NAMES.has(fileName)) {
+    return "config";
+  }
 
   if (extension === "typ") {
     return "typ";
   }
 
-  if (extension === "tex") {
+  if (extension !== null && TEX_FILE_EXTENSIONS.has(extension)) {
     return "tex";
+  }
+
+  if (extension === "bib") {
+    return "bib";
+  }
+
+  if (extension !== null && MARKDOWN_FILE_EXTENSIONS.has(extension)) {
+    return "md";
   }
 
   if (extension === "pdf") {
@@ -294,6 +364,26 @@ export function getWorkspaceNodeBadge(node: WorkspaceTreeNode): WorkspaceFileBad
 
   if (extension !== null && IMAGE_FILE_EXTENSIONS.has(extension)) {
     return "img";
+  }
+
+  if (extension !== null && JSON_FILE_EXTENSIONS.has(extension)) {
+    return "json";
+  }
+
+  if (extension !== null && YAML_FILE_EXTENSIONS.has(extension)) {
+    return "yaml";
+  }
+
+  if (extension !== null && CSV_FILE_EXTENSIONS.has(extension)) {
+    return "csv";
+  }
+
+  if (extension !== null && CONFIG_FILE_EXTENSIONS.has(extension)) {
+    return "config";
+  }
+
+  if (extension !== null && CODE_FILE_EXTENSIONS.has(extension)) {
+    return "code";
   }
 
   if (extension !== null && TEXT_FILE_EXTENSIONS.has(extension)) {

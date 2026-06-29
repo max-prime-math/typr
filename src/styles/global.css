@@ -2681,12 +2681,11 @@ button {
 }
 
 .file-tree__folder-icon--open {
-  background-image: url("../icons/files/folder.svg");
+  background-image: url("../icons/files/folder-open.svg");
 }
 
 .file-tree__folder-icon--empty {
-  background-image: url("../icons/files/folder.svg");
-  opacity: 0.62;
+  background-image: url("../icons/files/folder-empty.svg");
 }
 
 .file-tree__items {
@@ -2815,24 +2814,51 @@ button {
 }
 
 .file-tree__file-icon--tex {
-  background-image: url("../icons/files/tex.svg");
+  background-image: url("../icons/files/file-tex.svg");
+}
+
+.file-tree__file-icon--md {
+  background-image: url("../icons/files/file-markdown.svg");
 }
 
 .file-tree__file-icon--img {
-  background-image: url("../icons/files/image.svg");
+  background-image: url("../icons/files/file-image.svg");
 }
 
 .file-tree__file-icon--pdf {
-  background-image: url("../icons/files/pdf.svg");
+  background-image: url("../icons/files/file-pdf.svg");
+}
+
+.file-tree__file-icon--json {
+  background-image: url("../icons/files/file-json.svg");
+}
+
+.file-tree__file-icon--yaml {
+  background-image: url("../icons/files/file-yaml.svg");
+}
+
+.file-tree__file-icon--csv {
+  background-image: url("../icons/files/file-csv.svg");
+}
+
+.file-tree__file-icon--config {
+  background-image: url("../icons/files/file-config.svg");
+}
+
+.file-tree__file-icon--bib {
+  background-image: url("../icons/files/file-bib.svg");
+}
+
+.file-tree__file-icon--code {
+  background-image: url("../icons/files/file-code.svg");
 }
 
 .file-tree__file-icon--txt {
-  background-image: url("../icons/files/default.svg");
+  background-image: url("../icons/files/file-text.svg");
 }
 
 .file-tree__file-icon--bin {
-  background-image: url("../icons/files/default.svg");
-  opacity: 0.76;
+  background-image: url("../icons/files/file-binary.svg");
 }
 
 .workspace-context-menu {
