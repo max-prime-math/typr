@@ -358,6 +358,7 @@ const WORKSPACE_UPLOAD_ACCEPT = [
 ].join(",");
 const TEXT_DECODER = new TextDecoder();
 const TEXT_ENCODER = new TextEncoder();
+const WORKSPACE_PREVIEW_FILE_CACHE_LIMIT = 8;
 const GRAPHIC_REFERENCE_EXTENSIONS = [
   "pdf",
   "png",
@@ -428,6 +429,37 @@ function getWorkspacePreviewMimeType(path: string): string | null {
       return "text/markdown";
     default:
       return null;
+  }
+}
+
+function getWorkspacePreviewFileCacheKey(
+  project: TyprProjectRepository,
+  path: string
+): string {
+  const normalizedPath = normalizeWorkspacePath(path);
+  const entryVersion = normalizedPath
+    ? project.filesystem.entries[normalizedPath]?.updatedAt ?? "unknown"
+    : "unknown";
+
+  return `${project.id}:${normalizedPath}:${entryVersion}`;
+}
+
+function rememberWorkspacePreviewFile(
+  cache: Map<string, WorkspacePreviewFile>,
+  key: string,
+  file: WorkspacePreviewFile
+): void {
+  cache.delete(key);
+  cache.set(key, file);
+
+  while (cache.size > WORKSPACE_PREVIEW_FILE_CACHE_LIMIT) {
+    const oldestKey = cache.keys().next().value;
+
+    if (!oldestKey) {
+      return;
+    }
+
+    cache.delete(oldestKey);
   }
 }
 
@@ -3615,6 +3647,7 @@ export function App() {
   );
   const isInspectingGraphSource = inspectedGraph !== null;
   const sourceEditorValue = isInspectingGraphSource ? inspectedGraphSource : activeDocumentTextContent;
+  const workspacePreviewFileCacheRef = useRef(new Map<string, WorkspacePreviewFile>());
   useEffect(() => {
     const handle = window.setTimeout(() => {
       setOutlineSourceContent(activeDocumentTextContent);
@@ -3781,20 +3814,44 @@ export function App() {
         return;
       }
 
-      setSelectedWorkspacePreview(null);
-
       if (!mimeType) {
         setSelectedWorkspacePreview(null);
         return;
       }
 
+      const previewCacheKey = selectedProjectRepository
+        ? getWorkspacePreviewFileCacheKey(
+            selectedProjectRepository,
+            activePreviewWorkspaceNode.path
+          )
+        : null;
+      const cachedPreview = previewCacheKey
+        ? workspacePreviewFileCacheRef.current.get(previewCacheKey) ?? null
+        : null;
+
+      if (cachedPreview) {
+        setSelectedWorkspacePreview(cachedPreview);
+      } else {
+        setSelectedWorkspacePreview(null);
+      }
+
       if (activePreviewWorkspaceNode.content instanceof Uint8Array) {
-        setSelectedWorkspacePreview({
+        const previewFile = {
           name: activePreviewWorkspaceNode.name,
           path: activePreviewWorkspaceNode.path,
           content: activePreviewWorkspaceNode.content,
           mimeType
-        });
+        };
+
+        if (previewCacheKey) {
+          rememberWorkspacePreviewFile(
+            workspacePreviewFileCacheRef.current,
+            previewCacheKey,
+            previewFile
+          );
+        }
+
+        setSelectedWorkspacePreview(previewFile);
         return;
       }
 
@@ -3807,12 +3864,22 @@ export function App() {
       }
 
       if (bytes) {
-        setSelectedWorkspacePreview({
+        const previewFile = {
           name: activePreviewWorkspaceNode.name,
           path: activePreviewWorkspaceNode.path,
           content: bytes,
           mimeType
-        });
+        };
+
+        if (previewCacheKey) {
+          rememberWorkspacePreviewFile(
+            workspacePreviewFileCacheRef.current,
+            previewCacheKey,
+            previewFile
+          );
+        }
+
+        setSelectedWorkspacePreview(previewFile);
         return;
       }
 

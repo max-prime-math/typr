@@ -34,12 +34,18 @@ function getWorkspaceIconTitle(badge: WorkspaceFileBadge): string {
       return "CSV file";
     case "config":
       return "Configuration file";
+    case "git":
+      return "Git file";
+    case "info":
+      return "Readme file";
     case "bib":
       return "Bibliography file";
     case "code":
       return "Code file";
     case "txt":
       return "Text file";
+    case "archive":
+      return "Archive file";
     case "bin":
       return "Binary file";
     case "dir":

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
@@ -135,6 +135,10 @@ export function PreviewPane({
             {fallbackResult.output.kind === "pdf" && fallbackResult.output.artifactData ? (
               <PdfPreview
                 artifactData={fallbackResult.output.artifactData}
+                cacheKey={createPdfPreviewCacheKey(
+                  `compile:${sourcePath ?? "preview"}`,
+                  fallbackResult.output.artifactData
+                )}
                 isFaulted={isErrorSettled}
                 paperView={paperView}
                 theme={theme}
@@ -196,6 +200,10 @@ export function PreviewPane({
         {result.output.kind === "pdf" && result.output.artifactData ? (
           <PdfPreview
             artifactData={result.output.artifactData}
+            cacheKey={createPdfPreviewCacheKey(
+              `compile:${sourcePath ?? "preview"}`,
+              result.output.artifactData
+            )}
             paperView={paperView}
             theme={theme}
             zoom={currentZoom}
@@ -701,6 +709,17 @@ function WorkspaceFilePreview({
   theme: ThemeDefinition;
   zoom: PreviewZoomState;
 }) {
+  const pdfArtifactData = useMemo(() => {
+    return file.mimeType === "application/pdf"
+      ? encodeWorkspacePreviewBytes(file.content)
+      : null;
+  }, [file.content, file.mimeType]);
+  const pdfCacheKey = useMemo(() => {
+    return pdfArtifactData
+      ? createPdfPreviewCacheKey(`workspace:${file.path}`, pdfArtifactData)
+      : undefined;
+  }, [file.path, pdfArtifactData]);
+
   if (file.mimeType === "text/markdown") {
     return (
       <MarkdownFilePreview
@@ -712,10 +731,11 @@ function WorkspaceFilePreview({
     );
   }
 
-  if (file.mimeType === "application/pdf") {
+  if (file.mimeType === "application/pdf" && pdfArtifactData) {
     return (
       <PdfPreview
-        artifactData={encodeWorkspacePreviewBytes(file.content)}
+        artifactData={pdfArtifactData}
+        cacheKey={pdfCacheKey}
         paperView={paperView}
         theme={theme}
         zoom={zoom}
@@ -1499,12 +1519,14 @@ function ChromiumCanvasPreview({
 
 function PdfPreview({
   artifactData,
+  cacheKey,
   paperView = false,
   isFaulted = false,
   theme,
   zoom
 }: {
   artifactData: Uint8Array;
+  cacheKey?: string;
   paperView?: boolean;
   isFaulted?: boolean;
   theme: ThemeDefinition;
@@ -1514,7 +1536,6 @@ function PdfPreview({
   const zoomRef = useRef(zoom);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [hasMeasuredViewport, setHasMeasuredViewport] = useState(false);
 
   zoomRef.current = zoom;
 
@@ -1537,10 +1558,6 @@ function PdfPreview({
           width: container.clientWidth,
           height: container.clientHeight
         };
-
-        if (next.width > 0 && next.height > 0) {
-          setHasMeasuredViewport(true);
-        }
 
         setViewportSize((current) => {
           return current.width === next.width && current.height === next.height
@@ -1574,10 +1591,10 @@ function PdfPreview({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
 
-    if (!container || !hasMeasuredViewport) {
+    if (!container) {
       return;
     }
 
@@ -1588,6 +1605,7 @@ function PdfPreview({
     setRenderError(null);
 
     void renderPdfArtifactToCanvas(container, artifactData, {
+      cacheKey,
       paperView,
       signal: abortController.signal,
       themeColors: {
@@ -1616,7 +1634,7 @@ function PdfPreview({
     };
   }, [
     artifactData,
-    hasMeasuredViewport,
+    cacheKey,
     paperView,
     theme.palette.editorBackground,
     theme.palette.editorForeground,
@@ -2185,6 +2203,21 @@ function encodeWorkspacePreviewBytes(content: string | Uint8Array): Uint8Array {
   }
 
   return new TextEncoder().encode(content);
+}
+
+function createPdfPreviewCacheKey(scope: string, content: Uint8Array): string {
+  let hash = 2166136261;
+  const sampleCount = Math.min(128, content.byteLength);
+  const maxIndex = Math.max(0, content.byteLength - 1);
+
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const byteIndex =
+      sampleCount <= 1 ? 0 : Math.round((sampleIndex / (sampleCount - 1)) * maxIndex);
+    hash ^= content[byteIndex] ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return `${scope}:${content.byteLength}:${(hash >>> 0).toString(36)}`;
 }
 
 function decodeWorkspaceTextContent(content: string | Uint8Array): string {

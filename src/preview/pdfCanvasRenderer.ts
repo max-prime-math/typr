@@ -9,8 +9,10 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const INITIAL_PDF_RENDER_BATCH_SIZE = 2;
+const PDF_CANVAS_RENDER_CACHE_LIMIT = 6;
 
 export interface PdfCanvasRenderOptions {
+  cacheKey?: string;
   paperView?: boolean;
   signal?: AbortSignal;
   themeColors?: {
@@ -30,20 +32,43 @@ export async function renderPdfArtifactToCanvas(
   artifactContent: Uint8Array,
   options: PdfCanvasRenderOptions = {}
 ): Promise<void> {
+  assertNotAborted(options.signal);
+  rememberVisiblePdfCanvasScroll(container);
+  const scrollAnchor = capturePdfScrollAnchor(container);
+  const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
+  const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
+  const renderCacheKey = createPdfCanvasRenderCacheKey(container, options, themeColors);
+
+  container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
+  container.style.setProperty("--pdf-page-foreground", themeColors?.foregroundCss ?? "#000000");
+
+  const restoredEntry = restorePdfCanvasRenderFromCache(container, renderCacheKey, options.zoom);
+
+  if (restoredEntry?.complete) {
+    return;
+  }
+
   const pdfDocument = await getDocument({
     data: copyBytes(artifactContent)
   }).promise;
 
   try {
     assertNotAborted(options.signal);
-    const scrollAnchor = capturePdfScrollAnchor(container);
-    const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
-    const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
-    container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
-    container.style.setProperty("--pdf-page-foreground", themeColors?.foregroundCss ?? "#000000");
-    container.replaceChildren();
+    const startPageNumber = restoredEntry ? restoredEntry.pages.length + 1 : 1;
 
-    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+    if (!restoredEntry) {
+      delete container.dataset.pdfCanvasRenderCacheKey;
+      container.replaceChildren();
+    }
+
+    if (restoredEntry && startPageNumber > pdfDocument.numPages) {
+      applyPdfCanvasZoom(container, options.zoom);
+      restorePdfScrollAnchor(container, scrollAnchor);
+      rememberPdfCanvasRender(renderCacheKey, container, true);
+      return;
+    }
+
+    for (let pageNumber = startPageNumber; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
       assertNotAborted(options.signal);
       const target = await createPdfPageRenderTarget(
         pdfDocument,
@@ -60,6 +85,7 @@ export async function renderPdfArtifactToCanvas(
         themeColors,
         useDarkRetheme
       });
+      rememberPdfCanvasRender(renderCacheKey, container, false);
 
       if (pageNumber === Math.min(INITIAL_PDF_RENDER_BATCH_SIZE, pdfDocument.numPages)) {
         applyPdfCanvasZoom(container, options.zoom);
@@ -71,8 +97,138 @@ export async function renderPdfArtifactToCanvas(
 
     applyPdfCanvasZoom(container, options.zoom);
     restorePdfScrollAnchor(container, scrollAnchor);
+    rememberPdfCanvasRender(renderCacheKey, container, true);
   } finally {
     await destroyPdfDocument(pdfDocument);
+  }
+}
+
+interface PdfCanvasRenderCacheEntry {
+  complete: boolean;
+  pages: HTMLElement[];
+  scrollLeft: number;
+  scrollTop: number;
+  lastUsedAt: number;
+}
+
+const pdfCanvasRenderCache = new Map<string, PdfCanvasRenderCacheEntry>();
+
+function createPdfCanvasRenderCacheKey(
+  container: HTMLElement,
+  options: PdfCanvasRenderOptions,
+  themeColors: PdfThemeColors | null
+): string | null {
+  if (!options.cacheKey) {
+    return null;
+  }
+
+  const zoom = options.zoom ?? { mode: "fit-width", percent: 100 };
+  const themeKey = options.paperView
+    ? "paper"
+    : `${themeColors?.backgroundCss ?? "#ffffff"}:${themeColors?.foregroundCss ?? "#000000"}`;
+
+  return [
+    options.cacheKey,
+    themeKey,
+    zoom.mode,
+    zoom.percent,
+    getPdfOutputScale()
+  ].join("|");
+}
+
+function restorePdfCanvasRenderFromCache(
+  container: HTMLElement,
+  cacheKey: string | null,
+  zoom: PdfCanvasZoomState | undefined
+): PdfCanvasRenderCacheEntry | null {
+  if (!cacheKey) {
+    return null;
+  }
+
+  const entry = pdfCanvasRenderCache.get(cacheKey);
+
+  if (!entry || entry.pages.length === 0) {
+    pdfCanvasRenderCache.delete(cacheKey);
+    return null;
+  }
+
+  if (entry.pages.some((page) => page.isConnected && page.parentElement !== container)) {
+    return null;
+  }
+
+  container.replaceChildren(...entry.pages);
+  container.dataset.pdfCanvasRenderCacheKey = cacheKey;
+  entry.lastUsedAt = Date.now();
+  applyPdfCanvasZoom(container, zoom);
+  container.scrollTop = entry.scrollTop;
+  container.scrollLeft = entry.scrollLeft;
+  return entry;
+}
+
+function rememberPdfCanvasRender(
+  cacheKey: string | null,
+  container: HTMLElement,
+  complete: boolean
+): void {
+  if (!cacheKey) {
+    delete container.dataset.pdfCanvasRenderCacheKey;
+    return;
+  }
+
+  const pages = Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas"));
+
+  if (pages.length === 0) {
+    return;
+  }
+
+  pdfCanvasRenderCache.set(cacheKey, {
+    complete,
+    pages,
+    scrollLeft: container.scrollLeft,
+    scrollTop: container.scrollTop,
+    lastUsedAt: Date.now()
+  });
+  container.dataset.pdfCanvasRenderCacheKey = cacheKey;
+  prunePdfCanvasRenderCache(cacheKey);
+}
+
+function rememberVisiblePdfCanvasScroll(container: HTMLElement): void {
+  const cacheKey = container.dataset.pdfCanvasRenderCacheKey;
+
+  if (!cacheKey) {
+    return;
+  }
+
+  const entry = pdfCanvasRenderCache.get(cacheKey);
+
+  if (!entry) {
+    return;
+  }
+
+  entry.scrollLeft = container.scrollLeft;
+  entry.scrollTop = container.scrollTop;
+  entry.lastUsedAt = Date.now();
+}
+
+function prunePdfCanvasRenderCache(activeKey: string): void {
+  if (pdfCanvasRenderCache.size <= PDF_CANVAS_RENDER_CACHE_LIMIT) {
+    return;
+  }
+
+  const entries = Array.from(pdfCanvasRenderCache.entries()).sort(
+    (left, right) => left[1].lastUsedAt - right[1].lastUsedAt
+  );
+
+  for (const [cacheKey] of entries) {
+    if (cacheKey === activeKey) {
+      continue;
+    }
+
+    pdfCanvasRenderCache.delete(cacheKey);
+
+    if (pdfCanvasRenderCache.size <= PDF_CANVAS_RENDER_CACHE_LIMIT) {
+      return;
+    }
   }
 }
 

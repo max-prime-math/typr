@@ -418,8 +418,8 @@ button {
 }
 
 .activity-icon--source {
-  mask-image: url("../icons/files/file-text.svg");
-  -webkit-mask-image: url("../icons/files/file-text.svg");
+  mask-image: url("../icons/files/default.svg");
+  -webkit-mask-image: url("../icons/files/default.svg");
 }
 
 .activity-icon--preview {
@@ -2801,8 +2801,8 @@ button {
 
 .file-tree__file-icon {
   display: inline-block;
-  width: 1rem;
-  height: 1rem;
+  width: 1.15rem;
+  height: 1.15rem;
   flex: 0 0 auto;
   background-repeat: no-repeat;
   background-position: center;
@@ -2810,55 +2810,67 @@ button {
 }
 
 .file-tree__file-icon--typ {
-  background-image: url("../icons/files/file-typst.svg");
+  background-image: url("../icons/files/typst.svg");
 }
 
 .file-tree__file-icon--tex {
-  background-image: url("../icons/files/file-tex.svg");
+  background-image: url("../icons/files/tex.svg");
 }
 
 .file-tree__file-icon--md {
-  background-image: url("../icons/files/file-markdown.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--img {
-  background-image: url("../icons/files/file-image.svg");
+  background-image: url("../icons/files/image.svg");
 }
 
 .file-tree__file-icon--pdf {
-  background-image: url("../icons/files/file-pdf.svg");
+  background-image: url("../icons/files/pdf.svg");
 }
 
 .file-tree__file-icon--json {
-  background-image: url("../icons/files/file-json.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--yaml {
-  background-image: url("../icons/files/file-yaml.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--csv {
-  background-image: url("../icons/files/file-csv.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--config {
-  background-image: url("../icons/files/file-config.svg");
+  background-image: url("../icons/files/default.svg");
+}
+
+.file-tree__file-icon--git {
+  background-image: url("../icons/files/git.svg");
+}
+
+.file-tree__file-icon--info {
+  background-image: url("../icons/files/readme.svg");
 }
 
 .file-tree__file-icon--bib {
-  background-image: url("../icons/files/file-bib.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--code {
-  background-image: url("../icons/files/file-code.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .file-tree__file-icon--txt {
-  background-image: url("../icons/files/file-text.svg");
+  background-image: url("../icons/files/default.svg");
+}
+
+.file-tree__file-icon--archive {
+  background-image: url("../icons/files/archive.svg");
 }
 
 .file-tree__file-icon--bin {
-  background-image: url("../icons/files/file-binary.svg");
+  background-image: url("../icons/files/default.svg");
 }
 
 .workspace-context-menu {

@@ -20,9 +20,12 @@ export type WorkspaceFileBadge =
   | "yaml"
   | "csv"
   | "config"
+  | "git"
+  | "info"
   | "bib"
   | "code"
   | "txt"
+  | "archive"
   | "bin"
   | "dir"
   | "empty";
@@ -71,6 +74,12 @@ const TEXT_FILE_EXTENSIONS = new Set([
   "csv"
 ]);
 const TEXT_FILE_NAMES = new Set([".gitignore"]);
+const README_FILE_NAMES = new Set([
+  "readme",
+  "readme.md",
+  "readme.markdown",
+  "readme.txt"
+]);
 const IMAGE_FILE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"]);
 const TEX_FILE_EXTENSIONS = new Set(["tex", "ltx", "latex", "sty", "cls"]);
 const MARKDOWN_FILE_EXTENSIONS = new Set(["md", "markdown"]);
@@ -78,6 +87,16 @@ const JSON_FILE_EXTENSIONS = new Set(["json", "jsonc"]);
 const YAML_FILE_EXTENSIONS = new Set(["yaml", "yml"]);
 const CSV_FILE_EXTENSIONS = new Set(["csv", "tsv"]);
 const CONFIG_FILE_EXTENSIONS = new Set(["toml", "ini", "env", "lock"]);
+const ARCHIVE_FILE_EXTENSIONS = new Set([
+  "7z",
+  "bz2",
+  "gz",
+  "rar",
+  "tar",
+  "tgz",
+  "xz",
+  "zip"
+]);
 const CONFIG_FILE_NAMES = new Set([
   ".editorconfig",
   ".env",
@@ -338,6 +357,14 @@ export function getWorkspaceNodeBadge(node: WorkspaceTreeNode): WorkspaceFileBad
   const fileName = normalizeWorkspacePath(node.path).split("/").at(-1)?.toLowerCase() ?? "";
   const extension = getWorkspacePathExtension(node.path);
 
+  if (fileName === ".gitignore") {
+    return "git";
+  }
+
+  if (README_FILE_NAMES.has(fileName)) {
+    return "info";
+  }
+
   if (CONFIG_FILE_NAMES.has(fileName)) {
     return "config";
   }
@@ -384,6 +411,10 @@ export function getWorkspaceNodeBadge(node: WorkspaceTreeNode): WorkspaceFileBad
 
   if (extension !== null && CODE_FILE_EXTENSIONS.has(extension)) {
     return "code";
+  }
+
+  if (extension !== null && ARCHIVE_FILE_EXTENSIONS.has(extension)) {
+    return "archive";
   }
 
   if (extension !== null && TEXT_FILE_EXTENSIONS.has(extension)) {

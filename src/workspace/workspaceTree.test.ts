@@ -16,7 +16,7 @@ describe("workspace tree file icons", () => {
     expect(getWorkspaceNodeBadge(fileNode("main.typ"))).toBe("typ");
     expect(getWorkspaceNodeBadge(fileNode("paper.tex"))).toBe("tex");
     expect(getWorkspaceNodeBadge(fileNode("references.bib"))).toBe("bib");
-    expect(getWorkspaceNodeBadge(fileNode("README.md"))).toBe("md");
+    expect(getWorkspaceNodeBadge(fileNode("README.md"))).toBe("info");
     expect(getWorkspaceNodeBadge(fileNode("paper.pdf"))).toBe("pdf");
   });
 
@@ -24,9 +24,10 @@ describe("workspace tree file icons", () => {
     expect(getWorkspaceNodeBadge(fileNode("package.json"))).toBe("config");
     expect(getWorkspaceNodeBadge(fileNode("data/results.csv"))).toBe("csv");
     expect(getWorkspaceNodeBadge(fileNode("workflow.yml"))).toBe("yaml");
-    expect(getWorkspaceNodeBadge(fileNode(".gitignore"))).toBe("config");
+    expect(getWorkspaceNodeBadge(fileNode(".gitignore"))).toBe("git");
     expect(getWorkspaceNodeBadge(fileNode("scripts/build.ts"))).toBe("code");
     expect(getWorkspaceNodeBadge(fileNode("notes.txt"))).toBe("txt");
-    expect(getWorkspaceNodeBadge(fileNode("archive.zip"))).toBe("bin");
+    expect(getWorkspaceNodeBadge(fileNode("archive.zip"))).toBe("archive");
+    expect(getWorkspaceNodeBadge(fileNode("3.0.intro.synctex.gz"))).toBe("archive");
   });
 });
