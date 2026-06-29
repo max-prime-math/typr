@@ -1,4 +1,4 @@
-import type { Extension } from "@codemirror/state";
+import { StateEffect, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type PluginValue, type ViewUpdate } from "@codemirror/view";
 import { getCM } from "@replit/codemirror-vim";
 
@@ -13,6 +13,8 @@ const SMEAR_MIN_DISTANCE = 0.9;
 const MIN_FRAME_SECONDS = 1 / 240;
 const MAX_FRAME_SECONDS = 1 / 24;
 const DIAGONAL = 1 / Math.SQRT2;
+
+export const smoothCursorJumpEffect = StateEffect.define<void>();
 
 interface Point {
   x: number;
@@ -72,8 +74,8 @@ class SmoothCursorPlugin implements PluginValue {
     this.measure();
   }
 
-  update(_update: ViewUpdate): void {
-    this.measure();
+  update(update: ViewUpdate): void {
+    this.measure(shouldSnapSmoothCursor(update));
   }
 
   destroy(): void {
@@ -83,12 +85,12 @@ class SmoothCursorPlugin implements PluginValue {
     this.cursor.remove();
   }
 
-  private measure(): void {
+  private measure(snapToTarget = false): void {
     this.view.requestMeasure({
       read: (view) => {
         const selection = view.state.selection.main;
 
-        if (!view.hasFocus || view.state.selection.ranges.length !== 1 || !selection.empty) {
+        if (!view.hasFocus || view.state.selection.ranges.length !== 1) {
           return null;
         }
 
@@ -128,9 +130,11 @@ class SmoothCursorPlugin implements PluginValue {
         this.view.dom.classList.add("cm-smooth-cursor-active");
         this.cursor.classList.add("cm-smooth-cursor--visible");
 
-        if (!this.currentQuad || !this.trailQuad) {
+        if (snapToTarget || !this.currentQuad || !this.trailQuad) {
+          this.stopAnimation();
           this.currentQuad = cloneQuad(nextTarget);
           this.trailQuad = cloneQuad(nextTarget);
+          this.lastMotion = null;
           this.render();
           return;
         }
@@ -279,6 +283,12 @@ class SmoothCursorPlugin implements PluginValue {
 
     this.lastFrameTime = 0;
   }
+}
+
+function shouldSnapSmoothCursor(update: ViewUpdate): boolean {
+  return update.transactions.some((transaction) =>
+    transaction.effects.some((effect) => effect.is(smoothCursorJumpEffect))
+  );
 }
 
 function resolveCursorWidth(view: EditorView, vimMode: boolean): number {

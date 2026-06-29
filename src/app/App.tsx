@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useId,
@@ -7,13 +8,16 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
   type ChangeEvent,
   type Dispatch,
   type ReactNode,
   type SetStateAction
 } from "react";
+import { zipSync } from "fflate";
 import {
   createDefaultSnapshot,
   DEFAULT_EDITOR_FONT_SIZE,
@@ -33,7 +37,6 @@ import {
   getActiveDocument,
   normalizeSnapshot,
   renameActiveDocument,
-  renameProject,
   setActiveDocument,
   saveCurrentDiagram,
   saveCurrentGraph,
@@ -63,6 +66,7 @@ import {
   updateCursorSmoothPreference,
   updateAutoSyncGitProjectsPreference,
   updateEditorFontSizePreference,
+  updateEditorToolingPreference,
   updateKeybindingsPreference,
   updateLiveCompilationPreference,
   updateRelativeLineNumbersPreference,
@@ -73,6 +77,14 @@ import {
   type ThemePreference
 } from "./appState";
 import {
+  formatSourceWithEditorTooling,
+  getEditorToolLanguage,
+  lintSourceWithEditorTooling,
+  type EditorFormatterId,
+  type EditorLinterId,
+  type EditorToolLanguage
+} from "../editor/editorTools";
+import {
   DEFAULT_KEYBINDINGS,
   KEYBINDING_DEFINITIONS,
   formatKeybinding,
@@ -81,6 +93,10 @@ import {
   type KeybindingMap,
   type KeybindingCommandId
 } from "./keybindings";
+import {
+  createCompletedPreviewCompilerStatus,
+  shouldRunPendingCompileAfterCompletion
+} from "./compilePreviewState";
 import { InlinePaneExpandControls } from "./InlinePaneExpandControls";
 import {
   createTypstCompiler,
@@ -168,12 +184,21 @@ import {
   getGraphFilePath,
   normalizeGraphFileNameForContentType
 } from "../graph/graphFiles";
-import { AUTO_THEME_ID, THEME_IMPORT_TEMPLATE } from "../theme/themes";
+import {
+  AUTO_THEME_ID,
+  compareThemesByDisplayOrder,
+  THEME_IMPORT_TEMPLATE
+} from "../theme/themes";
 import {
   DEFAULT_ZOOM,
   nextZoomStep,
   type PreviewZoomState
 } from "../preview/PreviewPane";
+import {
+  createSourceRange,
+  type PreviewSourceLink,
+  type SourcePosition
+} from "../preview/sourceLinks";
 import packageJson from "../../package.json";
 import {
   loadGitWorkspace,
@@ -267,7 +292,9 @@ import {
   buildProjectWorkspaceEntriesFromProject,
   buildTrashWorkspaceEntries,
   buildWorkspaceTree,
+  canDeleteWorkspaceNode,
   canMoveWorkspaceNode,
+  canRenameWorkspaceNode,
   flattenVisibleWorkspaceNodes,
   findWorkspaceNodeByPath,
   getWorkspacePathExtension,
@@ -276,6 +303,7 @@ import {
   type WorkspaceTreeNode
 } from "../workspace/workspaceTree";
 import { shouldIgnorePath } from "../git/pathFilters";
+import { createPrefixedId } from "../utils/randomId";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
@@ -300,8 +328,61 @@ const ZEN_MIN_HEIGHT = 320;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
 const APP_VERSION = packageJson.version;
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
-const SOURCE_TOOLBAR_STORAGE_KEY = "typr.source-toolbar";
 const WORKSPACE_OPEN_FOLDERS_STORAGE_KEY = "typr.workspace-open-folders.v1";
+const LATEX_PACKAGE_SELECTIONS_STORAGE_KEY = "typr.latex-package-selections.v1";
+const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
+const RECENT_WORKSPACE_STORAGE_KEY = "typr.recent-workspace.v1";
+const PROJECT_EXPORT_INPUT_ACCEPT = ".json,application/json";
+const WORKSPACE_UPLOAD_ACCEPT = [
+  ".typ",
+  ".tex",
+  ".md",
+  ".markdown",
+  ".txt",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".csv",
+  ".pdf",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".svg",
+  ".avif",
+  "text/plain",
+  "text/markdown",
+  "application/pdf",
+  "image/*"
+].join(",");
+const TEXT_DECODER = new TextDecoder();
+const TEXT_ENCODER = new TextEncoder();
+const GRAPHIC_REFERENCE_EXTENSIONS = [
+  "pdf",
+  "png",
+  "jpg",
+  "jpeg",
+  "svg",
+  "webp",
+  "gif",
+  "avif"
+];
+const TEXT_REFERENCE_EXTENSIONS = [
+  "typ",
+  "tex",
+  "md",
+  "markdown",
+  "txt",
+  "csv",
+  "json",
+  "yaml",
+  "yml",
+  "xml",
+  "bib"
+];
+const RECENT_PROJECT_LIMIT = 6;
+const RECENT_FILE_LIMIT = 10;
 
 type WorkspaceOpenFolderStorage = Record<string, string[]>;
 
@@ -378,7 +459,9 @@ const SOURCE_SYMBOL_ITEMS: SourceSymbolItem[] = [
 ];
 
 const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
+  { id: "projects", label: "Projects" },
   { id: "files", label: "Files" },
+  { id: "source-tools", label: "Tools" },
   { id: "search", label: "Search" },
   { id: "outline", label: "Outline" },
   { id: "diagram", label: "Diagram" },
@@ -412,6 +495,7 @@ type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview" | "zen";
 type ZenResizeEdge = "zen-left" | "zen-right" | "zen-top" | "zen-bottom";
 type ZoomPaneTarget = "sidebar" | "source" | "preview";
+type VimPaneFocusTarget = "files" | "source" | "preview";
 type PreviewScrollAction =
   | "left"
   | "down"
@@ -422,8 +506,11 @@ type PreviewScrollAction =
   | "top"
   | "bottom";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
+type WorkspaceTabKind = "source" | "preview";
 type SidebarTool =
+  | "projects"
   | "files"
+  | "source-tools"
   | "search"
   | "outline"
   | "mitex"
@@ -435,18 +522,161 @@ type DiagramPaneMode = "sidebar" | "source" | "preview";
 type GraphPaneMode = "sidebar" | "source" | "preview";
 type GitMergePaneMode = "sidebar" | "source" | "preview";
 type MergeVersionRole = "base" | "local" | "remote";
-type SettingsTab = "git" | "themes" | "keybindings" | "snippets" | "packages";
+type SettingsTab = "git" | "themes" | "editor" | "keybindings" | "snippets" | "packages";
 type PackageSettingsScope = "typst" | "latex";
+type SettingsScrollPositions = Partial<Record<SettingsTab, number>>;
+type WorkspaceClipboardMode = "copy" | "cut";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
 type TableAlignment = "left" | "center" | "right" | "horizon";
 type TableGutter = "none" | "small" | "medium";
 type TableInset = "none" | "small" | "medium";
 type TableStroke = "default" | "none";
 
+interface WorkspaceClipboardState {
+  mode: WorkspaceClipboardMode;
+  paths: string[];
+}
+
 interface SyncFeedback {
   tone: "neutral" | "success" | "error";
   text: string;
 }
+
+interface CompilePreviewState {
+  result: CompileResult | null;
+  lastSuccessfulResult: Extract<CompileResult, { ok: true }> | null;
+  compilerStatus: CompilerStatus;
+  isCompiling: boolean;
+}
+
+interface WorkspaceReference {
+  path: string;
+  defaultExtensions: string[];
+}
+
+interface WorkspaceDownloadFile {
+  path: string;
+  content: string | Uint8Array;
+}
+
+interface WorkspaceMissingReference {
+  sourcePath: string;
+  reference: string;
+  candidates: string[];
+}
+
+interface WorkspaceDownloadBundle {
+  files: WorkspaceDownloadFile[];
+  missingReferences: WorkspaceMissingReference[];
+}
+
+interface RecentProjectEntry {
+  id: string;
+  displayName: string;
+  touchedAt: string;
+}
+
+interface RecentFileEntry {
+  projectId: string;
+  projectName: string;
+  path: string;
+  touchedAt: string;
+}
+
+type PreviewDownloadMode = "output" | "source";
+type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
+
+interface StoredSettingsMenuState {
+  tab: SettingsTab;
+  scrollByTab: SettingsScrollPositions;
+}
+
+const SETTINGS_TABS: readonly SettingsTab[] = [
+  "git",
+  "themes",
+  "editor",
+  "keybindings",
+  "snippets",
+  "packages"
+];
+
+const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
+  git: [
+    "git",
+    "github",
+    "token",
+    "remote",
+    "owner",
+    "repo",
+    "repository",
+    "branch",
+    "gitignore",
+    "status",
+    "push",
+    "sync",
+    "commit"
+  ],
+  themes: [
+    "theme",
+    "themes",
+    "light",
+    "dark",
+    "system",
+    "import",
+    "palette",
+    "follow system default"
+  ],
+  editor: [
+    "editor",
+    "vim",
+    "cursor",
+    "smooth",
+    "smear",
+    "format",
+    "formatter",
+    "lint",
+    "linter",
+    "compile",
+    "live"
+  ],
+  keybindings: [
+    "keybindings",
+    "keys",
+    "shortcuts",
+    "hotkeys",
+    "vim",
+    "layout",
+    "preview",
+    "multi cursor",
+    ...KEYBINDING_DEFINITIONS.flatMap((definition) => [
+      definition.label,
+      definition.group,
+      definition.defaultBinding
+    ])
+  ],
+  snippets: [
+    "snippets",
+    "typst",
+    "latex",
+    "markdown",
+    "autocomplete",
+    "import",
+    "json",
+    "template"
+  ],
+  packages: [
+    "packages",
+    "package",
+    "typst universe",
+    "latex",
+    "cache",
+    "offline",
+    "bundle",
+    "manual",
+    "recommended",
+    "basic"
+  ]
+};
 
 interface PendingKeybindingConflict {
   commandId: KeybindingCommandId;
@@ -511,6 +741,25 @@ interface GitHubDiscoveryState {
   repoMode: GitHubRepoMode;
   isLoadingRepos: boolean;
   isLoadingBranches: boolean;
+}
+
+interface GitHubCloneState {
+  isOpen: boolean;
+  status: "idle" | "loading" | "connected" | "error";
+  token: string;
+  owner: string;
+  repo: string;
+  branch: string;
+  projectName: string;
+  repositoryUrl: string;
+  message: string;
+  accountLogin: string | null;
+  owners: RemoteGitAccount[];
+  repos: RemoteGitRepositorySummary[];
+  branches: RemoteGitBranchSummary[];
+  isLoadingRepos: boolean;
+  isLoadingBranches: boolean;
+  progress: { current: number; total: number } | null;
 }
 
 type MergeResolutionDraft =
@@ -664,6 +913,311 @@ function normalizeWorkspaceOpenFolderPaths(paths: readonly unknown[]): string[] 
   ).sort((left, right) => left.localeCompare(right));
 }
 
+function isSettingsTab(value: unknown): value is SettingsTab {
+  return typeof value === "string" && SETTINGS_TABS.includes(value as SettingsTab);
+}
+
+function normalizeSettingsScrollPositions(value: unknown): SettingsScrollPositions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return SETTINGS_TABS.reduce<SettingsScrollPositions>((positions, tab) => {
+    const scrollTop = (value as Partial<Record<SettingsTab, unknown>>)[tab];
+
+    if (typeof scrollTop === "number" && Number.isFinite(scrollTop) && scrollTop > 0) {
+      positions[tab] = Math.round(scrollTop);
+    }
+
+    return positions;
+  }, {});
+}
+
+function readStoredSettingsMenuState(): StoredSettingsMenuState {
+  if (typeof window === "undefined") {
+    return { tab: "git", scrollByTab: {} };
+  }
+
+  try {
+    const stored = window.localStorage.getItem(SETTINGS_MENU_STORAGE_KEY);
+
+    if (!stored) {
+      return { tab: "git", scrollByTab: {} };
+    }
+
+    const parsed = JSON.parse(stored);
+
+    return {
+      tab: isSettingsTab(parsed?.tab) ? parsed.tab : "git",
+      scrollByTab: normalizeSettingsScrollPositions(parsed?.scrollByTab)
+    };
+  } catch {
+    return { tab: "git", scrollByTab: {} };
+  }
+}
+
+function writeStoredSettingsMenuState(
+  tab: SettingsTab,
+  scrollByTab: SettingsScrollPositions
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    SETTINGS_MENU_STORAGE_KEY,
+    JSON.stringify({
+      tab,
+      scrollByTab
+    })
+  );
+}
+
+function readRecentWorkspaceState(): {
+  projects: RecentProjectEntry[];
+  files: RecentFileEntry[];
+} {
+  if (typeof window === "undefined") {
+    return { projects: [], files: [] };
+  }
+
+  try {
+    const stored = window.localStorage.getItem(RECENT_WORKSPACE_STORAGE_KEY);
+
+    if (!stored) {
+      return { projects: [], files: [] };
+    }
+
+    const parsed = JSON.parse(stored);
+
+    return {
+      projects: normalizeRecentProjects(parsed?.projects),
+      files: normalizeRecentFiles(parsed?.files)
+    };
+  } catch {
+    return { projects: [], files: [] };
+  }
+}
+
+function writeRecentWorkspaceState(
+  projects: RecentProjectEntry[],
+  files: RecentFileEntry[]
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    RECENT_WORKSPACE_STORAGE_KEY,
+    JSON.stringify({ projects, files })
+  );
+}
+
+function normalizeRecentProjects(value: unknown): RecentProjectEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry): RecentProjectEntry | null => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      const candidate = entry as Partial<Record<keyof RecentProjectEntry, unknown>>;
+      if (typeof candidate.id !== "string" || typeof candidate.displayName !== "string") {
+        return null;
+      }
+
+      return {
+        id: candidate.id,
+        displayName: candidate.displayName,
+        touchedAt:
+          typeof candidate.touchedAt === "string"
+            ? candidate.touchedAt
+            : new Date(0).toISOString()
+      };
+    })
+    .filter((entry): entry is RecentProjectEntry => Boolean(entry))
+    .sort((left, right) => right.touchedAt.localeCompare(left.touchedAt))
+    .slice(0, RECENT_PROJECT_LIMIT);
+}
+
+function normalizeRecentFiles(value: unknown): RecentFileEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry): RecentFileEntry | null => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      const candidate = entry as Partial<Record<keyof RecentFileEntry, unknown>>;
+      if (
+        typeof candidate.projectId !== "string" ||
+        typeof candidate.projectName !== "string" ||
+        typeof candidate.path !== "string"
+      ) {
+        return null;
+      }
+
+      const normalizedPath = normalizeWorkspacePath(candidate.path);
+      if (!normalizedPath) {
+        return null;
+      }
+
+      return {
+        projectId: candidate.projectId,
+        projectName: candidate.projectName,
+        path: normalizedPath,
+        touchedAt:
+          typeof candidate.touchedAt === "string"
+            ? candidate.touchedAt
+            : new Date(0).toISOString()
+      };
+    })
+    .filter((entry): entry is RecentFileEntry => Boolean(entry))
+    .sort((left, right) => right.touchedAt.localeCompare(left.touchedAt))
+    .slice(0, RECENT_FILE_LIMIT);
+}
+
+function touchRecentProject(
+  entries: RecentProjectEntry[],
+  project: TyprProjectRepository
+): RecentProjectEntry[] {
+  const touchedAt = new Date().toISOString();
+  return [
+    {
+      id: project.id,
+      displayName: project.displayName,
+      touchedAt
+    },
+    ...entries.filter((entry) => entry.id !== project.id)
+  ].slice(0, RECENT_PROJECT_LIMIT);
+}
+
+function touchRecentFile(
+  entries: RecentFileEntry[],
+  project: TyprProjectRepository,
+  path: string
+): RecentFileEntry[] {
+  const normalizedPath = normalizeWorkspacePath(path);
+  if (!normalizedPath) {
+    return entries;
+  }
+
+  const touchedAt = new Date().toISOString();
+  return [
+    {
+      projectId: project.id,
+      projectName: project.displayName,
+      path: normalizedPath,
+      touchedAt
+    },
+    ...entries.filter(
+      (entry) => entry.projectId !== project.id || entry.path !== normalizedPath
+    )
+  ].slice(0, RECENT_FILE_LIMIT);
+}
+
+function normalizeLatexPackageSelectionName(packageName: string): string {
+  return packageName.trim().toLowerCase();
+}
+
+function readStoredLatexPackageSelections(): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const stored = window.localStorage.getItem(LATEX_PACKAGE_SELECTIONS_STORAGE_KEY);
+
+    if (!stored) {
+      return [];
+    }
+
+    const parsed = JSON.parse(stored);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        parsed
+          .filter((packageName): packageName is string => typeof packageName === "string")
+          .map(normalizeLatexPackageSelectionName)
+          .filter(Boolean)
+      )
+    ).sort((left, right) => left.localeCompare(right));
+  } catch {
+    return [];
+  }
+}
+
+function createInitialGitHubCloneState(): GitHubCloneState {
+  return {
+    isOpen: false,
+    status: "idle",
+    token: "",
+    owner: "",
+    repo: "",
+    branch: "main",
+    projectName: "",
+    repositoryUrl: "",
+    message: "",
+    accountLogin: null,
+    owners: [],
+    repos: [],
+    branches: [],
+    isLoadingRepos: false,
+    isLoadingBranches: false,
+    progress: null
+  };
+}
+
+function parseGitHubRepositoryUrl(value: string): { owner: string; repo: string } | null {
+  const match = /github\.com[:/]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/?#\s]|$)/i.exec(value.trim());
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    owner: match[1],
+    repo: match[2]
+  };
+}
+
+function renameProjectRepositoryDisplayName(
+  project: TyprProjectRepository,
+  displayName: string
+): TyprProjectRepository {
+  const nextName = displayName.trim();
+
+  if (!nextName || nextName === project.displayName) {
+    return project;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    ...project,
+    displayName: nextName,
+    legacyRecovery: {
+      ...project.legacyRecovery,
+      project: {
+        ...project.legacyRecovery.project,
+        name: nextName,
+        updatedAt: now
+      }
+    },
+    updatedAt: now
+  };
+}
+
 function collectWorkspaceFolderPaths(nodes: WorkspaceTreeNode[]): string[] {
   const paths: string[] = [];
 
@@ -767,6 +1321,582 @@ function getWorkspaceBaseName(path: string): string {
   return normalizeWorkspacePath(path).split("/").filter(Boolean).at(-1) ?? path;
 }
 
+function getSafeDownloadName(name: string, fallback = "download"): string {
+  const normalizedName = name.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ");
+  return normalizedName || fallback;
+}
+
+function getWorkspacePathDirectory(path: string): string {
+  const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
+  segments.pop();
+  return segments.join("/");
+}
+
+function hasWorkspacePathExtension(path: string): boolean {
+  return Boolean(getWorkspacePathExtension(path));
+}
+
+function isExternalReference(reference: string): boolean {
+  const value = reference.trim();
+  return (
+    !value ||
+    value.startsWith("#") ||
+    value.startsWith("@") ||
+    value.startsWith("data:") ||
+    value.startsWith("mailto:") ||
+    value.startsWith("tel:") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(value)
+  );
+}
+
+function normalizeWorkspaceReferencePath(reference: string, sourcePath: string): string | null {
+  const [withoutHash] = reference.trim().split("#");
+  const [withoutQuery] = withoutHash.split("?");
+  const cleanedReference = withoutQuery.trim().replace(/^['"]|['"]$/g, "");
+
+  if (isExternalReference(cleanedReference)) {
+    return null;
+  }
+
+  const baseDirectory = getWorkspacePathDirectory(sourcePath);
+  const rawSegments = [
+    ...(cleanedReference.startsWith("/") ? [] : baseDirectory.split("/").filter(Boolean)),
+    ...cleanedReference.replace(/^\/+/, "").split("/")
+  ];
+  const normalizedSegments: string[] = [];
+
+  for (const segment of rawSegments) {
+    const trimmedSegment = segment.trim();
+
+    if (!trimmedSegment || trimmedSegment === ".") {
+      continue;
+    }
+
+    if (trimmedSegment === "..") {
+      normalizedSegments.pop();
+      continue;
+    }
+
+    normalizedSegments.push(trimmedSegment);
+  }
+
+  return normalizeWorkspacePath(normalizedSegments.join("/")) || null;
+}
+
+function getWorkspaceReferenceCandidatePaths(
+  reference: string,
+  sourcePath: string,
+  defaultExtensions: string[]
+): string[] {
+  const normalizedReference = normalizeWorkspaceReferencePath(reference, sourcePath);
+
+  if (!normalizedReference) {
+    return [];
+  }
+
+  const candidates = hasWorkspacePathExtension(normalizedReference)
+    ? [normalizedReference]
+    : [
+        normalizedReference,
+        ...defaultExtensions.map((extension) => `${normalizedReference}.${extension}`)
+      ];
+
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
+function resolveWorkspaceReferenceCandidates(
+  reference: string,
+  sourcePath: string,
+  fileMap: Map<string, WorkspaceDownloadFile>,
+  defaultExtensions: string[]
+): string[] {
+  return getWorkspaceReferenceCandidatePaths(reference, sourcePath, defaultExtensions).filter(
+    (candidate) => fileMap.has(candidate)
+  );
+}
+
+function extractLocalWorkspaceReferences(sourcePath: string, content: string): WorkspaceReference[] {
+  const references: WorkspaceReference[] = [];
+  const addReference = (value: string, extensions: string[] = TEXT_REFERENCE_EXTENSIONS) => {
+    const reference = value.trim();
+
+    if (reference) {
+      references.push({ path: reference, defaultExtensions: extensions });
+    }
+  };
+
+  for (const match of content.matchAll(/\\(?:input|include|subfile)\s*\{([^}]+)\}/gi)) {
+    addReference(match[1], ["tex"]);
+  }
+
+  for (const match of content.matchAll(/\\includegraphics(?:\s*\[[^\]]*])?\s*\{([^}]+)\}/gi)) {
+    addReference(match[1], GRAPHIC_REFERENCE_EXTENSIONS);
+  }
+
+  for (const match of content.matchAll(/\\(?:bibliography|addbibresource)\s*\{([^}]+)\}/gi)) {
+    for (const reference of match[1].split(",")) {
+      addReference(reference, ["bib"]);
+    }
+  }
+
+  for (const match of content.matchAll(/#?\s*(?:import|include)\s+"([^"]+)"/gi)) {
+    addReference(match[1], ["typ"]);
+  }
+
+  for (const match of content.matchAll(
+    /#?\s*(?:image|read|csv|json|yaml|xml|raw)\s*\(\s*"([^"]+)"/gi
+  )) {
+    addReference(match[1], TEXT_REFERENCE_EXTENSIONS.concat(GRAPHIC_REFERENCE_EXTENSIONS));
+  }
+
+  for (const match of content.matchAll(/!\[[^\]]*]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+    addReference(match[1], GRAPHIC_REFERENCE_EXTENSIONS);
+  }
+
+  for (const match of content.matchAll(/(?<!!)\[[^\]]+]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+    addReference(match[1], TEXT_REFERENCE_EXTENSIONS.concat(GRAPHIC_REFERENCE_EXTENSIONS));
+  }
+
+  for (const match of content.matchAll(/\bsrc\s*=\s*["']([^"']+)["']/gi)) {
+    addReference(match[1], GRAPHIC_REFERENCE_EXTENSIONS);
+  }
+
+  return references.filter((reference) => normalizeWorkspaceReferencePath(reference.path, sourcePath));
+}
+
+function getWorkspaceDownloadFileText(file: WorkspaceDownloadFile): string | null {
+  if (typeof file.content === "string") {
+    return file.content;
+  }
+
+  if (!isTextWorkspaceFile(file.path)) {
+    return null;
+  }
+
+  try {
+    return TEXT_DECODER.decode(file.content);
+  } catch {
+    return null;
+  }
+}
+
+function createWorkspaceFileMap(project: TyprProjectRepository): Map<string, WorkspaceDownloadFile> {
+  const fileMap = new Map<string, WorkspaceDownloadFile>();
+
+  for (const entry of buildProjectWorkspaceEntriesFromProject(project)) {
+    if (entry.kind !== "file") {
+      continue;
+    }
+
+    const path = normalizeWorkspacePath(entry.path);
+    if (!path) {
+      continue;
+    }
+
+    fileMap.set(path, {
+      path,
+      content: entry.content ?? ""
+    });
+  }
+
+  return fileMap;
+}
+
+function getWorkspaceDownloadBundleForPaths(
+  project: TyprProjectRepository,
+  selectedPaths: string[]
+): WorkspaceDownloadBundle {
+  const fileMap = createWorkspaceFileMap(project);
+  const normalizedSelectedPaths = normalizeUniqueWorkspacePaths(selectedPaths);
+  const queuedPaths: string[] = [];
+  const includedPaths = new Set<string>();
+  const missingReferencesByKey = new Map<string, WorkspaceMissingReference>();
+
+  const includeFilePath = (path: string) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+    if (!normalizedPath || includedPaths.has(normalizedPath) || !fileMap.has(normalizedPath)) {
+      return;
+    }
+
+    includedPaths.add(normalizedPath);
+    queuedPaths.push(normalizedPath);
+  };
+
+  for (const selectedPath of normalizedSelectedPaths) {
+    const file = fileMap.get(selectedPath);
+    if (file) {
+      includeFilePath(file.path);
+      continue;
+    }
+
+    const folderPrefix = selectedPath ? `${selectedPath}/` : "";
+    for (const path of fileMap.keys()) {
+      if (path.startsWith(folderPrefix)) {
+        includeFilePath(path);
+      }
+    }
+  }
+
+  for (let index = 0; index < queuedPaths.length; index += 1) {
+    const path = queuedPaths[index];
+    const file = fileMap.get(path);
+
+    if (!file) {
+      continue;
+    }
+
+    const text = getWorkspaceDownloadFileText(file);
+    if (text === null) {
+      continue;
+    }
+
+    for (const reference of extractLocalWorkspaceReferences(path, text)) {
+      const referencedPaths = resolveWorkspaceReferenceCandidates(
+        reference.path,
+        path,
+        fileMap,
+        reference.defaultExtensions
+      );
+
+      if (referencedPaths.length === 0) {
+        const candidates = getWorkspaceReferenceCandidatePaths(
+          reference.path,
+          path,
+          reference.defaultExtensions
+        );
+        const key = `${path}\0${reference.path}`;
+
+        if (candidates.length > 0 && !missingReferencesByKey.has(key)) {
+          missingReferencesByKey.set(key, {
+            sourcePath: path,
+            reference: reference.path,
+            candidates
+          });
+        }
+      }
+
+      for (const referencedPath of referencedPaths) {
+        includeFilePath(referencedPath);
+      }
+    }
+  }
+
+  return {
+    files: [...includedPaths]
+      .sort((left, right) => left.localeCompare(right))
+      .map((path) => fileMap.get(path))
+      .filter((file): file is WorkspaceDownloadFile => Boolean(file)),
+    missingReferences: [...missingReferencesByKey.values()].sort((left, right) =>
+      `${left.sourcePath}:${left.reference}`.localeCompare(`${right.sourcePath}:${right.reference}`)
+    )
+  };
+}
+
+function getWorkspaceDownloadFilesForPaths(
+  project: TyprProjectRepository,
+  selectedPaths: string[]
+): WorkspaceDownloadFile[] {
+  return getWorkspaceDownloadBundleForPaths(project, selectedPaths).files;
+}
+
+function formatMissingWorkspaceReferences(missingReferences: WorkspaceMissingReference[]): string {
+  if (missingReferences.length === 0) {
+    return "";
+  }
+
+  const sample = missingReferences
+    .slice(0, 3)
+    .map((reference) => `${reference.reference} in ${reference.sourcePath}`)
+    .join(", ");
+  const extraCount = missingReferences.length - 3;
+
+  return ` Missing ${missingReferences.length} referenced file${
+    missingReferences.length === 1 ? "" : "s"
+  }: ${sample}${extraCount > 0 ? `, +${extraCount} more` : ""}.`;
+}
+
+function createWorkspaceZip(files: WorkspaceDownloadFile[]): Uint8Array {
+  return zipSync(
+    files.reduce<Record<string, Uint8Array>>((entries, file) => {
+      entries[file.path] =
+        typeof file.content === "string" ? TEXT_ENCODER.encode(file.content) : file.content;
+      return entries;
+    }, {})
+  );
+}
+
+function getRenderedOutputBaseName(path: string): string {
+  return getSafeDownloadName(getWorkspaceBaseName(path).replace(/\.[^.]+$/, ""), "preview");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderMarkdownInlineHtml(value: string): string {
+  const placeholders: string[] = [];
+  const stash = (html: string) => {
+    const token = `\u0000${placeholders.length}\u0000`;
+    placeholders.push(html);
+    return token;
+  };
+
+  let rendered = escapeHtml(value);
+  rendered = rendered.replace(/`([^`]+)`/g, (_match, code: string) =>
+    stash(`<code>${escapeHtml(code)}</code>`)
+  );
+  rendered = rendered.replace(/!\[([^\]]*)]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_match, alt: string, href: string) =>
+    stash(`<img alt="${escapeHtml(alt)}" src="${escapeHtml(href)}">`)
+  );
+  rendered = rendered.replace(/\[([^\]]+)]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_match, label: string, href: string) =>
+    stash(`<a href="${escapeHtml(href)}">${renderMarkdownInlineHtml(label)}</a>`)
+  );
+  rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  rendered = rendered.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+
+  return rendered.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => placeholders[Number(index)] ?? "");
+}
+
+function renderMarkdownDocumentHtml(source: string): string {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const html: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
+    if (fence) {
+      const fenceMarker = fence[1];
+      const language = fence[2]?.trim();
+      const codeLines: string[] = [];
+      index += 1;
+
+      while (index < lines.length && !lines[index].trimStart().startsWith(fenceMarker)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      if (index < lines.length) {
+        index += 1;
+      }
+
+      html.push(
+        `<pre><code${language ? ` data-language="${escapeHtml(language)}"` : ""}>${escapeHtml(
+          codeLines.join("\n")
+        )}</code></pre>`
+      );
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const level = heading[1].length;
+      html.push(`<h${level}>${renderMarkdownInlineHtml(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      html.push("<hr>");
+      index += 1;
+      continue;
+    }
+
+    const listMatch = line.match(/^\s{0,3}([-*+]|\d+[.)])\s+(.+)$/);
+    if (listMatch) {
+      const ordered = /\d/.test(listMatch[1]);
+      const items: string[] = [];
+
+      while (index < lines.length) {
+        const itemMatch = lines[index].match(/^\s{0,3}([-*+]|\d+[.)])\s+(.+)$/);
+        if (!itemMatch || /\d/.test(itemMatch[1]) !== ordered) {
+          break;
+        }
+        items.push(`<li>${renderMarkdownInlineHtml(itemMatch[2])}</li>`);
+        index += 1;
+      }
+
+      html.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`);
+      continue;
+    }
+
+    if (/^\s{0,3}>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length) {
+        const quoteMatch = lines[index].match(/^\s{0,3}>\s?(.*)$/);
+        if (!quoteMatch) {
+          break;
+        }
+        quoteLines.push(quoteMatch[1]);
+        index += 1;
+      }
+      html.push(`<blockquote><p>${renderMarkdownInlineHtml(quoteLines.join(" "))}</p></blockquote>`);
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^\s*(```+|~~~+)/.test(lines[index]) &&
+      !/^\s{0,3}(#{1,6})\s+/.test(lines[index]) &&
+      !/^\s{0,3}([-*+]|\d+[.)])\s+/.test(lines[index]) &&
+      !/^\s{0,3}>\s?/.test(lines[index])
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    html.push(`<p>${renderMarkdownInlineHtml(paragraphLines.join(" "))}</p>`);
+  }
+
+  return html.join("\n");
+}
+
+function createRenderedMarkdownHtml(source: string, title: string): string {
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>${escapeHtml(title)}</title>`,
+    "<style>",
+    "body{max-width:760px;margin:40px auto;padding:0 20px;font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2328;background:#fff}",
+    "img{max-width:100%;height:auto}pre{overflow:auto;padding:12px;background:#f6f8fa;border-radius:6px}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #d0d7de;color:#57606a}",
+    "</style>",
+    "</head>",
+    "<body>",
+    renderMarkdownDocumentHtml(source),
+    "</body>",
+    "</html>"
+  ].join("\n");
+}
+
+function areWorkspacePathListsEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((path, index) => path === right[index]);
+}
+
+function normalizeUniqueWorkspacePaths(paths: readonly string[]): string[] {
+  const seenPaths = new Set<string>();
+  const normalizedPaths: string[] = [];
+
+  for (const path of paths) {
+    const normalizedPath = normalizeWorkspacePath(path);
+
+    if (!normalizedPath || seenPaths.has(normalizedPath)) {
+      continue;
+    }
+
+    seenPaths.add(normalizedPath);
+    normalizedPaths.push(normalizedPath);
+  }
+
+  return normalizedPaths;
+}
+
+function appendUniqueWorkspacePath(paths: string[], path: string): string[] {
+  const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
+  const normalizedPath = normalizeWorkspacePath(path);
+
+  if (!normalizedPath || normalizedPaths.includes(normalizedPath)) {
+    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
+  }
+
+  return [...normalizedPaths, normalizedPath];
+}
+
+function reorderWorkspacePaths(
+  paths: string[],
+  draggedPath: string,
+  targetPath: string,
+  insertAfterTarget: boolean
+): string[] {
+  const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
+  const normalizedDraggedPath = normalizeWorkspacePath(draggedPath);
+  const normalizedTargetPath = normalizeWorkspacePath(targetPath);
+  const draggedIndex = normalizedPaths.indexOf(normalizedDraggedPath);
+  const targetIndex = normalizedPaths.indexOf(normalizedTargetPath);
+
+  if (
+    !normalizedDraggedPath ||
+    !normalizedTargetPath ||
+    draggedIndex === -1 ||
+    targetIndex === -1 ||
+    draggedIndex === targetIndex
+  ) {
+    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
+  }
+
+  const nextPaths = normalizedPaths.filter((path) => path !== normalizedDraggedPath);
+  const targetInsertIndex = nextPaths.indexOf(normalizedTargetPath);
+
+  if (targetInsertIndex === -1) {
+    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
+  }
+
+  nextPaths.splice(targetInsertIndex + (insertAfterTarget ? 1 : 0), 0, normalizedDraggedPath);
+  return nextPaths;
+}
+
+function createIdleCompilerStatusForSource(path: string): CompilerStatus {
+  const language = getSourceLanguage(path);
+  const isCompilable = isCompilableSourceFile(path);
+
+  return {
+    phase: "idle",
+    mode: "worker",
+    label: isCompilable
+      ? language === "latex"
+        ? "LaTeX ready"
+        : "Typst ready"
+      : "No compiler for active file",
+    detail:
+      language === "latex"
+        ? "Press Compile or Ctrl+Enter to update the PDF preview."
+        : undefined
+  };
+}
+
+function createCompilePreviewState(
+  path: string,
+  overrides: Partial<CompilePreviewState> = {}
+): CompilePreviewState {
+  return {
+    result: null,
+    lastSuccessfulResult: null,
+    compilerStatus: createIdleCompilerStatusForSource(path),
+    isCompiling: false,
+    ...overrides
+  };
+}
+
+function collectWorkspaceFilePaths(nodes: WorkspaceTreeNode[]): string[] {
+  const paths: string[] = [];
+
+  for (const node of nodes) {
+    if (node.kind === "file") {
+      paths.push(node.path);
+      continue;
+    }
+
+    paths.push(...collectWorkspaceFilePaths(node.children));
+  }
+
+  return paths;
+}
+
 function getProjectWorkspaceStructureKey(project: TyprProjectRepository): string {
   return [
     project.id,
@@ -802,6 +1932,353 @@ function getWorkspaceMovePromptLabel(node: WorkspaceTreeNode): string {
   }
 
   return "Move to folder (blank for root)";
+}
+
+function isFigureWorkspacePath(path: string | null): boolean {
+  const normalizedPath = normalizeWorkspacePath(path ?? "");
+  return normalizedPath === "figures" || normalizedPath.startsWith("figures/");
+}
+
+function stripFiguresWorkspaceRoot(path: string): string {
+  const normalizedPath = normalizeWorkspacePath(path);
+
+  if (normalizedPath === "figures") {
+    return "";
+  }
+
+  return normalizedPath.startsWith("figures/")
+    ? normalizedPath.slice("figures/".length)
+    : normalizedPath;
+}
+
+function cloneWorkspaceContent(content: string | Uint8Array): string | Uint8Array {
+  return typeof content === "string" ? content : new Uint8Array(content);
+}
+
+function clonePlainValue<T>(value: T): T {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function cloneDiagramAssetForWorkspacePath(
+  diagram: DiagramAsset,
+  path: string,
+  now: string
+): DiagramAsset {
+  return {
+    ...diagram,
+    id: createPrefixedId("diagram"),
+    name: normalizeDiagramFileName(stripFiguresWorkspaceRoot(path)),
+    updatedAt: now,
+    frame: diagram.frame ? { ...diagram.frame } : null,
+    strokes: clonePlainValue(diagram.strokes),
+    shapes: clonePlainValue(diagram.shapes)
+  };
+}
+
+function cloneGraphAssetForWorkspacePath(
+  graph: GraphAsset,
+  path: string,
+  now: string
+): GraphAsset {
+  return {
+    ...graph,
+    id: createPrefixedId("graph"),
+    name: normalizeGraphFileNameForContentType(stripFiguresWorkspaceRoot(path), graph.contentType),
+    updatedAt: now,
+    style: clonePlainValue(graph.style),
+    viewport: graph.viewport ? { ...graph.viewport } : null,
+    content: new Uint8Array(graph.content)
+  };
+}
+
+function collectWorkspaceNodePaths(nodes: WorkspaceTreeNode[]): string[] {
+  const paths: string[] = [];
+
+  for (const node of nodes) {
+    paths.push(node.path);
+    paths.push(...collectWorkspaceNodePaths(node.children));
+  }
+
+  return paths;
+}
+
+function flattenWorkspaceNodeSubtree(node: WorkspaceTreeNode): WorkspaceTreeNode[] {
+  return [node, ...node.children.flatMap((child) => flattenWorkspaceNodeSubtree(child))];
+}
+
+function removeDescendantWorkspaceNodes(nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] {
+  const sortedNodes = [...nodes].sort((left, right) => left.path.length - right.path.length);
+  const rootNodes: WorkspaceTreeNode[] = [];
+
+  for (const node of sortedNodes) {
+    if (rootNodes.some((rootNode) => node.path.startsWith(`${rootNode.path}/`))) {
+      continue;
+    }
+
+    rootNodes.push(node);
+  }
+
+  return rootNodes;
+}
+
+function createWorkspacePathSet(snapshot: AppSnapshot): Set<string> {
+  return new Set(
+    collectWorkspaceNodePaths(buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot)))
+  );
+}
+
+function createWorkspaceCopyPath(
+  requestedPath: string,
+  existingPaths: Set<string>,
+  isFolder: boolean
+): string {
+  const normalizedPath = normalizeWorkspacePath(requestedPath);
+
+  if (!existingPaths.has(normalizedPath)) {
+    return normalizedPath;
+  }
+
+  const parentPath = getWorkspaceParentPath(normalizedPath);
+  const baseName = getWorkspaceBaseName(normalizedPath);
+  const extensionMatch = isFolder ? null : /\.([^.]+)$/i.exec(baseName);
+  const extension = extensionMatch ? `.${extensionMatch[1]}` : "";
+  const stem = extension ? baseName.slice(0, -extension.length) : baseName;
+  let copyIndex = 1;
+
+  while (true) {
+    const copySuffix = copyIndex === 1 ? " copy" : ` copy ${copyIndex}`;
+    const candidate = joinWorkspacePath(parentPath, `${stem}${copySuffix}${extension}`);
+
+    if (!existingPaths.has(candidate)) {
+      return candidate;
+    }
+
+    copyIndex += 1;
+  }
+}
+
+function isWorkspaceNodeCopyable(node: WorkspaceTreeNode): boolean {
+  return (
+    node.source.kind === "document" ||
+    node.source.kind === "diagram" ||
+    node.source.kind === "graph" ||
+    node.source.kind === "folder"
+  );
+}
+
+function getWorkspaceNodeCopyDomain(node: WorkspaceTreeNode): "regular" | "figure" | null {
+  if (!isWorkspaceNodeCopyable(node)) {
+    return null;
+  }
+
+  return isFigureWorkspacePath(node.path) ? "figure" : "regular";
+}
+
+function getWorkspaceClipboardDomain(nodes: WorkspaceTreeNode[]): "regular" | "figure" | null {
+  let domain: "regular" | "figure" | null = null;
+
+  for (const node of nodes) {
+    const nodeDomain = getWorkspaceNodeCopyDomain(node);
+
+    if (!nodeDomain) {
+      return null;
+    }
+
+    if (!domain) {
+      domain = nodeDomain;
+      continue;
+    }
+
+    if (domain !== nodeDomain) {
+      return null;
+    }
+  }
+
+  return domain;
+}
+
+function normalizeWorkspacePasteDestination(
+  domain: "regular" | "figure",
+  destinationFolderPath: string | null
+): { destinationFolderPath: string | null; error: string | null } {
+  const normalizedDestination = normalizeWorkspacePath(destinationFolderPath ?? "");
+
+  if (domain === "figure") {
+    return {
+      destinationFolderPath:
+        normalizedDestination && isFigureWorkspacePath(normalizedDestination)
+          ? normalizedDestination
+          : "figures",
+      error: null
+    };
+  }
+
+  if (normalizedDestination && isFigureWorkspacePath(normalizedDestination)) {
+    return {
+      destinationFolderPath: null,
+      error: "Documents cannot be pasted inside figures."
+    };
+  }
+
+  return {
+    destinationFolderPath: normalizedDestination || null,
+    error: null
+  };
+}
+
+function copyWorkspaceNodesToSnapshot(
+  snapshot: AppSnapshot,
+  nodes: WorkspaceTreeNode[],
+  destinationFolderPath: string | null
+): { snapshot: AppSnapshot; copiedPaths: string[] } {
+  const rootNodes = removeDescendantWorkspaceNodes(nodes).filter(isWorkspaceNodeCopyable);
+
+  if (rootNodes.length === 0) {
+    return { snapshot, copiedPaths: [] };
+  }
+
+  const now = new Date().toISOString();
+  const existingPaths = createWorkspacePathSet(snapshot);
+  const copiedPaths: string[] = [];
+  const copiedRootPaths: string[] = [];
+  let nextDocuments = [...snapshot.project.documents];
+  let nextFolders = [...snapshot.project.folders];
+  let nextFigures = [...snapshot.project.figures];
+  let nextGraphs = [...snapshot.project.graphs];
+  let activeDocumentId = snapshot.project.activeDocumentId;
+
+  for (const rootNode of rootNodes) {
+    const domain = getWorkspaceNodeCopyDomain(rootNode);
+    const requestedRootPath = joinWorkspacePath(
+      destinationFolderPath,
+      getWorkspaceBaseName(rootNode.path)
+    );
+    const rootTargetPath = createWorkspaceCopyPath(
+      requestedRootPath,
+      existingPaths,
+      rootNode.kind === "folder"
+    );
+    let didCopyRoot = false;
+
+    existingPaths.add(rootTargetPath);
+
+    for (const sourceNode of flattenWorkspaceNodeSubtree(rootNode)) {
+      const relativePath =
+        sourceNode.path === rootNode.path
+          ? ""
+          : sourceNode.path.slice(rootNode.path.length + 1);
+      const targetPath = relativePath
+        ? joinWorkspacePath(rootTargetPath, relativePath)
+        : rootTargetPath;
+
+      if (sourceNode.kind === "folder") {
+        if (domain === "regular" && sourceNode.source.kind === "folder") {
+          nextFolders = [
+            ...nextFolders,
+            {
+              id: createPrefixedId("folder"),
+              name: targetPath,
+              updatedAt: now
+            }
+          ];
+          didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
+        }
+
+        existingPaths.add(targetPath);
+        continue;
+      }
+
+      if (sourceNode.source.kind === "document" && domain === "regular") {
+        const sourceDocument = snapshot.project.documents.find(
+          (document) => document.id === sourceNode.source.id
+        );
+
+        if (!sourceDocument) {
+          continue;
+        }
+
+        const copiedDocument = {
+          ...sourceDocument,
+          id: createPrefixedId("doc"),
+          name: targetPath,
+          content: cloneWorkspaceContent(sourceDocument.content),
+          updatedAt: now
+        };
+
+        nextDocuments = [...nextDocuments, copiedDocument];
+        activeDocumentId = copiedDocument.id;
+        copiedPaths.push(targetPath);
+        didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
+        existingPaths.add(targetPath);
+        continue;
+      }
+
+      if (sourceNode.source.kind === "diagram" && domain === "figure") {
+        const sourceDiagram = snapshot.project.figures.find(
+          (figure) => figure.id === sourceNode.source.id
+        );
+
+        if (!sourceDiagram) {
+          continue;
+        }
+
+        nextFigures = [
+          ...nextFigures,
+          cloneDiagramAssetForWorkspacePath(sourceDiagram, targetPath, now)
+        ];
+        copiedPaths.push(targetPath);
+        didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
+        existingPaths.add(targetPath);
+        continue;
+      }
+
+      if (sourceNode.source.kind === "graph" && domain === "figure") {
+        const sourceGraph = snapshot.project.graphs.find(
+          (graph) => graph.id === sourceNode.source.id
+        );
+
+        if (!sourceGraph) {
+          continue;
+        }
+
+        nextGraphs = [
+          ...nextGraphs,
+          cloneGraphAssetForWorkspacePath(sourceGraph, targetPath, now)
+        ];
+        copiedPaths.push(targetPath);
+        didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
+        existingPaths.add(targetPath);
+      }
+    }
+
+    if (didCopyRoot) {
+      copiedRootPaths.push(rootTargetPath);
+    }
+  }
+
+  if (copiedPaths.length === 0 && copiedRootPaths.length === 0) {
+    return { snapshot, copiedPaths: [] };
+  }
+
+  return {
+    snapshot: {
+      ...snapshot,
+      project: {
+        ...snapshot.project,
+        documents: nextDocuments,
+        folders: nextFolders,
+        figures: nextFigures,
+        graphs: nextGraphs,
+        activeDocumentId,
+        updatedAt: now
+      }
+    },
+    copiedPaths: copiedRootPaths.length > 0 ? copiedRootPaths : copiedPaths
+  };
 }
 
 function isTypingTarget(target: EventTarget | null) {
@@ -841,17 +2318,17 @@ function getKeyboardZoomDirection(
   return null;
 }
 
-function getVimPaneFocusTarget(
+function getVimPaneFocusDirection(
   event: KeyboardEvent,
   keybindings: KeybindingMap,
   apple: boolean
-): "source" | "preview" | null {
+): -1 | 1 | null {
   if (matchesKeybinding(event, keybindings.focusSourcePane, apple)) {
-    return "source";
+    return -1;
   }
 
   if (matchesKeybinding(event, keybindings.focusPreviewPane, apple)) {
-    return "preview";
+    return 1;
   }
 
   return null;
@@ -1056,13 +2533,23 @@ function buildGraphShadowFiles(graphs: GraphAsset[]): CompileAssetFile[] {
 
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
+  const [storedSettingsMenu] = useState(readStoredSettingsMenuState);
   const menuStripRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
+  const settingsScrollByTabRef = useRef<SettingsScrollPositions>(storedSettingsMenu.scrollByTab);
+  const settingsTabRef = useRef<SettingsTab>(storedSettingsMenu.tab);
+  const settingsScrollRestoreFrameRef = useRef<number | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
   const previewPaneRef = useRef<HTMLElement | null>(null);
+  const sidebarPaneRef = useRef<HTMLElement | null>(null);
   const shouldFocusEditorAfterVimToggleRef = useRef(false);
+  const sourceTabsInitializedProjectRef = useRef<string | null>(null);
+  const previewTabsInitializedProjectRef = useRef<string | null>(null);
+  const workspaceTabDragRef = useRef<{ kind: WorkspaceTabKind; path: string } | null>(null);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
   const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
+  const projectImportInputRef = useRef<HTMLInputElement | null>(null);
   const documentUploadInputRef = useRef<HTMLInputElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const filesSectionRef = useRef<HTMLElement | null>(null);
@@ -1104,6 +2591,9 @@ export function App() {
   const themeRef = useRef<ThemeDefinition | null>(null);
   const compileResultRef = useRef<CompileResult | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
+  const handleFormatDocumentRef = useRef<() => void>(() => {});
+  const previewDownloadMenuRef = useRef<HTMLDivElement | null>(null);
+  const activateWorkspaceTabRef = useRef<(direction: -1 | 1) => boolean>(() => false);
   const compileInFlightRef = useRef(false);
   const compileInFlightLanguageRef = useRef<SourceLanguage | null>(null);
   const compileInFlightSourceRef = useRef("");
@@ -1113,7 +2603,12 @@ export function App() {
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("git");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(storedSettingsMenu.tab);
+  const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
+  const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
+  const [previewDownloadMode, setPreviewDownloadMode] = useState<PreviewDownloadMode>("output");
+  const [isPreviewDownloadMenuOpen, setIsPreviewDownloadMenuOpen] = useState(false);
+  const [recentWorkspaceState, setRecentWorkspaceState] = useState(readRecentWorkspaceState);
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>("files");
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
     search: "",
@@ -1148,7 +2643,6 @@ export function App() {
   const [graphPaneMode, setGraphPaneMode] = useState<GraphPaneMode>("sidebar");
   const [gitMergePaneMode, setGitMergePaneMode] = useState<GitMergePaneMode>("sidebar");
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
-  const [isSourceToolbarVisible, setIsSourceToolbarVisible] = useState(true);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isPaperView, setIsPaperView] = useState(false);
   const [recordingKeybindingId, setRecordingKeybindingId] =
@@ -1167,11 +2661,21 @@ export function App() {
   const [isTrashViewOpen, setIsTrashViewOpen] = useState(false);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<string[]>([]);
+  const [sourceTabPaths, setSourceTabPaths] = useState<string[]>([]);
+  const [transientSourceTabPath, setTransientSourceTabPath] = useState<string | null>(null);
+  const [previewTabPaths, setPreviewTabPaths] = useState<string[]>([]);
+  const [activePreviewPath, setActivePreviewPath] = useState<string | null>(null);
+  const [draggingWorkspaceTab, setDraggingWorkspaceTab] =
+    useState<{ kind: WorkspaceTabKind; path: string } | null>(null);
+  const [workspaceTabDropTarget, setWorkspaceTabDropTarget] =
+    useState<{ kind: WorkspaceTabKind; path: string; side: "before" | "after" } | null>(null);
   const [workspaceSelectionAnchorPath, setWorkspaceSelectionAnchorPath] = useState<string | null>(null);
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null);
   const [renamingWorkspacePath, setRenamingWorkspacePath] = useState<string | null>(null);
   const [workspaceRenameDraft, setWorkspaceRenameDraft] = useState("");
+  const [workspaceClipboard, setWorkspaceClipboard] = useState<WorkspaceClipboardState | null>(null);
+  const [pendingWorkspaceDeletePath, setPendingWorkspaceDeletePath] = useState<string | null>(null);
   const [draggedWorkspacePath, setDraggedWorkspacePath] = useState<string | null>(null);
   const [workspaceDropTargetPath, setWorkspaceDropTargetPath] = useState<string | null>(null);
   const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
@@ -1220,6 +2724,10 @@ export function App() {
     text: ""
   });
   const [latexPackageSearchQuery, setLatexPackageSearchQuery] = useState("");
+  const [cachedLatexPackageNames, setCachedLatexPackageNames] = useState(
+    readStoredLatexPackageSelections
+  );
+  const [installingLatexPackageName, setInstallingLatexPackageName] = useState<string | null>(null);
   const [installingLatexBundleId, setInstallingLatexBundleId] =
     useState<LatexPackageBundleId | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("split");
@@ -1268,6 +2776,7 @@ export function App() {
   );
   const [viewportWidth, setViewportWidth] = useState(getCurrentViewportWidth);
   const [viewportHeight, setViewportHeight] = useState(getCurrentViewportHeight);
+  const isMobileWorkspace = isMobileWorkspaceViewport(viewportWidth);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>("editor");
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
@@ -1348,6 +2857,7 @@ export function App() {
   const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
     Extract<CompileResult, { ok: true }> | null
   >(null);
+  const [compilePreviewsByPath, setCompilePreviewsByPath] = useState<Record<string, CompilePreviewState>>({});
   const [isErrorSettled, setIsErrorSettled] = useState(false);
   const [isCompiling, setIsCompiling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -1375,6 +2885,9 @@ export function App() {
     isLoadingRepos: false,
     isLoadingBranches: false
   });
+  const [gitHubClone, setGitHubClone] = useState<GitHubCloneState>(
+    createInitialGitHubCloneState
+  );
   const [upstreamTracking, setUpstreamTracking] = useState<UpstreamTracking | null>(null);
   const [createGitHubRepoPrivate, setCreateGitHubRepoPrivate] = useState(true);
   const [gitCommitHistory, setGitCommitHistory] = useState<RepoCommit[]>([]);
@@ -1410,6 +2923,10 @@ export function App() {
     keybindings.compile,
     isAppleShortcutPlatform
   );
+  const formatDocumentShortcutLabel = formatKeybinding(
+    keybindings.formatDocument,
+    isAppleShortcutPlatform
+  );
   const vimToggleShortcutLabel = formatKeybinding(
     keybindings.toggleVim,
     isAppleShortcutPlatform
@@ -1421,6 +2938,67 @@ export function App() {
       return updateVimPreference(currentSnapshot, nextVimMode);
     });
   }, []);
+
+  const saveCurrentSettingsScrollPosition = useCallback(() => {
+    const element = settingsBodyRef.current;
+
+    if (!element) {
+      return;
+    }
+
+    const tab = settingsTabRef.current;
+    settingsScrollByTabRef.current = {
+      ...settingsScrollByTabRef.current,
+      [tab]: Math.max(0, Math.round(element.scrollTop))
+    };
+    writeStoredSettingsMenuState(tab, settingsScrollByTabRef.current);
+  }, []);
+
+  const handleSettingsBodyScroll = useCallback(() => {
+    saveCurrentSettingsScrollPosition();
+  }, [saveCurrentSettingsScrollPosition]);
+
+  const handleSettingsTabChange = useCallback(
+    (tab: SettingsTab) => {
+      if (settingsTabRef.current === tab) {
+        return;
+      }
+
+      saveCurrentSettingsScrollPosition();
+      setSettingsTab(tab);
+    },
+    [saveCurrentSettingsScrollPosition]
+  );
+  const settingsSearchMatchingTabs = useMemo(() => {
+    const query = settingsSearchQuery.trim().toLowerCase();
+
+    if (!query) {
+      return SETTINGS_TABS;
+    }
+
+    return SETTINGS_TABS.filter((tab) =>
+      SETTINGS_SEARCH_INDEX[tab].some((term) => term.toLowerCase().includes(query))
+    );
+  }, [settingsSearchQuery]);
+
+  useEffect(() => {
+    const query = settingsSearchQuery.trim();
+
+    if (!isSettingsOpen || !query || settingsSearchMatchingTabs.includes(settingsTab)) {
+      return;
+    }
+
+    const [firstMatch] = settingsSearchMatchingTabs;
+    if (firstMatch) {
+      handleSettingsTabChange(firstMatch);
+    }
+  }, [
+    handleSettingsTabChange,
+    isSettingsOpen,
+    settingsSearchMatchingTabs,
+    settingsSearchQuery,
+    settingsTab
+  ]);
 
   const handleCursorSmearChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -1520,6 +3098,38 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    settingsTabRef.current = settingsTab;
+    writeStoredSettingsMenuState(settingsTab, settingsScrollByTabRef.current);
+  }, [settingsTab]);
+
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    if (settingsScrollRestoreFrameRef.current !== null) {
+      window.cancelAnimationFrame(settingsScrollRestoreFrameRef.current);
+    }
+
+    settingsScrollRestoreFrameRef.current = window.requestAnimationFrame(() => {
+      const element = settingsBodyRef.current;
+
+      if (element) {
+        element.scrollTop = settingsScrollByTabRef.current[settingsTab] ?? 0;
+      }
+
+      settingsScrollRestoreFrameRef.current = null;
+    });
+
+    return () => {
+      if (settingsScrollRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(settingsScrollRestoreFrameRef.current);
+        settingsScrollRestoreFrameRef.current = null;
+      }
+    };
+  }, [isSettingsOpen, settingsTab]);
+
+  useEffect(() => {
     if (!isSettingsOpen || settingsTab !== "keybindings" || !recordingKeybindingId) {
       return;
     }
@@ -1597,6 +3207,50 @@ export function App() {
       )
     );
   }, []);
+  const handleLintOnEditToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateEditorToolingPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.editorTooling,
+        lintOnEdit: !currentSnapshot.preferences.editorTooling.lintOnEdit
+      })
+    );
+  }, []);
+  const handleFormatOnCompileToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateEditorToolingPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.editorTooling,
+        formatOnCompile: !currentSnapshot.preferences.editorTooling.formatOnCompile
+      })
+    );
+  }, []);
+  const handleFormatterChange = useCallback((language: EditorToolLanguage, formatter: EditorFormatterId) => {
+    setSnapshot((currentSnapshot) =>
+      updateEditorToolingPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.editorTooling,
+        languages: {
+          ...currentSnapshot.preferences.editorTooling.languages,
+          [language]: {
+            ...currentSnapshot.preferences.editorTooling.languages[language],
+            formatter
+          }
+        }
+      })
+    );
+  }, []);
+  const handleLinterChange = useCallback((language: EditorToolLanguage, linter: EditorLinterId) => {
+    setSnapshot((currentSnapshot) =>
+      updateEditorToolingPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.editorTooling,
+        languages: {
+          ...currentSnapshot.preferences.editorTooling.languages,
+          [language]: {
+            ...currentSnapshot.preferences.editorTooling.languages[language],
+            linter
+          }
+        }
+      })
+    );
+  }, []);
   const togglePreviewDebug = useCallback(() => {
     setIsPreviewDebugVisible((current) => !current);
   }, []);
@@ -1621,38 +3275,6 @@ export function App() {
         ? gitWorkspace.projects.filter((project) => project.projectId === selectedProjectRepository.id)
         : [],
     [gitWorkspace.projects, selectedProjectRepository]
-  );
-  const githubConnectedProjectOptions = useMemo(
-    () =>
-      projectStorage.projects.flatMap((project) => {
-        const connectedProjects = gitWorkspace.projects.filter(
-          (managedProject) =>
-            managedProject.projectId === project.id &&
-            managedProject.connected &&
-            managedProject.owner.trim() &&
-            managedProject.repo.trim()
-        );
-        if (connectedProjects.length === 0) {
-          return [];
-        }
-
-        const scopedSelection = gitWorkspace.selectedProjectIdsByTyprProjectId[project.id];
-        const selectedManagedProject =
-          connectedProjects.find((managedProject) => managedProject.id === scopedSelection) ??
-          connectedProjects[0];
-
-        return [
-          {
-            project,
-            managedProject: selectedManagedProject
-          }
-        ];
-      }),
-    [
-      gitWorkspace.projects,
-      gitWorkspace.selectedProjectIdsByTyprProjectId,
-      projectStorage.projects
-    ]
   );
   const selectedGitProject = useMemo(
     () => {
@@ -1699,10 +3321,6 @@ export function App() {
   const selectedProjectGitConnectionLabel = selectedGitProjectIsGitHubConnected
     ? "Connected"
     : "Not connected";
-  const selectedGitHubProjectDropdownValue =
-    selectedGitProjectIsGitHubConnected && selectedProjectRepository
-      ? selectedProjectRepository.id
-      : "";
   useEffect(() => {
     if (!isHydrated || !selectedGitProject || !selectedProjectRepository || !selectedGitProject.connected) {
       return;
@@ -1911,6 +3529,10 @@ export function App() {
 
     return nextCollapsedFolders;
   }, [openFileFolders, workspaceFolderPaths]);
+  const visibleWorkspaceNodes = useMemo(
+    () => flattenVisibleWorkspaceNodes(visibleWorkspaceTree, collapsedFileFolders),
+    [collapsedFileFolders, visibleWorkspaceTree]
+  );
   const updateWorkspaceOpenFolders = useCallback(
     (updater: (currentPaths: Set<string>) => Set<string>) => {
       setWorkspaceOpenFoldersByProject((current) => {
@@ -1942,6 +3564,33 @@ export function App() {
         : null,
     [normalizedSelectedWorkspacePath, visibleWorkspaceTree]
   );
+  const workspaceTreeCursorPath = useMemo(() => {
+    const candidatePath =
+      workspaceSelectionAnchorPath ??
+      selectedWorkspacePaths[0] ??
+      normalizedSelectedWorkspacePath;
+    const normalizedPath = candidatePath ? normalizeWorkspacePath(candidatePath) : null;
+
+    return normalizedPath && findWorkspaceNodeByPath(visibleWorkspaceTree, normalizedPath)
+      ? normalizedPath
+      : null;
+  }, [
+    normalizedSelectedWorkspacePath,
+    selectedWorkspacePaths,
+    visibleWorkspaceTree,
+    workspaceSelectionAnchorPath
+  ]);
+  useEffect(() => {
+    if (activeSidebarTool !== "files" || !workspaceTreeCursorPath) {
+      return;
+    }
+
+    const selectedRow = Array.from(
+      sidebarPaneRef.current?.querySelectorAll<HTMLElement>("[data-workspace-path]") ?? []
+    ).find((row) => row.dataset.workspacePath === workspaceTreeCursorPath);
+
+    selectedRow?.scrollIntoView({ block: "nearest" });
+  }, [activeSidebarTool, workspaceTreeCursorPath]);
   const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
   const workspaceStructureKey = selectedProjectRepository
     ? getProjectWorkspaceStructureKey(selectedProjectRepository)
@@ -1975,76 +3624,6 @@ export function App() {
   }, [activeDocumentTextContent]);
   const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadWorkspacePreview() {
-      if (!sourceWorkspaceNode || sourceWorkspaceNode.kind !== "file") {
-        setSelectedWorkspacePreview(null);
-        return;
-      }
-
-      const mimeType = getWorkspacePreviewMimeType(sourceWorkspaceNode.path);
-
-      if (mimeType === "text/markdown") {
-        setSelectedWorkspacePreview({
-          name: sourceWorkspaceNode.name,
-          path: sourceWorkspaceNode.path,
-          content: sourceEditorValue,
-          mimeType
-        });
-        return;
-      }
-
-      if (isTextWorkspaceFile(sourceWorkspaceNode.path)) {
-        setSelectedWorkspacePreview(null);
-        return;
-      }
-
-      setSelectedWorkspacePreview(null);
-
-      if (!mimeType) {
-        setSelectedWorkspacePreview(null);
-        return;
-      }
-
-      if (sourceWorkspaceNode.content instanceof Uint8Array) {
-        setSelectedWorkspacePreview({
-          name: sourceWorkspaceNode.name,
-          path: sourceWorkspaceNode.path,
-          content: sourceWorkspaceNode.content,
-          mimeType
-        });
-        return;
-      }
-
-      const bytes = selectedProjectRepository
-        ? await readWorkspaceFileFromOpfs(selectedProjectRepository.id, sourceWorkspaceNode.path)
-        : null;
-
-      if (cancelled) {
-        return;
-      }
-
-      if (bytes) {
-        setSelectedWorkspacePreview({
-          name: sourceWorkspaceNode.name,
-          path: sourceWorkspaceNode.path,
-          content: bytes,
-          mimeType
-        });
-        return;
-      }
-
-      setSelectedWorkspacePreview(null);
-    }
-
-    void loadWorkspacePreview();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedProjectRepository, sourceEditorValue, sourceWorkspaceNode]);
-  useEffect(() => {
     if (
       sourceWorkspaceNode &&
       sourceWorkspaceNode.kind === "file" &&
@@ -2076,12 +3655,388 @@ export function App() {
     (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path));
   const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument.name;
   const activeSourceLanguage = getSourceLanguage(activeSourcePath);
+  const activeSourceToolLanguage = getEditorToolLanguage(activeSourceLanguage);
+  const isActiveSourceFormatterEnabled =
+    isSourceFileEditable &&
+    !isInspectingGraphSource &&
+    activeSourceToolLanguage !== null &&
+    snapshot.preferences.editorTooling.languages[activeSourceToolLanguage].formatter !== "disabled";
   const isActiveSourceCompilable = isCompilableSourceFile(activeSourcePath);
   const showSourceCompileButton =
     isSourceFileEditable &&
     isActiveSourceCompilable &&
-    activeSourceLanguage !== "markdown" &&
-    !(activeSourceLanguage === "typst" && snapshot.preferences.liveCompilation);
+    activeSourceLanguage !== "markdown";
+  const normalizedActiveSourcePath = normalizeWorkspacePath(activeSourcePath);
+  const isDocumentSourceTab =
+    sourceWorkspaceNode === null || sourceWorkspaceNode.source.kind === "document";
+  const canPreviewActiveSource =
+    isActiveSourceCompilable || activeSourceLanguage === "markdown";
+  const activeProjectTabKey = selectedProjectRepository?.id ?? snapshot.project.id;
+  const workspaceFilePathSet = useMemo(
+    () => new Set(collectWorkspaceFilePaths(workspaceTree)),
+    [workspaceTree]
+  );
+  const getExistingLatexPdfPreviewPath = useCallback(
+    (sourcePath: string) => {
+      if (!selectedProjectRepository || getSourceLanguage(sourcePath) !== "latex") {
+        return null;
+      }
+
+      return getExistingLatexPdfPath(selectedProjectRepository, sourcePath);
+    },
+    [selectedProjectRepository]
+  );
+  useEffect(() => {
+    writeRecentWorkspaceState(recentWorkspaceState.projects, recentWorkspaceState.files);
+  }, [recentWorkspaceState]);
+  useEffect(() => {
+    if (!isHydrated || !selectedProjectRepository) {
+      return;
+    }
+
+    setRecentWorkspaceState((current) => ({
+      ...current,
+      projects: touchRecentProject(current.projects, selectedProjectRepository)
+    }));
+  }, [
+    isHydrated,
+    selectedProjectRepository?.displayName,
+    selectedProjectRepository?.id
+  ]);
+  useEffect(() => {
+    if (
+      !isHydrated ||
+      !selectedProjectRepository ||
+      !normalizedActiveSourcePath ||
+      !workspaceFilePathSet.has(normalizedActiveSourcePath)
+    ) {
+      return;
+    }
+
+    setRecentWorkspaceState((current) => ({
+      ...current,
+      files: touchRecentFile(current.files, selectedProjectRepository, normalizedActiveSourcePath)
+    }));
+  }, [
+    isHydrated,
+    normalizedActiveSourcePath,
+    selectedProjectRepository?.displayName,
+    selectedProjectRepository?.id,
+    workspaceFilePathSet
+  ]);
+  const activePreviewWorkspaceNode = useMemo(
+    () =>
+      activePreviewPath
+        ? findWorkspaceNodeByPath(workspaceTree, activePreviewPath)
+        : null,
+    [activePreviewPath, workspaceTree]
+  );
+  const activePreviewTextContent =
+    activePreviewPath && activePreviewPath === normalizedActiveSourcePath
+      ? sourceEditorValue
+      : typeof activePreviewWorkspaceNode?.content === "string"
+        ? activePreviewWorkspaceNode.content
+        : "";
+  const activePreviewCompileState = activePreviewPath
+    ? compilePreviewsByPath[activePreviewPath] ?? null
+    : null;
+  const activePreviewSourcePosition = useMemo<SourcePosition | null>(
+    () =>
+      activePreviewPath === normalizedActiveSourcePath
+        ? createSourceRange({
+            path: normalizedActiveSourcePath,
+            line: currentEditorLineNumber,
+            column: 0
+          })
+        : null,
+    [activePreviewPath, currentEditorLineNumber, normalizedActiveSourcePath]
+  );
+  const activePreviewSourceLineCount = useMemo(
+    () => countSourceTextLines(activePreviewTextContent),
+    [activePreviewTextContent]
+  );
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadWorkspacePreview() {
+      if (!activePreviewWorkspaceNode || activePreviewWorkspaceNode.kind !== "file") {
+        setSelectedWorkspacePreview(null);
+        return;
+      }
+
+      const mimeType = getWorkspacePreviewMimeType(activePreviewWorkspaceNode.path);
+
+      if (mimeType === "text/markdown") {
+        setSelectedWorkspacePreview({
+          name: activePreviewWorkspaceNode.name,
+          path: activePreviewWorkspaceNode.path,
+          content: activePreviewTextContent,
+          mimeType
+        });
+        return;
+      }
+
+      if (isTextWorkspaceFile(activePreviewWorkspaceNode.path)) {
+        setSelectedWorkspacePreview(null);
+        return;
+      }
+
+      setSelectedWorkspacePreview(null);
+
+      if (!mimeType) {
+        setSelectedWorkspacePreview(null);
+        return;
+      }
+
+      if (activePreviewWorkspaceNode.content instanceof Uint8Array) {
+        setSelectedWorkspacePreview({
+          name: activePreviewWorkspaceNode.name,
+          path: activePreviewWorkspaceNode.path,
+          content: activePreviewWorkspaceNode.content,
+          mimeType
+        });
+        return;
+      }
+
+      const bytes = selectedProjectRepository
+        ? await readWorkspaceFileFromOpfs(selectedProjectRepository.id, activePreviewWorkspaceNode.path)
+        : null;
+
+      if (cancelled) {
+        return;
+      }
+
+      if (bytes) {
+        setSelectedWorkspacePreview({
+          name: activePreviewWorkspaceNode.name,
+          path: activePreviewWorkspaceNode.path,
+          content: bytes,
+          mimeType
+        });
+        return;
+      }
+
+      setSelectedWorkspacePreview(null);
+    }
+
+    void loadWorkspacePreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activePreviewTextContent, activePreviewWorkspaceNode, selectedProjectRepository]);
+  const visiblePreviewResult =
+    activePreviewPath && !selectedWorkspacePreview
+      ? activePreviewCompileState?.result ?? null
+      : null;
+  const visibleLastSuccessfulResult =
+    activePreviewPath && !selectedWorkspacePreview
+      ? activePreviewCompileState?.lastSuccessfulResult ?? null
+      : null;
+  const activePreviewCompilePath = activePreviewPath
+    ? normalizeWorkspacePath(activePreviewPath)
+    : null;
+  const activeCompileTargetPath = normalizeWorkspacePath(
+    compileInFlightSourcePathRef.current || pendingSourcePathRef.current
+  );
+  const visiblePreviewIsCompiling = Boolean(
+    activePreviewCompileState?.isCompiling &&
+      isCompiling &&
+      !selectedWorkspacePreview &&
+      activePreviewCompilePath &&
+      activePreviewCompilePath === activeCompileTargetPath
+  );
+  const rawVisiblePreviewCompilerStatus =
+    activePreviewCompileState?.compilerStatus ??
+    (activePreviewPath ? createIdleCompilerStatusForSource(activePreviewPath) : compilerStatus);
+  const visiblePreviewCompilerStatus =
+    rawVisiblePreviewCompilerStatus.phase === "compiling" && !visiblePreviewIsCompiling
+      ? activePreviewPath
+        ? createIdleCompilerStatusForSource(activePreviewPath)
+        : compilerStatus
+      : rawVisiblePreviewCompilerStatus;
+  const openSourceTab = useCallback((path: string) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+
+    if (!normalizedPath) {
+      return;
+    }
+
+    setSourceTabPaths((currentPaths) => appendUniqueWorkspacePath(currentPaths, normalizedPath));
+    setTransientSourceTabPath((currentPath) =>
+      currentPath === normalizedPath ? null : currentPath
+    );
+    setProjectRepository((project) => ({
+      ...project,
+      selection: {
+        ...project.selection,
+        openFilePaths: appendUniqueWorkspacePath(project.selection.openFilePaths, normalizedPath)
+      }
+    }));
+  }, [setProjectRepository]);
+  const previewSourceTab = useCallback((path: string) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+
+    if (!normalizedPath) {
+      return;
+    }
+
+    setTransientSourceTabPath(normalizedPath);
+  }, []);
+  const openPreviewTab = useCallback((path: string, options: { activate?: boolean } = {}) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+
+    if (!normalizedPath) {
+      return;
+    }
+
+    setPreviewTabPaths((currentPaths) => appendUniqueWorkspacePath(currentPaths, normalizedPath));
+
+    if (options.activate ?? true) {
+      setActivePreviewPath(normalizedPath);
+    }
+  }, []);
+  useEffect(() => {
+    if (
+      isTrashViewOpen ||
+      workspaceFilePathSet.size === 0 ||
+      sourceTabsInitializedProjectRef.current === activeProjectTabKey
+    ) {
+      return;
+    }
+
+    const storedSourceTabs = normalizeUniqueWorkspacePaths(
+      selectedProjectRepository?.selection.openFilePaths ?? []
+    ).filter(
+      (path) =>
+        workspaceFilePathSet.has(path) &&
+        isTextWorkspaceFile(path)
+    );
+
+    setSourceTabPaths(storedSourceTabs);
+    if (
+      selectedProjectRepository &&
+      !areWorkspacePathListsEqual(
+        selectedProjectRepository.selection.openFilePaths,
+        storedSourceTabs
+      )
+    ) {
+      setProjectRepository((project) => ({
+        ...project,
+        selection: {
+          ...project.selection,
+          openFilePaths: storedSourceTabs
+        }
+      }));
+    }
+    sourceTabsInitializedProjectRef.current = activeProjectTabKey;
+  }, [
+    activeProjectTabKey,
+    isTrashViewOpen,
+    selectedProjectRepository?.selection.openFilePaths,
+    selectedProjectRepository,
+    setProjectRepository,
+    workspaceFilePathSet
+  ]);
+  useEffect(() => {
+    if (
+      isTrashViewOpen ||
+      !normalizedActiveSourcePath ||
+      !isSourceFileEditable ||
+      !isDocumentSourceTab
+    ) {
+      return;
+    }
+
+    if (
+      canPreviewActiveSource &&
+      previewTabsInitializedProjectRef.current !== activeProjectTabKey &&
+      previewTabPaths.length === 0 &&
+      activePreviewPath === null
+    ) {
+      previewTabsInitializedProjectRef.current = activeProjectTabKey;
+      openPreviewTab(
+        getExistingLatexPdfPreviewPath(normalizedActiveSourcePath) ??
+          normalizedActiveSourcePath
+      );
+    }
+  }, [
+    activePreviewPath,
+    activeProjectTabKey,
+    canPreviewActiveSource,
+    getExistingLatexPdfPreviewPath,
+    isDocumentSourceTab,
+    isSourceFileEditable,
+    isTrashViewOpen,
+    normalizedActiveSourcePath,
+    openPreviewTab,
+    previewTabPaths.length
+  ]);
+  useEffect(() => {
+    const nextSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths).filter(
+      (path) => workspaceFilePathSet.has(path) && isTextWorkspaceFile(path)
+    );
+
+    if (
+      nextSourceTabs.length !== sourceTabPaths.length ||
+      nextSourceTabs.some((path, index) => path !== sourceTabPaths[index])
+    ) {
+      setSourceTabPaths(nextSourceTabs);
+    }
+  }, [sourceTabPaths, workspaceFilePathSet]);
+  useEffect(() => {
+    const normalizedCurrentTabs = normalizeUniqueWorkspacePaths(sourceTabPaths);
+    const storedSourceTabs = normalizeUniqueWorkspacePaths(
+      selectedProjectRepository?.selection.openFilePaths ?? []
+    ).filter(
+      (path) =>
+        workspaceFilePathSet.has(path) &&
+        isTextWorkspaceFile(path)
+    );
+
+    const nextSourceTabs = storedSourceTabs.filter((path) => !normalizedCurrentTabs.includes(path));
+
+    if (nextSourceTabs.length > 0) {
+      setSourceTabPaths((currentPaths) =>
+        normalizeUniqueWorkspacePaths([...currentPaths, ...nextSourceTabs])
+      );
+    }
+  }, [
+    selectedProjectRepository?.selection.openFilePaths,
+    sourceTabPaths,
+    workspaceFilePathSet
+  ]);
+  useEffect(() => {
+    if (!transientSourceTabPath) {
+      return;
+    }
+
+    const normalizedPath = normalizeWorkspacePath(transientSourceTabPath);
+
+    if (
+      !normalizedPath ||
+      !workspaceFilePathSet.has(normalizedPath) ||
+      sourceTabPaths.includes(normalizedPath)
+    ) {
+      setTransientSourceTabPath(null);
+    }
+  }, [sourceTabPaths, transientSourceTabPath, workspaceFilePathSet]);
+  useEffect(() => {
+    const nextPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter((path) =>
+      workspaceFilePathSet.has(path)
+    );
+
+    if (
+      nextPreviewTabs.length !== previewTabPaths.length ||
+      nextPreviewTabs.some((path, index) => path !== previewTabPaths[index])
+    ) {
+      setPreviewTabPaths(nextPreviewTabs);
+    }
+
+    if (activePreviewPath && !workspaceFilePathSet.has(activePreviewPath)) {
+      setActivePreviewPath(nextPreviewTabs[0] ?? null);
+    }
+  }, [activePreviewPath, previewTabPaths, workspaceFilePathSet]);
   const projectGitignoreContent = useMemo(
     () =>
       selectedProjectRepository
@@ -2205,9 +4160,41 @@ export function App() {
   }, [compileResult]);
 
   useEffect(() => {
+    if (!compileInFlightRef.current && !isCompiling) {
+      return;
+    }
+
+    const statusPath = normalizeWorkspacePath(
+      compileInFlightSourcePathRef.current || pendingSourcePathRef.current
+    );
+
+    if (!statusPath) {
+      return;
+    }
+
+    setCompilePreviewsByPath((currentPreviews) => {
+      const currentPreview = currentPreviews[statusPath] ?? createCompilePreviewState(statusPath);
+
+      if (currentPreview.compilerStatus === compilerStatus) {
+        return currentPreviews;
+      }
+
+      return {
+        ...currentPreviews,
+        [statusPath]: {
+          ...currentPreview,
+          compilerStatus
+        }
+      };
+    });
+  }, [compilerStatus, isCompiling]);
+
+  useEffect(() => {
     if (
       !isHydrated ||
       compileResult !== null ||
+      isCompiling ||
+      compileInFlightRef.current ||
       activeSourceLanguage !== "latex" ||
       !isActiveSourceCompilable ||
       !selectedProjectRepository
@@ -2233,12 +4220,27 @@ export function App() {
       mode: "worker",
       label: "Saved PDF preview ready"
     });
+    setCompilePreviewsByPath((currentPreviews) => ({
+      ...currentPreviews,
+      [normalizedActiveSourcePath]: createCompilePreviewState(normalizedActiveSourcePath, {
+        result: savedResult,
+        lastSuccessfulResult: savedResult,
+        compilerStatus: {
+          phase: "ready",
+          mode: "worker",
+          label: "Saved PDF preview ready"
+        },
+        isCompiling: false
+      })
+    }));
   }, [
     activeSourceLanguage,
     activeSourcePath,
     compileResult,
     isActiveSourceCompilable,
     isHydrated,
+    isCompiling,
+    normalizedActiveSourcePath,
     selectedProjectRepository,
     sourceEditorValue
   ]);
@@ -2852,9 +4854,6 @@ export function App() {
 
     const storedPopup = window.localStorage.getItem(PREVIEW_POPUP_STORAGE_KEY);
     setIsPreviewPopupOpen(storedPopup === "true");
-
-    const storedToolbar = window.localStorage.getItem(SOURCE_TOOLBAR_STORAGE_KEY);
-    setIsSourceToolbarVisible(storedToolbar !== "false");
   }, []);
 
   useEffect(() => {
@@ -2911,6 +4910,9 @@ export function App() {
         case "compile":
           handleCompileRef.current();
           return true;
+        case "formatDocument":
+          handleFormatDocumentRef.current();
+          return true;
         case "toggleVim":
           handleVimToggle();
           return true;
@@ -2954,6 +4956,10 @@ export function App() {
         case "nextSidebarTool":
           cycleSidebarTool(1);
           return true;
+        case "previousWorkspaceTab":
+          return activateWorkspaceTabRef.current(-1);
+        case "nextWorkspaceTab":
+          return activateWorkspaceTabRef.current(1);
         case "increaseEditorFont":
           setEditorFontSize(snapshot.preferences.editorFontSize + 1);
           return true;
@@ -3008,6 +5014,8 @@ export function App() {
   );
 
   const focusSourcePane = useCallback(() => {
+    lastZoomPaneTargetRef.current = "source";
+
     if (isMobileWorkspaceViewport(viewportWidth)) {
       setMobileWorkspaceTab("editor");
     } else if (workspaceMode !== "zen") {
@@ -3023,6 +5031,8 @@ export function App() {
   }, [viewportWidth, workspaceMode]);
 
   const focusPreviewPane = useCallback(() => {
+    lastZoomPaneTargetRef.current = "preview";
+
     if (isMobileWorkspaceViewport(viewportWidth)) {
       setMobileWorkspaceTab("preview");
     } else {
@@ -3037,6 +5047,26 @@ export function App() {
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         previewPaneRef.current?.focus({ preventScroll: true });
+      });
+    });
+  }, [viewportWidth, workspaceMode]);
+
+  const focusFilesPane = useCallback(() => {
+    lastZoomPaneTargetRef.current = "sidebar";
+    setActiveSidebarTool("files");
+    setIsSidebarCollapsed(false);
+
+    if (isMobileWorkspaceViewport(viewportWidth)) {
+      setMobileWorkspaceTab("files");
+    } else if (workspaceMode === "zen") {
+      exitZenMode();
+    } else if (workspaceMode !== "split") {
+      setWorkspaceMode("split");
+    }
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        sidebarPaneRef.current?.focus({ preventScroll: true });
       });
     });
   }, [viewportWidth, workspaceMode]);
@@ -3201,6 +5231,10 @@ export function App() {
         cancelPendingMenuOpen();
         setActiveMenu(null);
       }
+
+      if (!previewDownloadMenuRef.current?.contains(event.target as Node)) {
+        setIsPreviewDownloadMenuOpen(false);
+      }
     }
 
     function handleVimShortcutCapture(event: KeyboardEvent) {
@@ -3224,18 +5258,40 @@ export function App() {
         return;
       }
 
-      const paneFocusTarget = getVimPaneFocusTarget(
+      const paneFocusDirection = getVimPaneFocusDirection(
         event,
         snapshot.preferences.keybindings,
         isAppleShortcutPlatform
       );
-      if (!paneFocusTarget) {
+      if (paneFocusDirection === null) {
         return;
       }
 
       event.preventDefault();
 
-      if (paneFocusTarget === "source") {
+      const activeZoomPaneTarget =
+        resolveZoomPaneTarget(event.target) ??
+        resolveZoomPaneTarget(document.activeElement) ??
+        lastZoomPaneTargetRef.current;
+      const activeVimPane: VimPaneFocusTarget =
+        activeZoomPaneTarget === "sidebar" ? "files" : activeZoomPaneTarget;
+
+      if (activeVimPane === "files" && activeSidebarTool !== "files") {
+        focusFilesPane();
+        return;
+      }
+
+      const panes: VimPaneFocusTarget[] = ["files", "source", "preview"];
+      const activePaneIndex = Math.max(0, panes.indexOf(activeVimPane));
+      const nextPane =
+        panes[Math.min(panes.length - 1, Math.max(0, activePaneIndex + paneFocusDirection))];
+
+      if (nextPane === "files") {
+        focusFilesPane();
+        return;
+      }
+
+      if (nextPane === "source") {
         focusSourcePane();
         return;
       }
@@ -3269,6 +5325,7 @@ export function App() {
         cancelPendingMenuClose();
         cancelPendingMenuOpen();
         setActiveMenu(null);
+        setIsPreviewDownloadMenuOpen(false);
         setIsSettingsOpen(false);
         setDiagramPaneMode("sidebar");
         setGraphPaneMode("sidebar");
@@ -3281,6 +5338,18 @@ export function App() {
       }
 
       if (event.defaultPrevented) {
+        return;
+      }
+
+      if (
+        matchesKeybinding(
+          event,
+          snapshot.preferences.keybindings.formatDocument,
+          isAppleShortcutPlatform
+        ) &&
+        runAppKeybindingCommand("formatDocument")
+      ) {
+        event.preventDefault();
         return;
       }
 
@@ -3326,6 +5395,8 @@ export function App() {
     adjustZoomPaneTarget,
     cancelPendingMenuClose,
     cancelPendingMenuOpen,
+    activeSidebarTool,
+    focusFilesPane,
     focusPreviewPane,
     focusSourcePane,
     handleVimToggle,
@@ -3439,19 +5510,19 @@ export function App() {
       return;
     }
 
-    window.localStorage.setItem(PREVIEW_POPUP_STORAGE_KEY, String(isPreviewPopupOpen));
-  }, [isPreviewPopupOpen]);
+    window.localStorage.setItem(
+      LATEX_PACKAGE_SELECTIONS_STORAGE_KEY,
+      JSON.stringify(cachedLatexPackageNames)
+    );
+  }, [cachedLatexPackageNames]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
 
-    window.localStorage.setItem(
-      SOURCE_TOOLBAR_STORAGE_KEY,
-      String(isSourceToolbarVisible)
-    );
-  }, [isSourceToolbarVisible]);
+    window.localStorage.setItem(PREVIEW_POPUP_STORAGE_KEY, String(isPreviewPopupOpen));
+  }, [isPreviewPopupOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -3599,13 +5670,31 @@ export function App() {
         setLastSuccessfulResult(nextResult);
       }
 
-      if (result.ok) {
-        setCompilerStatus((currentStatus) => ({
-          phase: "ready",
-          mode: currentStatus.mode,
-          label: result.output.kind === "pdf" ? "PDF preview ready" : "Preview ready"
-        }));
-      }
+      setCompilePreviewsByPath((currentPreviews) => {
+        const sourcePathKey = normalizeWorkspacePath(sourcePath);
+        const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+        const nextCompilerStatus = createCompletedPreviewCompilerStatus(
+          result,
+          currentPreview.compilerStatus
+        );
+
+        return {
+          ...currentPreviews,
+          [sourcePathKey]: {
+            ...currentPreview,
+            result: nextResult,
+            lastSuccessfulResult: nextResult.ok
+              ? nextResult
+              : currentPreview.lastSuccessfulResult,
+            compilerStatus: nextCompilerStatus,
+            isCompiling: false
+          }
+        };
+      });
+
+      setCompilerStatus((currentStatus) =>
+        createCompletedPreviewCompilerStatus(result, currentStatus)
+      );
 
       logCompileTiming({
         durationMs: compileDurationMs,
@@ -3619,7 +5708,7 @@ export function App() {
         return;
       }
 
-      setCompileResult({
+      const failedResult = {
         ok: false,
         engine: sourceLanguage === "latex" ? "busytex" : "typst-ts",
         errors: [
@@ -3633,7 +5722,29 @@ export function App() {
             severity: "error"
           }
         ]
-      } satisfies CompileResult);
+      } satisfies CompileResult;
+      setCompileResult(failedResult);
+      setCompilePreviewsByPath((currentPreviews) => {
+        const sourcePathKey = normalizeWorkspacePath(sourcePath);
+        const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+        const nextCompilerStatus = createCompletedPreviewCompilerStatus(
+          failedResult,
+          currentPreview.compilerStatus
+        );
+
+        return {
+          ...currentPreviews,
+          [sourcePathKey]: {
+            ...currentPreview,
+            result: failedResult,
+            compilerStatus: nextCompilerStatus,
+            isCompiling: false
+          }
+        };
+      });
+      setCompilerStatus((currentStatus) =>
+        createCompletedPreviewCompilerStatus(failedResult, currentStatus)
+      );
     } finally {
       compileInFlightRef.current = false;
       compileInFlightLanguageRef.current = null;
@@ -3647,13 +5758,36 @@ export function App() {
       }
 
       if (
-        pendingSourceRef.current !== source ||
-        diagramAssetsRevisionRef.current !== diagramRevision ||
-        graphAssetsRevisionRef.current !== graphRevision
+        shouldRunPendingCompileAfterCompletion({
+          completedDiagramRevision: diagramRevision,
+          completedGraphRevision: graphRevision,
+          completedSource: source,
+          completedSourcePath: sourcePath,
+          pendingDiagramRevision: diagramAssetsRevisionRef.current,
+          pendingGraphRevision: graphAssetsRevisionRef.current,
+          pendingSource: pendingSourceRef.current,
+          pendingSourcePath: pendingSourcePathRef.current
+        })
       ) {
         void runCompile();
       } else {
         setIsCompiling(false);
+        setCompilePreviewsByPath((currentPreviews) => {
+          const sourcePathKey = normalizeWorkspacePath(sourcePath);
+          const currentPreview = currentPreviews[sourcePathKey];
+
+          if (!currentPreview || !currentPreview.isCompiling) {
+            return currentPreviews;
+          }
+
+          return {
+            ...currentPreviews,
+            [sourcePathKey]: {
+              ...currentPreview,
+              isCompiling: false
+            }
+          };
+        });
       }
     }
   }, [compiler, isHydrated, saveGeneratedLatexPdfToProject]);
@@ -3700,6 +5834,23 @@ export function App() {
           )
         : previewSourceDraftRef.current;
     setIsCompiling(true);
+    setCompilePreviewsByPath((currentPreviews) => {
+      const sourcePathKey = normalizeWorkspacePath(sourcePath);
+      const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+
+      return {
+        ...currentPreviews,
+        [sourcePathKey]: {
+          ...currentPreview,
+          compilerStatus: {
+            phase: "compiling",
+            mode: currentPreview.compilerStatus.mode,
+            label: sourceLanguage === "latex" ? "Compiling LaTeX" : "Compiling"
+          },
+          isCompiling: true
+        }
+      };
+    });
 
     if (compileInFlightRef.current) {
       if (shouldCancelInFlightLatexCompile({
@@ -3732,13 +5883,157 @@ export function App() {
     }, COMPILE_DEBOUNCE_MS);
   }, [isPaperView, runCompile, shouldCancelInFlightLatexCompile]);
 
+  const formatActiveSource = useCallback((reason: "compile" | "manual") => {
+    if (!isSourceFileEditable || isInspectingGraphSource) {
+      return sourceEditorValue;
+    }
+
+    const sourcePath = activeSourcePathRef.current;
+    const language = getSourceLanguage(sourcePath);
+    const toolLanguage = getEditorToolLanguage(language);
+    const formatter = toolLanguage
+      ? snapshot.preferences.editorTooling.languages[toolLanguage].formatter
+      : "disabled";
+
+    if (
+      formatter === "disabled" ||
+      (reason === "compile" && !snapshot.preferences.editorTooling.formatOnCompile)
+    ) {
+      if (reason === "manual") {
+        setCompilerStatus({
+          phase: "ready",
+          mode: "worker",
+          label: "No formatter enabled",
+          detail: `${formatSourceLanguageLabel(language)} formatting is disabled for ${sourcePath}`
+        });
+      }
+
+      return sourceEditorValue;
+    }
+
+    const result = formatSourceWithEditorTooling({
+      language,
+      path: sourcePath,
+      preferences: snapshot.preferences.editorTooling,
+      source: sourceEditorValue
+    });
+
+    if (result.changed) {
+      previewSourceDraftRef.current = result.source;
+      setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, result.source));
+      setCompilerStatus({
+        phase: "ready",
+        mode: "worker",
+        label: "Source formatted",
+        detail: `${formatSourceLanguageLabel(language)} formatter updated ${sourcePath}`
+      });
+    } else if (reason === "manual") {
+      setCompilerStatus({
+        phase: "ready",
+        mode: "worker",
+        label: "Source already formatted",
+        detail: `${formatSourceLanguageLabel(language)} formatter made no changes to ${sourcePath}`
+      });
+    }
+
+    return result.source;
+  }, [
+    isInspectingGraphSource,
+    isSourceFileEditable,
+    snapshot.preferences.editorTooling,
+    sourceEditorValue
+  ]);
+
+  const formatActiveSourceForCompile = useCallback(
+    () => formatActiveSource("compile"),
+    [formatActiveSource]
+  );
+
+  const handleFormatDocument = useCallback(() => {
+    formatActiveSource("manual");
+    editorRef.current?.focus();
+  }, [formatActiveSource]);
+
+  useEffect(() => {
+    handleFormatDocumentRef.current = handleFormatDocument;
+  }, [handleFormatDocument]);
+
   const handleCompile = useCallback(() => {
-    if (!isActiveSourceCompilableRef.current) {
+    const sourcePath = activeSourcePathRef.current;
+    const sourceLanguage = getSourceLanguage(sourcePath);
+
+    if (!isActiveSourceCompilableRef.current && sourceLanguage !== "markdown") {
       return;
     }
 
+    const nextSource = formatActiveSourceForCompile();
+    previewSourceDraftRef.current = nextSource;
+
+    if (sourceLanguage === "markdown") {
+      openPreviewTab(sourcePath);
+      setCompileResult(null);
+      setCompilerStatus({
+        phase: "ready",
+        mode: "worker",
+        label: "Markdown preview ready"
+      });
+      return;
+    }
+
+    if (sourceLanguage === "latex" && selectedProjectRepository) {
+      const savedResult = loadSavedLatexPdfCompileResult({
+        allowStale: false,
+        project: selectedProjectRepository,
+        source: nextSource,
+        sourcePath
+      });
+
+      if (savedResult?.ok) {
+        openPreviewTab(getExistingLatexPdfPreviewPath(sourcePath) ?? sourcePath);
+
+        if (compileTimerRef.current !== null) {
+          window.clearTimeout(compileTimerRef.current);
+          compileTimerRef.current = null;
+        }
+
+        if (compileInFlightRef.current && compileInFlightLanguageRef.current === "latex") {
+          compileRequestRef.current += 1;
+          cancelLatexCompile("LaTeX compile was skipped because a matching PDF already exists.");
+        }
+
+        const sourcePathKey = normalizeWorkspacePath(sourcePath);
+        const readyStatus: CompilerStatus = {
+          phase: "ready",
+          mode: "worker",
+          label: "Saved PDF preview ready"
+        };
+
+        setIsCompiling(false);
+        setCompileResult(savedResult);
+        setLastSuccessfulResult(savedResult);
+        setCompilerStatus(readyStatus);
+        setCompilePreviewsByPath((currentPreviews) => ({
+          ...currentPreviews,
+          [sourcePathKey]: createCompilePreviewState(sourcePathKey, {
+            result: savedResult,
+            lastSuccessfulResult: savedResult,
+            compilerStatus: readyStatus,
+            isCompiling: false
+          })
+        }));
+        return;
+      }
+    }
+
+    openPreviewTab(sourcePath);
     queueCompile(false);
-  }, [queueCompile]);
+  }, [
+    formatActiveSourceForCompile,
+    getExistingLatexPdfPreviewPath,
+    openPreviewTab,
+    queueCompile,
+    selectedProjectRepository
+  ]);
 
   useEffect(() => {
     handleCompileRef.current = handleCompile;
@@ -3775,10 +6070,15 @@ export function App() {
       return;
     }
 
+    if (activePreviewPath !== normalizedActiveSourcePath) {
+      return;
+    }
+
     if (compileResult === null || snapshot.preferences.liveCompilation) {
       queueCompile(compileResult !== null);
     }
   }, [
+    activePreviewPath,
     activeSourceLanguage,
     activeSourcePath,
     sourceEditorValue,
@@ -3787,6 +6087,7 @@ export function App() {
     graphAssetsRevision,
     isHydrated,
     isActiveSourceCompilable,
+    normalizedActiveSourcePath,
     queueCompile,
     snapshot.preferences.liveCompilation
   ]);
@@ -3800,11 +6101,17 @@ export function App() {
       return;
     }
 
+    if (activePreviewPath !== normalizedActiveSourcePath) {
+      return;
+    }
+
     queueCompile(false);
   }, [
+    activePreviewPath,
     activeSourceLanguage,
     isHydrated,
     isPaperView,
+    normalizedActiveSourcePath,
     queueCompile,
     theme
   ]);
@@ -3980,28 +6287,299 @@ export function App() {
     setOpenToolbarMenu((current) => (current === menu ? null : menu));
   }, []);
 
-  const handlePreviewSourceJump = useCallback((sourceLocation: string) => {
-    const sourceRange = parseSourceLocation(sourceLocation);
+  const handlePreviewSourceJump = useCallback((sourceLink: PreviewSourceLink) => {
+    const sourceRange = sourceLink.source;
+    const sourcePath = resolvePreviewSourcePath(
+      sourceRange.path,
+      normalizedActiveSourcePath,
+      activePreviewPath,
+      activeSourceLanguageRef.current
+    );
 
-    if (!sourceRange) {
+    if (!sourcePath) {
+      editorRef.current?.focusRange(sourceRange);
       return;
     }
 
-    editorRef.current?.focusRange(sourceRange);
-  }, []);
+    if (sourcePath !== normalizedActiveSourcePath) {
+      openSourceTab(sourcePath);
+      setSelectedWorkspacePath(sourcePath);
+      setSelectedWorkspacePaths([sourcePath]);
+      setWorkspaceSelectionAnchorPath(sourcePath);
+      const targetDocument = snapshot.project.documents.find(
+        (document) => normalizeWorkspacePath(document.name) === sourcePath
+      );
 
-  const handleSelectDocument = (documentId: string) => {
+      if (targetDocument) {
+        setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, targetDocument.id));
+      }
+    }
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        editorRef.current?.focusRange(sourceRange);
+      });
+    });
+  }, [activePreviewPath, normalizedActiveSourcePath, openSourceTab, snapshot.project.documents]);
+
+  const handleSelectDocument = useCallback((
+    documentId: string,
+    options: { sourceTabMode?: "pin" | "preview" | "preserve" } = {}
+  ) => {
     const nextDocument = snapshot.project.documents.find((document) => document.id === documentId);
 
     if (nextDocument) {
       const nextPath = normalizeWorkspacePath(nextDocument.name);
+
+      if (options.sourceTabMode === "pin") {
+        openSourceTab(nextPath);
+      } else if (options.sourceTabMode !== "preserve") {
+        previewSourceTab(nextPath);
+      }
+
       setSelectedWorkspacePath(nextPath);
       setSelectedWorkspacePaths([nextPath]);
       setWorkspaceSelectionAnchorPath(nextPath);
     }
 
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
-  };
+  }, [openSourceTab, previewSourceTab, snapshot.project.documents]);
+
+  const handleActivateSourceTab = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+      const targetDocument = snapshot.project.documents.find(
+        (document) => normalizeWorkspacePath(document.name) === normalizedPath
+      );
+
+      if (!targetDocument) {
+        return;
+      }
+
+      setInspectedWorkspacePath(null);
+      handleSelectDocument(targetDocument.id, { sourceTabMode: "preserve" });
+
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("editor");
+      }
+    },
+    [handleSelectDocument, isMobileWorkspace, snapshot.project.documents]
+  );
+
+  const handleCloseSourceTab = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+      const normalizedSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths);
+      const normalizedTransientPath = transientSourceTabPath
+        ? normalizeWorkspacePath(transientSourceTabPath)
+        : null;
+      const isPinnedTab = normalizedSourceTabs.includes(normalizedPath);
+
+      if (!isPinnedTab) {
+        if (normalizedPath === normalizedTransientPath) {
+          setTransientSourceTabPath(null);
+        }
+
+        if (normalizedPath === normalizedActiveSourcePath) {
+          const nextPath = normalizedSourceTabs[0];
+
+          if (nextPath) {
+            handleActivateSourceTab(nextPath);
+          }
+        }
+
+        return;
+      }
+
+      if (normalizedSourceTabs.length <= 1 && !normalizedTransientPath) {
+        return;
+      }
+
+      const closingIndex = normalizedSourceTabs.indexOf(normalizedPath);
+      const nextTabs = normalizedSourceTabs.filter((tabPath) => tabPath !== normalizedPath);
+      const nextActivePath =
+        normalizedPath === normalizedActiveSourcePath
+          ? nextTabs[Math.min(Math.max(closingIndex, 0), nextTabs.length - 1)] ??
+            (normalizedTransientPath && normalizedTransientPath !== normalizedPath
+              ? normalizedTransientPath
+              : null)
+          : normalizedActiveSourcePath;
+
+      if (normalizedPath === normalizedActiveSourcePath) {
+        if (nextActivePath) {
+          handleActivateSourceTab(nextActivePath);
+        }
+      }
+
+      if (nextActivePath) {
+        setProjectRepository((project) => ({
+          ...project,
+          selection: {
+            activeFilePath: nextActivePath,
+            openFilePaths: nextTabs
+          }
+        }));
+      }
+      setSourceTabPaths(nextTabs);
+    },
+    [
+      handleActivateSourceTab,
+      normalizedActiveSourcePath,
+      setProjectRepository,
+      sourceTabPaths,
+      transientSourceTabPath
+    ]
+  );
+
+  const closeSourceTabRef = useRef(handleCloseSourceTab);
+  closeSourceTabRef.current = handleCloseSourceTab;
+
+  const handleCloseActiveSourceTab = useCallback(() => {
+    const activePath = activeSourcePathRef.current;
+
+    if (activePath) {
+      closeSourceTabRef.current(activePath);
+    }
+  }, []);
+
+  const handleActivatePreviewTab = useCallback(
+    (path: string) => {
+      openPreviewTab(path);
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("preview");
+      }
+    },
+    [isMobileWorkspace, openPreviewTab]
+  );
+
+  const handleClosePreviewTab = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+      const normalizedPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths);
+      const closingIndex = normalizedPreviewTabs.indexOf(normalizedPath);
+      const nextTabs = normalizedPreviewTabs.filter((tabPath) => tabPath !== normalizedPath);
+
+      if (activePreviewPath === normalizedPath) {
+        setActivePreviewPath(
+          nextTabs[Math.min(Math.max(closingIndex, 0), nextTabs.length - 1)] ?? null
+        );
+      }
+
+      setPreviewTabPaths(nextTabs);
+    },
+    [activePreviewPath, previewTabPaths]
+  );
+
+  const handleWorkspaceTabWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.deltaY === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.scrollLeft += event.deltaY;
+  }, []);
+
+  const handleWorkspaceTabDragStart = useCallback(
+    (kind: WorkspaceTabKind, path: string) => (event: ReactDragEvent<HTMLDivElement>) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+
+      workspaceTabDragRef.current = { kind, path: normalizedPath };
+      setDraggingWorkspaceTab({ kind, path: normalizedPath });
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", normalizedPath);
+      event.dataTransfer.setData("application/x-typr-tab-kind", kind);
+    },
+    []
+  );
+
+  const handleWorkspaceTabDragOver = useCallback(
+    (kind: WorkspaceTabKind, path: string) => (event: ReactDragEvent<HTMLDivElement>) => {
+      const draggingTab = workspaceTabDragRef.current;
+      const normalizedPath = normalizeWorkspacePath(path);
+
+      if (
+        !draggingTab ||
+        draggingTab.kind !== kind ||
+        draggingTab.path === normalizedPath
+      ) {
+        setWorkspaceTabDropTarget(null);
+        return;
+      }
+
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const tabBounds = event.currentTarget.getBoundingClientRect();
+      const side = event.clientX > tabBounds.left + tabBounds.width / 2 ? "after" : "before";
+
+      setWorkspaceTabDropTarget((currentTarget) =>
+        currentTarget?.kind === kind &&
+        currentTarget.path === normalizedPath &&
+        currentTarget.side === side
+          ? currentTarget
+          : { kind, path: normalizedPath, side }
+      );
+    },
+    []
+  );
+
+  const handleWorkspaceTabDrop = useCallback(
+    (kind: WorkspaceTabKind, targetPath: string) => (event: ReactDragEvent<HTMLDivElement>) => {
+      const draggingTab = workspaceTabDragRef.current;
+
+      if (!draggingTab || draggingTab.kind !== kind) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const tabBounds = event.currentTarget.getBoundingClientRect();
+      const insertAfterTarget = event.clientX > tabBounds.left + tabBounds.width / 2;
+
+      if (kind === "source") {
+        const normalizedSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths);
+        const nextTabs = reorderWorkspacePaths(
+          normalizedSourceTabs,
+          draggingTab.path,
+          targetPath,
+          insertAfterTarget
+        );
+
+        if (!areWorkspacePathListsEqual(normalizedSourceTabs, nextTabs)) {
+          setSourceTabPaths(nextTabs);
+          setProjectRepository((project) => ({
+            ...project,
+            selection: {
+              ...project.selection,
+              openFilePaths: nextTabs
+            }
+          }));
+        }
+      } else {
+        const normalizedPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths);
+        const nextTabs = reorderWorkspacePaths(
+          normalizedPreviewTabs,
+          draggingTab.path,
+          targetPath,
+          insertAfterTarget
+        );
+
+        if (!areWorkspacePathListsEqual(normalizedPreviewTabs, nextTabs)) {
+          setPreviewTabPaths(nextTabs);
+        }
+      }
+
+      workspaceTabDragRef.current = null;
+      setDraggingWorkspaceTab(null);
+      setWorkspaceTabDropTarget(null);
+    },
+    [previewTabPaths, setProjectRepository, sourceTabPaths]
+  );
+
+  const handleWorkspaceTabDragEnd = useCallback(() => {
+    workspaceTabDragRef.current = null;
+    setDraggingWorkspaceTab(null);
+    setWorkspaceTabDropTarget(null);
+  }, []);
 
   const handleActivateWorkspaceNode = useCallback(
     (
@@ -4014,8 +6592,7 @@ export function App() {
       const normalizedPath = normalizeWorkspacePath(node.path);
 
       if (modifiers.range) {
-        const visibleNodes = flattenVisibleWorkspaceNodes(visibleWorkspaceTree, collapsedFileFolders);
-        const selectablePaths = visibleNodes.map((entry) => entry.path);
+        const selectablePaths = visibleWorkspaceNodes.map((entry) => entry.path);
         const anchorPath = workspaceSelectionAnchorPath ?? selectedWorkspacePath ?? normalizedPath;
         const anchorIndex = selectablePaths.indexOf(anchorPath);
         const targetIndex = selectablePaths.indexOf(normalizedPath);
@@ -4046,7 +6623,7 @@ export function App() {
       setSelectedWorkspacePaths([normalizedPath]);
       setWorkspaceSelectionAnchorPath(normalizedPath);
     },
-    [collapsedFileFolders, selectedWorkspacePath, visibleWorkspaceTree, workspaceSelectionAnchorPath]
+    [selectedWorkspacePath, visibleWorkspaceNodes, workspaceSelectionAnchorPath]
   );
 
   const handleRequestWorkspaceRename = useCallback((node: WorkspaceTreeNode) => {
@@ -4066,7 +6643,9 @@ export function App() {
     }
 
     if (renamingWorkspacePath === WORKSPACE_ROOT_PATH) {
-      setSnapshot((currentSnapshot) => renameProject(currentSnapshot, workspaceRenameDraft));
+      setProjectRepository((project) =>
+        renameProjectRepositoryDisplayName(project, workspaceRenameDraft)
+      );
       handleCancelWorkspaceRename();
       return;
     }
@@ -4101,7 +6680,7 @@ export function App() {
 
     setSelectedWorkspacePath(null);
     handleCancelWorkspaceRename();
-  }, [handleCancelWorkspaceRename, renamingWorkspacePath, visibleWorkspaceTree, workspaceRenameDraft]);
+  }, [handleCancelWorkspaceRename, renamingWorkspacePath, setProjectRepository, visibleWorkspaceTree, workspaceRenameDraft]);
 
   const handleRequestWorkspaceRootRename = useCallback(() => {
     if (isTrashViewOpen) {
@@ -4143,6 +6722,37 @@ export function App() {
     },
     [isTrashViewOpen]
   );
+
+  const handleDownloadWorkspaceNode = useCallback(
+    (node: WorkspaceTreeNode) => {
+      const downloadPaths =
+        selectedWorkspacePaths.includes(node.path) && selectedWorkspacePaths.length > 1
+          ? selectedWorkspacePaths
+          : [node.path];
+      const baseName =
+        downloadPaths.length === 1 ? getWorkspaceBaseName(node.path) : selectedProjectRepository?.displayName;
+
+      downloadWorkspaceFiles(downloadPaths, {
+        zipName: `${getSafeDownloadName(baseName ?? "typr-files", "typr-files")}.zip`,
+        preferSingleFile: downloadPaths.length === 1 && node.kind === "file"
+      });
+    },
+    [downloadWorkspaceFiles, selectedProjectRepository?.displayName, selectedWorkspacePaths]
+  );
+
+  const handleDownloadWorkspaceProjectFiles = useCallback(() => {
+    if (!selectedProjectRepository) {
+      return;
+    }
+
+    downloadWorkspaceFiles(
+      listProjectEntries(selectedProjectRepository).map((entry) => entry.path),
+      {
+        zipName: `${getSafeDownloadName(selectedProjectRepository.displayName, "typr-project")}-files.zip`,
+        preferSingleFile: false
+      }
+    );
+  }, [downloadWorkspaceFiles, selectedProjectRepository]);
 
   const handleDeleteWorkspaceNode = useCallback(
     (node: WorkspaceTreeNode) => {
@@ -4548,13 +7158,13 @@ export function App() {
   );
 
   const handleGitHubUrlPaste = useCallback((value: string) => {
-    const match = /github\.com[:/]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/?#\s]|$)/i.exec(value.trim());
-    if (!match) {
+    const parsedUrl = parseGitHubRepositoryUrl(value);
+    if (!parsedUrl) {
       return false;
     }
 
-    handleGitRemoteConfigChange("owner", match[1]);
-    handleGitRemoteConfigChange("repo", match[2]);
+    handleGitRemoteConfigChange("owner", parsedUrl.owner);
+    handleGitRemoteConfigChange("repo", parsedUrl.repo);
     setGitHubDiscovery((current) => ({
       ...current,
       repoMode: "manual",
@@ -4668,6 +7278,268 @@ export function App() {
     remoteConfig.repo,
     remoteGitService,
     selectedGitToken
+  ]);
+
+  const handleToggleGitHubCloneFlow = useCallback(() => {
+    setGitHubClone((current) => {
+      if (current.isOpen) {
+        return {
+          ...current,
+          isOpen: false
+        };
+      }
+
+      return {
+        ...createInitialGitHubCloneState(),
+        isOpen: true,
+        token: current.token || selectedGitToken
+      };
+    });
+  }, [selectedGitToken]);
+
+  const handleGitHubCloneTokenChange = useCallback((value: string) => {
+    setGitHubClone((current) => ({
+      ...current,
+      token: value,
+      status: "idle",
+      message: "",
+      accountLogin: null,
+      owners: [],
+      repos: [],
+      branches: [],
+      isLoadingRepos: false,
+      isLoadingBranches: false
+    }));
+  }, []);
+
+  const handleGitHubCloneRepositoryUrlChange = useCallback((value: string) => {
+    setGitHubClone((current) => {
+      const parsedUrl = parseGitHubRepositoryUrl(value);
+
+      if (!parsedUrl) {
+        return {
+          ...current,
+          repositoryUrl: value
+        };
+      }
+
+      const nextProjectName =
+        !current.projectName || current.projectName === current.repo
+          ? parsedUrl.repo
+          : current.projectName;
+
+      return {
+        ...current,
+        repositoryUrl: value,
+        owner: parsedUrl.owner,
+        repo: parsedUrl.repo,
+        branch: "main",
+        projectName: nextProjectName,
+        branches: []
+      };
+    });
+  }, []);
+
+  const handleConnectGitHubClone = useCallback(async () => {
+    const token = gitHubClone.token.trim();
+
+    if (!token) {
+      setGitHubClone((current) => ({
+        ...current,
+        status: "error",
+        message: "Add a GitHub token before connecting."
+      }));
+      return;
+    }
+
+    setGitHubClone((current) => ({
+      ...current,
+      status: "loading",
+      message: "Connecting to GitHub...",
+      repos: [],
+      branches: [],
+      isLoadingRepos: false,
+      isLoadingBranches: false
+    }));
+
+    const result = await remoteGitService.inspectToken(() => token);
+
+    if (!result.ok) {
+      setGitHubClone((current) => ({
+        ...current,
+        status: "error",
+        message: redactGitSecrets(result.message, [token]),
+        accountLogin: null,
+        owners: [],
+        repos: [],
+        branches: [],
+        isLoadingRepos: false,
+        isLoadingBranches: false
+      }));
+      return;
+    }
+
+    setGitHubClone((current) => {
+      const owner =
+        result.value.owners.find(
+          (entry) => entry.login.toLowerCase() === current.owner.trim().toLowerCase()
+        )?.login ??
+        (current.owner.trim() || result.value.user.login);
+
+      return {
+        ...current,
+        status: "connected",
+        message: result.message,
+        accountLogin: result.value.user.login,
+        owners: result.value.owners,
+        owner,
+        repos: [],
+        branches: [],
+        isLoadingRepos: false,
+        isLoadingBranches: false
+      };
+    });
+  }, [gitHubClone.token, remoteGitService]);
+
+  const handleGitHubCloneOwnerChange = useCallback((owner: string) => {
+    setGitHubClone((current) => ({
+      ...current,
+      owner,
+      repo: "",
+      branch: "main",
+      projectName: "",
+      repos: [],
+      branches: [],
+      message: ""
+    }));
+  }, []);
+
+  const handleGitHubCloneRepoSelection = useCallback((repoName: string) => {
+    setGitHubClone((current) => {
+      const selectedRepo = current.repos.find((repo) => repo.name === repoName);
+      const nextBranch = selectedRepo?.defaultBranch ?? "main";
+
+      return {
+        ...current,
+        repo: repoName,
+        branch: nextBranch,
+        projectName:
+          !current.projectName || current.projectName === current.repo
+            ? repoName
+            : current.projectName,
+        branches: []
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (
+      gitHubClone.status !== "connected" ||
+      !gitHubClone.token.trim() ||
+      !gitHubClone.owner.trim()
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const token = gitHubClone.token.trim();
+    const owner = gitHubClone.owner.trim();
+
+    setGitHubClone((current) => ({
+      ...current,
+      repos: [],
+      isLoadingRepos: true
+    }));
+
+    void remoteGitService
+      .listRepositories(owner, () => token)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (!result.ok) {
+          setGitHubClone((current) => ({
+            ...current,
+            message: redactGitSecrets(result.message, [token]),
+            repos: [],
+            isLoadingRepos: false
+          }));
+          return;
+        }
+
+        setGitHubClone((current) => ({
+          ...current,
+          message: result.message,
+          repos: result.value,
+          isLoadingRepos: false
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [gitHubClone.owner, gitHubClone.status, gitHubClone.token, remoteGitService]);
+
+  useEffect(() => {
+    if (
+      gitHubClone.status !== "connected" ||
+      !gitHubClone.token.trim() ||
+      !gitHubClone.owner.trim() ||
+      !gitHubClone.repo.trim()
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const token = gitHubClone.token.trim();
+    const owner = gitHubClone.owner.trim();
+    const repo = gitHubClone.repo.trim();
+
+    setGitHubClone((current) => ({
+      ...current,
+      branches: [],
+      isLoadingBranches: true
+    }));
+
+    void remoteGitService
+      .listBranches({ owner, repo }, () => token)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (!result.ok) {
+          setGitHubClone((current) => ({
+            ...current,
+            message: redactGitSecrets(result.message, [token]),
+            branches: [],
+            isLoadingBranches: false
+          }));
+          return;
+        }
+
+        setGitHubClone((current) => ({
+          ...current,
+          message: result.message,
+          branches: result.value,
+          branch:
+            result.value.some((branch) => branch.name === current.branch)
+              ? current.branch
+              : result.value[0]?.name ?? current.branch,
+          isLoadingBranches: false
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    gitHubClone.owner,
+    gitHubClone.repo,
+    gitHubClone.status,
+    gitHubClone.token,
+    remoteGitService
   ]);
 
   const handleGitProjectFieldChange = useCallback(
@@ -4984,57 +7856,6 @@ export function App() {
     });
   }, []);
 
-  const selectGitHubConnectedProject = useCallback(
-    (projectId: string) => {
-      const option = githubConnectedProjectOptions.find(
-        (connectedProject) => connectedProject.project.id === projectId
-      );
-      if (!option) {
-        return;
-      }
-
-      setProjectStorage((currentStorage) => {
-        const nextProject = currentStorage.projects.find((project) => project.id === projectId);
-        if (!nextProject) {
-          return currentStorage;
-        }
-
-        setRawSnapshot((currentSnapshot) => ({
-          ...currentSnapshot,
-          project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
-        }));
-
-        return {
-          ...currentStorage,
-          selectedProjectId: nextProject.id
-        };
-      });
-
-      setGitWorkspace((currentWorkspace) => {
-        const selectedManagedProject = currentWorkspace.projects.find(
-          (managedProject) =>
-            managedProject.id === option.managedProject.id &&
-            managedProject.projectId === projectId &&
-            managedProject.owner.trim() &&
-            managedProject.repo.trim()
-        );
-        if (!selectedManagedProject) {
-          return currentWorkspace;
-        }
-
-        return {
-          ...currentWorkspace,
-          selectedProjectId: selectedManagedProject.id,
-          selectedProjectIdsByTyprProjectId: {
-            ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-            [projectId]: selectedManagedProject.id
-          }
-        };
-      });
-    },
-    [githubConnectedProjectOptions]
-  );
-
   const addDefaultGitManagedProject = useCallback(
     (project: TyprProjectRepository, projectName = project.displayName) => {
       const nextProject = createEmptyGitManagedProject({
@@ -5077,15 +7898,106 @@ export function App() {
     []
   );
 
-  const handleSelectGitSettingsProject = useCallback(
+  const handleSelectLocalProject = useCallback(
     (projectId: string) => {
       const nextProject = projectStorage.projects.find((project) => project.id === projectId);
       selectStoredProjectRepository(projectId);
       if (nextProject) {
         addDefaultGitManagedProject(nextProject, nextProject.displayName);
+        setIsTrashViewOpen(false);
+        setSelectedWorkspacePath(nextProject.selection.activeFilePath);
+        setSelectedWorkspacePaths(nextProject.selection.activeFilePath ? [nextProject.selection.activeFilePath] : []);
+        setWorkspaceSelectionAnchorPath(nextProject.selection.activeFilePath);
+        setWorkspaceContextMenu(null);
+        setGitRefreshToken((token) => token + 1);
       }
     },
     [addDefaultGitManagedProject, projectStorage.projects, selectStoredProjectRepository]
+  );
+
+  const handleOpenRecentFile = useCallback(
+    (entry: RecentFileEntry) => {
+      const normalizedPath = normalizeWorkspacePath(entry.path);
+      const project = projectStorage.projects.find((candidate) => candidate.id === entry.projectId);
+      const projectFile = project
+        ? listProjectEntries(project).find(
+            (candidate) =>
+              candidate.kind === "file" &&
+              normalizeWorkspacePath(candidate.path) === normalizedPath
+          )
+        : null;
+
+      if (!project || !projectFile || !normalizedPath) {
+        setRecentWorkspaceState((current) => ({
+          ...current,
+          files: current.files.filter(
+            (recentFile) =>
+              recentFile.projectId !== entry.projectId || recentFile.path !== entry.path
+          )
+        }));
+        setSyncFeedback({ tone: "error", text: "That recent file is no longer available." });
+        return;
+      }
+
+      const nextOpenFilePaths = isTextWorkspaceFile(normalizedPath)
+        ? appendUniqueWorkspacePath(project.selection.openFilePaths ?? [], normalizedPath)
+        : project.selection.openFilePaths ?? [];
+      const nextProject: TyprProjectRepository = {
+        ...project,
+        selection: {
+          activeFilePath: normalizedPath,
+          openFilePaths: nextOpenFilePaths
+        },
+        editor: {
+          ...project.editor,
+          previewPath:
+            getSourceLanguage(normalizedPath) === "markdown" || getWorkspacePreviewMimeType(normalizedPath)
+              ? normalizedPath
+              : project.editor.previewPath
+        }
+      };
+
+      setProjectStorage((currentStorage) => ({
+        ...currentStorage,
+        selectedProjectId: nextProject.id,
+        projects: currentStorage.projects.map((candidate) =>
+          candidate.id === nextProject.id ? nextProject : candidate
+        )
+      }));
+      setRawSnapshot((currentSnapshot) => ({
+        ...currentSnapshot,
+        project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
+      }));
+      addDefaultGitManagedProject(nextProject, nextProject.displayName);
+      setIsTrashViewOpen(false);
+      setSelectedWorkspacePath(normalizedPath);
+      setSelectedWorkspacePaths([normalizedPath]);
+      setWorkspaceSelectionAnchorPath(normalizedPath);
+      setWorkspaceContextMenu(null);
+      setInspectedWorkspacePath(null);
+      setGitRefreshToken((token) => token + 1);
+
+      if (isTextWorkspaceFile(normalizedPath)) {
+        setSourceTabPaths(nextOpenFilePaths);
+        setTransientSourceTabPath(null);
+      } else {
+        setSourceTabPaths([]);
+      }
+
+      if (getSourceLanguage(normalizedPath) === "markdown" || getWorkspacePreviewMimeType(normalizedPath)) {
+        setPreviewTabPaths([normalizedPath]);
+        setActivePreviewPath(normalizedPath);
+        setIsPreviewCollapsed(false);
+      } else {
+        setPreviewTabPaths([]);
+        setActivePreviewPath(null);
+      }
+
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab(isTextWorkspaceFile(normalizedPath) ? "editor" : "preview");
+      }
+    },
+    [addDefaultGitManagedProject, isMobileWorkspace, projectStorage.projects, setSyncFeedback]
   );
 
   const handleToggleSelectedGitHubConnection = useCallback(() => {
@@ -5117,7 +8029,7 @@ export function App() {
       }
       setSyncFeedback({
         tone: "success",
-        text: "Disconnected this project from GitHub. The GitHub repository was not deleted."
+        text: "Disconnected GitHub. The GitHub repository was not deleted."
       });
       return;
     }
@@ -5136,7 +8048,7 @@ export function App() {
     }));
     setSyncFeedback({
       tone: "success",
-      text: `Connected this project to ${remoteConfig.owner}/${remoteConfig.repo}.`
+      text: `Connected GitHub to ${remoteConfig.owner}/${remoteConfig.repo}.`
     });
   }, [
     remoteConfig,
@@ -5175,7 +8087,7 @@ export function App() {
     }));
     setSyncFeedback({
       tone: "success",
-      text: `Connected this project to ${remoteConfig.owner}/${remoteConfig.repo}.`
+      text: `Connected GitHub to ${remoteConfig.owner}/${remoteConfig.repo}.`
     });
   }, [
     handleConnectGitHub,
@@ -5212,12 +8124,56 @@ export function App() {
     });
   }, [addDefaultGitManagedProject, selectProjectRepository]);
 
-  const handleDeleteSelectedProject = useCallback(async () => {
-    if (!selectedProjectRepository) {
+  const handleRenameLocalProject = useCallback(
+    (projectId: string) => {
+      const projectToRename = projectStorage.projects.find((project) => project.id === projectId);
+
+      if (!projectToRename) {
+        return;
+      }
+
+      const nextName = window.prompt("Project name", projectToRename.displayName);
+
+      if (nextName === null) {
+        return;
+      }
+
+      const renamedProject = renameProjectRepositoryDisplayName(projectToRename, nextName);
+
+      if (renamedProject === projectToRename) {
+        return;
+      }
+
+      if (selectedProjectRepository?.id === projectId) {
+        setProjectRepository((project) =>
+          project.id === projectId ? renameProjectRepositoryDisplayName(project, nextName) : project
+        );
+      } else {
+        setProjectStorage((currentStorage) => ({
+          ...currentStorage,
+          projects: currentStorage.projects.map((project) =>
+            project.id === projectId ? renamedProject : project
+          )
+        }));
+      }
+
+      setSyncFeedback({
+        tone: "success",
+        text: `Renamed local project to "${renamedProject.displayName}".`
+      });
+    },
+    [projectStorage.projects, selectedProjectRepository?.id, setProjectRepository]
+  );
+
+  const handleDeleteSelectedProject = useCallback(async (projectId?: string) => {
+    const projectToDelete = projectStorage.projects.find(
+      (project) => project.id === (projectId ?? selectedProjectRepository?.id)
+    );
+
+    if (!projectToDelete) {
       return;
     }
 
-    const projectToDelete = selectedProjectRepository;
     const confirmation = window.prompt(
       [
         `Delete local Typr project "${projectToDelete.displayName}"?`,
@@ -5359,18 +8315,6 @@ export function App() {
     selectedProjectRepository
   ]);
 
-  const handleRequestImportGitHubProject = useCallback(() => {
-    if (selectedProjectRepository) {
-      addDefaultGitManagedProject(selectedProjectRepository);
-    }
-    setSettingsTab("git");
-    setIsSettingsOpen(true);
-    setSyncFeedback({
-      tone: "neutral",
-      text: "Connect GitHub, choose owner/repo/branch, then import the repo as a separate project."
-    });
-  }, [addDefaultGitManagedProject, selectedProjectRepository]);
-
   const replaceProjectEntries = useCallback(
     (project: TyprProjectRepository, entries: ProjectFilesystemEntry[]) => {
       let nextProject = project;
@@ -5508,45 +8452,104 @@ export function App() {
     selectedProjectRepository
   ]);
 
-  const handleImportExistingGitHubRepoAsProject = useCallback(async () => {
-    if (!selectedGitProject) {
-      setSyncFeedback({ tone: "error", text: "Create or select a managed git project first." });
+  const handleCloneGitHubRepository = useCallback(async () => {
+    const token = gitHubClone.token.trim();
+    const owner = gitHubClone.owner.trim();
+    const repo = gitHubClone.repo.trim();
+    const branch = gitHubClone.branch.trim();
+    const projectName = gitHubClone.projectName.trim() || repo;
+
+    if (!token || !owner || !repo || !branch) {
+      setGitHubClone((current) => ({
+        ...current,
+        status: current.status === "connected" ? current.status : "error",
+        message: "Connect GitHub, then choose owner, repo, and branch."
+      }));
       return;
     }
-    if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim() || !selectedGitToken.trim()) {
-      setSyncFeedback({ tone: "error", text: "Fill in owner, repo, branch, and token first." });
-      return;
-    }
+
+    const cloneConfig: RemoteGitConfig = {
+      owner,
+      repo,
+      branch,
+      remoteName: "origin"
+    };
 
     setIsSyncing(true);
-    setSyncFeedback({ tone: "neutral", text: `Importing ${remoteConfig.owner}/${remoteConfig.repo}...` });
+    setSyncFeedback({ tone: "neutral", text: `Cloning ${owner}/${repo}...` });
+    setGitHubClone((current) => ({
+      ...current,
+      message: `Cloning ${owner}/${repo}...`,
+      progress: null
+    }));
 
     let importedProject = createEmptyProjectRepository({
-      displayName: remoteConfig.repo,
+      displayName: projectName,
       defaultFileName: null
     });
     const initResult = await repoBackend.initRepository(importedProject);
+
     if (!initResult.ok) {
       setIsSyncing(false);
+      setGitHubClone((current) => ({
+        ...current,
+        status: "error",
+        message: formatRepoError(initResult.error),
+        progress: null
+      }));
       setSyncFeedback({ tone: "error", text: formatRepoError(initResult.error) });
       return;
     }
+
     importedProject = initResult.value;
 
-    const pullResult = await remoteGitService.pull(importedProject, remoteConfig, () => selectedGitToken, {
-      onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message })
+    const pullResult = await remoteGitService.pull(importedProject, cloneConfig, () => token, {
+      onProgress: (progress) => {
+        const nextProgress =
+          typeof progress.current === "number" &&
+          typeof progress.total === "number" &&
+          progress.total > 0
+            ? {
+                current: Math.max(0, Math.min(progress.current, progress.total)),
+                total: progress.total
+              }
+            : null;
+        setSyncFeedback({ tone: "neutral", text: progress.message });
+        setGitHubClone((current) => ({
+          ...current,
+          message: progress.message,
+          progress: nextProgress ?? current.progress
+        }));
+      }
     });
     setIsSyncing(false);
+
     if (!pullResult.ok || !pullResult.project) {
-      setSyncFeedback({ tone: "error", text: pullResult.message });
+      const message = redactGitSecrets(pullResult.message, [token]);
+      setGitHubClone((current) => ({
+        ...current,
+        status: "error",
+        message,
+        progress: null
+      }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
 
-    importedProject = {
-      ...pullResult.project,
-      displayName: remoteConfig.repo
+    importedProject = renameProjectRepositoryDisplayName(pullResult.project, projectName);
+    const managedProject = {
+      ...createEmptyGitManagedProject({
+        projectId: importedProject.id,
+        projectName
+      }),
+      name: projectName,
+      owner,
+      repo,
+      connected: true,
+      branch,
+      remoteName: cloneConfig.remoteName
     };
-    const managedProject = createManagedProjectForRepository(importedProject, remoteConfig.repo);
+
     selectProjectRepository(importedProject);
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
@@ -5559,21 +8562,27 @@ export function App() {
     }));
     setGitCredentials((currentCredentials) => ({
       ...currentCredentials,
-      [managedProject.id]: selectedGitToken
+      [managedProject.id]: token
     }));
-    setGitRefreshToken((token) => token + 1);
+    setIsTrashViewOpen(false);
+    setSelectedWorkspacePath(importedProject.selection.activeFilePath);
+    setSelectedWorkspacePaths(importedProject.selection.activeFilePath ? [importedProject.selection.activeFilePath] : []);
+    setWorkspaceSelectionAnchorPath(importedProject.selection.activeFilePath);
+    setGitRefreshToken((current) => current + 1);
+    setGitHubClone(createInitialGitHubCloneState());
     setSyncFeedback({
       tone: "success",
-      text: `Imported ${remoteConfig.owner}/${remoteConfig.repo} as a separate project.`
+      text: `Cloned ${owner}/${repo}.`
     });
   }, [
-    createManagedProjectForRepository,
-    remoteConfig,
+    gitHubClone.branch,
+    gitHubClone.owner,
+    gitHubClone.projectName,
+    gitHubClone.repo,
+    gitHubClone.token,
     remoteGitService,
     repoBackend,
-    selectProjectRepository,
-    selectedGitProject,
-    selectedGitToken
+    selectProjectRepository
   ]);
 
   const handleThemeImport = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -5758,6 +8767,61 @@ export function App() {
     [refreshLatexPackageCache]
   );
 
+  const handleCacheLatexPackage = useCallback(
+    async (entry: LatexPackageResolution, bundleAlreadyCached: boolean) => {
+      if (!entry.bundleId) {
+        return;
+      }
+
+      setInstallingLatexPackageName(entry.name);
+
+      try {
+        if (!bundleAlreadyCached) {
+          await cacheLatexPackageBundle(entry.bundleId);
+        }
+
+        setCachedLatexPackageNames((currentNames) => {
+          const nextNames = new Set(currentNames.map(normalizeLatexPackageSelectionName));
+          const nextName = normalizeLatexPackageSelectionName(entry.name);
+
+          if (nextName) {
+            nextNames.add(nextName);
+          }
+
+          return [...nextNames].sort((left, right) => left.localeCompare(right));
+        });
+        await refreshLatexPackageCache();
+        setLatexPackageFeedback({
+          tone: "success",
+          text: `Cached ${entry.name}.`
+        });
+      } catch (error) {
+        setLatexPackageFeedback({
+          tone: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : `Unable to cache ${entry.name}.`
+        });
+      } finally {
+        setInstallingLatexPackageName(null);
+      }
+    },
+    [refreshLatexPackageCache]
+  );
+
+  const handleRemoveCachedLatexPackage = useCallback((packageName: string) => {
+    const packageKey = normalizeLatexPackageSelectionName(packageName);
+
+    setCachedLatexPackageNames((currentNames) =>
+      currentNames.filter((currentName) => normalizeLatexPackageSelectionName(currentName) !== packageKey)
+    );
+    setLatexPackageFeedback({
+      tone: "neutral",
+      text: `Removed ${packageName}.`
+    });
+  }, []);
+
   const handleRemoveLatexBundle = useCallback(
     async (bundleId: LatexPackageBundleId) => {
       try {
@@ -5890,15 +8954,54 @@ export function App() {
     downloadBlob(name, new Blob([content as BlobPart], { type }));
   };
 
-  const handleRenameProject = () => {
-    const nextName = window.prompt("Project name", snapshot.project.name);
-
-    if (nextName === null) {
+  function downloadWorkspaceFiles(
+    paths: string[],
+    options: { zipName?: string; preferSingleFile?: boolean } = {}
+  ) {
+    if (!selectedProjectRepository) {
       return;
     }
 
-    setSnapshot((currentSnapshot) => renameProject(currentSnapshot, nextName));
-  };
+    const { files, missingReferences } = getWorkspaceDownloadBundleForPaths(
+      selectedProjectRepository,
+      paths
+    );
+
+    if (files.length === 0) {
+      setSyncFeedback({ tone: "error", text: "No downloadable files were found." });
+      setWorkspaceContextMenu(null);
+      return;
+    }
+
+    if (files.length === 1 && options.preferSingleFile !== false) {
+      const [file] = files;
+      downloadFile(
+        getWorkspaceBaseName(file.path),
+        file.content,
+        typeof file.content === "string"
+          ? "text/plain"
+          : getWorkspacePreviewMimeType(file.path) ?? "application/octet-stream"
+      );
+    } else {
+      const zipName = getSafeDownloadName(
+        options.zipName ?? `${selectedProjectRepository.displayName}.zip`,
+        "typr-files.zip"
+      );
+      downloadBlob(
+        zipName.endsWith(".zip") ? zipName : `${zipName}.zip`,
+        new Blob([new Uint8Array(createWorkspaceZip(files))], { type: "application/zip" })
+      );
+    }
+
+    const missingMessage = formatMissingWorkspaceReferences(missingReferences);
+    setSyncFeedback({
+      tone: missingReferences.length > 0 ? "neutral" : "success",
+      text: `${
+        files.length === 1 ? `Downloaded ${files[0].path}.` : `Downloaded ${files.length} files.`
+      }${missingMessage}`
+    });
+    setWorkspaceContextMenu(null);
+  }
 
   const handleRenameDocument = () => {
     const nextName = window.prompt("File name", activeDocument.name);
@@ -5927,6 +9030,13 @@ export function App() {
   };
 
   const handleDownloadDocument = () => {
+    if (selectedProjectRepository) {
+      downloadWorkspaceFiles([activeDocument.name], {
+        zipName: `${getWorkspaceBaseName(activeDocument.name).replace(/\.[^.]+$/, "")}-bundle.zip`
+      });
+      return;
+    }
+
     downloadFile(
       activeDocument.name,
       activeDocument.content,
@@ -5936,12 +9046,141 @@ export function App() {
     );
   };
 
+  const handleDownloadActivePreview = useCallback((mode: PreviewDownloadMode = previewDownloadMode) => {
+    const sourcePath = activePreviewPath ?? normalizedActiveSourcePath;
+
+    if (!sourcePath) {
+      setSyncFeedback({ tone: "error", text: "No preview source is selected." });
+      return;
+    }
+
+    if (mode === "output") {
+      const baseName = getRenderedOutputBaseName(sourcePath);
+
+      if (selectedWorkspacePreview) {
+        if (selectedWorkspacePreview.mimeType === "text/markdown") {
+          const markdownSource =
+            typeof selectedWorkspacePreview.content === "string"
+              ? selectedWorkspacePreview.content
+              : TEXT_DECODER.decode(selectedWorkspacePreview.content);
+          downloadFile(
+            `${baseName}.html`,
+            createRenderedMarkdownHtml(
+              markdownSource || activePreviewTextContent,
+              selectedWorkspacePreview.name
+            ),
+            "text/html"
+          );
+          setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.html.` });
+          return;
+        }
+
+        downloadFile(
+          getWorkspaceBaseName(selectedWorkspacePreview.path),
+          selectedWorkspacePreview.content,
+          selectedWorkspacePreview.mimeType
+        );
+        setSyncFeedback({ tone: "success", text: `Downloaded ${selectedWorkspacePreview.path}.` });
+        return;
+      }
+
+      const renderedResult = visiblePreviewResult?.ok
+        ? visiblePreviewResult
+        : visibleLastSuccessfulResult;
+
+      if (!renderedResult) {
+        setSyncFeedback({ tone: "error", text: "No rendered preview is available yet." });
+        return;
+      }
+
+      if (renderedResult.output.kind === "pdf" && renderedResult.output.artifactData) {
+        downloadFile(`${baseName}.pdf`, renderedResult.output.artifactData, "application/pdf");
+        setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.pdf.` });
+        return;
+      }
+
+      if (renderedResult.output.kind === "svg") {
+        downloadFile(`${baseName}.svg`, renderedResult.output.content, "image/svg+xml");
+        setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.svg.` });
+        return;
+      }
+
+      if (renderedResult.output.kind === "html" || renderedResult.output.kind === "placeholder") {
+        downloadFile(`${baseName}.html`, renderedResult.output.content, "text/html");
+        setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.html.` });
+        return;
+      }
+
+      setSyncFeedback({ tone: "error", text: "No downloadable rendered output is available." });
+      return;
+    }
+
+    downloadWorkspaceFiles([sourcePath], {
+      zipName: `${getWorkspaceBaseName(sourcePath).replace(/\.[^.]+$/, "")}-bundle.zip`
+    });
+  }, [
+    activePreviewPath,
+    activePreviewTextContent,
+    downloadWorkspaceFiles,
+    normalizedActiveSourcePath,
+    previewDownloadMode,
+    selectedWorkspacePreview,
+    visibleLastSuccessfulResult,
+    visiblePreviewResult
+  ]);
+
   const handleDownloadProject = () => {
     downloadFile(
       `${snapshot.project.name}.json`,
       JSON.stringify(snapshot, null, 2),
       "application/json"
     );
+  };
+
+  const handleImportProjectFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const importedSnapshot = normalizeSnapshot(JSON.parse(await file.text()) as AppSnapshot);
+      const importSeed = createEmptyProjectRepository({
+        displayName: importedSnapshot.project.name || "Imported project",
+        defaultFileName: null
+      });
+      const isolatedStorage = createProjectStorageFromSnapshot({
+        ...importedSnapshot,
+        project: {
+          ...importedSnapshot.project,
+          id: importSeed.id,
+          name: importSeed.displayName
+        }
+      });
+      const importedProject = getSelectedProjectRepository(isolatedStorage);
+
+      if (!importedProject) {
+        throw new Error("The file did not contain a Typr project.");
+      }
+
+      selectProjectRepository(importedProject);
+      addDefaultGitManagedProject(importedProject, importedProject.displayName);
+      setIsTrashViewOpen(false);
+      setSelectedWorkspacePath(importedProject.selection.activeFilePath);
+      setSelectedWorkspacePaths(importedProject.selection.activeFilePath ? [importedProject.selection.activeFilePath] : []);
+      setWorkspaceSelectionAnchorPath(importedProject.selection.activeFilePath);
+      setSyncFeedback({
+        tone: "success",
+        text: `Imported project "${importedProject.displayName}".`
+      });
+    } catch (error) {
+      setSyncFeedback({
+        tone: "error",
+        text: error instanceof Error ? `Unable to import project: ${error.message}` : "Unable to import project."
+      });
+    }
   };
 
   const handleAddDiagramStroke = useCallback(
@@ -6433,7 +9672,7 @@ export function App() {
 
   const handleShowTutorial = () => {
     window.alert(
-      "Tutorial: open Files to switch projects and documents, type in Source, use View for layout controls, and use Git settings when you want to connect a remote."
+      "Tutorial: open Projects to switch workspaces, use Files for documents, type in Source, use View for layout controls, and use Git settings when you want to connect a remote."
     );
   };
 
@@ -6473,7 +9712,7 @@ export function App() {
       return { ok: false as const, message };
     }
     if (!selectedGitProject.connected) {
-      const message = "Connect this project to GitHub first.";
+      const message = "Connect GitHub first.";
       setSyncFeedback({ tone: "error", text: message });
       setSettingsTab("git");
       setIsSettingsOpen(true);
@@ -6709,7 +9948,7 @@ export function App() {
     const ready = validateRemoteAction();
     if (!ready.ok) return ready;
 
-    const conflictMessage = "Git conflicts need to be resolved before this project can be saved to Git.";
+    const conflictMessage = "Git conflicts need to be resolved before saving to Git.";
     if (hasActiveMergeStop(localRepoStatus)) {
       setFilesGitConflictNotice(conflictMessage);
       setSyncFeedback({ tone: "error", text: conflictMessage });
@@ -6847,7 +10086,7 @@ export function App() {
     }
     lastAutoSyncKeyRef.current = autoSyncKey;
 
-    const conflictMessage = "Git conflicts need to be resolved before this project can sync.";
+    const conflictMessage = "Git conflicts need to be resolved before syncing.";
     if (hasActiveMergeStop(localRepoStatus)) {
       setFilesGitConflictNotice(conflictMessage);
       setSyncFeedback({ tone: "error", text: conflictMessage });
@@ -6857,7 +10096,7 @@ export function App() {
     if (hasRepoChanges(localRepoStatus)) {
       setSyncFeedback({
         tone: "neutral",
-        text: "Auto-sync skipped because this project has local changes."
+        text: "Auto-sync skipped because there are local changes."
       });
       return;
     }
@@ -7892,6 +11131,42 @@ export function App() {
     selectedGitProjectIsGitHubConnected &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !isSyncing;
+  const canManageGitHubProjects =
+    isOnline &&
+    Boolean(selectedProjectRepository) &&
+    Boolean(selectedGitProject) &&
+    Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
+    !isSyncing;
+  const gitHubCloneBranchGuidance =
+    gitHubClone.status === "connected" &&
+    gitHubClone.repo.trim() &&
+    !gitHubClone.isLoadingBranches &&
+    gitHubClone.branches.length === 0
+      ? "No branches found. Initialize the repo on GitHub first, for example with a README."
+      : gitHubClone.status === "connected" &&
+          gitHubClone.branches.length > 0 &&
+          gitHubClone.branch.trim() &&
+          !gitHubClone.branches.some((branch) => branch.name === gitHubClone.branch.trim())
+        ? "Choose an existing branch. Browser clone cannot create a missing remote branch."
+        : "";
+  const gitHubCloneBranchReady =
+    !gitHubCloneBranchGuidance &&
+    (gitHubClone.branches.length === 0 ||
+      gitHubClone.branches.some((branch) => branch.name === gitHubClone.branch.trim()));
+  const canCloneGitHubRepository =
+    isOnline &&
+    gitHubClone.status === "connected" &&
+    Boolean(gitHubClone.token.trim()) &&
+    Boolean(gitHubClone.owner.trim()) &&
+    Boolean(gitHubClone.repo.trim()) &&
+    Boolean(gitHubClone.branch.trim()) &&
+    !gitHubClone.isLoadingBranches &&
+    gitHubCloneBranchReady &&
+    !isSyncing;
+  const gitHubCloneProgressPercent =
+    gitHubClone.progress && gitHubClone.progress.total > 0
+      ? Math.max(0, Math.min(100, (gitHubClone.progress.current / gitHubClone.progress.total) * 100))
+      : null;
   const handleMergeVersionBodyScroll = useCallback((role: MergeVersionRole) => {
     const sourceBody = mergeVersionBodyRefs.current[role];
     if (!sourceBody || isSyncingMergeScrollRef.current) {
@@ -8006,12 +11281,28 @@ export function App() {
       </div>
     );
   };
-  const editorDiagnostics =
+  const lintDiagnostics = useMemo(
+    () =>
+      lintSourceWithEditorTooling({
+        language: activeSourceLanguage,
+        path: activeSourcePath,
+        preferences: snapshot.preferences.editorTooling,
+        source: sourceEditorValue
+      }),
+    [
+      activeSourceLanguage,
+      activeSourcePath,
+      snapshot.preferences.editorTooling,
+      sourceEditorValue
+    ]
+  );
+  const compilerDiagnostics =
     compileResult === null
       ? []
       : compileResult.ok
         ? compileResult.diagnostics
         : compileResult.errors;
+  const editorDiagnostics = [...lintDiagnostics, ...compilerDiagnostics];
   const storageLabel =
     storageStatus === "saved"
       ? "Saved locally"
@@ -8029,7 +11320,6 @@ export function App() {
       ? ` · last push ${new Date(selectedGitProject.lastPushedAt).toLocaleString()}`
       : "");
   const workspaceModeLabel = describeWorkspaceMode(workspaceMode);
-  const allThemes = [...builtinThemes, ...customThemes];
   const allSnippetsByLanguage = useMemo<SnippetCollections>(
     () => ({
       typst: mergeSnippets([...DEFAULT_SNIPPETS_BY_LANGUAGE.typst, ...customSnippets.typst]),
@@ -8063,6 +11353,10 @@ export function App() {
     () => new Map(latexPackageBundleEntries.map((entry) => [entry.id, entry])),
     [latexPackageBundleEntries]
   );
+  const cachedLatexPackageKeys = useMemo(
+    () => new Set(cachedLatexPackageNames.map(normalizeLatexPackageSelectionName)),
+    [cachedLatexPackageNames]
+  );
   const detectedLatexPackageNames = useMemo(() => {
     const packageNames = new Set<string>();
 
@@ -8094,9 +11388,18 @@ export function App() {
           return true;
         }
 
-        return !latexBundleCacheById.get(entry.bundleId)?.cached;
+        const bundle = latexBundleCacheById.get(entry.bundleId);
+
+        if (bundle?.defaultLoaded) {
+          return false;
+        }
+
+        return !(
+          cachedLatexPackageKeys.has(normalizeLatexPackageSelectionName(entry.name)) &&
+          bundle?.cached
+        );
       }),
-    [detectedLatexPackages, latexBundleCacheById]
+    [cachedLatexPackageKeys, detectedLatexPackages, latexBundleCacheById]
   );
   const latexPackageSearchResults = useMemo(
     () =>
@@ -8105,6 +11408,21 @@ export function App() {
         : [],
     [latexPackageCatalog, latexPackageSearchQuery]
   );
+  const manualExtraLatexPackages = useMemo<LatexPackageResolution[]>(() => {
+    if (!latexPackageCatalog || !latexBundleCacheById.get("texlive-extra")?.cached) {
+      return [];
+    }
+
+    return cachedLatexPackageNames
+      .map((name) => ({
+        name,
+        bundleId: latexPackageCatalog.packages.get(normalizeLatexPackageSelectionName(name)) ?? null
+      }))
+      .filter((entry): entry is LatexPackageResolution & { bundleId: "texlive-extra" } =>
+        entry.bundleId === "texlive-extra"
+      )
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [cachedLatexPackageNames, latexBundleCacheById, latexPackageCatalog]);
   const flatOutlineEntries = useMemo(
     () => collectOutlineEntries(outlineSourceContent),
     [outlineSourceContent]
@@ -8117,11 +11435,14 @@ export function App() {
     const activeEntry = findActiveOutlineEntry(flatOutlineEntries, currentEditorLineNumber);
     return activeEntry ? `${activeEntry.lineNumber}:${activeEntry.level}:${activeEntry.title}` : null;
   }, [currentEditorLineNumber, flatOutlineEntries]);
-  const lightThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "light");
-  const darkThemes = allThemes.filter((themeDefinition) => themeDefinition.mode === "dark");
+  const lightThemes = builtinThemes
+    .filter((themeDefinition) => themeDefinition.mode === "light")
+    .sort(compareThemesByDisplayOrder);
+  const darkThemes = builtinThemes
+    .filter((themeDefinition) => themeDefinition.mode === "dark")
+    .sort(compareThemesByDisplayOrder);
   const effectiveWorkspaceWidth =
     workspaceWidth > 0 ? workspaceWidth : viewportWidth;
-  const isMobileWorkspace = isMobileWorkspaceViewport(viewportWidth);
   const isZenMode = !isMobileWorkspace && workspaceMode === "zen";
   const zenPaneWidth = isZenMode
     ? clampZenWidth(zenWidth, effectiveWorkspaceWidth)
@@ -8487,7 +11808,7 @@ export function App() {
   );
 
   const handleOpenWorkspaceFile = useCallback(
-    (path: string) => {
+    (path: string, options: { pinSourceTab?: boolean } = {}) => {
       const normalizedPath = normalizeWorkspacePath(path);
       setSelectedWorkspacePath(normalizedPath);
       setSelectedWorkspacePaths([normalizedPath]);
@@ -8506,7 +11827,21 @@ export function App() {
 
       if (matchingDocument) {
         setInspectedWorkspacePath(null);
-        handleSelectDocument(matchingDocument.id);
+        handleSelectDocument(matchingDocument.id, {
+          sourceTabMode: options.pinSourceTab ? "pin" : "preview"
+        });
+        const sourceLanguage = getSourceLanguage(normalizedPath);
+        const existingLatexPdfPath = getExistingLatexPdfPreviewPath(normalizedPath);
+
+        if (sourceLanguage === "markdown") {
+          openPreviewTab(normalizedPath);
+          setIsPreviewCollapsed(false);
+        } else if (existingLatexPdfPath) {
+          openPreviewTab(existingLatexPdfPath);
+          setIsPreviewCollapsed(false);
+        } else if (previewTabPaths.length === 0 && isCompilableSourceFile(normalizedPath)) {
+          openPreviewTab(normalizedPath, { activate: true });
+        }
         return;
       }
 
@@ -8524,6 +11859,9 @@ export function App() {
         }
 
         setInspectedWorkspacePath(null);
+        if (getWorkspacePreviewMimeType(normalizedPath)) {
+          openPreviewTab(normalizedPath);
+        }
         setWorkspaceMode("split");
         setIsPreviewCollapsed(false);
       }
@@ -8531,8 +11869,442 @@ export function App() {
     [
       handleOpenWorkspaceDiagram,
       handleOpenWorkspaceGraph,
+      handleSelectDocument,
+      getExistingLatexPdfPreviewPath,
       isTrashViewOpen,
+      openPreviewTab,
+      previewTabPaths.length,
       snapshot.project.documents,
+      visibleWorkspaceTree
+    ]
+  );
+
+  const handlePinWorkspaceFile = useCallback(
+    (path: string) => {
+      handleOpenWorkspaceFile(path, { pinSourceTab: true });
+    },
+    [handleOpenWorkspaceFile]
+  );
+
+  const getWorkspaceKeyboardNode = useCallback(() => {
+    const selectedPath = workspaceTreeCursorPath ?? visibleWorkspaceNodes[0]?.path ?? null;
+
+    return selectedPath ? findWorkspaceNodeByPath(visibleWorkspaceTree, selectedPath) : null;
+  }, [
+    visibleWorkspaceNodes,
+    visibleWorkspaceTree,
+    workspaceTreeCursorPath
+  ]);
+
+  const selectWorkspaceKeyboardNode = useCallback((node: WorkspaceTreeNode) => {
+    setPendingWorkspaceDeletePath(null);
+    setSelectedWorkspacePaths([node.path]);
+    setWorkspaceSelectionAnchorPath(node.path);
+  }, []);
+
+  const getWorkspaceKeyboardSelection = useCallback(
+    (node: WorkspaceTreeNode) => {
+      const selectionPaths =
+        selectedWorkspacePaths.includes(node.path) && selectedWorkspacePaths.length > 1
+          ? selectedWorkspacePaths
+          : [node.path];
+
+      return selectionPaths
+        .map((path) => findWorkspaceNodeByPath(visibleWorkspaceTree, path))
+        .filter((entry): entry is WorkspaceTreeNode => Boolean(entry));
+    },
+    [selectedWorkspacePaths, visibleWorkspaceTree]
+  );
+
+  const getWorkspacePasteDestination = useCallback((node: WorkspaceTreeNode | null) => {
+    if (!node) {
+      return null;
+    }
+
+    return node.kind === "folder" ? node.path : getWorkspaceParentPath(node.path);
+  }, []);
+
+  const moveWorkspaceKeyboardSelection = useCallback(
+    (direction: -1 | 1) => {
+      if (visibleWorkspaceNodes.length === 0) {
+        return;
+      }
+
+      const selectedPath = workspaceTreeCursorPath;
+      const selectedIndex = selectedPath
+        ? visibleWorkspaceNodes.findIndex((node) => node.path === selectedPath)
+        : -1;
+      const nextIndex =
+        selectedIndex === -1
+          ? direction > 0
+            ? 0
+            : visibleWorkspaceNodes.length - 1
+          : Math.min(visibleWorkspaceNodes.length - 1, Math.max(0, selectedIndex + direction));
+
+      selectWorkspaceKeyboardNode(visibleWorkspaceNodes[nextIndex]);
+    },
+    [
+      selectWorkspaceKeyboardNode,
+      visibleWorkspaceNodes,
+      workspaceTreeCursorPath
+    ]
+  );
+
+  const handleWorkspaceKeyboardCopy = useCallback(
+    (node: WorkspaceTreeNode, mode: WorkspaceClipboardMode) => {
+      if (isTrashViewOpen) {
+        setSyncFeedback({ tone: "error", text: "Leave Trash before copying files." });
+        return;
+      }
+
+      const commandNodes = getWorkspaceKeyboardSelection(node).filter((entry) =>
+        mode === "cut" ? canMoveWorkspaceNode(entry) : isWorkspaceNodeCopyable(entry)
+      );
+      const rootNodes = removeDescendantWorkspaceNodes(commandNodes);
+      const domain = getWorkspaceClipboardDomain(rootNodes);
+
+      if (rootNodes.length === 0 || !domain) {
+        setSyncFeedback({
+          tone: "error",
+          text: mode === "cut" ? "No movable file selected." : "No copyable file selected."
+        });
+        return;
+      }
+
+      setWorkspaceClipboard({
+        mode,
+        paths: rootNodes.map((entry) => entry.path)
+      });
+      setPendingWorkspaceDeletePath(null);
+      setSyncFeedback({
+        tone: "neutral",
+        text: `${mode === "cut" ? "Cut" : "Copied"} ${rootNodes.length} item${
+          rootNodes.length === 1 ? "" : "s"
+        }.`
+      });
+    },
+    [getWorkspaceKeyboardSelection, isTrashViewOpen, setSyncFeedback]
+  );
+
+  const handleWorkspaceKeyboardPaste = useCallback(
+    (destinationNode: WorkspaceTreeNode | null) => {
+      if (isTrashViewOpen) {
+        setSyncFeedback({ tone: "error", text: "Leave Trash before pasting files." });
+        return;
+      }
+
+      if (!workspaceClipboard || workspaceClipboard.paths.length === 0) {
+        setSyncFeedback({ tone: "error", text: "Nothing to paste." });
+        return;
+      }
+
+      const clipboardNodes = workspaceClipboard.paths
+        .map((path) => findWorkspaceNodeByPath(workspaceTree, path))
+        .filter((entry): entry is WorkspaceTreeNode => Boolean(entry));
+      const rootNodes = removeDescendantWorkspaceNodes(clipboardNodes);
+      const domain = getWorkspaceClipboardDomain(rootNodes);
+
+      if (rootNodes.length === 0 || !domain) {
+        setWorkspaceClipboard(null);
+        setSyncFeedback({ tone: "error", text: "Those files are no longer available." });
+        return;
+      }
+
+      const pasteDestination = normalizeWorkspacePasteDestination(
+        domain,
+        getWorkspacePasteDestination(destinationNode)
+      );
+
+      if (pasteDestination.error) {
+        setSyncFeedback({ tone: "error", text: pasteDestination.error });
+        return;
+      }
+
+      if (workspaceClipboard.mode === "cut") {
+        const movableNodes = rootNodes.filter(
+          (entry) =>
+            canMoveWorkspaceNode(entry) &&
+            !(
+              entry.kind === "folder" &&
+              pasteDestination.destinationFolderPath &&
+              (pasteDestination.destinationFolderPath === entry.path ||
+                pasteDestination.destinationFolderPath.startsWith(`${entry.path}/`))
+            )
+        );
+
+        if (movableNodes.length === 0) {
+          setSyncFeedback({ tone: "error", text: "No movable file selected." });
+          return;
+        }
+
+        for (const entry of movableNodes) {
+          handleMoveWorkspaceNode(entry, pasteDestination.destinationFolderPath);
+        }
+
+        setWorkspaceClipboard(null);
+        setPendingWorkspaceDeletePath(null);
+        setSyncFeedback({
+          tone: "success",
+          text: `Moved ${movableNodes.length} item${movableNodes.length === 1 ? "" : "s"}.`
+        });
+        return;
+      }
+
+      const result = copyWorkspaceNodesToSnapshot(
+        snapshot,
+        rootNodes,
+        pasteDestination.destinationFolderPath
+      );
+
+      if (result.copiedPaths.length === 0) {
+        setSyncFeedback({ tone: "error", text: "Nothing could be copied there." });
+        return;
+      }
+
+      setSnapshot(result.snapshot);
+      setSelectedWorkspacePath(result.copiedPaths[0]);
+      setSelectedWorkspacePaths(result.copiedPaths);
+      setWorkspaceSelectionAnchorPath(result.copiedPaths[0]);
+      setPendingWorkspaceDeletePath(null);
+      setSyncFeedback({
+        tone: "success",
+        text: `Pasted ${result.copiedPaths.length} item${
+          result.copiedPaths.length === 1 ? "" : "s"
+        }.`
+      });
+    },
+    [
+      getWorkspacePasteDestination,
+      handleMoveWorkspaceNode,
+      isTrashViewOpen,
+      setSnapshot,
+      setSyncFeedback,
+      snapshot,
+      workspaceClipboard,
+      workspaceTree
+    ]
+  );
+
+  const handleWorkspaceKeyboardRestore = useCallback(
+    (node: WorkspaceTreeNode) => {
+      if (!isTrashViewOpen || node.source.kind !== "trash-item") {
+        return false;
+      }
+
+      const trashNodes = getWorkspaceKeyboardSelection(node).filter(
+        (entry): entry is WorkspaceTreeNode & { source: { kind: "trash-item"; id: string } } =>
+          entry.source.kind === "trash-item"
+      );
+
+      if (trashNodes.length === 0) {
+        return false;
+      }
+
+      setSnapshot((currentSnapshot) =>
+        trashNodes.reduce(
+          (nextSnapshot, trashNode) => restoreTrashEntry(nextSnapshot, trashNode.source.id),
+          currentSnapshot
+        )
+      );
+      setWorkspaceContextMenu(null);
+      setSelectedWorkspacePath(null);
+      setSelectedWorkspacePaths([]);
+      setWorkspaceSelectionAnchorPath(null);
+      setPendingWorkspaceDeletePath(null);
+      setSyncFeedback({
+        tone: "success",
+        text: `Restored ${trashNodes.length} item${trashNodes.length === 1 ? "" : "s"}.`
+      });
+      return true;
+    },
+    [getWorkspaceKeyboardSelection, isTrashViewOpen, setSnapshot, setSyncFeedback]
+  );
+
+  const handleFilesPaneKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (
+        !snapshot.preferences.vimMode ||
+        activeSidebarTool !== "files" ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        isTypingTarget(event.target)
+      ) {
+        return;
+      }
+
+      const key = event.key;
+
+      if (pendingWorkspaceDeletePath) {
+        if (key === "y" || key === "Y") {
+          const nodeToDelete = findWorkspaceNodeByPath(visibleWorkspaceTree, pendingWorkspaceDeletePath);
+          event.preventDefault();
+          setPendingWorkspaceDeletePath(null);
+
+          if (nodeToDelete && canDeleteWorkspaceNode(nodeToDelete)) {
+            handleDeleteWorkspaceNode(nodeToDelete);
+            setSyncFeedback({ tone: "success", text: `Deleted ${nodeToDelete.name}.` });
+          }
+          return;
+        }
+
+        if (key === "n" || key === "N" || key === "Escape") {
+          event.preventDefault();
+          setPendingWorkspaceDeletePath(null);
+          setSyncFeedback({ tone: "neutral", text: "Delete cancelled." });
+          return;
+        }
+
+        event.preventDefault();
+        return;
+      }
+
+      if (key === "j") {
+        event.preventDefault();
+        moveWorkspaceKeyboardSelection(1);
+        return;
+      }
+
+      if (key === "k") {
+        event.preventDefault();
+        moveWorkspaceKeyboardSelection(-1);
+        return;
+      }
+
+      const commandNode = getWorkspaceKeyboardNode();
+
+      if (key === " " || key === "Spacebar") {
+        if (!commandNode) {
+          return;
+        }
+
+        event.preventDefault();
+
+        if (commandNode.kind === "folder") {
+          if (commandNode.children.length > 0) {
+            handleToggleFolder(commandNode.path);
+          }
+          return;
+        }
+
+        handleOpenWorkspaceFile(commandNode.path);
+        return;
+      }
+
+      if (key === "Enter") {
+        if (!commandNode) {
+          return;
+        }
+
+        event.preventDefault();
+
+        if (commandNode.kind === "folder") {
+          if (commandNode.children.length > 0) {
+            handleToggleFolder(commandNode.path);
+          }
+          return;
+        }
+
+        handlePinWorkspaceFile(commandNode.path);
+        return;
+      }
+
+      if (key === "n") {
+        event.preventDefault();
+        if (isTrashViewOpen) {
+          setSyncFeedback({ tone: "error", text: "Leave Trash before creating files." });
+          return;
+        }
+        handleNewDocument();
+        return;
+      }
+
+      if (key === "N") {
+        event.preventDefault();
+        if (isTrashViewOpen) {
+          setSyncFeedback({ tone: "error", text: "Leave Trash before creating folders." });
+          return;
+        }
+        handleAddFolder();
+        return;
+      }
+
+      if (key === "r") {
+        if (!commandNode) {
+          return;
+        }
+
+        event.preventDefault();
+
+        if (handleWorkspaceKeyboardRestore(commandNode)) {
+          return;
+        }
+
+        if (!canRenameWorkspaceNode(commandNode)) {
+          return;
+        }
+
+        handleRequestWorkspaceRename(commandNode);
+        return;
+      }
+
+      if (key === "d") {
+        if (!commandNode || !canDeleteWorkspaceNode(commandNode)) {
+          return;
+        }
+
+        event.preventDefault();
+        setPendingWorkspaceDeletePath(commandNode.path);
+        setSyncFeedback({
+          tone: "neutral",
+          text: `Delete ${commandNode.name}? Press y to confirm or n to cancel.`
+        });
+        return;
+      }
+
+      if (key === "y") {
+        if (!commandNode) {
+          return;
+        }
+
+        event.preventDefault();
+        handleWorkspaceKeyboardCopy(commandNode, "copy");
+        return;
+      }
+
+      if (key === "x") {
+        if (!commandNode) {
+          return;
+        }
+
+        event.preventDefault();
+        handleWorkspaceKeyboardCopy(commandNode, "cut");
+        return;
+      }
+
+      if (key === "p") {
+        event.preventDefault();
+        handleWorkspaceKeyboardPaste(commandNode);
+      }
+    },
+    [
+      activeSidebarTool,
+      getWorkspaceKeyboardNode,
+      handleAddFolder,
+      handleDeleteWorkspaceNode,
+      handleNewDocument,
+      handleOpenWorkspaceFile,
+      handlePinWorkspaceFile,
+      handleRequestWorkspaceRename,
+      handleToggleFolder,
+      handleWorkspaceKeyboardCopy,
+      handleWorkspaceKeyboardPaste,
+      handleWorkspaceKeyboardRestore,
+      isTrashViewOpen,
+      moveWorkspaceKeyboardSelection,
+      pendingWorkspaceDeletePath,
+      setSyncFeedback,
+      snapshot.preferences.vimMode,
       visibleWorkspaceTree
     ]
   );
@@ -8566,16 +12338,28 @@ export function App() {
     key: string
   ): ReactNode => {
     const bundle = entry.bundleId ? latexBundleCacheById.get(entry.bundleId) : null;
+    const packageKey = normalizeLatexPackageSelectionName(entry.name);
+    const packageCached = Boolean(
+      entry.bundleId &&
+      !bundle?.defaultLoaded &&
+      cachedLatexPackageKeys.has(packageKey) &&
+      bundle?.cached
+    );
+    const bundleReady = Boolean(entry.bundleId && bundle?.cached);
+    const isInstallingPackage = installingLatexPackageName === entry.name;
     const bundleLabel = entry.bundleId
       ? formatLatexPackageBundleLabel(entry.bundleId)
       : "Not in bundled catalog";
     const statusLabel = entry.bundleId
-      ? bundle?.cached
-        ? bundle.defaultLoaded
-          ? "Loaded by default"
-          : "Cached"
-        : "Not cached"
+      ? bundle?.defaultLoaded
+        ? "Loaded by default"
+        : packageCached
+          ? "Cached"
+          : bundleReady
+            ? "Bundle ready"
+            : "Not cached"
       : "Unavailable";
+    const buttonLabel = bundleReady ? "Cache" : `Cache ${bundleLabel}`;
 
     return (
       <article className="package-cache-row" key={key} role="listitem">
@@ -8585,16 +12369,16 @@ export function App() {
             {bundleLabel} · {statusLabel}
           </span>
         </div>
-        {entry.bundleId && !bundle?.cached ? (
+        {entry.bundleId && !bundle?.defaultLoaded && !packageCached ? (
           <button
             className="pane__button"
-            disabled={installingLatexBundleId === entry.bundleId}
+            disabled={isInstallingPackage}
             onClick={() => {
-              void handleCacheLatexBundle(entry.bundleId as LatexPackageBundleId);
+              void handleCacheLatexPackage(entry, bundleReady);
             }}
             type="button"
           >
-            {installingLatexBundleId === entry.bundleId ? "Caching..." : `Cache ${bundleLabel}`}
+            {isInstallingPackage ? "Caching..." : buttonLabel}
           </button>
         ) : (
           <span className="package-cache-row__badge">{statusLabel}</span>
@@ -8602,6 +12386,697 @@ export function App() {
       </article>
     );
   };
+  const normalizedTransientSourceTabPath = transientSourceTabPath
+    ? normalizeWorkspacePath(transientSourceTabPath)
+    : null;
+  const visibleSourceTabPaths = useMemo(() => {
+    const tabs = normalizeUniqueWorkspacePaths(sourceTabPaths);
+
+    if (
+      normalizedTransientSourceTabPath &&
+      !tabs.includes(normalizedTransientSourceTabPath) &&
+      workspaceFilePathSet.has(normalizedTransientSourceTabPath)
+    ) {
+      tabs.push(normalizedTransientSourceTabPath);
+    }
+
+    if (
+      tabs.length === 0 &&
+      isSourceFileEditable &&
+      isDocumentSourceTab &&
+      normalizedActiveSourcePath
+    ) {
+      tabs.push(normalizedActiveSourcePath);
+    }
+
+    return tabs;
+  }, [
+    isDocumentSourceTab,
+    isSourceFileEditable,
+    normalizedActiveSourcePath,
+    normalizedTransientSourceTabPath,
+    sourceTabPaths,
+    workspaceFilePathSet
+  ]);
+  const visiblePreviewTabPaths = useMemo(
+    () => normalizeUniqueWorkspacePaths(previewTabPaths),
+    [previewTabPaths]
+  );
+  const recentProjectsForDisplay = useMemo(
+    () =>
+      recentWorkspaceState.projects
+        .map((recentProject) => {
+          const project = projectStorage.projects.find(
+            (candidate) => candidate.id === recentProject.id
+          );
+          return project ?? null;
+        })
+        .filter((project): project is TyprProjectRepository => Boolean(project))
+        .slice(0, RECENT_PROJECT_LIMIT),
+    [projectStorage.projects, recentWorkspaceState.projects]
+  );
+  const recentFilesForDisplay = useMemo(
+    () =>
+      recentWorkspaceState.files
+        .map((recentFile) => {
+          const project = projectStorage.projects.find(
+            (candidate) => candidate.id === recentFile.projectId
+          );
+
+          if (!project) {
+            return null;
+          }
+
+          const normalizedPath = normalizeWorkspacePath(recentFile.path);
+          const exists = listProjectEntries(project).some(
+            (entry) => entry.kind === "file" && normalizeWorkspacePath(entry.path) === normalizedPath
+          );
+
+          return exists
+            ? {
+                ...recentFile,
+                path: normalizedPath,
+                projectName: project.displayName
+              }
+            : null;
+        })
+        .filter((entry): entry is RecentFileEntry => Boolean(entry))
+        .slice(0, RECENT_FILE_LIMIT),
+    [projectStorage.projects, recentWorkspaceState.files]
+  );
+  const workspaceGitBadgeByPath = useMemo<Record<string, WorkspaceGitBadgeKind>>(() => {
+    const badges: Record<string, WorkspaceGitBadgeKind> = {};
+
+    for (const entry of localRepoStatus?.entries ?? []) {
+      const normalizedPath = normalizeWorkspacePath(entry.path);
+      if (!normalizedPath) {
+        continue;
+      }
+
+      if (entry.staged === "added" || entry.worktree === "untracked") {
+        badges[normalizedPath] = "added";
+      } else if (entry.staged === "deleted" || entry.worktree === "deleted") {
+        badges[normalizedPath] = "deleted";
+      } else {
+        badges[normalizedPath] = "modified";
+      }
+    }
+
+    for (const file of localRepoStatus?.mergeState?.files ?? []) {
+      const normalizedPath = normalizeWorkspacePath(file.path);
+      if (!normalizedPath) {
+        continue;
+      }
+
+      badges[normalizedPath] = file.state === "conflict" ? "conflict" : "modified";
+    }
+
+    return badges;
+  }, [localRepoStatus]);
+  const visibleKeybindingDefinitions = useMemo(() => {
+    const query = (keybindingSearchQuery.trim() || settingsSearchQuery.trim()).toLowerCase();
+
+    if (!query) {
+      return KEYBINDING_DEFINITIONS;
+    }
+
+    return KEYBINDING_DEFINITIONS.filter((definition) => {
+      const binding = keybindings[definition.id];
+      return [
+        definition.label,
+        definition.group,
+        binding,
+        definition.defaultBinding
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [keybindingSearchQuery, keybindings, settingsSearchQuery]);
+  useEffect(() => {
+    activateWorkspaceTabRef.current = (direction: -1 | 1) => {
+      const activateTab = (
+        paths: string[],
+        activePath: string | null,
+        onActivate: (path: string) => void
+      ): boolean => {
+        if (paths.length < 2) {
+          return false;
+        }
+
+        const activeIndex = activePath ? paths.indexOf(activePath) : -1;
+        const fallbackIndex = direction > 0 ? -1 : 0;
+        const nextIndex =
+          (activeIndex >= 0 ? activeIndex : fallbackIndex) + direction;
+        const nextPath = paths[(nextIndex + paths.length) % paths.length];
+
+        if (!nextPath) {
+          return false;
+        }
+
+        onActivate(nextPath);
+        return true;
+      };
+
+      const activateSourceTab = () =>
+        activateTab(
+          visibleSourceTabPaths,
+          normalizedActiveSourcePath,
+          handleActivateSourceTab
+        );
+      const activatePreviewTab = () =>
+        activateTab(
+          visiblePreviewTabPaths,
+          activePreviewPath,
+          handleActivatePreviewTab
+        );
+
+      if (lastZoomPaneTargetRef.current === "preview") {
+        return activatePreviewTab() || activateSourceTab();
+      }
+
+      return activateSourceTab() || activatePreviewTab();
+    };
+  }, [
+    activePreviewPath,
+    handleActivatePreviewTab,
+    handleActivateSourceTab,
+    normalizedActiveSourcePath,
+    visiblePreviewTabPaths,
+    visibleSourceTabPaths
+  ]);
+  const renderWorkspaceTabStrip = ({
+    activePath,
+    ariaLabel,
+    kind,
+    onActivate,
+    onClose,
+    paths
+  }: {
+    activePath: string | null;
+    ariaLabel: string;
+    kind: WorkspaceTabKind;
+    onActivate: (path: string) => void;
+    onClose: (path: string) => void;
+    paths: string[];
+  }) => {
+    const normalizedSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths);
+
+    return (
+      <div className="pane-tabbar">
+        <div
+          className="pane-tabs"
+          role="tablist"
+          aria-label={ariaLabel}
+          onWheel={handleWorkspaceTabWheel}
+        >
+          {paths.map((path) => {
+            const isActiveTab = path === activePath;
+            const canCloseTab =
+              kind === "preview" ||
+              path === normalizedTransientSourceTabPath ||
+              (normalizedSourceTabs.includes(path) &&
+                (normalizedSourceTabs.length > 1 || Boolean(normalizedTransientSourceTabPath)));
+            const isPreviewSourceTab =
+              kind === "source" &&
+              path === normalizedTransientSourceTabPath &&
+              !sourceTabPaths.includes(path);
+            const isDraggingTab =
+              draggingWorkspaceTab?.kind === kind && draggingWorkspaceTab.path === path;
+            const dropSide =
+              workspaceTabDropTarget?.kind === kind && workspaceTabDropTarget.path === path
+                ? workspaceTabDropTarget.side
+                : null;
+            const tabDisplayPath = getWorkspaceTabDisplayPath(kind, path);
+            const tabLabel = getWorkspaceBaseName(tabDisplayPath);
+
+            return (
+              <div
+                className={`pane-tab ${isActiveTab ? "pane-tab--active" : ""} ${
+                  isDraggingTab ? "pane-tab--dragging" : ""
+                } ${isPreviewSourceTab ? "pane-tab--preview" : ""} ${
+                  dropSide === "before" ? "pane-tab--drop-before" : ""
+                } ${dropSide === "after" ? "pane-tab--drop-after" : ""}`}
+                draggable
+                key={path}
+                onDragEnd={handleWorkspaceTabDragEnd}
+                onDragOver={handleWorkspaceTabDragOver(kind, path)}
+                onDragStart={handleWorkspaceTabDragStart(kind, path)}
+                onDrop={handleWorkspaceTabDrop(kind, path)}
+                title={tabDisplayPath}
+              >
+                <button
+                  aria-selected={isActiveTab}
+                  className="pane-tab__button"
+                  onClick={() => onActivate(path)}
+                  role="tab"
+                  title={tabDisplayPath}
+                  type="button"
+                >
+                  <span className="pane-tab__label">{tabLabel}</span>
+                </button>
+                {canCloseTab ? (
+                  <button
+                    aria-label={`Close ${tabDisplayPath}`}
+                    className="pane-tab__close"
+                    draggable={false}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onClose(path);
+                    }}
+                    title={`Close ${tabDisplayPath}`}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className="pane-tab__close-icon" />
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+  const sourceToolsPanel = isSourceFileEditable ? (
+    <div className="source-tools-panel">
+      {showSourceCompileButton ? (
+        <button
+          className="pane__button source-tools-panel__compile"
+          onClick={handleCompile}
+          title={`Compile (${compileShortcutLabel})`}
+          type="button"
+        >
+          Compile
+        </button>
+      ) : null}
+
+      <div className="source-tools-panel__section">
+        <div className="pane__toolbar-group source-tools-panel__grid">
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleBold}
+            type="button"
+            aria-label="Bold"
+            title="Bold"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--bold" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleItalic}
+            type="button"
+            aria-label="Italic"
+            title="Italic"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--italic" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleUnderline}
+            type="button"
+            aria-label="Underline"
+            title="Underline"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--underline" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleBulletList}
+            type="button"
+            aria-label="Bulleted list"
+            title="Bulleted list"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--bullet-list" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleNumberedList}
+            type="button"
+            aria-label="Numbered list"
+            title="Numbered list"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--numbered-list" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleMathMode}
+            type="button"
+            aria-label="Math mode"
+            title="Math mode"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--math" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleCycleHeading}
+            type="button"
+            aria-label="Cycle heading level"
+            title="Cycle heading level"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--heading" />
+          </button>
+          <button
+            aria-label="Format document"
+            className="pane__button pane__button--compact pane__icon-button"
+            disabled={!isActiveSourceFormatterEnabled}
+            onClick={handleFormatDocument}
+            title={`Format document (${formatDocumentShortcutLabel})`}
+            type="button"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--format" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={() => {
+              setSettingsTab("snippets");
+              setIsSettingsOpen(true);
+            }}
+            type="button"
+            aria-label="Snippets"
+            title="Snippets"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--snippets" />
+          </button>
+          <button
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={handleVimToggle}
+            type="button"
+            aria-label={snapshot.preferences.vimMode ? "Disable Vim mode" : "Enable Vim mode"}
+            aria-pressed={snapshot.preferences.vimMode}
+            title={
+              snapshot.preferences.vimMode
+                ? `Vim mode on (${vimToggleShortcutLabel})`
+                : `Vim mode off (${vimToggleShortcutLabel})`
+            }
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--vim" />
+          </button>
+        </div>
+      </div>
+
+      <div className="source-tools-panel__section">
+        <div className={`matrix-menu ${openToolbarMenu === "matrix" ? "matrix-menu--open" : ""}`}>
+          <button
+            aria-expanded={openToolbarMenu === "matrix"}
+            aria-label="Matrix options"
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={() => toggleToolbarMenu("matrix")}
+            title="Matrix options"
+            type="button"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--matrix" />
+          </button>
+          {openToolbarMenu === "matrix" ? (
+            <div className="matrix-menu__panel" role="menu" aria-label="Matrix options">
+              <label className="matrix-menu__field">
+                <span>Rows</span>
+                <select
+                  onChange={(event) =>
+                    setMatrixSettings((current) => ({
+                      ...current,
+                      rows: Number(event.target.value)
+                    }))
+                  }
+                  value={matrixSettings.rows}
+                >
+                  {MATRIX_ROW_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="matrix-menu__field">
+                <span>Columns</span>
+                <select
+                  onChange={(event) =>
+                    setMatrixSettings((current) => ({
+                      ...current,
+                      columns: Number(event.target.value)
+                    }))
+                  }
+                  value={matrixSettings.columns}
+                >
+                  {MATRIX_COLUMN_OPTIONS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="matrix-menu__delimiters" role="group" aria-label="Brackets">
+                {MATRIX_DELIMITER_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    className={`matrix-menu__delimiter ${
+                      matrixSettings.delimiter === option.id
+                        ? "matrix-menu__delimiter--active"
+                        : ""
+                    }`}
+                    onClick={() =>
+                      setMatrixSettings((current) => ({
+                        ...current,
+                        delimiter: option.id
+                      }))
+                    }
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                className="pane__button matrix-menu__insert"
+                onClick={() => {
+                  handleInsertMatrix();
+                  setOpenToolbarMenu(null);
+                }}
+                type="button"
+              >
+                Insert matrix
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className={`table-menu ${openToolbarMenu === "table" ? "table-menu--open" : ""}`}>
+          <button
+            aria-expanded={openToolbarMenu === "table"}
+            aria-label="Table options"
+            className="pane__button pane__button--compact pane__icon-button"
+            onClick={() => toggleToolbarMenu("table")}
+            title="Table options"
+            type="button"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--table" />
+          </button>
+          {openToolbarMenu === "table" ? (
+            <div className="table-menu__panel" role="menu" aria-label="Table options">
+              <div className="table-menu__grid">
+                <label className="table-menu__field">
+                  <span>Rows</span>
+                  <select
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        rows: Number(event.target.value)
+                      }))
+                    }
+                    value={tableSettings.rows}
+                  >
+                    {TABLE_ROW_OPTIONS.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="table-menu__field">
+                  <span>Columns</span>
+                  <select
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        columns: Number(event.target.value)
+                      }))
+                    }
+                    value={tableSettings.columns}
+                  >
+                    {TABLE_COLUMN_OPTIONS.map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="table-menu__field">
+                  <span>Alignment</span>
+                  <select
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        align: event.target.value as TableAlignment
+                      }))
+                    }
+                    value={tableSettings.align}
+                  >
+                    {TABLE_ALIGNMENT_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="table-menu__field">
+                  <span>Gutter</span>
+                  <select
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        gutter: event.target.value as TableGutter
+                      }))
+                    }
+                    value={tableSettings.gutter}
+                  >
+                    {TABLE_GUTTER_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="table-menu__field">
+                  <span>Inset</span>
+                  <select
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        inset: event.target.value as TableInset
+                      }))
+                    }
+                    value={tableSettings.inset}
+                  >
+                    {TABLE_INSET_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="table-menu__field">
+                  <span>Stroke</span>
+                  <select
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        stroke: event.target.value as TableStroke
+                      }))
+                    }
+                    value={tableSettings.stroke}
+                  >
+                    <option value="default">Default</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+              </div>
+              <div className="table-menu__toggles">
+                <label className="table-menu__toggle">
+                  <input
+                    checked={tableSettings.header}
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        header: event.target.checked
+                      }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Header row</span>
+                </label>
+                <label className="table-menu__toggle">
+                  <input
+                    checked={tableSettings.footer}
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        footer: event.target.checked
+                      }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Footer row</span>
+                </label>
+                <label className="table-menu__toggle">
+                  <input
+                    checked={tableSettings.striped}
+                    onChange={(event) =>
+                      setTableSettings((current) => ({
+                        ...current,
+                        striped: event.target.checked
+                      }))
+                    }
+                    type="checkbox"
+                  />
+                  <span>Striped fill</span>
+                </label>
+              </div>
+              <button
+                className="pane__button table-menu__insert"
+                onClick={() => {
+                  handleInsertTable();
+                  setOpenToolbarMenu(null);
+                }}
+                type="button"
+              >
+                Insert table
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="source-tools-panel__section">
+        <details className="source-symbol-menu">
+          <summary
+            className="pane__button pane__button--compact pane__icon-button"
+            aria-label="Symbols"
+            title="Symbols"
+          >
+            <span aria-hidden="true" className="toolbar-icon toolbar-icon--symbols" />
+          </summary>
+          <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
+            {SOURCE_SYMBOL_ITEMS.map((item) => (
+              <button
+                key={item.template}
+                className="source-symbol-menu__item"
+                onBlur={clearSourceSymbolPreview}
+                onClick={(event) => {
+                  handleInsertSymbol(item.template);
+                  clearSourceSymbolPreview();
+                  const details = event.currentTarget.closest("details");
+                  if (details instanceof HTMLDetailsElement) {
+                    details.open = false;
+                  }
+                }}
+                onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
+                onPointerMove={positionSourceSymbolTooltip}
+                onPointerLeave={clearSourceSymbolPreview}
+                title={item.label}
+                type="button"
+              >
+                <span aria-hidden="true" className="source-symbol-menu__glyph">
+                  {item.glyph}
+                </span>
+                <span className="visually-hidden">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </details>
+      </div>
+    </div>
+  ) : (
+    <div className="snippet-empty">Open an editable source file to use source tools.</div>
+  );
 
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""}`}>
@@ -8668,7 +13143,6 @@ export function App() {
               aria-label="Settings"
               className="activity-bar__button"
               onClick={() => {
-                setSettingsTab("git");
                 setIsSettingsOpen(true);
                 setActiveMenu(null);
               }}
@@ -8754,7 +13228,6 @@ export function App() {
                   aria-label="Settings"
                   className="activity-bar__button"
                   onClick={() => {
-                    setSettingsTab("git");
                     setIsSettingsOpen(true);
                     setActiveMenu(null);
                   }}
@@ -8773,8 +13246,11 @@ export function App() {
           <aside
             className={`pane pane--sidebar ${sidebarVisibilityClass}`}
             data-zoom-pane="sidebar"
-            aria-label="Files and git"
+            aria-label="Sidebar tools"
+            onKeyDown={handleFilesPaneKeyDown}
+            ref={sidebarPaneRef}
             style={sidebarPaneStyle}
+            tabIndex={-1}
           >
             <>
               <div className="pane__header">
@@ -8782,10 +13258,20 @@ export function App() {
                   <h2>{filesPanelTitle}</h2>
                 </div>
                 <div className="pane__header-actions">
-                  {activeSidebarTool === "files" ? (
+                  {activeSidebarTool === "projects" ? (
+                    <button
+                      className="pane__button pane__button--compact pane__icon-button"
+                      onClick={handleCreateLocalProject}
+                      type="button"
+                      aria-label="New project"
+                      title="New project"
+                    >
+                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-folder" />
+                    </button>
+                  ) : activeSidebarTool === "files" ? (
                     <>
                       <button
-                        aria-label="Sync project to Git"
+                        aria-label="Sync to Git"
                         className="pane__button pane__button--compact pane__icon-button"
                         disabled={!canQuickSaveToGit}
                         onClick={() => {
@@ -8818,8 +13304,8 @@ export function App() {
                         className="pane__button pane__button--compact pane__icon-button"
                         onClick={() => documentUploadInputRef.current?.click()}
                         type="button"
-                        aria-label="Upload .typ"
-                        title="Upload .typ"
+                        aria-label="Upload file"
+                        title="Upload file"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
                       </button>
@@ -8872,45 +13358,354 @@ export function App() {
                 </div>
               </div>
 
-              {activeSidebarTool === "files" ? (
+              {activeSidebarTool === "projects" ? (
+                <section className="sidebar-section sidebar-section--scrollable sidebar-section--projects">
+                  <div className="project-manager">
+                    <div className="project-manager__list" role="list">
+                      {projectStorage.projects.map((project) => {
+                        const isSelectedProject = project.id === selectedProjectRepository?.id;
+                        const projectEntries = listProjectEntries(project).filter(
+                          (entry) => entry.path !== DEFAULT_PROJECT_GITIGNORE_PATH
+                        );
+                        const connectedRepoCount = gitWorkspace.projects.filter(
+                          (managedProject) =>
+                            managedProject.projectId === project.id &&
+                            managedProject.connected &&
+                            managedProject.owner.trim() &&
+                            managedProject.repo.trim()
+                        ).length;
+
+                        return (
+                          <article
+                            className={`project-manager__row ${
+                              isSelectedProject ? "project-manager__row--active" : ""
+                            }`}
+                            key={project.id}
+                            role="listitem"
+                          >
+                            <button
+                              aria-pressed={isSelectedProject}
+                              className="project-manager__select"
+                              onClick={() => handleSelectLocalProject(project.id)}
+                              type="button"
+                            >
+                              <strong>{project.displayName}</strong>
+                              <span>
+                                {isSelectedProject
+                                  ? "Active"
+                                  : connectedRepoCount > 0
+                                    ? `${connectedRepoCount} GitHub repo${connectedRepoCount === 1 ? "" : "s"}`
+                                    : `${projectEntries.length} item${projectEntries.length === 1 ? "" : "s"}`}
+                              </span>
+                            </button>
+                            <div className="project-manager__row-actions">
+                              <button
+                                className="pane__button pane__button--compact"
+                                onClick={() => handleRenameLocalProject(project.id)}
+                                type="button"
+                              >
+                                Rename
+                              </button>
+                              <button
+                                className="pane__button pane__button--compact pane__button--danger"
+                                onClick={() => {
+                                  void handleDeleteSelectedProject(project.id);
+                                }}
+                                type="button"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+
+                    {recentProjectsForDisplay.length > 0 || recentFilesForDisplay.length > 0 ? (
+                      <div className="project-recent-card">
+                        {recentProjectsForDisplay.length > 0 ? (
+                          <section className="project-recent-card__section">
+                            <h4>Recent projects</h4>
+                            <div className="project-recent-list">
+                              {recentProjectsForDisplay.map((project) => (
+                                <button
+                                  className="project-recent-item"
+                                  disabled={project.id === selectedProjectRepository?.id}
+                                  key={project.id}
+                                  onClick={() => handleSelectLocalProject(project.id)}
+                                  title={project.displayName}
+                                  type="button"
+                                >
+                                  <span>{project.displayName}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </section>
+                        ) : null}
+                        {recentFilesForDisplay.length > 0 ? (
+                          <section className="project-recent-card__section">
+                            <h4>Recent files</h4>
+                            <div className="project-recent-list">
+                              {recentFilesForDisplay.map((entry) => (
+                                <button
+                                  className="project-recent-item project-recent-item--file"
+                                  key={`${entry.projectId}:${entry.path}`}
+                                  onClick={() => handleOpenRecentFile(entry)}
+                                  title={`${entry.projectName}/${entry.path}`}
+                                  type="button"
+                                >
+                                  <span>{getWorkspaceBaseName(entry.path)}</span>
+                                  <small>{entry.projectName}</small>
+                                </button>
+                              ))}
+                            </div>
+                          </section>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <div className="project-manager__actions">
+                      <button
+                        className="pane__button"
+                        onClick={handleCreateLocalProject}
+                        type="button"
+                      >
+                        New local project
+                      </button>
+                      <button
+                        className="pane__button"
+                        onClick={handleToggleGitHubCloneFlow}
+                        type="button"
+                      >
+                        {gitHubClone.isOpen ? "Hide clone" : "Clone GitHub repo"}
+                      </button>
+                      <button
+                        className="pane__button"
+                        disabled={!canManageGitHubProjects}
+                        onClick={() => {
+                          void handleCreateGitHubRepoFromCurrentProject();
+                        }}
+                        type="button"
+                      >
+                        Create GitHub repo
+                      </button>
+                      <button
+                        className="pane__button pane__button--quiet"
+                        onClick={handleDownloadProject}
+                        type="button"
+                      >
+                        Export project
+                      </button>
+                      <button
+                        className="pane__button pane__button--quiet"
+                        onClick={() => projectImportInputRef.current?.click()}
+                        type="button"
+                      >
+                        Import project
+                      </button>
+                      <button
+                        className="pane__button pane__button--quiet"
+                        onClick={() => {
+                          setSettingsTab("git");
+                          setIsSettingsOpen(true);
+                        }}
+                        type="button"
+                      >
+                        Git setup
+                      </button>
+                    </div>
+                    {gitHubClone.isOpen ? (
+                      <div className="project-clone-card">
+                        <label className="sync-field">
+                          <span>GitHub token</span>
+                          <input
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            onChange={(event) => handleGitHubCloneTokenChange(event.target.value)}
+                            placeholder="Paste token"
+                            type="password"
+                            value={gitHubClone.token}
+                          />
+                        </label>
+                        <button
+                          className="pane__button"
+                          disabled={!gitHubClone.token.trim() || gitHubClone.status === "loading"}
+                          onClick={() => {
+                            void handleConnectGitHubClone();
+                          }}
+                          type="button"
+                        >
+                          {gitHubClone.status === "loading" ? "Connecting..." : "Connect"}
+                        </button>
+                        <label className="sync-field">
+                          <span>GitHub URL</span>
+                          <input
+                            autoCapitalize="none"
+                            autoCorrect="off"
+                            onChange={(event) => handleGitHubCloneRepositoryUrlChange(event.target.value)}
+                            placeholder="https://github.com/owner/repo"
+                            type="text"
+                            value={gitHubClone.repositoryUrl}
+                          />
+                        </label>
+                        <div className="project-clone-grid">
+                          <label className="sync-field">
+                            <span>Owner</span>
+                            {gitHubClone.owners.length > 0 ? (
+                              <select
+                                onChange={(event) => handleGitHubCloneOwnerChange(event.target.value)}
+                                value={gitHubClone.owner}
+                              >
+                                {gitHubClone.owners.map((owner) => (
+                                  <option key={owner.login} value={owner.login}>
+                                    {owner.login}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                onChange={(event) => handleGitHubCloneOwnerChange(event.target.value)}
+                                placeholder="owner"
+                                type="text"
+                                value={gitHubClone.owner}
+                              />
+                            )}
+                          </label>
+                          <label className="sync-field">
+                            <span>Repo</span>
+                            {gitHubClone.repos.length > 0 ? (
+                              <select
+                                disabled={gitHubClone.isLoadingRepos}
+                                onChange={(event) => handleGitHubCloneRepoSelection(event.target.value)}
+                                value={
+                                  gitHubClone.repos.some((repo) => repo.name === gitHubClone.repo)
+                                    ? gitHubClone.repo
+                                    : ""
+                                }
+                              >
+                                <option value="">
+                                  {gitHubClone.isLoadingRepos ? "Loading repos..." : "Choose repo"}
+                                </option>
+                                {gitHubClone.repos.map((repo) => (
+                                  <option key={repo.fullName} value={repo.name}>
+                                    {repo.name}{repo.private ? " (private)" : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                onChange={(event) => handleGitHubCloneRepoSelection(event.target.value)}
+                                placeholder={gitHubClone.isLoadingRepos ? "Loading repos..." : "repo"}
+                                type="text"
+                                value={gitHubClone.repo}
+                              />
+                            )}
+                          </label>
+                        </div>
+                        <div className="project-clone-grid">
+                          <label className="sync-field">
+                            <span>Branch</span>
+                            {gitHubClone.branches.length > 0 ? (
+                              <select
+                                disabled={gitHubClone.isLoadingBranches}
+                                onChange={(event) =>
+                                  setGitHubClone((current) => ({
+                                    ...current,
+                                    branch: event.target.value
+                                  }))
+                                }
+                                value={
+                                  gitHubClone.branches.some((branch) => branch.name === gitHubClone.branch)
+                                    ? gitHubClone.branch
+                                    : ""
+                                }
+                              >
+                                <option value="">
+                                  {gitHubClone.isLoadingBranches ? "Loading branches..." : "Choose branch"}
+                                </option>
+                                {gitHubClone.branches.map((branch) => (
+                                  <option key={branch.name} value={branch.name}>
+                                    {branch.name}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                onChange={(event) =>
+                                  setGitHubClone((current) => ({
+                                    ...current,
+                                    branch: event.target.value
+                                  }))
+                                }
+                                placeholder={gitHubClone.isLoadingBranches ? "Loading branches..." : "main"}
+                                type="text"
+                                value={gitHubClone.branch}
+                              />
+                            )}
+                          </label>
+                          <label className="sync-field">
+                            <span>Local name</span>
+                            <input
+                              onChange={(event) =>
+                                setGitHubClone((current) => ({
+                                  ...current,
+                                  projectName: event.target.value
+                                }))
+                              }
+                              placeholder={gitHubClone.repo || "Project name"}
+                              type="text"
+                              value={gitHubClone.projectName}
+                            />
+                          </label>
+                        </div>
+                        {gitHubClone.message ? (
+                          <p className="project-clone-card__message">{gitHubClone.message}</p>
+                        ) : null}
+                        {gitHubCloneBranchGuidance ? (
+                          <p className="project-clone-card__message project-clone-card__message--warning">
+                            {gitHubCloneBranchGuidance}
+                          </p>
+                        ) : null}
+                        <div className="project-clone-actions">
+                          <button
+                            className={`pane__button project-clone-button ${
+                              isSyncing && gitHubCloneProgressPercent !== null
+                                ? "project-clone-button--active"
+                                : ""
+                            }`}
+                            disabled={!canCloneGitHubRepository}
+                            onClick={() => {
+                              void handleCloneGitHubRepository();
+                            }}
+                            style={
+                              {
+                                "--project-clone-progress": `${gitHubCloneProgressPercent ?? 0}%`
+                              } as CSSProperties
+                            }
+                            type="button"
+                          >
+                            <span>{isSyncing ? "Cloning..." : "Clone"}</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              ) : activeSidebarTool === "source-tools" ? (
+                <section className="sidebar-section sidebar-section--scrollable sidebar-section--source-tools">
+                  {sourceToolsPanel}
+                </section>
+              ) : activeSidebarTool === "files" ? (
                 <section
                   ref={filesSectionRef}
                   className="sidebar-section sidebar-section--scrollable sidebar-section--files"
                 >
-                  {!isTrashViewOpen ? (
-                    <div className="project-switcher" aria-label="Typr projects">
-                      <label className="project-switcher__field">
-                        <span>Project</span>
-                        <select
-                          onChange={(event) => {
-                            const nextProject = projectStorage.projects.find(
-                              (project) => project.id === event.target.value
-                            );
-                            selectStoredProjectRepository(event.target.value);
-                            if (nextProject) {
-                              addDefaultGitManagedProject(nextProject);
-                            }
-                          }}
-                          value={selectedProjectRepository?.id ?? ""}
-                        >
-                          {projectStorage.projects.map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.displayName}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="project-switcher__actions">
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={handleCreateLocalProject}
-                          type="button"
-                        >
-                          New local project
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
                   {!isTrashViewOpen && filesGitConflictNotice ? (
                     <div className="files-git-notice">
                       <div className="files-git-notice__body">
@@ -8951,8 +13746,9 @@ export function App() {
                     collapsedPaths={collapsedFileFolders}
                     dropTargetPath={workspaceDropTargetPath}
                     nodes={visibleWorkspaceTree}
-                    rootLabel={isTrashViewOpen ? "Trash" : snapshot.project.name}
-                    rootIsRenameable={!isTrashViewOpen}
+                    gitStatusByPath={workspaceGitBadgeByPath}
+                    rootLabel={isTrashViewOpen ? "Trash" : "Files"}
+                    rootIsRenameable={false}
                     renamingPath={renamingWorkspacePath}
                     renameDraft={workspaceRenameDraft}
                     selectedPaths={selectedWorkspacePaths}
@@ -8964,12 +13760,12 @@ export function App() {
                     onDropIntoFolder={handleWorkspaceDropIntoFolder}
                     onFolderDragHover={handleWorkspaceFolderDragHover}
                     onOpenFile={handleOpenWorkspaceFile}
+                    onPinFile={handlePinWorkspaceFile}
                     onToggleFolder={handleToggleFolder}
                     onRenameDraftChange={setWorkspaceRenameDraft}
                     onRenameCancel={handleCancelWorkspaceRename}
                     onRenameCommit={handleCommitWorkspaceRename}
                     onRequestRootContextMenu={handleRequestWorkspaceRootContextMenu}
-                    onRequestRootRename={handleRequestWorkspaceRootRename}
                     onRequestRename={handleRequestWorkspaceRename}
                     onRequestContextMenu={handleRequestWorkspaceContextMenu}
                   />
@@ -8989,13 +13785,22 @@ export function App() {
                       }
                     >
                       {workspaceContextMenu.kind === "project-root" ? (
-                        <button
-                          className="workspace-context-menu__item"
-                          onClick={handleRequestWorkspaceRootRename}
-                          type="button"
-                        >
-                          Rename
-                        </button>
+                        <>
+                          <button
+                            className="workspace-context-menu__item"
+                            onClick={handleRequestWorkspaceRootRename}
+                            type="button"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            className="workspace-context-menu__item"
+                            onClick={handleDownloadWorkspaceProjectFiles}
+                            type="button"
+                          >
+                            Download files
+                          </button>
+                        </>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
                       workspaceContextMenu.node.source.kind === "graph" ? (
@@ -9049,6 +13854,19 @@ export function App() {
                           type="button"
                         >
                           Move
+                        </button>
+                      ) : null}
+                      {workspaceContextMenu.kind === "node" &&
+                      (workspaceContextMenu.node.source.kind === "document" ||
+                        workspaceContextMenu.node.source.kind === "folder" ||
+                        workspaceContextMenu.node.source.kind === "diagram" ||
+                        workspaceContextMenu.node.source.kind === "graph") ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={() => handleDownloadWorkspaceNode(workspaceContextMenu.node)}
+                          type="button"
+                        >
+                          Download
                         </button>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
@@ -9337,31 +14155,14 @@ export function App() {
                   <div className="sync-stack">
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
-                        <span>GitHub projects</span>
+                        <span>{selectedGitProject?.name || "Git repo"}</span>
                         <span className="pane__meta">
                           {selectedGitProjectIsGitHubConnected && selectedGitProject
                             ? selectedGitProject.backendId
-                            : `${githubConnectedProjectOptions.length} connected`}
+                            : selectedProjectGitConnectionLabel}
                         </span>
                       </div>
                       <div className="sidebar-card__actions">
-                        <select
-                          className="pane__button pane__button--compact"
-                          disabled={githubConnectedProjectOptions.length === 0}
-                          onChange={(event) => selectGitHubConnectedProject(event.target.value)}
-                          value={selectedGitHubProjectDropdownValue}
-                        >
-                          <option disabled value="">
-                            {githubConnectedProjectOptions.length === 0
-                              ? "No GitHub projects"
-                              : "Choose GitHub project"}
-                          </option>
-                          {githubConnectedProjectOptions.map(({ project }) => (
-                            <option key={project.id} value={project.id}>
-                              {project.displayName}
-                            </option>
-                          ))}
-                        </select>
                         <button
                           aria-label="Add repo"
                           className="pane__button pane__button--compact pane__icon-button"
@@ -10062,438 +14863,34 @@ export function App() {
           aria-label="Source editor"
         >
           {isZenMode ? null : (
-          <div className="pane__header">
-            <div className="pane__header-group">
-              <h2>Source</h2>
-            </div>
-            <div className="pane__header-actions">
-              {showSourceCompileButton ? (
-                <button
-                  className="pane__button"
-                  onClick={handleCompile}
-                  title={`Compile (${compileShortcutLabel})`}
-                  type="button"
-                >
-                  Compile
-                </button>
-              ) : null}
-                <button
-                  className="pane__button pane__button--quiet"
-                  onClick={() => setIsSourceToolbarVisible((current) => !current)}
-                  type="button"
-                  disabled={!isSourceFileEditable}
-                  aria-pressed={isSourceToolbarVisible}
-                  aria-label={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
-                  title={isSourceToolbarVisible ? "Hide source toolbar" : "Show source toolbar"}
-                >
-                <span
-                  aria-hidden="true"
-                  className={`toolbar-icon toolbar-icon--toggle ${
-                    isSourceToolbarVisible ? "toolbar-icon--toggle-open" : "toolbar-icon--toggle-closed"
-                  }`}
-                />
-              </button>
-            </div>
-          </div>
+            <>
+              <div className="pane__header">
+                <div className="pane__header-group">
+                  <h2>Source</h2>
+                </div>
+                <div className="pane__header-actions">
+                  {showSourceCompileButton ? (
+                    <button
+                      className="pane__button pane__button--compact"
+                      onClick={handleCompile}
+                      title={`Compile (${compileShortcutLabel})`}
+                      type="button"
+                    >
+                      Compile
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {renderWorkspaceTabStrip({
+                activePath: normalizedActiveSourcePath,
+                ariaLabel: "Open source files",
+                kind: "source",
+                onActivate: handleActivateSourceTab,
+                onClose: handleCloseSourceTab,
+                paths: visibleSourceTabPaths
+              })}
+            </>
           )}
-          {!isZenMode && isSourceToolbarVisible && isSourceFileEditable ? (
-            <div className="pane__toolbar pane__toolbar--source" aria-label="Source toolbar">
-              <div className="pane__toolbar-section">
-                <div className="pane__toolbar-group">
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleBold}
-                    type="button"
-                    aria-label="Bold"
-                    title="Bold"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--bold" />
-                  </button>
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleItalic}
-                    type="button"
-                    aria-label="Italic"
-                    title="Italic"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--italic" />
-                  </button>
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleUnderline}
-                    type="button"
-                    aria-label="Underline"
-                    title="Underline"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--underline" />
-                  </button>
-                </div>
-              </div>
-
-              <div className="pane__toolbar-section">
-                <div className="pane__toolbar-group">
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleBulletList}
-                    type="button"
-                    aria-label="Bulleted list"
-                    title="Bulleted list"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--bullet-list" />
-                  </button>
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleNumberedList}
-                    type="button"
-                    aria-label="Numbered list"
-                    title="Numbered list"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--numbered-list" />
-                  </button>
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleMathMode}
-                    type="button"
-                    aria-label="Math mode"
-                    title="Math mode"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--math" />
-                  </button>
-                  <button
-                    className="pane__button pane__button--compact pane__icon-button"
-                    onClick={handleCycleHeading}
-                    type="button"
-                    aria-label="Cycle heading level"
-                    title="Cycle heading level"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--heading" />
-                  </button>
-                  <div className={`matrix-menu ${openToolbarMenu === "matrix" ? "matrix-menu--open" : ""}`}>
-                    <button
-                      aria-expanded={openToolbarMenu === "matrix"}
-                      aria-label="Matrix options"
-                      className="pane__button pane__button--compact pane__icon-button"
-                      onClick={() => toggleToolbarMenu("matrix")}
-                      title="Matrix options"
-                      type="button"
-                    >
-                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--matrix" />
-                    </button>
-                    {openToolbarMenu === "matrix" ? (
-                    <div className="matrix-menu__panel" role="menu" aria-label="Matrix options">
-                      <label className="matrix-menu__field">
-                        <span>Rows</span>
-                        <select
-                          onChange={(event) =>
-                            setMatrixSettings((current) => ({
-                              ...current,
-                              rows: Number(event.target.value)
-                            }))
-                          }
-                          value={matrixSettings.rows}
-                        >
-                          {MATRIX_ROW_OPTIONS.map((value) => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="matrix-menu__field">
-                        <span>Columns</span>
-                        <select
-                          onChange={(event) =>
-                            setMatrixSettings((current) => ({
-                              ...current,
-                              columns: Number(event.target.value)
-                            }))
-                          }
-                          value={matrixSettings.columns}
-                        >
-                          {MATRIX_COLUMN_OPTIONS.map((value) => (
-                            <option key={value} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="matrix-menu__delimiters" role="group" aria-label="Brackets">
-                        {MATRIX_DELIMITER_OPTIONS.map((option) => (
-                          <button
-                            key={option.id}
-                            className={`matrix-menu__delimiter ${
-                              matrixSettings.delimiter === option.id
-                                ? "matrix-menu__delimiter--active"
-                                : ""
-                            }`}
-                            onClick={() =>
-                              setMatrixSettings((current) => ({
-                                ...current,
-                                delimiter: option.id
-                              }))
-                            }
-                            type="button"
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                      <button
-                        className="pane__button matrix-menu__insert"
-                        onClick={() => {
-                          handleInsertMatrix();
-                          setOpenToolbarMenu(null);
-                        }}
-                        type="button"
-                      >
-                        Insert matrix
-                      </button>
-                    </div>
-                    ) : null}
-                  </div>
-                  <div className={`table-menu ${openToolbarMenu === "table" ? "table-menu--open" : ""}`}>
-                    <button
-                      aria-expanded={openToolbarMenu === "table"}
-                      aria-label="Table options"
-                      className="pane__button pane__button--compact pane__icon-button"
-                      onClick={() => toggleToolbarMenu("table")}
-                      title="Table options"
-                      type="button"
-                    >
-                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--table" />
-                    </button>
-                    {openToolbarMenu === "table" ? (
-                    <div className="table-menu__panel" role="menu" aria-label="Table options">
-                      <div className="table-menu__grid">
-                        <label className="table-menu__field">
-                          <span>Rows</span>
-                          <select
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                rows: Number(event.target.value)
-                              }))
-                            }
-                            value={tableSettings.rows}
-                          >
-                            {TABLE_ROW_OPTIONS.map((value) => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="table-menu__field">
-                          <span>Columns</span>
-                          <select
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                columns: Number(event.target.value)
-                              }))
-                            }
-                            value={tableSettings.columns}
-                          >
-                            {TABLE_COLUMN_OPTIONS.map((value) => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="table-menu__field">
-                          <span>Alignment</span>
-                          <select
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                align: event.target.value as TableAlignment
-                              }))
-                            }
-                            value={tableSettings.align}
-                          >
-                            {TABLE_ALIGNMENT_OPTIONS.map((option) => (
-                              <option key={option.id} value={option.id}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="table-menu__field">
-                          <span>Gutter</span>
-                          <select
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                gutter: event.target.value as TableGutter
-                              }))
-                            }
-                            value={tableSettings.gutter}
-                          >
-                            {TABLE_GUTTER_OPTIONS.map((option) => (
-                              <option key={option.id} value={option.id}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="table-menu__field">
-                          <span>Inset</span>
-                          <select
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                inset: event.target.value as TableInset
-                              }))
-                            }
-                            value={tableSettings.inset}
-                          >
-                            {TABLE_INSET_OPTIONS.map((option) => (
-                              <option key={option.id} value={option.id}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="table-menu__field">
-                          <span>Stroke</span>
-                          <select
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                stroke: event.target.value as TableStroke
-                              }))
-                            }
-                            value={tableSettings.stroke}
-                          >
-                            <option value="default">Default</option>
-                            <option value="none">None</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div className="table-menu__toggles">
-                        <label className="table-menu__toggle">
-                          <input
-                            checked={tableSettings.header}
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                header: event.target.checked
-                              }))
-                            }
-                            type="checkbox"
-                          />
-                          <span>Header row</span>
-                        </label>
-                        <label className="table-menu__toggle">
-                          <input
-                            checked={tableSettings.footer}
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                footer: event.target.checked
-                              }))
-                            }
-                            type="checkbox"
-                          />
-                          <span>Footer row</span>
-                        </label>
-                        <label className="table-menu__toggle">
-                          <input
-                            checked={tableSettings.striped}
-                            onChange={(event) =>
-                              setTableSettings((current) => ({
-                                ...current,
-                                striped: event.target.checked
-                              }))
-                            }
-                            type="checkbox"
-                          />
-                          <span>Striped fill</span>
-                        </label>
-                      </div>
-                      <button
-                        className="pane__button table-menu__insert"
-                        onClick={() => {
-                          handleInsertTable();
-                          setOpenToolbarMenu(null);
-                        }}
-                        type="button"
-                      >
-                        Insert table
-                      </button>
-                    </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-
-              <div className="pane__toolbar-section">
-                <details className="source-symbol-menu">
-                  <summary
-                    className="pane__button pane__button--compact pane__icon-button"
-                    aria-label="Symbols"
-                    title="Symbols"
-                  >
-                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--symbols" />
-                  </summary>
-                  <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
-                    {SOURCE_SYMBOL_ITEMS.map((item) => (
-                      <button
-                        key={item.template}
-                        className="source-symbol-menu__item"
-                        onBlur={clearSourceSymbolPreview}
-                        onClick={(event) => {
-                          handleInsertSymbol(item.template);
-                          clearSourceSymbolPreview();
-                          const details = event.currentTarget.closest("details");
-                          if (details instanceof HTMLDetailsElement) {
-                            details.open = false;
-                          }
-                        }}
-                        onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
-                        onPointerMove={positionSourceSymbolTooltip}
-                        onPointerLeave={clearSourceSymbolPreview}
-                        title={item.label}
-                        type="button"
-                      >
-                        <span aria-hidden="true" className="source-symbol-menu__glyph">
-                          {item.glyph}
-                        </span>
-                      <span className="visually-hidden">{item.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </details>
-                <button
-                  className="pane__button pane__button--compact pane__icon-button"
-                  onClick={() => {
-                    setSettingsTab("snippets");
-                    setIsSettingsOpen(true);
-                  }}
-                  type="button"
-                  aria-label="Snippets"
-                  title="Snippets"
-                >
-                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--snippets" />
-                </button>
-                <button
-                  className="pane__button pane__button--compact pane__icon-button"
-                  onClick={handleVimToggle}
-                  type="button"
-                  aria-label={snapshot.preferences.vimMode ? "Disable Vim mode" : "Enable Vim mode"}
-                  aria-pressed={snapshot.preferences.vimMode}
-                  title={
-                    snapshot.preferences.vimMode
-                      ? `Vim mode on (${vimToggleShortcutLabel})`
-                      : `Vim mode off (${vimToggleShortcutLabel})`
-                  }
-                >
-                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--vim" />
-                </button>
-              </div>
-            </div>
-          ) : null}
           {isSourceFileEditable ? (
             <>
               {showGraphInspectWarning ? (
@@ -10512,6 +14909,8 @@ export function App() {
                     : []
                 }
                 onCompileRequested={handleCompile}
+                onFormatRequested={handleFormatDocument}
+                onCloseRequested={handleCloseActiveSourceTab}
                 onSearchRequested={openSearchPane}
                 onSelectionChange={setCurrentEditorLineNumber}
                 value={sourceEditorValue}
@@ -10612,9 +15011,9 @@ export function App() {
               />
             </div>
             <div className="pane__header-actions">
-              {isCompiling ? (
+              {visiblePreviewIsCompiling ? (
                 <span className="pane__meta pane__meta--status">
-                  <PreviewStatusIcon kind="compiling" label={compilerStatus.label} />
+                  <PreviewStatusIcon kind="compiling" label={visiblePreviewCompilerStatus.label} />
                 </span>
               ) : null}
               <button
@@ -10625,17 +15024,70 @@ export function App() {
               >
                 Paper
               </button>
+              <div
+                className={`preview-download-menu ${
+                  isPreviewDownloadMenuOpen ? "preview-download-menu--open" : ""
+                }`}
+                ref={previewDownloadMenuRef}
+              >
+                <button
+                  aria-expanded={isPreviewDownloadMenuOpen}
+                  aria-haspopup="menu"
+                  aria-label="Download preview"
+                  className="pane__button pane__button--quiet pane__icon-button preview-download-button"
+                  onClick={() => setIsPreviewDownloadMenuOpen((current) => !current)}
+                  title="Download preview"
+                  type="button"
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--download" />
+                </button>
+                {isPreviewDownloadMenuOpen ? (
+                  <div className="preview-download-menu__panel" role="menu" aria-label="Download preview">
+                    {(["output", "source"] as PreviewDownloadMode[]).map((mode) => (
+                      <button
+                        aria-checked={previewDownloadMode === mode}
+                        className="preview-download-menu__item"
+                        key={mode}
+                        onClick={() => {
+                          setPreviewDownloadMode(mode);
+                          setIsPreviewDownloadMenuOpen(false);
+                          handleDownloadActivePreview(mode);
+                        }}
+                        role="menuitemradio"
+                        type="button"
+                      >
+                        <span>{mode === "output" ? "Output" : "Source"}</span>
+                        {previewDownloadMode === mode ? (
+                          <span aria-hidden="true" className="preview-download-menu__check" />
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
+          {renderWorkspaceTabStrip({
+            activePath: activePreviewPath,
+            ariaLabel: "Open previews",
+            kind: "preview",
+            onActivate: handleActivatePreviewTab,
+            onClose: handleClosePreviewTab,
+            paths: visiblePreviewTabPaths
+          })}
           <PreviewPane
-            compilerStatus={compilerStatus}
+            activeSource={activePreviewSourcePosition}
+            compilerStatus={visiblePreviewCompilerStatus}
             isErrorSettled={isErrorSettled}
-            isCompiling={isCompiling}
-            lastSuccessfulResult={lastSuccessfulResult}
+            isCompiling={visiblePreviewIsCompiling}
+            lastSuccessfulResult={visibleLastSuccessfulResult}
+            onSourceJump={handlePreviewSourceJump}
             paperView={isPaperView}
             showToolbar={false}
             onZoomChange={setPreviewZoom}
-            result={compileResult}
+            result={visiblePreviewResult}
+            sourceLineCount={activePreviewSourceLineCount}
+            sourcePath={activePreviewPath ?? undefined}
             workspacePreview={selectedWorkspacePreview}
             zoom={previewZoom}
           />
@@ -10671,14 +15123,18 @@ export function App() {
               </button>
             </div>
             <PreviewPane
-              compilerStatus={compilerStatus}
+              activeSource={activePreviewSourcePosition}
+              compilerStatus={visiblePreviewCompilerStatus}
               isErrorSettled={isErrorSettled}
-              isCompiling={isCompiling}
-              lastSuccessfulResult={lastSuccessfulResult}
+              isCompiling={visiblePreviewIsCompiling}
+              lastSuccessfulResult={visibleLastSuccessfulResult}
+              onSourceJump={handlePreviewSourceJump}
               paperView={isPaperView}
               showToolbar={true}
               onZoomChange={setPreviewZoom}
-              result={compileResult}
+              result={visiblePreviewResult}
+              sourceLineCount={activePreviewSourceLineCount}
+              sourcePath={activePreviewPath ?? undefined}
               workspacePreview={selectedWorkspacePreview}
               zoom={previewZoom}
             />
@@ -10689,7 +15145,10 @@ export function App() {
       {isSettingsOpen ? (
         <div
           className="sheet-backdrop"
-          onClick={() => setIsSettingsOpen(false)}
+          onClick={() => {
+            saveCurrentSettingsScrollPosition();
+            setIsSettingsOpen(false);
+          }}
           role="presentation"
         >
           <section
@@ -10698,27 +15157,54 @@ export function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="settings-sheet__header">
-              <div>
-                <h2>Typr Settings</h2>
-                <p className="settings-sheet__copy">
-                  Configure sync, themes, keybindings, snippets, and graph tools from one place.
-                </p>
+              <div className="settings-sheet__header-main">
+                <h2>Settings</h2>
+                <div className="settings-search-field">
+                  <input
+                    aria-label="Search settings"
+                    onChange={(event) => setSettingsSearchQuery(event.target.value)}
+                    placeholder="Search settings"
+                    type="search"
+                    value={settingsSearchQuery}
+                  />
+                  {settingsSearchQuery ? (
+                    <button
+                      aria-label="Clear settings search"
+                      className="settings-search-field__clear"
+                      onClick={() => setSettingsSearchQuery("")}
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="package-search-clear__icon" />
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <button
                 className="pane__button"
-                onClick={() => setIsSettingsOpen(false)}
+                onClick={() => {
+                  saveCurrentSettingsScrollPosition();
+                  setIsSettingsOpen(false);
+                }}
                 type="button"
               >
                 Close
               </button>
             </div>
 
-            <div className="settings-sheet__body">
+            <div
+              className="settings-sheet__body"
+              onScroll={handleSettingsBodyScroll}
+              ref={settingsBodyRef}
+            >
               <div className="settings-tabs" role="tablist" aria-label="Settings tabs">
                 <button
                   aria-selected={settingsTab === "git"}
-                  className={`settings-tab ${settingsTab === "git" ? "settings-tab--active" : ""}`}
-                  onClick={() => setSettingsTab("git")}
+                  className={`settings-tab ${settingsTab === "git" ? "settings-tab--active" : ""} ${
+                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("git")
+                      ? "settings-tab--muted"
+                      : ""
+                  }`}
+                  onClick={() => handleSettingsTabChange("git")}
                   role="tab"
                   type="button"
                 >
@@ -10726,17 +15212,38 @@ export function App() {
                 </button>
                 <button
                   aria-selected={settingsTab === "themes"}
-                  className={`settings-tab ${settingsTab === "themes" ? "settings-tab--active" : ""}`}
-                  onClick={() => setSettingsTab("themes")}
+                  className={`settings-tab ${settingsTab === "themes" ? "settings-tab--active" : ""} ${
+                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("themes")
+                      ? "settings-tab--muted"
+                      : ""
+                  }`}
+                  onClick={() => handleSettingsTabChange("themes")}
                   role="tab"
                   type="button"
                 >
                   Themes
                 </button>
                 <button
+                  aria-selected={settingsTab === "editor"}
+                  className={`settings-tab ${settingsTab === "editor" ? "settings-tab--active" : ""} ${
+                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("editor")
+                      ? "settings-tab--muted"
+                      : ""
+                  }`}
+                  onClick={() => handleSettingsTabChange("editor")}
+                  role="tab"
+                  type="button"
+                >
+                  Editor
+                </button>
+                <button
                   aria-selected={settingsTab === "keybindings"}
-                  className={`settings-tab ${settingsTab === "keybindings" ? "settings-tab--active" : ""}`}
-                  onClick={() => setSettingsTab("keybindings")}
+                  className={`settings-tab ${settingsTab === "keybindings" ? "settings-tab--active" : ""} ${
+                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("keybindings")
+                      ? "settings-tab--muted"
+                      : ""
+                  }`}
+                  onClick={() => handleSettingsTabChange("keybindings")}
                   role="tab"
                   type="button"
                 >
@@ -10744,8 +15251,12 @@ export function App() {
                 </button>
                 <button
                   aria-selected={settingsTab === "snippets"}
-                  className={`settings-tab ${settingsTab === "snippets" ? "settings-tab--active" : ""}`}
-                  onClick={() => setSettingsTab("snippets")}
+                  className={`settings-tab ${settingsTab === "snippets" ? "settings-tab--active" : ""} ${
+                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("snippets")
+                      ? "settings-tab--muted"
+                      : ""
+                  }`}
+                  onClick={() => handleSettingsTabChange("snippets")}
                   role="tab"
                   type="button"
                 >
@@ -10753,32 +15264,29 @@ export function App() {
                 </button>
                 <button
                   aria-selected={settingsTab === "packages"}
-                  className={`settings-tab ${settingsTab === "packages" ? "settings-tab--active" : ""}`}
-                  onClick={() => setSettingsTab("packages")}
+                  className={`settings-tab ${settingsTab === "packages" ? "settings-tab--active" : ""} ${
+                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("packages")
+                      ? "settings-tab--muted"
+                      : ""
+                  }`}
+                  onClick={() => handleSettingsTabChange("packages")}
                   role="tab"
                   type="button"
                 >
                   Packages
                 </button>
               </div>
+              {settingsSearchQuery.trim() && settingsSearchMatchingTabs.length === 0 ? (
+                <div className="settings-search-empty">No matching settings.</div>
+              ) : null}
 
               {settingsTab === "git" ? (
                 <div className="settings-panel settings-panel--git" role="tabpanel">
                   <div className="git-settings-card git-settings-card--status">
-                    <div className="git-project-connection-row">
-                      <label className="sync-field git-project-connection-row__select">
-                        <span>Project</span>
-                        <select
-                          onChange={(event) => handleSelectGitSettingsProject(event.target.value)}
-                          value={selectedProjectRepository?.id ?? ""}
-                        >
-                          {projectStorage.projects.map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.displayName}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                    <div className="git-project-connection-row git-project-connection-row--status-only">
+                      <strong className="git-project-connection-row__name">
+                        {selectedGitProject?.name || "Git repo"}
+                      </strong>
                       <span
                         className={`git-project-status ${
                           selectedGitProjectIsGitHubConnected
@@ -10808,7 +15316,7 @@ export function App() {
                       target="_blank"
                       title="Open GitHub"
                     >
-                      <span aria-hidden="true" className="git-setup-step__icon toolbar-icon toolbar-icon--sync" />
+                      <span aria-hidden="true" className="git-setup-step__icon toolbar-icon toolbar-icon--github" />
                     </a>
                     <label className="sync-field git-token-field">
                       <span>Fine-grained token</span>
@@ -10835,8 +15343,8 @@ export function App() {
                       }}
                       title={
                         selectedGitProjectIsGitHubConnected
-                          ? "Disconnect this project from GitHub"
-                          : "Connect this project to GitHub"
+                          ? "Disconnect GitHub"
+                          : "Connect GitHub"
                       }
                       type="button"
                     >
@@ -11011,10 +15519,18 @@ export function App() {
                           value={selectedGitProject?.backendId ?? "browser"}
                         >
                           <option value="browser">Browser</option>
-                          <option value="local-agent">Local Agent</option>
-                          <option value="cloud-container">Cloud Container</option>
                         </select>
                       </label>
+                    </div>
+                    <div className="git-permission-list">
+                      <div className="git-permission-row">
+                        <span>Existing repo</span>
+                        <strong>Contents read/write</strong>
+                      </div>
+                      <div className="git-permission-row">
+                        <span>Create repos</span>
+                        <strong>Contents + Administration read/write</strong>
+                      </div>
                     </div>
                   </div>
 
@@ -11042,35 +15558,10 @@ export function App() {
                     </label>
                   </div>
 
-                  <div className="git-settings-card git-settings-card--actions">
-                    <div className="git-action-grid">
-                      <button
-                        className="pane__button git-action-button"
-                        disabled={isSyncing || !selectedGitProject || !selectedGitToken.trim()}
-                        onClick={() => {
-                          void handleCreateGitHubRepoFromCurrentProject();
-                        }}
-                        type="button"
-                      >
-                        Create repo from current project
-                      </button>
-                      <button
-                        className="pane__button git-action-button"
-                        disabled={isSyncing || !selectedGitProject || !selectedGitToken.trim()}
-                        onClick={() => {
-                          void handleImportExistingGitHubRepoAsProject();
-                        }}
-                        type="button"
-                      >
-                        Import existing repo
-                      </button>
-                    </div>
-                  </div>
-
                   <div className="git-settings-card git-settings-card--advanced">
                     <div className="git-advanced-grid">
                       <label className="sync-field">
-                        <span>Project .gitignore</span>
+                        <span>.gitignore</span>
                         <textarea
                           disabled={!selectedProjectRepository}
                           onChange={(event) => handleProjectGitignoreChange(event.target.value)}
@@ -11099,7 +15590,7 @@ export function App() {
                         onChange={(event) =>
                           handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
                         }
-                        placeholder="Sync project from Typr"
+                        placeholder="Sync from Typr"
                         type="text"
                         value={selectedGitProject?.commitMessageTemplate ?? ""}
                       />
@@ -11131,68 +15622,6 @@ export function App() {
                           type="checkbox"
                         />
                       </label>
-                    </div>
-
-                    <div className="settings-toggle-stack">
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>Live compilation (experimental)</strong>
-                          <small>
-                            Recompile the active document automatically while you edit.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.liveCompilation}
-                          onChange={handleLiveCompilationToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>Relative line numbers</strong>
-                          <small>
-                            Show line numbers relative to the cursor line.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.relativeLineNumbers}
-                          onChange={handleRelativeLineNumbersToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <div className="settings-toggle settings-toggle--stacked">
-                        <label className="settings-toggle__row">
-                          <span>
-                            <strong>Smooth cursor</strong>
-                            <small>Animate the source cursor as it moves through text.</small>
-                          </span>
-                          <input
-                            checked={snapshot.preferences.cursorSmooth}
-                            onChange={handleCursorSmoothToggle}
-                            type="checkbox"
-                          />
-                        </label>
-
-                        {snapshot.preferences.cursorSmooth ? (
-                          <label className="settings-slider settings-slider--embedded">
-                            <span>
-                              <strong>Smear cursor</strong>
-                            </span>
-                            <div className="settings-slider__control">
-                              <input
-                                max="100"
-                                min="0"
-                                onChange={handleCursorSmearChange}
-                                type="range"
-                                value={snapshot.preferences.cursorSmear}
-                              />
-                              <output>{snapshot.preferences.cursorSmear}%</output>
-                            </div>
-                          </label>
-                        ) : null}
-                      </div>
                     </div>
 
                     <div className="theme-columns">
@@ -11296,15 +15725,189 @@ export function App() {
                     </section>
                   </div>
                 </div>
+              ) : settingsTab === "editor" ? (
+                <div className="settings-panel" role="tabpanel">
+                  <div className="settings-section">
+                    <div className="settings-section__header">
+                      <h3>Editor</h3>
+                    </div>
+
+                    <div className="settings-toggle-stack">
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Live compilation (experimental)</strong>
+                          <small>
+                            Recompile the active Typst document automatically while you edit.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.liveCompilation}
+                          onChange={handleLiveCompilationToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Lint while editing</strong>
+                          <small>
+                            Show browser-available linter diagnostics in the source editor.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.editorTooling.lintOnEdit}
+                          onChange={handleLintOnEditToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Format on compile</strong>
+                          <small>
+                            Run the selected formatter before compile or Markdown preview.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.editorTooling.formatOnCompile}
+                          onChange={handleFormatOnCompileToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>Relative line numbers</strong>
+                          <small>
+                            Show line numbers relative to the cursor line.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.relativeLineNumbers}
+                          onChange={handleRelativeLineNumbersToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      <div className="settings-toggle settings-toggle--stacked">
+                        <label className="settings-toggle__row">
+                          <span>
+                            <strong>Smooth cursor</strong>
+                            <small>Animate the source cursor as it moves through text.</small>
+                          </span>
+                          <input
+                            checked={snapshot.preferences.cursorSmooth}
+                            onChange={handleCursorSmoothToggle}
+                            type="checkbox"
+                          />
+                        </label>
+
+                        {snapshot.preferences.cursorSmooth ? (
+                          <label className="settings-slider settings-slider--embedded">
+                            <span>
+                              <strong>Smear cursor</strong>
+                            </span>
+                            <div className="settings-slider__control">
+                              <input
+                                max="100"
+                                min="0"
+                                onChange={handleCursorSmearChange}
+                                type="range"
+                                value={snapshot.preferences.cursorSmear}
+                              />
+                              <output>{snapshot.preferences.cursorSmear}%</output>
+                            </div>
+                          </label>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <section className="settings-section settings-section--nested">
+                      <div className="settings-section__header">
+                        <h3>Formatters and linters</h3>
+                        <span className="pane__meta">Browser mode</span>
+                      </div>
+
+                      <div className="package-repository-list" role="list">
+                        {(["typst", "latex", "markdown"] as EditorToolLanguage[]).map((language) => {
+                          const languageTools = snapshot.preferences.editorTooling.languages[language];
+                          const builtInDescription =
+                            language === "typst"
+                              ? "Built-in Typst formatting and linting run offline in the browser."
+                              : language === "latex"
+                                ? "Built-in LaTeX formatting and BusyTeX-oriented linting run offline in the browser."
+                                : "Built-in Markdown formatting and linting run offline in the browser.";
+
+                          return (
+                            <article className="package-cache-row" key={language} role="listitem">
+                              <div className="package-cache-row__main">
+                                <strong>{formatEditorToolLanguageLabel(language)}</strong>
+                                <span>{builtInDescription}</span>
+                              </div>
+                              <label className="sync-field">
+                                <span>Formatter</span>
+                                <select
+                                  onChange={(event) =>
+                                    handleFormatterChange(language, event.target.value as EditorFormatterId)
+                                  }
+                                  value={languageTools.formatter}
+                                >
+                                  <option value="disabled">Disabled</option>
+                                  <option value="built-in">
+                                    Built in
+                                  </option>
+                                </select>
+                              </label>
+                              <label className="sync-field">
+                                <span>Linter</span>
+                                <select
+                                  onChange={(event) =>
+                                    handleLinterChange(language, event.target.value as EditorLinterId)
+                                  }
+                                  value={languageTools.linter}
+                                >
+                                  <option value="disabled">Disabled</option>
+                                  <option value="built-in">
+                                    Built in
+                                  </option>
+                                </select>
+                              </label>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  </div>
+                </div>
               ) : settingsTab === "keybindings" ? (
                 <div className="settings-panel" role="tabpanel">
                   <div className="settings-section">
+                    <div className="keybindings-search-field">
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        onChange={(event) => setKeybindingSearchQuery(event.target.value)}
+                        placeholder="Search keybindings"
+                        type="search"
+                        value={keybindingSearchQuery}
+                      />
+                      {keybindingSearchQuery ? (
+                        <button
+                          aria-label="Clear keybinding search"
+                          className="package-search-clear"
+                          onClick={() => setKeybindingSearchQuery("")}
+                          type="button"
+                        >
+                          <span aria-hidden="true" className="package-search-clear__icon" />
+                        </button>
+                      ) : null}
+                    </div>
                     <div className="keybindings-table" role="table" aria-label="Keyboard shortcuts">
                       <div className="keybindings-table__row keybindings-table__row--head" role="row">
                         <span role="columnheader">Action</span>
                         <span role="columnheader">Shortcut</span>
                       </div>
-                      {KEYBINDING_DEFINITIONS.map((definition) => {
+                      {visibleKeybindingDefinitions.map((definition, index) => {
                         const binding = keybindings[definition.id];
                         const conflicts = getKeybindingConflictsForBinding(
                           keybindings,
@@ -11322,108 +15925,120 @@ export function App() {
                           .join(", ");
                         const isRecording = recordingKeybindingId === definition.id;
                         const isModified = binding !== definition.defaultBinding;
+                        const previousDefinition = visibleKeybindingDefinitions[index - 1];
+                        const showGroupHeader = previousDefinition?.group !== definition.group;
 
                         return (
-                          <div className="keybindings-table__row" key={definition.id} role="row">
-                            <span className="keybindings-table__action" role="cell">
-                              <strong>{definition.label}</strong>
-                            </span>
-                            <div className="keybindings-table__binding" role="cell">
-                              <button
-                                className={`keybinding-recorder ${
-                                  isRecording ? "keybinding-recorder--active" : ""
-                                }`}
-                                data-keybinding-recorder={definition.id}
-                                onClick={() => {
-                                  setPendingKeybindingConflict(null);
-                                  setRecordingKeybindingId(definition.id);
-                                }}
-                                onKeyDown={(event) => {
-                                  if (!isRecording) {
-                                    return;
-                                  }
-
-                                  event.preventDefault();
-                                  event.stopPropagation();
-
-                                  if (event.key === "Escape") {
-                                    setRecordingKeybindingId(null);
-                                    return;
-                                  }
-
-                                  const nextBinding = keybindingFromKeyboardEvent(
-                                    event.nativeEvent,
-                                    isAppleShortcutPlatform
-                                  );
-                                  if (!nextBinding) {
-                                    return;
-                                  }
-
-                                  handleRecordedKeybinding(definition.id, nextBinding);
-                                  setRecordingKeybindingId(null);
-                                }}
-                                type="button"
-                              >
-                                {isRecording
-                                  ? "Press keys"
-                                  : formatKeybinding(binding, isAppleShortcutPlatform)}
-                              </button>
-                              {isModified ? (
-                                <button
-                                  aria-label={`Reset ${definition.label}`}
-                                  className="pane__button pane__button--compact pane__icon-button keybinding-reset-button"
-                                  onClick={() => handleKeybindingReset(definition.id)}
-                                  title={`Reset to ${formatKeybinding(
-                                    definition.defaultBinding,
-                                    isAppleShortcutPlatform
-                                  )}`}
-                                  type="button"
-                                >
-                                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--reset" />
-                                </button>
-                              ) : null}
-                            </div>
-                            {displayedConflictIds.length > 0 ? (
-                              <div className="keybinding-conflict" role="alert">
-                                <span>
-                                  <strong>
-                                    {formatKeybinding(
-                                      displayedConflictBinding,
-                                      isAppleShortcutPlatform
-                                    )}
-                                  </strong>{" "}
-                                  is already used by {conflictLabels}.
-                                </span>
-                                <div className="keybinding-conflict__actions">
-                                  <button
-                                    className="pane__button pane__button--compact"
-                                    onClick={() =>
-                                      pendingConflict
-                                        ? handleResolvePendingKeybindingConflict()
-                                        : handleWhackKeybindingConflicts(
-                                            definition.id,
-                                            displayedConflictBinding
-                                          )
-                                    }
-                                    type="button"
-                                  >
-                                    Whack-a-mole
-                                  </button>
-                                  {pendingConflict ? (
-                                    <button
-                                      className="pane__button pane__button--compact pane__button--quiet"
-                                      onClick={handleCancelPendingKeybindingConflict}
-                                      type="button"
-                                    >
-                                      Cancel
-                                    </button>
-                                  ) : null}
-                                </div>
+                          <Fragment key={definition.id}>
+                            {showGroupHeader ? (
+                              <div className="keybindings-table__group" role="row">
+                                <span role="cell">{definition.group}</span>
                               </div>
                             ) : null}
-                          </div>
+                            <div className="keybindings-table__row" role="row">
+                              <span className="keybindings-table__action" role="cell">
+                                <strong>{definition.label}</strong>
+                              </span>
+                              <div className="keybindings-table__binding" role="cell">
+                                <button
+                                  className={`keybinding-recorder ${
+                                    isRecording ? "keybinding-recorder--active" : ""
+                                  }`}
+                                  data-keybinding-recorder={definition.id}
+                                  onClick={() => {
+                                    setPendingKeybindingConflict(null);
+                                    setRecordingKeybindingId(definition.id);
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (!isRecording) {
+                                      return;
+                                    }
+
+                                    event.preventDefault();
+                                    event.stopPropagation();
+
+                                    if (event.key === "Escape") {
+                                      setRecordingKeybindingId(null);
+                                      return;
+                                    }
+
+                                    const nextBinding = keybindingFromKeyboardEvent(
+                                      event.nativeEvent,
+                                      isAppleShortcutPlatform
+                                    );
+                                    if (!nextBinding) {
+                                      return;
+                                    }
+
+                                    handleRecordedKeybinding(definition.id, nextBinding);
+                                    setRecordingKeybindingId(null);
+                                  }}
+                                  type="button"
+                                >
+                                  {isRecording
+                                    ? "Press keys"
+                                    : formatKeybinding(binding, isAppleShortcutPlatform)}
+                                </button>
+                                {isModified ? (
+                                  <button
+                                    aria-label={`Reset ${definition.label}`}
+                                    className="pane__button pane__button--compact pane__icon-button keybinding-reset-button"
+                                    onClick={() => handleKeybindingReset(definition.id)}
+                                    title={`Reset to ${formatKeybinding(
+                                      definition.defaultBinding,
+                                      isAppleShortcutPlatform
+                                    )}`}
+                                    type="button"
+                                  >
+                                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--reset" />
+                                  </button>
+                                ) : null}
+                              </div>
+                              {displayedConflictIds.length > 0 ? (
+                                <div className="keybinding-conflict" role="alert">
+                                  <span>
+                                    <strong>
+                                      {formatKeybinding(
+                                        displayedConflictBinding,
+                                        isAppleShortcutPlatform
+                                      )}
+                                    </strong>{" "}
+                                    is already used by {conflictLabels}.
+                                  </span>
+                                  <div className="keybinding-conflict__actions">
+                                    <button
+                                      className="pane__button pane__button--compact"
+                                      onClick={() =>
+                                        pendingConflict
+                                          ? handleResolvePendingKeybindingConflict()
+                                          : handleWhackKeybindingConflicts(
+                                              definition.id,
+                                              displayedConflictBinding
+                                            )
+                                      }
+                                      type="button"
+                                    >
+                                      Whack-a-mole
+                                    </button>
+                                    {pendingConflict ? (
+                                      <button
+                                        className="pane__button pane__button--compact pane__button--quiet"
+                                        onClick={handleCancelPendingKeybindingConflict}
+                                        type="button"
+                                      >
+                                        Cancel
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+                          </Fragment>
                         );
                       })}
+                      {visibleKeybindingDefinitions.length === 0 ? (
+                        <div className="snippet-empty">No matching keybindings.</div>
+                      ) : null}
                     </div>
 
                     <section className="keybindings-card">
@@ -11665,20 +16280,32 @@ export function App() {
                           they stay available offline later.
                         </p>
                       </div>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        className="package-search-input"
-                        disabled={!isOnline}
-                        onChange={(event) => setPackageSearchQuery(event.target.value)}
-                        placeholder={
-                          isOnline
-                            ? "Search Universe packages like cetz or oxifmt"
-                            : "Go online to search Typst Universe"
-                        }
-                        type="search"
-                        value={packageSearchQuery}
-                      />
+                      <div className="package-search-field">
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          className="package-search-input"
+                          disabled={!isOnline}
+                          onChange={(event) => setPackageSearchQuery(event.target.value)}
+                          placeholder={
+                            isOnline
+                              ? "Search Universe packages like cetz or oxifmt"
+                              : "Go online to search Typst Universe"
+                          }
+                          type="search"
+                          value={packageSearchQuery}
+                        />
+                        {packageSearchQuery ? (
+                          <button
+                            aria-label="Clear package search"
+                            className="package-search-clear"
+                            onClick={() => setPackageSearchQuery("")}
+                            type="button"
+                          >
+                            <span aria-hidden="true" className="package-search-clear__icon" />
+                          </button>
+                        ) : null}
+                      </div>
                       {!isOnline ? (
                         <div className="snippet-empty">
                           Universe search is only available while you are online.
@@ -11831,15 +16458,27 @@ export function App() {
                               TeX Live bundle that contains them.
                             </p>
                           </div>
-                          <input
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            className="package-search-input"
-                            onChange={(event) => setLatexPackageSearchQuery(event.target.value)}
-                            placeholder="Search LaTeX packages like amsmath or tikz"
-                            type="search"
-                            value={latexPackageSearchQuery}
-                          />
+                          <div className="package-search-field">
+                            <input
+                              autoCapitalize="none"
+                              autoCorrect="off"
+                              className="package-search-input"
+                              onChange={(event) => setLatexPackageSearchQuery(event.target.value)}
+                              placeholder="Search LaTeX packages like amsmath or tikz"
+                              type="search"
+                              value={latexPackageSearchQuery}
+                            />
+                            {latexPackageSearchQuery ? (
+                              <button
+                                aria-label="Clear package search"
+                                className="package-search-clear"
+                                onClick={() => setLatexPackageSearchQuery("")}
+                                type="button"
+                              >
+                                <span aria-hidden="true" className="package-search-clear__icon" />
+                              </button>
+                            ) : null}
+                          </div>
                           {isLatexPackageCacheLoading && !latexPackageCatalog ? (
                             <div className="snippet-empty">Loading LaTeX package catalog...</div>
                           ) : latexPackageSearchResults.length > 0 ? (
@@ -11884,6 +16523,36 @@ export function App() {
                           ) : (
                             <div className="snippet-empty">
                               No LaTeX packages have been detected in this project yet.
+                            </div>
+                          )}
+                        </section>
+
+                        <section className="package-cache-card">
+                          <div className="package-cache-card__copy">
+                            <h4>Manual extra packages</h4>
+                            <p>Extra packages cached from search.</p>
+                          </div>
+                          {manualExtraLatexPackages.length > 0 ? (
+                            <div className="package-cache-list" role="list">
+                              {manualExtraLatexPackages.map((entry) => (
+                                <article className="package-cache-row" key={entry.name} role="listitem">
+                                  <div className="package-cache-row__main">
+                                    <strong>{entry.name}</strong>
+                                    <span>{formatLatexPackageBundleLabel("texlive-extra")}</span>
+                                  </div>
+                                  <button
+                                    className="pane__button pane__button--quiet"
+                                    onClick={() => handleRemoveCachedLatexPackage(entry.name)}
+                                    type="button"
+                                  >
+                                    Remove
+                                  </button>
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="snippet-empty">
+                              No manually cached extra packages.
                             </div>
                           )}
                         </section>
@@ -11996,9 +16665,17 @@ export function App() {
       ) : null}
       <input
         ref={documentUploadInputRef}
-        accept=".typ,text/plain"
+        accept={WORKSPACE_UPLOAD_ACCEPT}
         className="visually-hidden"
         onChange={handleUploadDocument}
+        tabIndex={-1}
+        type="file"
+      />
+      <input
+        ref={projectImportInputRef}
+        accept={PROJECT_EXPORT_INPUT_ACCEPT}
+        className="visually-hidden"
+        onChange={handleImportProjectFile}
         tabIndex={-1}
         type="file"
       />
@@ -12272,7 +16949,12 @@ interface SavedLatexPdfOptions {
 function loadSavedLatexPdfCompileResult(
   options: SavedLatexPdfOptions
 ): CompileResult | null {
-  const pdfPath = getLatexPdfOutputPath(options.sourcePath);
+  const pdfPath = getExistingLatexPdfPath(options.project, options.sourcePath);
+
+  if (!pdfPath) {
+    return null;
+  }
+
   const pdfEntry = options.project.filesystem.entries[pdfPath];
 
   if (!pdfEntry || pdfEntry.kind !== "file") {
@@ -12293,7 +16975,12 @@ function loadSavedLatexPdfCompileResult(
 
   if (
     !options.allowStale &&
-    !isSavedLatexPdfFresh(options.project, pdfPath, pdfEntry.updatedAt)
+    !isSavedLatexPdfFreshForSource({
+      pdfUpdatedAt: pdfEntry.updatedAt,
+      project: options.project,
+      source: options.source,
+      sourcePath: options.sourcePath
+    })
   ) {
     return null;
   }
@@ -12330,49 +17017,54 @@ function writeGeneratedLatexPdfFile(
   );
   const existingBytes = readProjectFileBytes(project, pdfPath);
   const nextBytes = new Uint8Array(result.output.artifactData);
-
-  if (existingBytes && areBytesEqual(existingBytes, nextBytes)) {
-    return project;
-  }
+  const pdfBytes =
+    existingBytes && areBytesEqual(existingBytes, nextBytes) ? existingBytes : nextBytes;
 
   return writeProjectFile(
     project,
     pdfPath,
-    nextBytes,
+    pdfBytes,
     { kind: "virtual", id: GENERATED_LATEX_PDF_SOURCE_ID }
   );
 }
 
-function isSavedLatexPdfFresh(
-  project: TyprProjectRepository,
-  pdfPath: string,
-  pdfUpdatedAt: string
-): boolean {
+function isSavedLatexPdfFreshForSource({
+  pdfUpdatedAt,
+  project,
+  source,
+  sourcePath
+}: {
+  pdfUpdatedAt: string;
+  project: TyprProjectRepository;
+  source: string;
+  sourcePath: string;
+}): boolean {
   const pdfUpdatedAtMs = Date.parse(pdfUpdatedAt);
 
   if (!Number.isFinite(pdfUpdatedAtMs)) {
     return false;
   }
 
-  for (const entry of listProjectEntries(project)) {
-    if (
-      entry.kind !== "file" ||
-      entry.path === pdfPath ||
-      entry.path === ".git" ||
-      entry.path.startsWith(".git/") ||
-      (entry.source.kind === "virtual" && entry.source.id === GENERATED_LATEX_PDF_SOURCE_ID)
-    ) {
-      continue;
-    }
+  const sourceEntry = project.filesystem.entries[
+    normalizeCompilerPath(sourcePath) || sourcePath
+  ];
 
-    const entryUpdatedAtMs = Date.parse(entry.updatedAt);
-
-    if (!Number.isFinite(entryUpdatedAtMs) || entryUpdatedAtMs > pdfUpdatedAtMs) {
-      return false;
-    }
+  if (
+    !sourceEntry ||
+    sourceEntry.kind !== "file" ||
+    typeof sourceEntry.content !== "string" ||
+    sourceEntry.content !== source
+  ) {
+    return false;
   }
 
-  return true;
+  const sourceUpdatedAtMs = Date.parse(sourceEntry.updatedAt);
+
+  if (!Number.isFinite(sourceUpdatedAtMs)) {
+    return false;
+  }
+
+  return sourceUpdatedAtMs <= pdfUpdatedAtMs;
 }
 
 function getLatexPdfSourcePathForResult(
@@ -12398,6 +17090,24 @@ function getLatexPdfOutputPath(sourcePath: string): string {
   }
 
   return `${normalizedSourcePath}.pdf`;
+}
+
+function getExistingLatexPdfPath(
+  project: TyprProjectRepository,
+  sourcePath: string
+): string | null {
+  const pdfPath = getLatexPdfOutputPath(sourcePath);
+  const pdfEntry = project.filesystem.entries[pdfPath];
+
+  return pdfEntry?.kind === "file" ? pdfPath : null;
+}
+
+function getWorkspaceTabDisplayPath(kind: WorkspaceTabKind, path: string): string {
+  if (kind === "preview" && getSourceLanguage(path) === "latex") {
+    return getLatexPdfOutputPath(path);
+  }
+
+  return path;
 }
 
 function areBytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -12660,35 +17370,36 @@ function logCompileTiming({
   );
 }
 
-function parseSourceLocation(sourceLocation: string) {
-  const normalizedLocation = sourceLocation.trim();
-  const locationMatch = normalizedLocation.match(
-    /(\d+):(\d+)(?:-(\d+):(\d+))?$/
-  );
+function resolvePreviewSourcePath(
+  path: string | undefined,
+  activeSourcePath: string,
+  activePreviewPath: string | null,
+  activeSourceLanguage: SourceLanguage
+): string {
+  const normalizedPath = path ? normalizeWorkspacePath(path) : "";
+  const fallbackPath = activePreviewPath ?? activeSourcePath;
+  const fallbackIsTypst = getSourceLanguage(fallbackPath) === "typst";
 
-  if (!locationMatch) {
-    return null;
+  if (!normalizedPath) {
+    return fallbackPath;
   }
 
-  const line = Number.parseInt(locationMatch[1], 10);
-  const column = Number.parseInt(locationMatch[2], 10);
-  const endLine = locationMatch[3]
-    ? Number.parseInt(locationMatch[3], 10)
-    : undefined;
-  const endColumn = locationMatch[4]
-    ? Number.parseInt(locationMatch[4], 10)
-    : undefined;
-
-  if (!Number.isFinite(line) || !Number.isFinite(column)) {
-    return null;
+  if (
+    normalizedPath === "main.typ" &&
+    (activeSourceLanguage === "typst" || fallbackIsTypst)
+  ) {
+    return fallbackPath;
   }
 
-  return {
-    line,
-    column,
-    endLine,
-    endColumn
-  };
+  return normalizedPath;
+}
+
+function countSourceTextLines(source: string): number {
+  if (!source) {
+    return 1;
+  }
+
+  return source.replace(/\r\n?/g, "\n").split("\n").length;
 }
 
 function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
@@ -12731,8 +17442,12 @@ function readProjectTextFileOrDefault(
 
 function getSidebarToolTitle(tool: SidebarTool): string {
   switch (tool) {
+    case "projects":
+      return "Projects";
     case "files":
       return "Files";
+    case "source-tools":
+      return "Tools";
     case "search":
       return "Search";
     case "outline":
@@ -12752,8 +17467,12 @@ function getSidebarToolTitle(tool: SidebarTool): string {
 
 function getSidebarToolSubtitle(tool: SidebarTool): string {
   switch (tool) {
+    case "projects":
+      return "Local workspaces";
     case "files":
-      return "Project documents";
+      return "Files";
+    case "source-tools":
+      return "Source actions";
     case "search":
       return "";
     case "outline":
@@ -12765,7 +17484,7 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
     case "graph":
       return "Desmos graph editor";
     case "sync":
-      return "Managed git repos";
+      return "Version control";
     case "debug":
       return "Compiler and diagnostics";
   }
@@ -13005,4 +17724,22 @@ function formatDiagnosticRange(diagnostic: {
   }
 
   return diagnostic.range;
+}
+
+function formatSourceLanguageLabel(language: SourceLanguage): string {
+  return language === "typst"
+    ? "Typst"
+    : language === "latex"
+      ? "LaTeX"
+      : language === "markdown"
+        ? "Markdown"
+        : "Text";
+}
+
+function formatEditorToolLanguageLabel(language: EditorToolLanguage): string {
+  return language === "typst"
+    ? "Typst"
+    : language === "latex"
+      ? "LaTeX"
+      : "Markdown";
 }

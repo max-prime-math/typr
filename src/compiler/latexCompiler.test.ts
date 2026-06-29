@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeLatexDirtyStateForTest,
+  createLatexFilesWithPdfTexFontMapOverridesForTest,
   createLatexQuickPreviewPlan,
   formatLatexErrorForTest,
   formatLatexFailureLog,
+  isLikelyTypstSyntaxInLatexLog,
   isRuntimeFontGenerationFailure,
   shouldRetryWithFullBusyTexPackages
 } from "./latexCompiler";
@@ -36,6 +38,30 @@ describe("LaTeX compiler diagnostics", () => {
     expect(message).toContain("BusyTeX package resolver");
     expect(message).toContain("tcrm1200");
     expect(message).toContain("mktexpk");
+  });
+
+  it("explains pdfTeX font-map retry attempts", () => {
+    const message = formatLatexFailureLog(mktexpkLog, {
+      retriedFullDataPackages: true,
+      retriedPdfTexFontMapOverrides: true
+    });
+
+    expect(message).toContain("CM-Super T1/TS1 font maps");
+  });
+
+  it("explains Typst syntax found during a LaTeX compile", () => {
+    const typstSyntaxLog = [
+      "(./2.3.calculator-lab-estimating-derivatives.tex",
+      "! You can't use `macro parameter character #' in horizontal mode.",
+      'l.2 # figure(image("figures/diagram 1.svg"))',
+      "This document may require an external tool."
+    ].join("\n");
+    const message = formatLatexFailureLog(typstSyntaxLog);
+
+    expect(isLikelyTypstSyntaxInLatexLog(typstSyntaxLog)).toBe(true);
+    expect(message).toContain("Typst syntax inside a file being compiled as LaTeX");
+    expect(message).toContain("# figure(image(...))");
+    expect(message).not.toContain("shell escape");
   });
 
   it("explains missing BusyTeX runtime assets", () => {
@@ -114,6 +140,26 @@ describe("LaTeX quick preview planning", () => {
 
     expect(createLatexQuickPreviewPlan(files, "main.tex", "quick").previewKind).toBe("document");
     expect(createLatexQuickPreviewPlan(files, "main.tex", "full").previewKind).toBe("document");
+  });
+
+  it("injects pdfTeX font map overrides before the document body", () => {
+    const files = createLatexFilesWithPdfTexFontMapOverridesForTest(
+      [
+        {
+          path: "notes/main.tex",
+          content: "\\documentclass{article}\n\\usepackage{textcomp}\n\\begin{document}\nHello\n\\end{document}"
+        }
+      ],
+      "notes/main.tex"
+    );
+
+    const mainFile = files.find((file) => file.path === "notes/main.tex");
+    const fontMapFile = files.find((file) => file.path === "notes/.typr-pdftex-fontmaps.tex");
+
+    expect(mainFile?.content).toContain("\\documentclass{article}\n\\usepackage{type1ec}");
+    expect(mainFile?.content).toContain("\\input{.typr-pdftex-fontmaps.tex}");
+    expect(fontMapFile?.content).toContain("\\pdfmapfile{+cm-super-t1.map}");
+    expect(fontMapFile?.content).toContain("\\pdfmapfile{+cm-super-ts1.map}");
   });
 });
 

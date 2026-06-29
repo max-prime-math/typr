@@ -25,6 +25,7 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
+import { smoothCursorJumpEffect } from "./smoothCursor";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
@@ -53,6 +54,8 @@ interface TypstEditorProps {
   snippets: SnippetDefinition[];
   onSearchRequested: () => void;
   onCompileRequested: () => void;
+  onFormatRequested: () => void;
+  onCloseRequested: () => void;
   onSelectionChange: (lineNumber: number) => void;
   onChange: (value: string) => void;
 }
@@ -123,6 +126,8 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   snippets,
   onSearchRequested,
   onCompileRequested,
+  onFormatRequested,
+  onCloseRequested,
   onSelectionChange,
   onChange
 }, ref) {
@@ -173,13 +178,17 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           ? endLine.from + clampColumn(range.endColumn ?? range.column, endLine.length)
           : anchor;
 
+        view.focus();
         view.dispatch({
           selection: EditorSelection.range(anchor, head),
-          effects: EditorView.scrollIntoView(anchor, {
-            y: "center"
-          })
+          effects: [
+            smoothCursorJumpEffect.of(undefined),
+            EditorView.scrollIntoView(anchor, {
+              y: "center"
+            })
+          ]
         });
-        view.focus();
+        scheduleSmoothCursorSnap(view);
       },
       insertText(text) {
         const view = viewRef.current;
@@ -389,7 +398,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
       }
     }),
-    [onCompileRequested, onSearchRequested]
+    [onCompileRequested, onFormatRequested, onSearchRequested]
   );
 
   useEffect(() => {
@@ -424,7 +433,9 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         language,
         snippetSource: snippetCompletionSource,
         onSearchRequested,
-        onCompileRequested
+        onCompileRequested,
+        onFormatRequested,
+        onCloseRequested
       }),
       parent: containerRef.current
     });
@@ -477,7 +488,9 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     editorFontSize,
     keybindings,
     language,
+    onCloseRequested,
     onCompileRequested,
+    onFormatRequested,
     onSelectionChange,
     readOnly,
     relativeLineNumbers,
@@ -613,6 +626,22 @@ function isPrimaryCursorVisible(view: EditorView, from: number, to: number): boo
     cursorRect.right >= scrollRect.left &&
     cursorRect.left <= scrollRect.right
   );
+}
+
+function scheduleSmoothCursorSnap(view: EditorView): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    if (!view.dom.isConnected) {
+      return;
+    }
+
+    view.dispatch({
+      effects: smoothCursorJumpEffect.of(undefined)
+    });
+  });
 }
 
 function replaceSelection(view: EditorView, before: string, after: string): void {

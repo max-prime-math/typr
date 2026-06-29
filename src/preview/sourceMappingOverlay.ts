@@ -42,7 +42,7 @@ export async function renderSourceMappingOverlay(
       pixelPerPt: getOverlayPixelPerPt(),
       backgroundColor: paperView ? "#fffef9" : "#ffffff",
       dataSelection: {
-        body: false,
+        body: true,
         semantics: true
       }
     });
@@ -65,6 +65,15 @@ export async function renderSourceMappingOverlay(
       }
 
       return session.getSourceLoc(path) ?? null;
+    },
+    resolveSourceLocationAt(point) {
+      const path = extractSemanticPathAtPoint(point, container);
+
+      if (!path) {
+        return null;
+      }
+
+      return session.getSourceLoc(path) ?? null;
     }
   };
 }
@@ -72,6 +81,7 @@ export async function renderSourceMappingOverlay(
 export interface SourceMappingOverlayHandle {
   dispose(): void;
   resolveSourceLocation(target: EventTarget | null): string | null;
+  resolveSourceLocationAt(point: { x: number; y: number }): string | null;
 }
 
 async function getRenderer(): Promise<TypstRendererDriver> {
@@ -110,6 +120,7 @@ function normalizeSourceMappingOverlay(container: HTMLElement): void {
     if (canvasHost) {
       canvasHost.style.position = "absolute";
       canvasHost.style.inset = "0";
+      canvasHost.style.opacity = "0";
       canvasHost.style.pointerEvents = "none";
     }
   }
@@ -132,6 +143,47 @@ function extractSemanticPath(
   }
 
   return null;
+}
+
+function extractSemanticPathAtPoint(
+  point: { x: number; y: number },
+  container: HTMLElement
+): Uint32Array | null {
+  let bestPath: Uint32Array | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+  let bestDepth = -1;
+  const elements = Array.from(container.querySelectorAll<Element>("*"));
+
+  elements.forEach((element, depth) => {
+    const path = extractPathFromElement(element);
+
+    if (!path) {
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+
+    if (
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      point.x < rect.left ||
+      point.x > rect.right ||
+      point.y < rect.top ||
+      point.y > rect.bottom
+    ) {
+      return;
+    }
+
+    const area = rect.width * rect.height;
+
+    if (area < bestArea || (area === bestArea && depth > bestDepth)) {
+      bestPath = path;
+      bestArea = area;
+      bestDepth = depth;
+    }
+  });
+
+  return bestPath;
 }
 
 function extractPathFromElement(element: Element): Uint32Array | null {

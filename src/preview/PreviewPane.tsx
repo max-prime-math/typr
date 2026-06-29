@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
@@ -6,6 +6,15 @@ import type { ThemeDefinition } from "../theme/themes";
 import { applyPdfCanvasZoom, renderPdfArtifactToCanvas } from "./pdfCanvasRenderer";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
 import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
+import {
+  createSourceRange,
+  parseSourceLocation,
+  sourcePositionIntersectsRange,
+  type PreviewRect,
+  type PreviewSourceLink,
+  type SourcePosition,
+  type SourceRange
+} from "./sourceLinks";
 
 interface PreviewPaneProps {
   result: CompileResult | null;
@@ -15,7 +24,10 @@ interface PreviewPaneProps {
   compilerStatus: CompilerStatus;
   paperView?: boolean;
   showToolbar?: boolean;
-  onSourceJump?: (sourceLocation: string) => void;
+  activeSource?: SourcePosition | null;
+  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  sourceLineCount?: number;
+  sourcePath?: string;
   zoom?: PreviewZoomState;
   onZoomChange?: (zoom: PreviewZoomState) => void;
   workspacePreview?: WorkspacePreviewFile | null;
@@ -52,7 +64,10 @@ export function PreviewPane({
   compilerStatus,
   paperView = false,
   showToolbar = true,
+  activeSource = null,
   onSourceJump,
+  sourceLineCount,
+  sourcePath,
   zoom,
   onZoomChange,
   workspacePreview,
@@ -71,9 +86,12 @@ export function PreviewPane({
       <div className={getPreviewLayoutClassName(paperView, isPdfPreview)}>
         <div className={`preview-surface ${paperView ? "preview-surface--paper" : ""}`}>
           <WorkspaceFilePreview
+            activeSource={activeSource}
             file={workspacePreview}
+            onSourceJump={onSourceJump}
             paperView={paperView}
             theme={theme}
+            zoom={currentZoom}
           />
         </div>
       </div>
@@ -136,6 +154,8 @@ export function PreviewPane({
                 paperView={paperView}
                 markup={fallbackResult.output.content}
                 onSourceJump={onSourceJump}
+                sourceLineCount={sourceLineCount}
+                sourcePath={sourcePath}
                 theme={theme}
                 zoom={currentZoom}
                 viewportPadding={viewportPadding}
@@ -189,6 +209,8 @@ export function PreviewPane({
               paperView={paperView}
               markup={result.output.content}
               onSourceJump={onSourceJump}
+              sourceLineCount={sourceLineCount}
+              sourcePath={sourcePath}
               theme={theme}
               zoom={currentZoom}
               viewportPadding={viewportPadding}
@@ -507,6 +529,8 @@ function PreviewDocument({
   markup,
   isFaulted = false,
   onSourceJump,
+  sourceLineCount,
+  sourcePath,
   theme,
   zoom,
   viewportPadding = 28
@@ -516,7 +540,9 @@ function PreviewDocument({
   paperView?: boolean;
   markup: string;
   isFaulted?: boolean;
-  onSourceJump?: (sourceLocation: string) => void;
+  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  sourceLineCount?: number;
+  sourcePath?: string;
   theme: ThemeDefinition;
   zoom: PreviewZoomState;
   viewportPadding?: number;
@@ -602,6 +628,20 @@ function PreviewDocument({
         className={`preview-document__canvas ${
           hasStablePreviewLayout ? "" : "preview-document__canvas--pending"
         }`}
+        onDoubleClick={onSourceJump
+          ? (event) => {
+              if (event.defaultPrevented) {
+                return;
+              }
+
+              onSourceJump(createFallbackPreviewSourceLink(
+                event.currentTarget,
+                event.clientY,
+                sourcePath,
+                sourceLineCount
+              ));
+            }
+          : undefined}
         style={{
           width: hasMeasuredViewport ? `${contentWidth}px` : "100%"
         }}
@@ -647,16 +687,40 @@ function PreviewDocument({
 }
 
 function WorkspaceFilePreview({
+  activeSource,
   file,
+  onSourceJump,
   paperView,
-  theme
+  theme,
+  zoom
 }: {
+  activeSource: SourcePosition | null;
   file: WorkspacePreviewFile;
+  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
   paperView: boolean;
   theme: ThemeDefinition;
+  zoom: PreviewZoomState;
 }) {
   if (file.mimeType === "text/markdown") {
-    return <MarkdownFilePreview file={file} paperView={paperView} />;
+    return (
+      <MarkdownFilePreview
+        activeSource={activeSource}
+        file={file}
+        onSourceJump={onSourceJump}
+        paperView={paperView}
+      />
+    );
+  }
+
+  if (file.mimeType === "application/pdf") {
+    return (
+      <PdfPreview
+        artifactData={encodeWorkspacePreviewBytes(file.content)}
+        paperView={paperView}
+        theme={theme}
+        zoom={zoom}
+      />
+    );
   }
 
   return (
@@ -697,35 +761,62 @@ function WorkspaceBinaryFilePreview({
         isPdf ? "preview-document--pdf" : "preview-document--asset"
       } ${paperView ? "preview-document--paper" : ""}`}
     >
-      {isPdf ? (
-        <object
-          aria-label={file.name}
-          className="preview-file-preview__embed"
-          data={blobUrl}
-          type={file.mimeType}
-        >
-          <p className="preview-file-preview__fallback">
-            {file.name}
-          </p>
-        </object>
-      ) : (
-        <div className="preview-file-preview">
-          <img alt={file.name} className="preview-file-preview__image" src={blobUrl} />
-        </div>
-      )}
+      <div className="preview-file-preview">
+        <img alt={file.name} className="preview-file-preview__image" src={blobUrl} />
+      </div>
     </div>
   );
 }
 
 function MarkdownFilePreview({
+  activeSource,
   file,
+  onSourceJump,
   paperView
 }: {
+  activeSource: SourcePosition | null;
   file: WorkspacePreviewFile;
+  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
   paperView: boolean;
 }) {
   const source = decodeWorkspaceTextContent(file.content);
-  const blocks = useMemo(() => renderMarkdownBlocks(source), [source]);
+  const sourcePath = file.path || file.name;
+  const activeMarkdownSource =
+    activeSource && normalizeSourcePathForPreview(activeSource.path) === normalizeSourcePathForPreview(sourcePath)
+      ? activeSource
+      : null;
+  const blocks = useMemo(
+    () => renderMarkdownBlocks(source, {
+      activeSource: activeMarkdownSource,
+      onSourceJump,
+      sourcePath
+    }),
+    [activeMarkdownSource, onSourceJump, source, sourcePath]
+  );
+  const activeBlockKey = useMemo(
+    () => findActiveMarkdownBlockKey(source, activeMarkdownSource),
+    [activeMarkdownSource, source]
+  );
+  const articleRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!activeBlockKey || !articleRef.current) {
+      return;
+    }
+
+    const activeBlock = articleRef.current.querySelector<HTMLElement>(
+      `[data-source-block-key="${activeBlockKey}"]`
+    );
+
+    if (!activeBlock) {
+      return;
+    }
+
+    activeBlock.scrollIntoView({
+      block: "center",
+      inline: "nearest"
+    });
+  }, [activeBlockKey]);
 
   return (
     <div
@@ -733,7 +824,7 @@ function MarkdownFilePreview({
         paperView ? "preview-document--paper" : ""
       }`}
     >
-      <article className="preview-markdown" aria-label={`${file.name} preview`}>
+      <article className="preview-markdown" aria-label={`${file.name} preview`} ref={articleRef}>
         {blocks.length > 0 ? blocks : (
           <p className="preview-markdown__empty">Empty Markdown file.</p>
         )}
@@ -742,7 +833,18 @@ function MarkdownFilePreview({
   );
 }
 
-function renderMarkdownBlocks(source: string): ReactNode[] {
+interface MarkdownRenderOptions {
+  activeSource: SourcePosition | null;
+  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  sourcePath: string;
+}
+
+interface MarkdownBlockInfo {
+  key: string;
+  range: SourceRange;
+}
+
+function renderMarkdownBlocks(source: string, options: MarkdownRenderOptions): ReactNode[] {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -758,6 +860,7 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
 
     const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
     if (fence) {
+      const startLine = index + 1;
       const fenceMarker = fence[1];
       const info = fence[2]?.trim();
       const codeLines: string[] = [];
@@ -772,8 +875,12 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
         index += 1;
       }
 
+      const block = createMarkdownBlockInfo("code", blockIndex, options.sourcePath, startLine, index);
       blocks.push(
-        <pre className="preview-markdown__code-block" key={`code-${blockIndex}`}>
+        <pre
+          {...createMarkdownBlockProps(block, options, "preview-markdown__code-block")}
+          key={block.key}
+        >
           <code data-language={info || undefined}>{codeLines.join("\n")}</code>
         </pre>
       );
@@ -783,11 +890,13 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
 
     const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (heading) {
+      const block = createMarkdownBlockInfo("heading", blockIndex, options.sourcePath, index + 1, index + 1);
       blocks.push(
         renderMarkdownHeading(
           heading[1].length,
           parseMarkdownInline(heading[2], `heading-${blockIndex}`),
-          `heading-${blockIndex}`
+          block,
+          options
         )
       );
       index += 1;
@@ -796,13 +905,15 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
     }
 
     if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      blocks.push(<hr key={`hr-${blockIndex}`} />);
+      const block = createMarkdownBlockInfo("hr", blockIndex, options.sourcePath, index + 1, index + 1);
+      blocks.push(<hr {...createMarkdownBlockProps(block, options)} key={block.key} />);
       index += 1;
       blockIndex += 1;
       continue;
     }
 
     if (/^\s{0,3}>\s?/.test(line)) {
+      const startLine = index + 1;
       const quoteLines: string[] = [];
 
       while (index < lines.length) {
@@ -814,8 +925,9 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
         index += 1;
       }
 
+      const block = createMarkdownBlockInfo("quote", blockIndex, options.sourcePath, startLine, index);
       blocks.push(
-        <blockquote key={`quote-${blockIndex}`}>
+        <blockquote {...createMarkdownBlockProps(block, options)} key={block.key}>
           <p>{parseMarkdownInline(quoteLines.join(" "), `quote-${blockIndex}`)}</p>
         </blockquote>
       );
@@ -825,6 +937,7 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
 
     const unorderedListMatch = line.match(/^\s{0,3}[-*+]\s+(.+)$/);
     if (unorderedListMatch) {
+      const startLine = index + 1;
       const items: string[] = [];
 
       while (index < lines.length) {
@@ -836,8 +949,9 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
         index += 1;
       }
 
+      const block = createMarkdownBlockInfo("ul", blockIndex, options.sourcePath, startLine, index);
       blocks.push(
-        <ul key={`ul-${blockIndex}`}>
+        <ul {...createMarkdownBlockProps(block, options)} key={block.key}>
           {items.map((item, itemIndex) => (
             <li key={`ul-${blockIndex}-${itemIndex}`}>
               {parseMarkdownInline(item, `ul-${blockIndex}-${itemIndex}`)}
@@ -851,6 +965,7 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
 
     const orderedListMatch = line.match(/^\s{0,3}\d+[.)]\s+(.+)$/);
     if (orderedListMatch) {
+      const startLine = index + 1;
       const items: string[] = [];
 
       while (index < lines.length) {
@@ -862,8 +977,9 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
         index += 1;
       }
 
+      const block = createMarkdownBlockInfo("ol", blockIndex, options.sourcePath, startLine, index);
       blocks.push(
-        <ol key={`ol-${blockIndex}`}>
+        <ol {...createMarkdownBlockProps(block, options)} key={block.key}>
           {items.map((item, itemIndex) => (
             <li key={`ol-${blockIndex}-${itemIndex}`}>
               {parseMarkdownInline(item, `ol-${blockIndex}-${itemIndex}`)}
@@ -875,6 +991,7 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
       continue;
     }
 
+    const startLine = index + 1;
     const paragraphLines: string[] = [];
     while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
       paragraphLines.push(lines[index].trim());
@@ -882,8 +999,9 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
     }
 
     if (paragraphLines.length > 0) {
+      const block = createMarkdownBlockInfo("p", blockIndex, options.sourcePath, startLine, index);
       blocks.push(
-        <p key={`p-${blockIndex}`}>
+        <p {...createMarkdownBlockProps(block, options)} key={block.key}>
           {parseMarkdownInline(paragraphLines.join(" "), `p-${blockIndex}`)}
         </p>
       );
@@ -897,6 +1015,189 @@ function renderMarkdownBlocks(source: string): ReactNode[] {
   return blocks;
 }
 
+function createMarkdownBlockInfo(
+  kind: string,
+  index: number,
+  sourcePath: string,
+  startLine: number,
+  endLine: number
+): MarkdownBlockInfo {
+  return {
+    key: `${kind}-${index}`,
+    range: createSourceRange({
+      path: sourcePath,
+      line: startLine,
+      column: 0,
+      endLine: Math.max(startLine, endLine),
+      endColumn: 0
+    })
+  };
+}
+
+function createMarkdownBlockProps(
+  block: MarkdownBlockInfo,
+  options: MarkdownRenderOptions,
+  className?: string
+) {
+  const active = options.activeSource
+    ? sourcePositionIntersectsRange(options.activeSource, block.range)
+    : false;
+  const blockClassName = [
+    className,
+    "preview-markdown__source-block",
+    active ? "preview-markdown__source-block--active" : null
+  ].filter(Boolean).join(" ");
+
+  return {
+    className: blockClassName,
+    "data-source-block-key": block.key,
+    "data-source-line": `${block.range.line}`,
+    "data-source-end-line": `${block.range.endLine ?? block.range.line}`,
+    onDoubleClick: (event: ReactMouseEvent<HTMLElement>) => {
+      if (!options.onSourceJump) {
+        return;
+      }
+
+      options.onSourceJump({
+        previewRect: getPreviewRectFromElement(event.currentTarget),
+        source: block.range
+      });
+    }
+  };
+}
+
+function findActiveMarkdownBlockKey(source: string, activeSource: SourcePosition | null): string | null {
+  if (!activeSource) {
+    return null;
+  }
+
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  let index = 0;
+  let blockIndex = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    const startLine = index + 1;
+    let kind = "p";
+    let endLine = startLine;
+
+    const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
+    if (fence) {
+      kind = "code";
+      const fenceMarker = fence[1];
+      index += 1;
+
+      while (index < lines.length && !lines[index].trimStart().startsWith(fenceMarker)) {
+        index += 1;
+      }
+
+      if (index < lines.length) {
+        index += 1;
+      }
+
+      endLine = index;
+    } else if (/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.test(line)) {
+      kind = "heading";
+      index += 1;
+      endLine = startLine;
+    } else if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+      kind = "hr";
+      index += 1;
+      endLine = startLine;
+    } else if (/^\s{0,3}>\s?/.test(line)) {
+      kind = "quote";
+      while (index < lines.length && /^\s{0,3}>\s?/.test(lines[index])) {
+        index += 1;
+      }
+      endLine = index;
+    } else if (/^\s{0,3}[-*+]\s+(.+)$/.test(line)) {
+      kind = "ul";
+      while (index < lines.length && /^\s{0,3}[-*+]\s+(.+)$/.test(lines[index])) {
+        index += 1;
+      }
+      endLine = index;
+    } else if (/^\s{0,3}\d+[.)]\s+(.+)$/.test(line)) {
+      kind = "ol";
+      while (index < lines.length && /^\s{0,3}\d+[.)]\s+(.+)$/.test(lines[index])) {
+        index += 1;
+      }
+      endLine = index;
+    } else {
+      while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
+        index += 1;
+      }
+      endLine = index;
+    }
+
+    if (activeSource.line >= startLine && activeSource.line <= Math.max(startLine, endLine)) {
+      return `${kind}-${blockIndex}`;
+    }
+
+    blockIndex += 1;
+  }
+
+  return null;
+}
+
+function getPreviewRectFromElement(element: HTMLElement): PreviewRect {
+  const rect = element.getBoundingClientRect();
+
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height
+  };
+}
+
+function createFallbackPreviewSourceLink(
+  element: HTMLElement,
+  clientY: number,
+  sourcePath?: string,
+  sourceLineCount?: number
+): PreviewSourceLink {
+  const rect = element.getBoundingClientRect();
+
+  return {
+    previewRect: getPreviewRectFromElement(element),
+    source: createSourceRange({
+      path: sourcePath,
+      line: estimateSourceLineFromPreviewPosition(clientY, rect, sourceLineCount),
+      column: 0
+    })
+  };
+}
+
+function estimateSourceLineFromPreviewPosition(
+  clientY: number,
+  rect: DOMRect,
+  sourceLineCount?: number
+): number {
+  const totalLines = Math.max(1, Math.floor(sourceLineCount ?? 1));
+
+  if (!Number.isFinite(clientY) || rect.height <= 0 || totalLines <= 1) {
+    return 1;
+  }
+
+  const ratio = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+
+  return Math.min(totalLines, Math.max(1, Math.round(ratio * (totalLines - 1)) + 1));
+}
+
+function normalizeSourcePathForPreview(path: string | undefined): string {
+  return (path ?? "")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
 function isMarkdownBlockStart(line: string): boolean {
   return (
     /^\s*(```+|~~~+)/.test(line) ||
@@ -908,20 +1209,25 @@ function isMarkdownBlockStart(line: string): boolean {
   );
 }
 
-function renderMarkdownHeading(level: number, children: ReactNode[], key: string): ReactNode {
+function renderMarkdownHeading(
+  level: number,
+  children: ReactNode[],
+  block: MarkdownBlockInfo,
+  options: MarkdownRenderOptions
+): ReactNode {
   switch (level) {
     case 1:
-      return <h1 key={key}>{children}</h1>;
+      return <h1 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h1>;
     case 2:
-      return <h2 key={key}>{children}</h2>;
+      return <h2 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h2>;
     case 3:
-      return <h3 key={key}>{children}</h3>;
+      return <h3 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h3>;
     case 4:
-      return <h4 key={key}>{children}</h4>;
+      return <h4 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h4>;
     case 5:
-      return <h5 key={key}>{children}</h5>;
+      return <h5 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h5>;
     default:
-      return <h6 key={key}>{children}</h6>;
+      return <h6 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h6>;
   }
 }
 
@@ -1055,7 +1361,7 @@ function PreviewSourceMappingOverlay({
 }: {
   artifactData: Uint8Array;
   isCompiling: boolean;
-  onSourceJump: (sourceLocation: string) => void;
+  onSourceJump: (sourceLink: PreviewSourceLink) => void;
   overlayWidth: number;
   paperView: boolean;
 }) {
@@ -1070,6 +1376,7 @@ function PreviewSourceMappingOverlay({
 
     let cancelled = false;
     let disposeOverlay = () => {};
+    let disposeDoubleClickListener = () => {};
     const handle = window.setTimeout(() => {
       void renderSourceMappingOverlay(container, artifactData, paperView)
         .then((overlay) => {
@@ -1079,24 +1386,42 @@ function PreviewSourceMappingOverlay({
           }
 
           disposeOverlay = overlay.dispose;
-          container.ondblclick = (event) => {
-            const sourceLocation = overlay.resolveSourceLocation(event.target);
+          const interactionHost = container.parentElement ?? container;
+          const handleDoubleClick = (event: MouseEvent) => {
+            const sourceLocation =
+              overlay.resolveSourceLocation(event.target) ??
+              overlay.resolveSourceLocationAt({ x: event.clientX, y: event.clientY });
+            const source = sourceLocation ? parseSourceLocation(sourceLocation) : null;
 
-            if (sourceLocation) {
-              onSourceJump(sourceLocation);
+            if (source) {
+              event.preventDefault();
+              event.stopPropagation();
+              onSourceJump({
+                previewRect: getPreviewRectFromElement(
+                  event.target instanceof HTMLElement && container.contains(event.target)
+                    ? event.target
+                    : container
+                ),
+                source
+              });
             }
+          };
+          interactionHost.addEventListener("dblclick", handleDoubleClick, true);
+          disposeDoubleClickListener = () => {
+            interactionHost.removeEventListener("dblclick", handleDoubleClick, true);
           };
         })
         .catch(() => {
           container.innerHTML = "";
-          container.ondblclick = null;
+          disposeDoubleClickListener();
+          disposeDoubleClickListener = () => {};
         });
     }, 180);
 
     return () => {
       cancelled = true;
       window.clearTimeout(handle);
-      container.ondblclick = null;
+      disposeDoubleClickListener();
       disposeOverlay();
     };
   }, [artifactData, isCompiling, onSourceJump, overlayWidth, paperView]);
@@ -1848,6 +2173,18 @@ function buildWorkspacePreviewBlob(
   const markup = decodeWorkspaceTextContent(file.content);
   const normalizedMarkup = normalizePreviewSvg(markup, paperView, theme);
   return new Blob([normalizedMarkup], { type: file.mimeType });
+}
+
+function encodeWorkspacePreviewBytes(content: string | Uint8Array): Uint8Array {
+  if (content instanceof Uint8Array) {
+    return content;
+  }
+
+  if (typeof TextEncoder === "undefined") {
+    return new Uint8Array();
+  }
+
+  return new TextEncoder().encode(content);
 }
 
 function decodeWorkspaceTextContent(content: string | Uint8Array): string {

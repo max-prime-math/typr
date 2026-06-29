@@ -35,7 +35,7 @@ import {
   type Command,
   type ViewUpdate
 } from "@codemirror/view";
-import { getCM, vim } from "@replit/codemirror-vim";
+import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { markdown } from "@codemirror/lang-markdown";
 import { latex } from "codemirror-lang-latex";
 import type { StyleSpec } from "style-mod";
@@ -67,9 +67,30 @@ interface EditorSetupOptions {
   snippetSource: CompletionSource;
   onSearchRequested: () => void;
   onCompileRequested: () => void;
+  onFormatRequested: () => void;
+  onCloseRequested: () => void;
 }
 
 export const diagnosticsCompartment = new Compartment();
+
+let latestVimCloseRequested: (() => void) | null = null;
+let vimCloseCommandsRegistered = false;
+
+function registerVimCloseCommands(onCloseRequested: () => void): void {
+  latestVimCloseRequested = onCloseRequested;
+
+  if (vimCloseCommandsRegistered) {
+    return;
+  }
+
+  Vim.defineEx("quit", "q", () => {
+    latestVimCloseRequested?.();
+  });
+  Vim.defineEx("wq", "wq", () => {
+    latestVimCloseRequested?.();
+  });
+  vimCloseCommandsRegistered = true;
+}
 
 const editorHighlightStyle = HighlightStyle.define([
   {
@@ -248,8 +269,14 @@ export function createEditorExtensions({
   language,
   snippetSource,
   onSearchRequested,
-  onCompileRequested
+  onCompileRequested,
+  onFormatRequested,
+  onCloseRequested
 }: EditorSetupOptions): Extension[] {
+  if (vimMode) {
+    registerVimCloseCommands(onCloseRequested);
+  }
+
   const lineNumberExtension = lineNumbers({
     formatNumber: (lineNumber, state) => {
       if (!relativeLineNumbers) {
@@ -269,6 +296,10 @@ export function createEditorExtensions({
     }, scope: "editor" },
     { key: toCodeMirrorKeybinding(keybindings.compile), run: () => {
       onCompileRequested();
+      return true;
+    }, scope: "editor" },
+    { key: toCodeMirrorKeybinding(keybindings.formatDocument), run: () => {
+      onFormatRequested();
       return true;
     }, scope: "editor" },
     { key: toCodeMirrorKeybinding(keybindings.multiCursorAbove), run: addCursorAbove },

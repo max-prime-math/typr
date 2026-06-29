@@ -1,11 +1,14 @@
 import {
   GlobalWorkerOptions,
   getDocument,
+  type PDFPageProxy,
   type PDFDocumentProxy
 } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const INITIAL_PDF_RENDER_BATCH_SIZE = 2;
 
 export interface PdfCanvasRenderOptions {
   paperView?: boolean;
@@ -34,88 +37,171 @@ export async function renderPdfArtifactToCanvas(
   try {
     assertNotAborted(options.signal);
     const scrollAnchor = capturePdfScrollAnchor(container);
-    const renderedPages: HTMLElement[] = [];
     const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
     const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
     container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
     container.style.setProperty("--pdf-page-foreground", themeColors?.foregroundCss ?? "#000000");
+    container.replaceChildren();
 
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
       assertNotAborted(options.signal);
-      const page = await pdfDocument.getPage(pageNumber);
-      const cssViewport = page.getViewport({ scale: 1 });
-      const geometry = getPdfPageGeometry(
+      const target = await createPdfPageRenderTarget(
+        pdfDocument,
+        pageNumber,
         container,
-        cssViewport.width,
-        cssViewport.height,
-        options.zoom
+        options.zoom,
+        Boolean(themeColors)
       );
-      const viewport = page.getViewport({ scale: geometry.displayScale });
-      const outputScale = getPdfOutputScale();
-      const pageElement = document.createElement("div");
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d", {
-        alpha: false,
-        willReadFrequently: Boolean(themeColors)
-      });
-
-      if (!context) {
-        throw new Error("Unable to create PDF canvas context.");
-      }
-
-      context.imageSmoothingEnabled = true;
-      context.imageSmoothingQuality = "high";
-      canvas.width = Math.max(1, Math.ceil(viewport.width * outputScale));
-      canvas.height = Math.max(1, Math.ceil(viewport.height * outputScale));
-      canvas.style.display = "block";
-      canvas.style.width = `${geometry.displayWidth}px`;
-      canvas.style.height = `${geometry.displayHeight}px`;
-      canvas.style.imageRendering = "auto";
-      canvas.style.filter = "none";
-
-      pageElement.className = "pdf-page canvas";
-      pageElement.dataset.pdfNaturalWidth = String(cssViewport.width);
-      pageElement.dataset.pdfNaturalHeight = String(cssViewport.height);
-      pageElement.style.position = "relative";
-      pageElement.style.width = `${geometry.displayWidth}px`;
-      pageElement.style.height = `${geometry.displayHeight}px`;
-      pageElement.style.margin = "0 auto";
-      pageElement.style.overflow = "hidden";
-      pageElement.appendChild(canvas);
-      assertNotAborted(options.signal);
-      renderedPages.push(pageElement);
-
-      const renderTask = page.render({
-        canvas,
-        canvasContext: context,
-        background: "#ffffff",
-        transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
-        viewport
-      });
-      const abortRender = () => renderTask.cancel();
-
-      options.signal?.addEventListener("abort", abortRender, { once: true });
-
-      try {
-        await renderTask.promise;
-      } finally {
-        options.signal?.removeEventListener("abort", abortRender);
-      }
 
       assertNotAborted(options.signal);
+      container.appendChild(target.pageElement);
+      await renderPdfPageTarget(target, {
+        signal: options.signal,
+        themeColors,
+        useDarkRetheme
+      });
 
-      if (themeColors) {
-        rethemePdfCanvas(canvas, context, themeColors, useDarkRetheme);
+      if (pageNumber === Math.min(INITIAL_PDF_RENDER_BATCH_SIZE, pdfDocument.numPages)) {
+        applyPdfCanvasZoom(container, options.zoom);
+        restorePdfScrollAnchor(container, scrollAnchor);
       }
+
+      await yieldPdfRenderFrame(options.signal);
     }
 
-    assertNotAborted(options.signal);
-    container.replaceChildren(...renderedPages);
     applyPdfCanvasZoom(container, options.zoom);
     restorePdfScrollAnchor(container, scrollAnchor);
   } finally {
     await destroyPdfDocument(pdfDocument);
   }
+}
+
+interface PdfPageRenderTarget {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  outputScale: number;
+  page: PDFPageProxy;
+  pageElement: HTMLElement;
+  viewport: ReturnType<PDFPageProxy["getViewport"]>;
+}
+
+async function createPdfPageRenderTarget(
+  pdfDocument: PDFDocumentProxy,
+  pageNumber: number,
+  container: HTMLElement,
+  zoom: PdfCanvasZoomState = { mode: "fit-width", percent: 100 },
+  needsReadback = false
+): Promise<PdfPageRenderTarget> {
+  const page = await pdfDocument.getPage(pageNumber);
+  const cssViewport = page.getViewport({ scale: 1 });
+  const geometry = getPdfPageGeometry(
+    container,
+    cssViewport.width,
+    cssViewport.height,
+    zoom
+  );
+  const viewport = page.getViewport({ scale: geometry.displayScale });
+  const outputScale = getPdfOutputScale();
+  const pageElement = document.createElement("div");
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", {
+    alpha: false,
+    willReadFrequently: needsReadback
+  });
+
+  if (!context) {
+    throw new Error("Unable to create PDF canvas context.");
+  }
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  canvas.width = Math.max(1, Math.ceil(viewport.width * outputScale));
+  canvas.height = Math.max(1, Math.ceil(viewport.height * outputScale));
+  canvas.style.display = "block";
+  canvas.style.width = `${geometry.displayWidth}px`;
+  canvas.style.height = `${geometry.displayHeight}px`;
+  canvas.style.imageRendering = "auto";
+  canvas.style.filter = "none";
+
+  pageElement.className = "pdf-page canvas";
+  pageElement.dataset.pdfNaturalWidth = String(cssViewport.width);
+  pageElement.dataset.pdfNaturalHeight = String(cssViewport.height);
+  pageElement.style.position = "relative";
+  pageElement.style.width = `${geometry.displayWidth}px`;
+  pageElement.style.height = `${geometry.displayHeight}px`;
+  pageElement.style.margin = "0 auto";
+  pageElement.style.overflow = "hidden";
+  pageElement.appendChild(canvas);
+
+  return {
+    canvas,
+    context,
+    outputScale,
+    page,
+    pageElement,
+    viewport
+  };
+}
+
+async function renderPdfPageTarget(
+  target: PdfPageRenderTarget,
+  options: {
+    signal?: AbortSignal;
+    themeColors: PdfThemeColors | null;
+    useDarkRetheme: boolean;
+  }
+): Promise<void> {
+  const renderTask = target.page.render({
+    canvas: target.canvas,
+    canvasContext: target.context,
+    background: "#ffffff",
+    transform:
+      target.outputScale === 1
+        ? undefined
+        : [target.outputScale, 0, 0, target.outputScale, 0, 0],
+    viewport: target.viewport
+  });
+  const abortRender = () => renderTask.cancel();
+
+  options.signal?.addEventListener("abort", abortRender, { once: true });
+
+  try {
+    await renderTask.promise;
+  } finally {
+    options.signal?.removeEventListener("abort", abortRender);
+  }
+
+  assertNotAborted(options.signal);
+
+  if (options.themeColors) {
+    rethemePdfCanvas(
+      target.canvas,
+      target.context,
+      options.themeColors,
+      options.useDarkRetheme
+    );
+  }
+}
+
+function yieldPdfRenderFrame(signal: AbortSignal | undefined): Promise<void> {
+  assertNotAborted(signal);
+
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const frame = window.requestAnimationFrame(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    });
+    const abort = () => {
+      window.cancelAnimationFrame(frame);
+      reject(new DOMException("PDF render was cancelled.", "AbortError"));
+    };
+
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 export function applyPdfCanvasZoom(

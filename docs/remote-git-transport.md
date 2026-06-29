@@ -17,7 +17,7 @@ Tokens are credentials, not repository config. They are stored in the Git creden
 
 Limitations in browser mode:
 
-- Merge and rebase conflict flows are not implemented; pull requires fast-forwardable history and a clean working tree.
+- Diverged pulls stop in a browser merge state. The Git pane can inspect base/local/remote versions, choose or edit resolutions, and create a two-parent merge commit. Rebase is not implemented.
 - Empty GitHub repositories must be initialized on GitHub first, for example with a README, because GitHub's Git Database API cannot create the first branch reference in an empty repository.
 - Remote commits can still be rejected if GitHub's commit metadata is insufficient to reconstruct the exact Git object bytes locally.
 - Smart-HTTP clone/fetch/push remains a non-browser transport candidate for a future trusted local agent.

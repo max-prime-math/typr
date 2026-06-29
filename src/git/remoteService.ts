@@ -170,7 +170,12 @@ export function createRemoteGitService(options: {
       emit(remoteOptions, "fetch", "Reading remote branch.");
       const remoteSha = await getRemoteBranchSha(fetchImpl, config, token, remoteOptions.signal);
       if (!remoteSha) {
-        return { ok: false, message: `Remote branch ${config.branch} was not found.` };
+        return {
+          ok: false,
+          message:
+            `Remote branch ${config.branch} was not found. ` +
+            "If the GitHub repository is empty, initialize it on GitHub first, for example with a README."
+        };
       }
 
       await importCommitGraph(fetchImpl, options.repoBackend, project, config, token, remoteSha, {
@@ -660,6 +665,7 @@ async function importCommitGraph(
   }
   await importTree(fetchImpl, repoBackend, project, config, token, commit.tree.sha, {
     includeBlobs: options.includeBlobs,
+    onProgress: options.onProgress,
     signal: options.signal
   });
   const commitObject = await buildMatchingCommitObject(commit);
@@ -681,7 +687,7 @@ async function importTree(
   config: RemoteGitConfig,
   token: string,
   treeSha: string,
-  options: { includeBlobs: boolean; signal?: AbortSignal }
+  options: { includeBlobs: boolean; onProgress?: RemoteGitOptions["onProgress"]; signal?: AbortSignal }
 ): Promise<void> {
   const tree = await githubJson<GitHubTreeResponse>(
     fetchImpl,
@@ -694,6 +700,10 @@ async function importTree(
     throw new Error("Remote tree is too large for the browser GitHub adapter response.");
   }
   const entries = [];
+  const blobEntries = tree.tree.filter(
+    (entry) => entry.type === "blob" && entry.sha && entry.path
+  );
+  let importedBlobCount = 0;
   for (const entry of tree.tree) {
     if (entry.type === "commit" && entry.path) {
       throw new Error(`Remote repository contains unsupported submodule entry: ${entry.path}`);
@@ -704,6 +714,13 @@ async function importTree(
     }
     if (options.includeBlobs) {
       await yieldToBrowser();
+      emit(
+        options,
+        "fetch",
+        `Downloading ${importedBlobCount + 1} of ${blobEntries.length} Git objects.`,
+        importedBlobCount,
+        blobEntries.length
+      );
       const blob = await githubJson<GitHubBlobResponse>(
         fetchImpl,
         config,
@@ -719,6 +736,14 @@ async function importTree(
       if (written.value !== entry.sha) {
         throw new Error(`Blob ${entry.path} did not round-trip to the expected object id.`);
       }
+      importedBlobCount += 1;
+      emit(
+        options,
+        "fetch",
+        `Downloaded ${importedBlobCount} of ${blobEntries.length} Git objects.`,
+        importedBlobCount,
+        blobEntries.length
+      );
     }
     entries.push({
       path: entry.path,

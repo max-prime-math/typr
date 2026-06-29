@@ -4,13 +4,17 @@ https://typr.ca/
 
 The GitHub Pages deployment is also available at https://max-prime-math.github.io/typr/.
 
-Typr is a local-first, browser-based Typst editor for iPad and desktop. It runs as a Progressive Web App, keeps projects on device, and supports live preview, offline reopen, Vim mode, themes, diagrams, graphs, a browser shell, and repo-backed GitHub sync.
+Typr is a local-first, browser-based writing and preview workspace for Typst, LaTeX, and Markdown on iPad and desktop. It runs as a Progressive Web App, keeps projects on device, and supports live preview, offline reopen, Vim mode, themes, diagrams, graphs, package caching, a browser shell, and repo-backed GitHub sync.
 
 ## What It Does
 
 - Runs fully in the browser for the current build.
 - Stores each Typr project as its own workspace and browser-managed git repository.
-- Supports Typst preview, package caching, theme switching, and Vim-compatible editing.
+- Supports Typst, LaTeX, and Markdown source editing, preview, package caching, theme switching, and Vim-compatible editing.
+- Opens multiple source and preview tabs, including separate active source and preview documents.
+- Downloads rendered preview output or source bundles from Preview.
+- Bundles local document dependencies when downloading source files, folders, selected files, or preview source bundles, and reports missing referenced files.
+- Provides recent project/file switching, settings search, and Git status badges in the file tree.
 - Keeps `.git` internals hidden from the workspace tree and Browser Shell.
 - Uses local commits before remote push/pull, instead of replacing files through a document sync API.
 
@@ -68,11 +72,24 @@ src/
   app/
     App.tsx
     appState.ts
+    keybindings.ts
+  auth/
+    AuthGate.tsx
   compiler/
+    latexCompiler.ts
+    latexPackages.ts
+    sourceFileTypes.ts
     typstCompiler.ts
+    typstPackages.ts
+  diagram/
+    DiagramEditor.tsx
   editor/
     TypstEditor.tsx
     codemirrorSetup.ts
+  graph/
+    GraphEditor.tsx
+  mitex/
+    MitexPanel.tsx
   git/
     repoBackend.ts
     remoteService.ts
@@ -82,6 +99,8 @@ src/
     projectState.ts
   preview/
     PreviewPane.tsx
+    pdfCanvasRenderer.ts
+    typstCanvasRenderer.ts
   storage/
     indexedDbStorage.ts
   terminal/
@@ -96,11 +115,13 @@ src/
 
 Each Typr project owns its working tree, hidden `.git` data, remote config, and selected Git UI state. The project filesystem is the git working tree. Browser-managed `.git` files live in a separate IndexedDB object store keyed by Typr project id, so two projects can have separate branches, refs, indexes, commits, and remotes even when both are open in the app state.
 
-Use the Files pane project selector to switch Typr projects, create a new local project, or start importing a GitHub repository as a separate project. Git settings manages the selected project's managed repo entries and GitHub remote connection; changing branches, remotes, tokens, or commit state there does not change another Typr project.
+Use the Projects pane to switch Typr projects, reopen recent projects and files, create or import a local project, export a project backup, or clone a GitHub repository as a separate project. Git settings manages the selected project's managed repo entries and GitHub remote connection; changing branches, remotes, tokens, or commit state there does not change another Typr project.
 
 The browser git backend writes Git-compatible loose objects, trees, commits, refs, HEAD, config, and a v2 index. The visible workspace and Browser Shell cannot edit, delete, list, or stage `.git` internals as normal files.
 
 GitHub remotes use the GitHub Git Database REST API for blobs, trees, commits, and refs. Typr does not use the old GitHub Contents API document-sync path and does not depend on a CORS proxy. Tokens are stored only through `src/git/credentials.ts`, persisted in the credentials store, and redacted from UI feedback and command output.
+
+GitHub clone setup lives in Projects. After token connection, Typr lists owners, repositories, and branches, then blocks obvious empty-repository or missing-branch clone attempts with inline guidance.
 
 Supported Browser Shell commands include:
 
@@ -123,7 +144,7 @@ Supported Browser Shell commands include:
 
 Fast-forward pulls are applied to the project working tree. Dirty working trees are blocked before fetch or checkout.
 
-When local and remote history diverge, Browser mode stops before merge. It records a persistent merge-stop state containing the base, local, and remote object ids for every changed path, including conflict classification. It does not auto-resolve by timestamps and does not write conflict markers into project files. The Git pane lets you inspect base/local/remote versions, choose or edit a resolution for each conflict, then create a two-parent merge commit. `git merge --abort` clears that state without changing local files or commits. Rebase, cherry-pick, tags, submodules, executable bits, symlinks, and real smart-HTTP git transport are not implemented in Browser mode.
+When local and remote history diverge, Browser mode stops before merge. It records a persistent merge-stop state containing the base, local, and remote object ids for every changed path, including conflict classification. It does not auto-resolve by timestamps and does not write conflict markers into project files. The Git pane lets you inspect base/local/remote versions, choose or edit a resolution for each conflict, then create a two-parent merge commit. `git merge --abort` clears that state without changing local files or commits. Rebase and smart-HTTP git transport are outside the current browser backend.
 
 ## Data Safety
 

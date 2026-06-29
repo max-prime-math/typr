@@ -1,4 +1,4 @@
-import { AUTO_THEME_ID } from "../theme/themes";
+import { AUTO_THEME_ID, normalizeThemeId } from "../theme/themes";
 import {
   DEFAULT_DIAGRAM_FILE_NAME,
   getDiagramFilePath,
@@ -17,6 +17,11 @@ import {
   serializeSimplePlotGraphDocument
 } from "../graph/simplePlotGraph";
 import { createPrefixedId } from "../utils/randomId";
+import {
+  DEFAULT_EDITOR_TOOLING_PREFERENCES,
+  normalizeEditorToolingPreferences,
+  type EditorToolingPreferences
+} from "../editor/editorTools";
 import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from "./keybindings";
 
 export type ThemePreference = string;
@@ -257,6 +262,7 @@ export interface AppPreferences {
   cursorSmear: number;
   liveCompilation: boolean;
   autoSyncGitProjects: boolean;
+  editorTooling: EditorToolingPreferences;
   graphProvider: GraphProvider;
   keybindings: KeybindingMap;
   editorFontSize: number;
@@ -439,6 +445,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
       autoSyncGitProjects: true,
+      editorTooling: DEFAULT_EDITOR_TOOLING_PREFERENCES,
       graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
@@ -483,7 +490,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     ...snapshot,
     version: 9,
     preferences: {
-      theme: snapshot.preferences.theme ?? AUTO_THEME_ID,
+      theme: normalizeThemeId(snapshot.preferences.theme ?? AUTO_THEME_ID),
       vimMode: snapshot.preferences.vimMode ?? false,
       relativeLineNumbers: snapshot.preferences.relativeLineNumbers ?? false,
       cursorSmooth: snapshot.preferences.cursorSmooth ?? true,
@@ -496,6 +503,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
       autoSyncGitProjects:
         (snapshot.preferences as Partial<AppPreferences>).autoSyncGitProjects ?? true,
+      editorTooling: normalizeEditorToolingPreferences(
+        (snapshot.preferences as Partial<AppPreferences>).editorTooling
+      ),
       graphProvider: normalizeGraphProvider(storedGraphProvider),
       keybindings: normalizeKeybindings(
         (snapshot.preferences as Partial<AppPreferences>).keybindings
@@ -926,6 +936,10 @@ export function setActiveDocument(
   snapshot: AppSnapshot,
   documentId: string
 ): AppSnapshot {
+  if (snapshot.project.activeDocumentId === documentId) {
+    return snapshot;
+  }
+
   if (!snapshot.project.documents.some((document) => document.id === documentId)) {
     return snapshot;
   }
@@ -2262,6 +2276,19 @@ export function updateAutoSyncGitProjectsPreference(
     preferences: {
       ...snapshot.preferences,
       autoSyncGitProjects
+    }
+  };
+}
+
+export function updateEditorToolingPreference(
+  snapshot: AppSnapshot,
+  editorTooling: EditorToolingPreferences
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      editorTooling: normalizeEditorToolingPreferences(editorTooling)
     }
   };
 }

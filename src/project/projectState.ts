@@ -163,21 +163,35 @@ export function syncProjectStorageFromSnapshot(
   existingStorage: TyprProjectStorageState,
   previousSnapshot: AppSnapshot
 ): TyprProjectStorageState {
+  if (snapshot.project === previousSnapshot.project) {
+    return existingStorage;
+  }
+
   const targetedDocument = findTargetedDocumentContentChange(snapshot, previousSnapshot);
 
   if (targetedDocument) {
-    return updateSelectedProjectRepository(existingStorage, (project) => ({
-      ...writeProjectFile(
-        project,
-        targetedDocument.next.name,
-        targetedDocument.next.content,
-        { kind: "document", id: targetedDocument.next.id }
-      ),
-      selection: {
-        activeFilePath: normalizeProjectPath(targetedDocument.next.name),
-        openFilePaths: [normalizeProjectPath(targetedDocument.next.name)]
-      }
-    }));
+    return updateSelectedProjectRepository(existingStorage, (project) => {
+      const activeFilePath = normalizeProjectPath(targetedDocument.next.name);
+      const openFilePaths = Array.from(
+        new Set([
+          ...(project.selection?.openFilePaths ?? []).map(normalizeProjectPath).filter(Boolean),
+          activeFilePath
+        ])
+      );
+
+      return {
+        ...writeProjectFile(
+          project,
+          targetedDocument.next.name,
+          targetedDocument.next.content,
+          { kind: "document", id: targetedDocument.next.id }
+        ),
+        selection: {
+          activeFilePath,
+          openFilePaths
+        }
+      };
+    });
   }
 
   const targetedGraph = findTargetedGraphContentChange(snapshot, previousSnapshot);
@@ -191,6 +205,18 @@ export function syncProjectStorageFromSnapshot(
         { kind: "graph", id: targetedGraph.next.id }
       )
     );
+  }
+
+  const activeFilePath = findSelectionOnlyActiveFilePath(snapshot, previousSnapshot);
+
+  if (activeFilePath) {
+    return updateSelectedProjectRepository(existingStorage, (project) => ({
+      ...project,
+      selection: {
+        ...project.selection,
+        activeFilePath
+      }
+    }));
   }
 
   return createProjectStorageFromSnapshot(snapshot, existingStorage);
@@ -739,6 +765,21 @@ function createRepositoryFromLegacyProject(
   const activeDocument = snapshot.project.documents.find(
     (document) => document.id === snapshot.project.activeDocumentId
   );
+  const activeFilePath = activeDocument ? normalizeProjectPath(activeDocument.name) : null;
+  const storedOpenFilePaths = existingProject
+    ? existingProject.selection.openFilePaths.map(normalizeProjectPath)
+    : activeFilePath
+      ? [activeFilePath]
+      : [];
+  const openFilePaths = Array.from(
+    new Set(storedOpenFilePaths)
+  ).filter((path): path is string => {
+    if (!path) {
+      return false;
+    }
+
+    return entries[path]?.kind === "file";
+  });
   const projectId = snapshot.project.id || createId("project");
 
   return {
@@ -759,8 +800,8 @@ function createRepositoryFromLegacyProject(
       remotes: []
     },
     selection: {
-      activeFilePath: activeDocument ? normalizeProjectPath(activeDocument.name) : null,
-      openFilePaths: activeDocument ? [normalizeProjectPath(activeDocument.name)] : []
+      activeFilePath,
+      openFilePaths
     },
     editor: existingProject?.editor ?? {
       previewPath: null
@@ -942,6 +983,32 @@ function findTargetedGraphContentChange(
   }
 
   return changedGraph ? { next: changedGraph } : null;
+}
+
+function findSelectionOnlyActiveFilePath(
+  snapshot: AppSnapshot,
+  previousSnapshot: AppSnapshot
+): string | null {
+  if (
+    snapshot.project.id !== previousSnapshot.project.id ||
+    snapshot.project.activeDocumentId === previousSnapshot.project.activeDocumentId ||
+    snapshot.project.name !== previousSnapshot.project.name ||
+    snapshot.project.updatedAt !== previousSnapshot.project.updatedAt ||
+    snapshot.project.createdAt !== previousSnapshot.project.createdAt ||
+    snapshot.project.documents !== previousSnapshot.project.documents ||
+    snapshot.project.folders !== previousSnapshot.project.folders ||
+    snapshot.project.figures !== previousSnapshot.project.figures ||
+    snapshot.project.graphs !== previousSnapshot.project.graphs ||
+    snapshot.project.trash !== previousSnapshot.project.trash
+  ) {
+    return null;
+  }
+
+  const activeDocument = snapshot.project.documents.find(
+    (document) => document.id === snapshot.project.activeDocumentId
+  );
+
+  return activeDocument ? normalizeProjectPath(activeDocument.name) : null;
 }
 
 function getLegacyEntryUpdatedAt(

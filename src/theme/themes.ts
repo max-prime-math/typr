@@ -172,52 +172,6 @@ export const BUILTIN_THEMES: ThemeDefinition[] = [
     editorSelection: "rgba(140, 170, 238, 0.24)",
     shadow: "0 24px 80px rgba(17, 18, 28, 0.35)"
   }),
-  theme("catppuccin-macchiato", "Catppuccin Macchiato", "A deeper blue-gray Catppuccin variant.", "dark", {
-    ...DARK_NEUTRAL,
-    background: "#24273a",
-    backgroundWash: "#1e2030",
-    surface: "rgba(36, 39, 58, 0.86)",
-    surfaceStrong: "#24273a",
-    surfaceMuted: "rgba(54, 58, 79, 0.94)",
-    text: "#cad3f5",
-    textMuted: "#a5adcb",
-    border: "rgba(165, 173, 203, 0.14)",
-    accent: "#8aadf4",
-    accentStrong: "#91d7e3",
-    accentSoft: "rgba(138, 173, 244, 0.14)",
-    danger: "#ed8796",
-    warning: "#eed49f",
-    editorBackground: "#24273a",
-    editorForeground: "#cad3f5",
-    editorGutter: "#1e2030",
-    editorGutterForeground: "#7077a5",
-    editorActiveLine: "rgba(138, 173, 244, 0.12)",
-    editorSelection: "rgba(138, 173, 244, 0.24)",
-    shadow: "0 24px 80px rgba(11, 12, 21, 0.38)"
-  }),
-  theme("catppuccin-mocha", "Catppuccin Mocha", "Warm dark theme with soft contrast and cyan accents.", "dark", {
-    ...DARK_NEUTRAL,
-    background: "#1e1e2e",
-    backgroundWash: "#181825",
-    surface: "rgba(30, 30, 46, 0.86)",
-    surfaceStrong: "#1e1e2e",
-    surfaceMuted: "rgba(69, 71, 90, 0.94)",
-    text: "#cdd6f4",
-    textMuted: "#a6adc8",
-    border: "rgba(166, 173, 200, 0.14)",
-    accent: "#89b4fa",
-    accentStrong: "#94e2d5",
-    accentSoft: "rgba(137, 180, 250, 0.14)",
-    danger: "#f38ba8",
-    warning: "#f9e2af",
-    editorBackground: "#1e1e2e",
-    editorForeground: "#cdd6f4",
-    editorGutter: "#181825",
-    editorGutterForeground: "#6c7086",
-    editorActiveLine: "rgba(137, 180, 250, 0.12)",
-    editorSelection: "rgba(137, 180, 250, 0.24)",
-    shadow: "0 24px 80px rgba(4, 5, 17, 0.42)"
-  }),
   theme("gruvbox-light", "Gruvbox Light", "Warm paper tones with an amber-and-blue accent mix.", "light", {
     ...LIGHT_NEUTRAL,
     background: "#fbf1c7",
@@ -356,6 +310,29 @@ export const BUILTIN_THEMES: ThemeDefinition[] = [
     editorSelection: "rgba(40, 105, 131, 0.2)",
     shadow: "0 24px 80px rgba(87, 82, 121, 0.11)"
   }),
+  theme("rose-pine-moon", "Rose Pine Moon", "A dusky Rose Pine companion to Dawn.", "dark", {
+    ...DARK_NEUTRAL,
+    background: "#232136",
+    backgroundWash: "#2a273f",
+    surface: "rgba(42, 39, 63, 0.9)",
+    surfaceStrong: "#232136",
+    surfaceMuted: "rgba(57, 53, 82, 0.94)",
+    text: "#e0def4",
+    textMuted: "#908caa",
+    border: "rgba(144, 140, 170, 0.16)",
+    accent: "#3e8fb0",
+    accentStrong: "#ea9a97",
+    accentSoft: "rgba(62, 143, 176, 0.14)",
+    danger: "#eb6f92",
+    warning: "#f6c177",
+    editorBackground: "#232136",
+    editorForeground: "#e0def4",
+    editorGutter: "#2a273f",
+    editorGutterForeground: "#6e6a86",
+    editorActiveLine: "rgba(62, 143, 176, 0.12)",
+    editorSelection: "rgba(62, 143, 176, 0.24)",
+    shadow: "0 24px 80px rgba(13, 11, 25, 0.4)"
+  }),
   theme("kanagawa-lotus", "Kanagawa Lotus", "Kanagawa's light lotus-paper palette.", "light", {
     ...LIGHT_NEUTRAL,
     background: "#f2ecbc",
@@ -378,6 +355,29 @@ export const BUILTIN_THEMES: ThemeDefinition[] = [
     editorActiveLine: "rgba(77, 105, 155, 0.08)",
     editorSelection: "rgba(77, 105, 155, 0.2)",
     shadow: "0 24px 80px rgba(84, 84, 100, 0.12)"
+  }),
+  theme("kanagawa-wave", "Kanagawa Wave", "Kanagawa's ink-dark wave palette.", "dark", {
+    ...DARK_NEUTRAL,
+    background: "#1f1f28",
+    backgroundWash: "#16161d",
+    surface: "rgba(34, 36, 54, 0.9)",
+    surfaceStrong: "#1f1f28",
+    surfaceMuted: "rgba(54, 59, 79, 0.94)",
+    text: "#dcd7ba",
+    textMuted: "#c8c093",
+    border: "rgba(114, 128, 153, 0.16)",
+    accent: "#7e9cd8",
+    accentStrong: "#957fb8",
+    accentSoft: "rgba(126, 156, 216, 0.14)",
+    danger: "#c34043",
+    warning: "#c0a36e",
+    editorBackground: "#1f1f28",
+    editorForeground: "#dcd7ba",
+    editorGutter: "#16161d",
+    editorGutterForeground: "#727169",
+    editorActiveLine: "rgba(126, 156, 216, 0.12)",
+    editorSelection: "rgba(126, 156, 216, 0.24)",
+    shadow: "0 24px 80px rgba(8, 9, 14, 0.42)"
   }),
   theme("everforest-light", "Everforest Light", "Everforest's soft light green-and-gold palette.", "light", {
     ...LIGHT_NEUTRAL,
@@ -424,6 +424,29 @@ export const BUILTIN_THEMES: ThemeDefinition[] = [
     editorActiveLine: "rgba(64, 120, 242, 0.07)",
     editorSelection: "rgba(64, 120, 242, 0.18)",
     shadow: "0 24px 80px rgba(56, 58, 66, 0.1)"
+  }),
+  theme("one-dark", "One Dark", "Atom's familiar One Dark palette.", "dark", {
+    ...DARK_NEUTRAL,
+    background: "#282c34",
+    backgroundWash: "#21252b",
+    surface: "rgba(40, 44, 52, 0.9)",
+    surfaceStrong: "#282c34",
+    surfaceMuted: "rgba(53, 59, 69, 0.94)",
+    text: "#abb2bf",
+    textMuted: "#828997",
+    border: "rgba(130, 137, 151, 0.16)",
+    accent: "#61afef",
+    accentStrong: "#56b6c2",
+    accentSoft: "rgba(97, 175, 239, 0.14)",
+    danger: "#e06c75",
+    warning: "#e5c07b",
+    editorBackground: "#282c34",
+    editorForeground: "#abb2bf",
+    editorGutter: "#21252b",
+    editorGutterForeground: "#5c6370",
+    editorActiveLine: "rgba(97, 175, 239, 0.12)",
+    editorSelection: "rgba(97, 175, 239, 0.24)",
+    shadow: "0 24px 80px rgba(9, 11, 15, 0.4)"
   }),
   theme("ayu-light", "Ayu Light", "Ayu's clean light palette with warm accents.", "light", {
     ...LIGHT_NEUTRAL,
@@ -494,51 +517,28 @@ export const BUILTIN_THEMES: ThemeDefinition[] = [
     editorSelection: "rgba(38, 139, 210, 0.24)",
     shadow: "0 24px 80px rgba(0, 27, 36, 0.42)"
   }),
-  theme("dracula", "Dracula", "High-contrast purple and pink with a familiar terminal feel.", "dark", {
+  theme("ayu-dark", "Ayu Dark", "Ayu's dark editor palette with warm amber accents.", "dark", {
     ...DARK_NEUTRAL,
-    background: "#282a36",
-    backgroundWash: "#21222c",
-    surface: "rgba(52, 55, 70, 0.9)",
-    surfaceStrong: "#282a36",
-    surfaceMuted: "rgba(68, 71, 90, 0.94)",
-    text: "#f8f8f2",
-    textMuted: "#bd93f9",
-    border: "rgba(189, 147, 249, 0.16)",
-    accent: "#bd93f9",
-    accentStrong: "#ff79c6",
-    accentSoft: "rgba(189, 147, 249, 0.14)",
-    danger: "#ff5555",
-    warning: "#f1fa8c",
-    editorBackground: "#282a36",
-    editorForeground: "#f8f8f2",
-    editorGutter: "#21222c",
-    editorGutterForeground: "#6272a4",
-    editorActiveLine: "rgba(189, 147, 249, 0.12)",
-    editorSelection: "rgba(189, 147, 249, 0.24)",
-    shadow: "0 24px 80px rgba(6, 6, 13, 0.44)"
-  }),
-  theme("rose-pine", "Rose Pine", "A muted rose-and-pine dark palette.", "dark", {
-    ...DARK_NEUTRAL,
-    background: "#191724",
-    backgroundWash: "#1f1d2e",
-    surface: "rgba(31, 29, 46, 0.9)",
-    surfaceStrong: "#191724",
-    surfaceMuted: "rgba(38, 35, 58, 0.94)",
-    text: "#e0def4",
-    textMuted: "#908caa",
-    border: "rgba(144, 140, 170, 0.16)",
-    accent: "#c4a7e7",
-    accentStrong: "#9ccfd8",
-    accentSoft: "rgba(196, 167, 231, 0.14)",
-    danger: "#eb6f92",
-    warning: "#f6c177",
-    editorBackground: "#191724",
-    editorForeground: "#e0def4",
-    editorGutter: "#1f1d2e",
-    editorGutterForeground: "#6e6a86",
-    editorActiveLine: "rgba(196, 167, 231, 0.12)",
-    editorSelection: "rgba(196, 167, 231, 0.24)",
-    shadow: "0 24px 80px rgba(6, 5, 12, 0.42)"
+    background: "#0f1419",
+    backgroundWash: "#131a21",
+    surface: "rgba(19, 26, 33, 0.9)",
+    surfaceStrong: "#0f1419",
+    surfaceMuted: "rgba(27, 36, 45, 0.94)",
+    text: "#e6e1cf",
+    textMuted: "#b3b1ad",
+    border: "rgba(179, 177, 173, 0.16)",
+    accent: "#ffb454",
+    accentStrong: "#aad94c",
+    accentSoft: "rgba(255, 180, 84, 0.14)",
+    danger: "#f07178",
+    warning: "#ffee99",
+    editorBackground: "#0f1419",
+    editorForeground: "#e6e1cf",
+    editorGutter: "#131a21",
+    editorGutterForeground: "#5c6773",
+    editorActiveLine: "rgba(255, 180, 84, 0.1)",
+    editorSelection: "rgba(255, 180, 84, 0.22)",
+    shadow: "0 24px 80px rgba(0, 0, 0, 0.44)"
   }),
   theme("tokyo-night", "Tokyo Night", "Deep indigo surfaces with a crisp blue accent.", "dark", {
     ...DARK_NEUTRAL,
@@ -589,6 +589,27 @@ export const BUILTIN_THEMES: ThemeDefinition[] = [
 ];
 
 export const DEFAULT_THEME_ID = "catppuccin-latte";
+export const DEFAULT_DARK_THEME_ID = "catppuccin-frappe";
+
+export const BUILTIN_THEME_PAIRS = [
+  ["catppuccin-latte", "catppuccin-frappe"],
+  ["gruvbox-light", "gruvbox-dark"],
+  ["solarized-light", "solarized-dark"],
+  ["tokyo-night-day", "tokyo-night"],
+  ["rose-pine-dawn", "rose-pine-moon"],
+  ["kanagawa-lotus", "kanagawa-wave"],
+  ["everforest-light", "everforest-dark"],
+  ["one-light", "one-dark"],
+  ["ayu-light", "ayu-dark"],
+  ["nord-light", "nord"]
+] as const;
+
+const THEME_DISPLAY_ORDER = new Map<string, number>(
+  BUILTIN_THEME_PAIRS.flatMap(([lightThemeId, darkThemeId], index): Array<[string, number]> => [
+    [lightThemeId, index],
+    [darkThemeId, index]
+  ])
+);
 
 export const BUILTIN_THEME_IDS = new Set(BUILTIN_THEMES.map((themeDefinition) => themeDefinition.id));
 
@@ -678,10 +699,36 @@ export function normalizeThemeId(themeId: string): string {
   }
 
   if (themeId === "dark") {
-    return "catppuccin-mocha";
+    return DEFAULT_DARK_THEME_ID;
+  }
+
+  if (
+    themeId === "catppuccin-macchiato" ||
+    themeId === "catppuccin-mocha" ||
+    themeId === "dracula"
+  ) {
+    return DEFAULT_DARK_THEME_ID;
   }
 
   return themeId;
+}
+
+export function compareThemesByDisplayOrder(
+  left: ThemeDefinition,
+  right: ThemeDefinition
+): number {
+  const leftOrder = THEME_DISPLAY_ORDER.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+  const rightOrder = THEME_DISPLAY_ORDER.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+
+  if (leftOrder !== rightOrder) {
+    return leftOrder - rightOrder;
+  }
+
+  if (left.source !== right.source) {
+    return left.source === "builtin" ? -1 : 1;
+  }
+
+  return left.name.localeCompare(right.name);
 }
 
 export function applyThemeVariables(theme: ThemeDefinition, root: HTMLElement): void {

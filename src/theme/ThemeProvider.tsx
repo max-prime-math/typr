@@ -13,12 +13,14 @@ import {
   AUTO_THEME_ID,
   BUILTIN_THEMES,
   createCustomTheme,
+  DEFAULT_DARK_THEME_ID,
   DEFAULT_THEME_ID,
   getThemeById,
   getThemesByMode,
   isAutoThemeId,
   isCompletePalette,
   isThemeMode,
+  normalizeThemeId,
   pickRandomTheme,
   type ThemeDefinition,
   type ThemeImportFile,
@@ -215,7 +217,11 @@ function resolveAutoTheme(
     }
   }
 
-  const pickedTheme = pickRandomTheme(available) ?? getThemeById(DEFAULT_THEME_ID, themes);
+  const defaultThemeId = systemMode === "dark" ? DEFAULT_DARK_THEME_ID : DEFAULT_THEME_ID;
+  const pickedTheme =
+    available.find((themeDefinition) => themeDefinition.id === defaultThemeId) ??
+    pickRandomTheme(available) ??
+    getThemeById(DEFAULT_THEME_ID, themes);
   saveAutoThemeSelection({
     systemMode,
     themeId: pickedTheme.id
@@ -228,11 +234,13 @@ function resolveTheme(
   themes: ThemeDefinition[],
   systemMode: ThemeMode
 ): ThemeDefinition {
-  if (isAutoThemeId(preferenceId)) {
+  const normalizedPreferenceId = normalizeThemeId(preferenceId);
+
+  if (isAutoThemeId(normalizedPreferenceId)) {
     return resolveAutoTheme(themes, systemMode);
   }
 
-  return getThemeById(preferenceId, themes);
+  return getThemeById(normalizedPreferenceId, themes);
 }
 
 function createThemeFromImportFile(parsed: unknown): ThemeDefinition | null {
@@ -263,13 +271,18 @@ function createThemeFromImportFile(parsed: unknown): ThemeDefinition | null {
 export function ThemeProvider({ children }: PropsWithChildren) {
   const bootThemeSnapshotRef = useRef<BootThemeSnapshot | null>(readBootThemeSnapshot());
   const [themePreferenceId, setThemePreferenceId] = useState<string>(
-    () => bootThemeSnapshotRef.current?.preferenceId ?? AUTO_THEME_ID
+    () => normalizeThemeId(bootThemeSnapshotRef.current?.preferenceId ?? AUTO_THEME_ID)
   );
   const [customThemes, setCustomThemes] = useState<ThemeDefinition[]>(() => readCachedCustomThemes());
   const [resolvedThemeId, setResolvedThemeId] = useState<string>(() => {
     const bootTheme = bootThemeSnapshotRef.current?.resolvedTheme;
 
     if (bootTheme) {
+      const normalizedBootThemeId = normalizeThemeId(bootTheme.id);
+      if (normalizedBootThemeId !== bootTheme.id) {
+        return resolveTheme(normalizedBootThemeId, BUILTIN_THEMES, getSystemThemeMode()).id;
+      }
+
       return bootTheme.id;
     }
 
@@ -352,7 +365,7 @@ export function ThemeProvider({ children }: PropsWithChildren) {
   }, [customThemes]);
 
   const setTheme = useCallback((nextThemeId: string) => {
-    const normalizedThemeId = nextThemeId;
+    const normalizedThemeId = normalizeThemeId(nextThemeId);
     setThemePreferenceId(normalizedThemeId);
 
     const availableThemes = [...BUILTIN_THEMES, ...customThemesRef.current];

@@ -1,5 +1,6 @@
 export type KeybindingCommandId =
   | "compile"
+  | "formatDocument"
   | "toggleVim"
   | "openSearch"
   | "multiCursorAbove"
@@ -18,6 +19,8 @@ export type KeybindingCommandId =
   | "showSplit"
   | "focusSourcePane"
   | "focusPreviewPane"
+  | "previousWorkspaceTab"
+  | "nextWorkspaceTab"
   | "previousSidebarTool"
   | "nextSidebarTool"
   | "increaseActivePaneZoom"
@@ -48,6 +51,7 @@ export interface KeybindingDefinition {
 
 export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { id: "compile", label: "Compile document", group: "Editing", defaultBinding: "Mod-Enter" },
+  { id: "formatDocument", label: "Format document", group: "Editing", defaultBinding: "Shift-Alt-f" },
   { id: "toggleVim", label: "Toggle Vim mode", group: "Editing", defaultBinding: "Alt-v" },
   { id: "openSearch", label: "Open search", group: "Editing", defaultBinding: "Mod-f" },
   {
@@ -89,8 +93,20 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { id: "showEditorOnly", label: "Show editor only", group: "Layout", defaultBinding: "Mod-Alt-2" },
   { id: "showPreviewOnly", label: "Show preview only", group: "Layout", defaultBinding: "Mod-Alt-3" },
   { id: "showSplit", label: "Show split workspace", group: "Layout", defaultBinding: "Mod-Alt-4" },
-  { id: "focusSourcePane", label: "Focus source pane", group: "Layout", defaultBinding: "Alt-h" },
-  { id: "focusPreviewPane", label: "Focus preview pane", group: "Layout", defaultBinding: "Alt-l" },
+  { id: "focusSourcePane", label: "Focus pane left", group: "Layout", defaultBinding: "Alt-h" },
+  { id: "focusPreviewPane", label: "Focus pane right", group: "Layout", defaultBinding: "Alt-l" },
+  {
+    id: "previousWorkspaceTab",
+    label: "Previous open tab",
+    group: "Layout",
+    defaultBinding: "Alt-["
+  },
+  {
+    id: "nextWorkspaceTab",
+    label: "Next open tab",
+    group: "Layout",
+    defaultBinding: "Alt-]"
+  },
   {
     id: "previousSidebarTool",
     label: "Previous left tab",
@@ -251,9 +267,16 @@ export function formatKeybinding(binding: string, apple: boolean): string {
 
 export function toCodeMirrorKeybinding(binding: string): string {
   return binding
-    .split("-")
-    .map((part) => (part === "Minus" ? "-" : part))
-    .join("-");
+    .trim()
+    .split(/\s+/)
+    .map((chord) =>
+      chord
+        .split("-")
+        .filter(Boolean)
+        .map((part) => (part === "Minus" ? "-" : part))
+        .join("-")
+    )
+    .join(" ");
 }
 
 export function keybindingFromKeyboardEvent(event: KeyboardEvent, apple: boolean): string | null {
@@ -385,6 +408,14 @@ function normalizeEventCode(code: string): string | null {
 
   if (code === "Equal") {
     return "=";
+  }
+
+  if (code === "BracketLeft") {
+    return "[";
+  }
+
+  if (code === "BracketRight") {
+    return "]";
   }
 
   return null;
