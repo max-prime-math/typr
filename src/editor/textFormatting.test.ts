@@ -32,7 +32,7 @@ describe("text formatting toggles", () => {
     expect(unwrapped.selection).toEqual({ from: 6, to: 10 });
   });
 
-  it("uses Markdown delimiters and HTML underline", () => {
+  it("uses Markdown delimiters and extension underline", () => {
     expect(toggleTextFormatInSource("make bold", { from: 5, to: 9 }, "markdown", "bold").source).toBe(
       "make **bold**"
     );
@@ -40,7 +40,7 @@ describe("text formatting toggles", () => {
       "make _italic_"
     );
     expect(toggleTextFormatInSource("make underline", { from: 5, to: 14 }, "markdown", "underline").source).toBe(
-      "make <u>underline</u>"
+      "make ++underline++"
     );
   });
 });

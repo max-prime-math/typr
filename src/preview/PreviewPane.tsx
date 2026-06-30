@@ -1318,6 +1318,23 @@ function parseMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
       }
     }
 
+    if (text.startsWith("++", index)) {
+      const end = text.indexOf("++", index + 2);
+      if (end > index + 2) {
+        nodes.push(
+          <u key={keyPrefix + "-underline-" + nodeIndex}>
+            {parseMarkdownInline(
+              text.slice(index + 2, end),
+              keyPrefix + "-underline-" + nodeIndex
+            )}
+          </u>
+        );
+        nodeIndex += 1;
+        index = end + 2;
+        continue;
+      }
+    }
+
     const emphasisMarker =
       text[index] === "*" || text[index] === "_" ? text[index] : null;
     if (emphasisMarker) {
@@ -1346,7 +1363,7 @@ function parseMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
 }
 
 function findNextMarkdownInlineSpecial(text: string, start: number): number {
-  const positions = ["`", "[", "*", "_"]
+  const positions = ["`", "[", "*", "_", "++"]
     .map((marker) => text.indexOf(marker, start))
     .filter((position) => position >= 0);
 

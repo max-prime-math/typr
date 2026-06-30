@@ -1690,6 +1690,7 @@ function renderMarkdownInlineHtml(value: string): string {
   );
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  rendered = rendered.replace(/\+\+([^+]+)\+\+/g, "<u>$1</u>");
 
   return rendered.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => placeholders[Number(index)] ?? "");
 }

@@ -92,7 +92,7 @@ function getTextFormatMarkup(language: SourceLanguage, kind: TextFormatKind): Te
       return { before: "_", after: "_" };
     }
 
-    return { before: "<u>", after: "</u>" };
+    return { before: "++", after: "++" };
   }
 
   if (kind === "bold") {
