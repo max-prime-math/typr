@@ -6349,12 +6349,12 @@ export function App() {
   }, []);
 
   const handleBold = useCallback(() => {
-    handleWrapEditorSelection("*");
-  }, [handleWrapEditorSelection]);
+    editorRef.current?.toggleTextFormat("bold");
+  }, []);
 
   const handleItalic = useCallback(() => {
-    handleWrapEditorSelection("_");
-  }, [handleWrapEditorSelection]);
+    editorRef.current?.toggleTextFormat("italic");
+  }, []);
 
   const clearSourceSymbolPreview = useCallback(() => {
     if (symbolHoverTimerRef.current !== null) {
@@ -6416,8 +6416,8 @@ export function App() {
   }, []);
 
   const handleUnderline = useCallback(() => {
-    handleWrapEditorSelection("#underline[", "]");
-  }, [handleWrapEditorSelection]);
+    editorRef.current?.toggleTextFormat("underline");
+  }, []);
 
   const handleCycleHeading = useCallback(() => {
     editorRef.current?.cycleCurrentLinesHeading();

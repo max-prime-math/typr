@@ -46,6 +46,7 @@ import type { SourceLanguage } from "../compiler/sourceFileTypes";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { toggleMathDelimiterCommand } from "./mathActions";
+import { toggleTextFormatCommand } from "./textFormatting";
 import { smoothCursor } from "./smoothCursor";
 import { typstLanguage } from "./typstLanguage";
 import type { ThemeDefinition } from "../theme/themes";
@@ -302,6 +303,9 @@ export function createEditorExtensions({
       onFormatRequested();
       return true;
     }, scope: "editor" },
+    { key: "Mod-b", run: toggleTextFormatCommand(language, "bold"), preventDefault: true },
+    { key: "Mod-i", run: toggleTextFormatCommand(language, "italic"), preventDefault: true },
+    { key: "Mod-u", run: toggleTextFormatCommand(language, "underline"), preventDefault: true },
     { key: toCodeMirrorKeybinding(keybindings.multiCursorAbove), run: addCursorAbove },
     { key: toCodeMirrorKeybinding(keybindings.multiCursorBelow), run: addCursorBelow },
     { key: toCodeMirrorKeybinding(keybindings.multiCursorNextMatch), run: selectNextOccurrence, preventDefault: true },

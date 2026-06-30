@@ -25,6 +25,7 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
+import { toggleTextFormatInView, type TextFormatKind } from "./textFormatting";
 import { smoothCursorJumpEffect } from "./smoothCursor";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
@@ -96,6 +97,7 @@ export interface TypstEditorHandle {
   toggleCurrentLines(prefix: string, alternatePrefix?: string): void;
   cycleCurrentLinesHeading(maxLevel?: number): void;
   toggleMathMode(): void;
+  toggleTextFormat(kind: TextFormatKind): void;
   undo: () => void;
   redo: () => void;
   search: () => void;
@@ -285,6 +287,15 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         cycleMathDelimiter(view);
         view.focus();
       },
+      toggleTextFormat(kind) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        toggleTextFormatInView(view, language, kind);
+      },
       undo() {
         const view = viewRef.current;
         if (view) {
@@ -398,7 +409,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
       }
     }),
-    [onCompileRequested, onFormatRequested, onSearchRequested]
+    [language, onCompileRequested, onFormatRequested, onSearchRequested]
   );
 
   useEffect(() => {
