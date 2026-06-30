@@ -11568,8 +11568,8 @@ export function App() {
       .sort((left, right) => left.name.localeCompare(right.name));
   }, [cachedLatexPackageNames, latexBundleCacheById, latexPackageCatalog]);
   const flatOutlineEntries = useMemo(
-    () => collectOutlineEntries(outlineSourceContent),
-    [outlineSourceContent]
+    () => collectOutlineEntries(outlineSourceContent, activeSourceLanguage),
+    [activeSourceLanguage, outlineSourceContent]
   );
   const outlineEntries = useMemo(
     () => buildOutlineTree(flatOutlineEntries),
@@ -14187,7 +14187,7 @@ export function App() {
                     </div>
                   ) : (
                     <div className="snippet-empty">
-                      Add Typst headings like <code>= Section</code> to build an outline.
+                      Add headings like <code>= Section</code>, <code># Section</code>, or <code>{"\\section{Title}"}</code> to build an outline.
                     </div>
                   )}
                 </section>
@@ -17725,11 +17725,23 @@ ${footerRow}
 )`;
 }
 
-function collectOutlineEntries(content: string): OutlineEntry[] {
+function collectOutlineEntries(content: string, language: SourceLanguage): OutlineEntry[] {
+  if (language === "latex") {
+    return collectLatexOutlineEntries(content);
+  }
+
+  if (language === "markdown") {
+    return collectMarkdownOutlineEntries(content);
+  }
+
+  return collectTypstOutlineEntries(content);
+}
+
+function collectTypstOutlineEntries(content: string): OutlineEntry[] {
   return content
     .split("\n")
     .flatMap((lineText, index) => {
-      const match = lineText.match(/^(=+)\s+(.*)$/);
+      const match = lineText.match(/^\s*(=+)\s+(.*)$/);
 
       if (!match) {
         return [];
@@ -17739,10 +17751,74 @@ function collectOutlineEntries(content: string): OutlineEntry[] {
         {
           level: match[1].length,
           lineNumber: index + 1,
-          title: match[2].trim()
+          title: cleanOutlineTitle(match[2])
         } satisfies OutlineEntry
       ];
     });
+}
+
+function collectMarkdownOutlineEntries(content: string): OutlineEntry[] {
+  return content
+    .split("\n")
+    .flatMap((lineText, index) => {
+      const match = lineText.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+
+      if (!match) {
+        return [];
+      }
+
+      return [
+        {
+          level: match[1].length,
+          lineNumber: index + 1,
+          title: cleanOutlineTitle(match[2])
+        } satisfies OutlineEntry
+      ];
+    });
+}
+
+const LATEX_OUTLINE_LEVELS = new Map([
+  ["part", 1],
+  ["chapter", 2],
+  ["section", 3],
+  ["subsection", 4],
+  ["subsubsection", 5],
+  ["paragraph", 6],
+  ["subparagraph", 7]
+]);
+
+function collectLatexOutlineEntries(content: string): OutlineEntry[] {
+  return content
+    .split("\n")
+    .flatMap((lineText, index) => {
+      const match = lineText.match(/^\s*\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(?:\[[^\]]*\])?\s*\{(.+)\}\s*$/);
+
+      if (!match) {
+        return [];
+      }
+
+      return [
+        {
+          level: LATEX_OUTLINE_LEVELS.get(match[1]) ?? 1,
+          lineNumber: index + 1,
+          title: cleanLatexOutlineTitle(match[2])
+        } satisfies OutlineEntry
+      ];
+    });
+}
+
+function cleanOutlineTitle(title: string): string {
+  return title.trim().replace(/\s+/g, " ");
+}
+
+function cleanLatexOutlineTitle(title: string): string {
+  return cleanOutlineTitle(
+    title
+      .replace(/\\texorpdfstring\s*\{([^{}]*)\}\s*\{[^{}]*\}/g, "$1")
+      .replace(/\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\s*\{([^{}]*)\}/g, "$1")
+      .replace(/\\([#$%&_{}])/g, "$1")
+      .replace(/\\[a-zA-Z]+\*?/g, "")
+  );
 }
 
 function buildOutlineTree(entries: OutlineEntry[]): OutlineTreeEntry[] {
