@@ -7,6 +7,7 @@ import {
   type RepoStatus,
   type RepoTreeEntry
 } from "./repoBackend";
+import { bytesToHex, sha1Hex } from "../utils/hash";
 import { redactGitSecrets } from "./credentials";
 
 export interface RemoteGitConfig {
@@ -1310,12 +1311,6 @@ async function gitObjectSha(type: "commit" | "tree" | "blob", content: string): 
   return sha1Hex(payload);
 }
 
-async function sha1Hex(bytes: Uint8Array): Promise<string> {
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const digest = await crypto.subtle.digest("SHA-1", buffer);
-  return bytesToHex(new Uint8Array(digest));
-}
-
 function concatBytes(chunks: Uint8Array[]): Uint8Array {
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
   const result = new Uint8Array(totalLength);
@@ -1325,10 +1320,6 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.byteLength;
   }
   return result;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function validateRemoteConfig(config: RemoteGitConfig, token: string): RemoteGitResult {

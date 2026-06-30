@@ -1849,6 +1849,32 @@ function appendUniqueWorkspacePath(paths: string[], path: string): string[] {
   return [...normalizedPaths, normalizedPath];
 }
 
+function insertWorkspacePathAfterActive(
+  paths: string[],
+  path: string,
+  activePath: string | null
+): string[] {
+  const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
+  const normalizedPath = normalizeWorkspacePath(path);
+
+  if (!normalizedPath || normalizedPaths.includes(normalizedPath)) {
+    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
+  }
+
+  const normalizedActivePath = activePath ? normalizeWorkspacePath(activePath) : null;
+  const activeIndex = normalizedActivePath ? normalizedPaths.indexOf(normalizedActivePath) : -1;
+
+  if (activeIndex < 0) {
+    return [...normalizedPaths, normalizedPath];
+  }
+
+  return [
+    ...normalizedPaths.slice(0, activeIndex + 1),
+    normalizedPath,
+    ...normalizedPaths.slice(activeIndex + 1)
+  ];
+}
+
 function reorderWorkspacePaths(
   paths: string[],
   draggedPath: string,
@@ -2579,6 +2605,8 @@ export function App() {
   const sourceTabsInitializedProjectRef = useRef<string | null>(null);
   const previewTabsInitializedProjectRef = useRef<string | null>(null);
   const workspaceTabDragRef = useRef<{ kind: WorkspaceTabKind; path: string } | null>(null);
+  const activeSourceTabRef = useRef<HTMLDivElement | null>(null);
+  const activePreviewTabRef = useRef<HTMLDivElement | null>(null);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
   const snippetImportInputRef = useRef<HTMLInputElement | null>(null);
   const projectImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -2589,6 +2617,7 @@ export function App() {
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
   const compileTimerRef = useRef<number | null>(null);
+  const compileFrameRef = useRef<number | null>(null);
   const previewPendingGTimerRef = useRef<number | null>(null);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   const panelResizeRef = useRef<{
@@ -3770,8 +3799,15 @@ export function App() {
       : typeof activePreviewWorkspaceNode?.content === "string"
         ? activePreviewWorkspaceNode.content
         : "";
-  const activePreviewCompileState = activePreviewPath
-    ? compilePreviewsByPath[activePreviewPath] ?? null
+  const activePreviewCompileSourcePath = activePreviewPath
+    ? resolveLatexSourcePathForPdfPreview(
+        activePreviewPath,
+        selectedProjectRepository,
+        activeSourcePathRef.current
+      ) ?? activePreviewPath
+    : null;
+  const activePreviewCompileState = activePreviewCompileSourcePath
+    ? compilePreviewsByPath[activePreviewCompileSourcePath] ?? null
     : null;
   const activePreviewSourcePosition = useMemo<SourcePosition | null>(
     () =>
@@ -3892,34 +3928,40 @@ export function App() {
       cancelled = true;
     };
   }, [activePreviewTextContent, activePreviewWorkspaceNode, selectedProjectRepository]);
-  const visiblePreviewResult =
-    activePreviewPath && !selectedWorkspacePreview
-      ? activePreviewCompileState?.result ?? null
-      : null;
-  const visibleLastSuccessfulResult =
-    activePreviewPath && !selectedWorkspacePreview
-      ? activePreviewCompileState?.lastSuccessfulResult ?? null
-      : null;
-  const activePreviewCompilePath = activePreviewPath
-    ? normalizeWorkspacePath(activePreviewPath)
+  const activePreviewCompilePath = activePreviewCompileSourcePath
+    ? normalizeWorkspacePath(activePreviewCompileSourcePath)
     : null;
   const activeCompileTargetPath = normalizeWorkspacePath(
     compileInFlightSourcePathRef.current || pendingSourcePathRef.current
   );
-  const visiblePreviewIsCompiling = Boolean(
-    activePreviewCompileState?.isCompiling &&
-      isCompiling &&
-      !selectedWorkspacePreview &&
-      activePreviewCompilePath &&
+  const activePreviewIsCompileTarget = Boolean(
+    activePreviewCompilePath &&
+      activeCompileTargetPath &&
       activePreviewCompilePath === activeCompileTargetPath
   );
-  const rawVisiblePreviewCompilerStatus =
-    activePreviewCompileState?.compilerStatus ??
-    (activePreviewPath ? createIdleCompilerStatusForSource(activePreviewPath) : compilerStatus);
+  const visiblePreviewIsCompiling = Boolean(activePreviewCompileState?.isCompiling);
+  const visibleWorkspacePreview =
+    activePreviewPath && selectedWorkspacePreview?.path === activePreviewPath
+      ? selectedWorkspacePreview
+      : null;
+  const visiblePreviewResult =
+    activePreviewPath && !visibleWorkspacePreview
+      ? activePreviewCompileState?.result ?? null
+      : null;
+  const visibleLastSuccessfulResult =
+    activePreviewPath && !visibleWorkspacePreview
+      ? activePreviewCompileState?.lastSuccessfulResult ?? null
+      : null;
+  const rawVisiblePreviewCompilerStatus = activePreviewPath
+    ? activePreviewCompileState?.isCompiling && activePreviewIsCompileTarget
+      ? compilerStatus
+      : activePreviewCompileState?.compilerStatus ??
+        createIdleCompilerStatusForSource(activePreviewCompileSourcePath ?? activePreviewPath)
+    : compilerStatus;
   const visiblePreviewCompilerStatus =
     rawVisiblePreviewCompilerStatus.phase === "compiling" && !visiblePreviewIsCompiling
-      ? activePreviewPath
-        ? createIdleCompilerStatusForSource(activePreviewPath)
+      ? activePreviewCompileSourcePath
+        ? createIdleCompilerStatusForSource(activePreviewCompileSourcePath)
         : compilerStatus
       : rawVisiblePreviewCompilerStatus;
   const openSourceTab = useCallback((path: string) => {
@@ -3929,7 +3971,9 @@ export function App() {
       return;
     }
 
-    setSourceTabPaths((currentPaths) => appendUniqueWorkspacePath(currentPaths, normalizedPath));
+    setSourceTabPaths((currentPaths) =>
+      insertWorkspacePathAfterActive(currentPaths, normalizedPath, normalizedActiveSourcePath)
+    );
     setTransientSourceTabPath((currentPath) =>
       currentPath === normalizedPath ? null : currentPath
     );
@@ -3937,10 +3981,14 @@ export function App() {
       ...project,
       selection: {
         ...project.selection,
-        openFilePaths: appendUniqueWorkspacePath(project.selection.openFilePaths, normalizedPath)
+        openFilePaths: insertWorkspacePathAfterActive(
+          project.selection.openFilePaths,
+          normalizedPath,
+          normalizedActiveSourcePath
+        )
       }
     }));
-  }, [setProjectRepository]);
+  }, [normalizedActiveSourcePath, setProjectRepository]);
   const previewSourceTab = useCallback((path: string) => {
     const normalizedPath = normalizeWorkspacePath(path);
 
@@ -3957,12 +4005,14 @@ export function App() {
       return;
     }
 
-    setPreviewTabPaths((currentPaths) => appendUniqueWorkspacePath(currentPaths, normalizedPath));
+    setPreviewTabPaths((currentPaths) =>
+      insertWorkspacePathAfterActive(currentPaths, normalizedPath, activePreviewPath)
+    );
 
     if (options.activate ?? true) {
       setActivePreviewPath(normalizedPath);
     }
-  }, []);
+  }, [activePreviewPath]);
   useEffect(() => {
     if (
       isTrashViewOpen ||
@@ -4006,39 +4056,12 @@ export function App() {
     workspaceFilePathSet
   ]);
   useEffect(() => {
-    if (
-      isTrashViewOpen ||
-      !normalizedActiveSourcePath ||
-      !isSourceFileEditable ||
-      !isDocumentSourceTab
-    ) {
+    if (isTrashViewOpen || previewTabsInitializedProjectRef.current === activeProjectTabKey) {
       return;
     }
 
-    if (
-      canPreviewActiveSource &&
-      previewTabsInitializedProjectRef.current !== activeProjectTabKey &&
-      previewTabPaths.length === 0 &&
-      activePreviewPath === null
-    ) {
-      previewTabsInitializedProjectRef.current = activeProjectTabKey;
-      openPreviewTab(
-        getExistingLatexPdfPreviewPath(normalizedActiveSourcePath) ??
-          normalizedActiveSourcePath
-      );
-    }
-  }, [
-    activePreviewPath,
-    activeProjectTabKey,
-    canPreviewActiveSource,
-    getExistingLatexPdfPreviewPath,
-    isDocumentSourceTab,
-    isSourceFileEditable,
-    isTrashViewOpen,
-    normalizedActiveSourcePath,
-    openPreviewTab,
-    previewTabPaths.length
-  ]);
+    previewTabsInitializedProjectRef.current = activeProjectTabKey;
+  }, [activeProjectTabKey, isTrashViewOpen]);
   useEffect(() => {
     const nextSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths).filter(
       (path) => workspaceFilePathSet.has(path) && isTextWorkspaceFile(path)
@@ -4129,9 +4152,27 @@ export function App() {
       return;
     }
 
+    const normalizedSourcePath = normalizeWorkspacePath(activeSourcePath);
+    const scheduledCompilePath = normalizeWorkspacePath(
+      compileInFlightSourcePathRef.current || pendingSourcePathRef.current
+    );
+    const sourceHasScheduledCompile = Boolean(
+      normalizedSourcePath &&
+        scheduledCompilePath === normalizedSourcePath &&
+        (compileInFlightRef.current || compileFrameRef.current !== null || compileTimerRef.current !== null)
+    );
+
+    if (sourceHasScheduledCompile) {
+      return;
+    }
+
     if (compileTimerRef.current !== null) {
       window.clearTimeout(compileTimerRef.current);
       compileTimerRef.current = null;
+    }
+    if (compileFrameRef.current !== null) {
+      window.cancelAnimationFrame(compileFrameRef.current);
+      compileFrameRef.current = null;
     }
 
     compileRequestRef.current += 1;
@@ -4594,6 +4635,9 @@ export function App() {
       isMountedRef.current = false;
       if (compileTimerRef.current !== null) {
         window.clearTimeout(compileTimerRef.current);
+      }
+      if (compileFrameRef.current !== null) {
+        window.cancelAnimationFrame(compileFrameRef.current);
       }
       if (workspaceHoverExpandTimerRef.current !== null) {
         window.clearTimeout(workspaceHoverExpandTimerRef.current);
@@ -5873,8 +5917,8 @@ export function App() {
     }) => {
       return (
         compileInFlightLanguageRef.current === "latex" &&
+        compileInFlightSourcePathRef.current === sourcePath &&
         (compileInFlightSourceRef.current !== source ||
-          compileInFlightSourcePathRef.current !== sourcePath ||
           compileInFlightDiagramRevisionRef.current !== diagramRevision ||
           compileInFlightGraphRevisionRef.current !== graphRevision)
       );
@@ -5882,14 +5926,59 @@ export function App() {
     []
   );
 
-  const queueCompile = useCallback((debounced: boolean) => {
+  const clearScheduledCompile = useCallback(() => {
     if (compileTimerRef.current !== null) {
       window.clearTimeout(compileTimerRef.current);
       compileTimerRef.current = null;
     }
+    if (compileFrameRef.current !== null) {
+      window.cancelAnimationFrame(compileFrameRef.current);
+      compileFrameRef.current = null;
+    }
+  }, []);
+
+  const scheduleCompileAfterPaint = useCallback((delayMs: number) => {
+    clearScheduledCompile();
+    compileFrameRef.current = window.requestAnimationFrame(() => {
+      compileFrameRef.current = null;
+      compileTimerRef.current = window.setTimeout(() => {
+        compileTimerRef.current = null;
+        void runCompile();
+      }, delayMs);
+    });
+  }, [clearScheduledCompile, runCompile]);
+
+  const queueCompile = useCallback((debounced: boolean) => {
+    clearScheduledCompile();
 
     const sourcePath = activeSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
+    const previousPendingSourcePath = normalizeWorkspacePath(pendingSourcePathRef.current);
+    const nextSourcePathKey = normalizeWorkspacePath(sourcePath);
+
+    if (
+      compileInFlightRef.current &&
+      previousPendingSourcePath &&
+      nextSourcePathKey &&
+      previousPendingSourcePath !== nextSourcePathKey &&
+      previousPendingSourcePath !== normalizeWorkspacePath(compileInFlightSourcePathRef.current)
+    ) {
+      setCompilePreviewsByPath((currentPreviews) => {
+        const previousPreview = currentPreviews[previousPendingSourcePath];
+        if (!previousPreview?.isCompiling) {
+          return currentPreviews;
+        }
+
+        return {
+          ...currentPreviews,
+          [previousPendingSourcePath]: {
+            ...previousPreview,
+            isCompiling: false,
+            compilerStatus: createIdleCompilerStatusForSource(previousPendingSourcePath)
+          }
+        };
+      });
+    }
 
     pendingSourcePathRef.current = sourcePath;
     pendingSourceRef.current =
@@ -5900,7 +5989,13 @@ export function App() {
             isPaperView
           )
         : previewSourceDraftRef.current;
+    const nextCompilerStatus: CompilerStatus = {
+      phase: "compiling",
+      mode: "worker",
+      label: sourceLanguage === "latex" ? "Compiling LaTeX" : "Compiling"
+    };
     setIsCompiling(true);
+    setCompilerStatus(nextCompilerStatus);
     setCompilePreviewsByPath((currentPreviews) => {
       const sourcePathKey = normalizeWorkspacePath(sourcePath);
       const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
@@ -5910,9 +6005,8 @@ export function App() {
         [sourcePathKey]: {
           ...currentPreview,
           compilerStatus: {
-            phase: "compiling",
-            mode: currentPreview.compilerStatus.mode,
-            label: sourceLanguage === "latex" ? "Compiling LaTeX" : "Compiling"
+            ...nextCompilerStatus,
+            mode: currentPreview.compilerStatus.mode
           },
           isCompiling: true
         }
@@ -5939,16 +6033,8 @@ export function App() {
       return;
     }
 
-    if (!debounced) {
-      void runCompile();
-      return;
-    }
-
-    compileTimerRef.current = window.setTimeout(() => {
-      compileTimerRef.current = null;
-      void runCompile();
-    }, COMPILE_DEBOUNCE_MS);
-  }, [isPaperView, runCompile, shouldCancelInFlightLatexCompile]);
+    scheduleCompileAfterPaint(debounced ? COMPILE_DEBOUNCE_MS : 0);
+  }, [clearScheduledCompile, isPaperView, scheduleCompileAfterPaint, shouldCancelInFlightLatexCompile]);
 
   const formatActiveSource = useCallback((reason: "compile" | "manual") => {
     if (!isSourceFileEditable || isInspectingGraphSource) {
@@ -6058,10 +6144,7 @@ export function App() {
       if (savedResult?.ok) {
         openPreviewTab(getExistingLatexPdfPreviewPath(sourcePath) ?? sourcePath);
 
-        if (compileTimerRef.current !== null) {
-          window.clearTimeout(compileTimerRef.current);
-          compileTimerRef.current = null;
-        }
+        clearScheduledCompile();
 
         if (compileInFlightRef.current && compileInFlightLanguageRef.current === "latex") {
           compileRequestRef.current += 1;
@@ -6095,6 +6178,7 @@ export function App() {
     openPreviewTab(sourcePath);
     queueCompile(false);
   }, [
+    clearScheduledCompile,
     formatActiveSourceForCompile,
     getExistingLatexPdfPreviewPath,
     openPreviewTab,
@@ -6113,10 +6197,7 @@ export function App() {
 
     previewSourceDraftRef.current = sourceEditorValue;
     if (!isActiveSourceCompilable) {
-      if (compileTimerRef.current !== null) {
-        window.clearTimeout(compileTimerRef.current);
-        compileTimerRef.current = null;
-      }
+      clearScheduledCompile();
       compileRequestRef.current += 1;
       setIsCompiling(false);
       setCompileResult(null);
@@ -6129,11 +6210,10 @@ export function App() {
     }
 
     if (activeSourceLanguage !== "typst") {
-      if (compileTimerRef.current !== null) {
-        window.clearTimeout(compileTimerRef.current);
-        compileTimerRef.current = null;
+      if (activeSourceLanguage !== "latex") {
+        clearScheduledCompile();
+        setIsCompiling(false);
       }
-      setIsCompiling(false);
       return;
     }
 
@@ -6148,6 +6228,7 @@ export function App() {
     activePreviewPath,
     activeSourceLanguage,
     activeSourcePath,
+    clearScheduledCompile,
     sourceEditorValue,
     diagramAssetsRevision,
     compileResult,
@@ -6458,10 +6539,6 @@ export function App() {
         return;
       }
 
-      if (normalizedSourceTabs.length <= 1 && !normalizedTransientPath) {
-        return;
-      }
-
       const closingIndex = normalizedSourceTabs.indexOf(normalizedPath);
       const nextTabs = normalizedSourceTabs.filter((tabPath) => tabPath !== normalizedPath);
       const nextActivePath =
@@ -6478,15 +6555,14 @@ export function App() {
         }
       }
 
-      if (nextActivePath) {
-        setProjectRepository((project) => ({
-          ...project,
-          selection: {
-            activeFilePath: nextActivePath,
-            openFilePaths: nextTabs
-          }
-        }));
-      }
+      setProjectRepository((project) => ({
+        ...project,
+        selection: {
+          ...project.selection,
+          activeFilePath: nextActivePath ?? project.selection.activeFilePath,
+          openFilePaths: nextTabs
+        }
+      }));
       setSourceTabPaths(nextTabs);
     },
     [
@@ -9124,17 +9200,17 @@ export function App() {
     if (mode === "output") {
       const baseName = getRenderedOutputBaseName(sourcePath);
 
-      if (selectedWorkspacePreview) {
-        if (selectedWorkspacePreview.mimeType === "text/markdown") {
+      if (visibleWorkspacePreview) {
+        if (visibleWorkspacePreview.mimeType === "text/markdown") {
           const markdownSource =
-            typeof selectedWorkspacePreview.content === "string"
-              ? selectedWorkspacePreview.content
-              : TEXT_DECODER.decode(selectedWorkspacePreview.content);
+            typeof visibleWorkspacePreview.content === "string"
+              ? visibleWorkspacePreview.content
+              : TEXT_DECODER.decode(visibleWorkspacePreview.content);
           downloadFile(
             `${baseName}.html`,
             createRenderedMarkdownHtml(
               markdownSource || activePreviewTextContent,
-              selectedWorkspacePreview.name
+              visibleWorkspacePreview.name
             ),
             "text/html"
           );
@@ -9143,11 +9219,11 @@ export function App() {
         }
 
         downloadFile(
-          getWorkspaceBaseName(selectedWorkspacePreview.path),
-          selectedWorkspacePreview.content,
-          selectedWorkspacePreview.mimeType
+          getWorkspaceBaseName(visibleWorkspacePreview.path),
+          visibleWorkspacePreview.content,
+          visibleWorkspacePreview.mimeType
         );
-        setSyncFeedback({ tone: "success", text: `Downloaded ${selectedWorkspacePreview.path}.` });
+        setSyncFeedback({ tone: "success", text: `Downloaded ${visibleWorkspacePreview.path}.` });
         return;
       }
 
@@ -9191,7 +9267,7 @@ export function App() {
     downloadWorkspaceFiles,
     normalizedActiveSourcePath,
     previewDownloadMode,
-    selectedWorkspacePreview,
+    visibleWorkspacePreview,
     visibleLastSuccessfulResult,
     visiblePreviewResult
   ]);
@@ -12464,22 +12540,11 @@ export function App() {
       !tabs.includes(normalizedTransientSourceTabPath) &&
       workspaceFilePathSet.has(normalizedTransientSourceTabPath)
     ) {
-      tabs.push(normalizedTransientSourceTabPath);
-    }
-
-    if (
-      tabs.length === 0 &&
-      isSourceFileEditable &&
-      isDocumentSourceTab &&
-      normalizedActiveSourcePath
-    ) {
-      tabs.push(normalizedActiveSourcePath);
+      return insertWorkspacePathAfterActive(tabs, normalizedTransientSourceTabPath, normalizedActiveSourcePath);
     }
 
     return tabs;
   }, [
-    isDocumentSourceTab,
-    isSourceFileEditable,
     normalizedActiveSourcePath,
     normalizedTransientSourceTabPath,
     sourceTabPaths,
@@ -12632,6 +12697,14 @@ export function App() {
     visiblePreviewTabPaths,
     visibleSourceTabPaths
   ]);
+  useEffect(() => {
+    activeSourceTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [normalizedActiveSourcePath, visibleSourceTabPaths]);
+
+  useEffect(() => {
+    activePreviewTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activePreviewPath, visiblePreviewTabPaths]);
+
   const renderWorkspaceTabStrip = ({
     activePath,
     ariaLabel,
@@ -12662,8 +12735,7 @@ export function App() {
             const canCloseTab =
               kind === "preview" ||
               path === normalizedTransientSourceTabPath ||
-              (normalizedSourceTabs.includes(path) &&
-                (normalizedSourceTabs.length > 1 || Boolean(normalizedTransientSourceTabPath)));
+              normalizedSourceTabs.includes(path);
             const isPreviewSourceTab =
               kind === "source" &&
               path === normalizedTransientSourceTabPath &&
@@ -12686,6 +12758,7 @@ export function App() {
                 } ${dropSide === "after" ? "pane-tab--drop-after" : ""}`}
                 draggable
                 key={path}
+                ref={isActiveTab ? (kind === "source" ? activeSourceTabRef : activePreviewTabRef) : undefined}
                 onDragEnd={handleWorkspaceTabDragEnd}
                 onDragOver={handleWorkspaceTabDragOver(kind, path)}
                 onDragStart={handleWorkspaceTabDragStart(kind, path)}
@@ -14936,7 +15009,7 @@ export function App() {
                   <h2>Source</h2>
                 </div>
                 <div className="pane__header-actions">
-                  {showSourceCompileButton ? (
+                  {showSourceCompileButton && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
                     <button
                       className="pane__button pane__button--compact"
                       onClick={handleCompile}
@@ -14949,7 +15022,7 @@ export function App() {
                 </div>
               </div>
               {renderWorkspaceTabStrip({
-                activePath: normalizedActiveSourcePath,
+                activePath: visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? normalizedActiveSourcePath : null,
                 ariaLabel: "Open source files",
                 kind: "source",
                 onActivate: handleActivateSourceTab,
@@ -14958,7 +15031,7 @@ export function App() {
               })}
             </>
           )}
-          {isSourceFileEditable ? (
+          {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
             <>
               {showGraphInspectWarning ? (
                 <div className="source-inline-status source-inline-status--warning">
@@ -14996,6 +15069,8 @@ export function App() {
                 runtime={terminalRuntime}
               />
             </>
+          ) : visibleSourceTabPaths.length === 0 ? (
+            <div className="source-empty-state" />
           ) : (
             <div className="source-empty-state">
               <div className="source-empty-state__title">cannot open this filetype</div>
@@ -15004,7 +15079,7 @@ export function App() {
               ) : null}
             </div>
           )}
-          {isSourceFileEditable && compileResult && !compileResult.ok ? (
+          {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) && compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}
             </div>
@@ -15155,7 +15230,7 @@ export function App() {
             result={visiblePreviewResult}
             sourceLineCount={activePreviewSourceLineCount}
             sourcePath={activePreviewPath ?? undefined}
-            workspacePreview={selectedWorkspacePreview}
+            workspacePreview={visibleWorkspacePreview}
             zoom={previewZoom}
           />
         </section>
@@ -15202,7 +15277,7 @@ export function App() {
               result={visiblePreviewResult}
               sourceLineCount={activePreviewSourceLineCount}
               sourcePath={activePreviewPath ?? undefined}
-              workspacePreview={selectedWorkspacePreview}
+              workspacePreview={visibleWorkspacePreview}
               zoom={previewZoom}
             />
           </section>
@@ -17167,6 +17242,38 @@ function getExistingLatexPdfPath(
   const pdfEntry = project.filesystem.entries[pdfPath];
 
   return pdfEntry?.kind === "file" ? pdfPath : null;
+}
+
+function resolveLatexSourcePathForPdfPreview(
+  previewPath: string,
+  project: TyprProjectRepository | null,
+  activeSourcePath: string
+): string | null {
+  const normalizedPreviewPath = normalizeCompilerPath(previewPath) || previewPath;
+  const normalizedActiveSourcePath = normalizeCompilerPath(activeSourcePath) || activeSourcePath;
+
+  if (
+    getSourceLanguage(normalizedActiveSourcePath) === "latex" &&
+    getLatexPdfOutputPath(normalizedActiveSourcePath) === normalizedPreviewPath
+  ) {
+    return normalizedActiveSourcePath;
+  }
+
+  if (!project || !/.pdf$/i.test(normalizedPreviewPath)) {
+    return null;
+  }
+
+  const matchingSourceEntry = Object.entries(project.filesystem.entries).find(([path, entry]) => {
+    const normalizedPath = normalizeCompilerPath(path) || path;
+    return (
+      entry.kind === "file" &&
+      typeof entry.content === "string" &&
+      getSourceLanguage(normalizedPath) === "latex" &&
+      getLatexPdfOutputPath(normalizedPath) === normalizedPreviewPath
+    );
+  });
+
+  return matchingSourceEntry?.[0] ?? null;
 }
 
 function getWorkspaceTabDisplayPath(kind: WorkspaceTabKind, path: string): string {

@@ -712,14 +712,14 @@ async function runBusyTexCompile(
     label: options.isPackageRetry || isFontMapRetry ? "Retrying LaTeX compile" : "Compiling LaTeX document",
     detail:
       isFontMapRetry
-        ? "Using pdfTeX CM-Super font maps to avoid runtime bitmap font generation"
+        ? "Applying pdfTeX font-map fallback"
         : options.previewKind === "subfile-wrapper"
-          ? "Quick subfile preview: compiling the active file with the root preamble"
+          ? "Combining the active file with the root preamble"
         : compileMode === "quick"
-        ? "Quick preview mode: one TeX pass, bibliography and index passes skipped"
+        ? "Running TeX pass"
         : options.isPackageRetry
-          ? "Using all local BusyTeX data packages"
-          : "Full mode: bibliography, index, and rerun passes enabled"
+          ? "Running with expanded package data"
+          : "Running TeX, bibliography, and rerun passes"
   });
 
   const compilePasses = getLatexCompilePassOptions(compileMode);

@@ -6412,15 +6412,31 @@ button {
 
 .preview-state {
   display: grid;
-  min-height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   place-items: center;
   padding: 1.5rem;
   color: var(--text-muted);
 }
 
+.preview-state--compiling {
+  position: relative;
+  display: block;
+}
+
 .preview-status {
+  width: min(100%, 34rem);
   max-width: 34rem;
   text-align: center;
+}
+
+.preview-state--compiling .preview-status {
+  position: absolute;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  left: 1.5rem;
+  width: auto;
+  margin: 0 auto;
 }
 
 .preview-status p {

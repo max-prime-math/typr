@@ -93,6 +93,9 @@ export function PreviewPane({
             theme={theme}
             zoom={currentZoom}
           />
+          {showCompilerActivity ? (
+            <PreviewActivityStatus docked status={compilerStatus} />
+          ) : null}
         </div>
       </div>
     );
@@ -100,15 +103,14 @@ export function PreviewPane({
 
   if (result === null) {
     return (
-      <div className={`preview-state ${paperView ? "preview-state--paper" : ""}`}>
+      <div
+        className={`preview-state ${paperView ? "preview-state--paper" : ""} ${
+          showCompilerActivity ? "preview-state--compiling" : ""
+        }`}
+      >
         <div className="preview-status">
-          {isCompiling ? (
-            <p>
-              <PreviewStatusIcon kind="compiling" label={compilerStatus.label} />
-            </p>
-          ) : null}
           <PreviewActivityStatus
-            centered
+            docked={showCompilerActivity}
             status={showCompilerActivity ? compilerStatus : null}
           />
         </div>

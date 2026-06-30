@@ -7,6 +7,7 @@ import {
   writeProjectFile
 } from "../project/projectState";
 import { createMemoryGitFileStorage, createRepoBackend } from "./repoBackend";
+import { sha1Hex } from "../utils/hash";
 import { createRemoteGitService, type RemoteGitProgress } from "./remoteService";
 
 function createProject() {
@@ -23,12 +24,6 @@ function jsonResponse(payload: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" }
   });
-}
-
-async function sha1Hex(bytes: Uint8Array): Promise<string> {
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  const digest = await crypto.subtle.digest("SHA-1", buffer);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function gitObjectSha(type: "blob" | "commit" | "tree", content: string): Promise<string> {
