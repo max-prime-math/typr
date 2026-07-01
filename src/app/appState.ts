@@ -286,9 +286,9 @@ This is a Typst starter document. Edit this source and watch the preview update 
 
 == Try it
 
-- Use the files pane to switch between the Typst, LaTeX, and Markdown starters.
+- Use the files pane to switch between the Typst, LaTeX, and README files.
 - Open latex-starter.tex when you want to try a manual LaTeX compile.
-- Open markdown-starter.md to see instant Markdown preview without compiling.
+- Open README.md for a short workspace overview.
 - Keep writing here, or replace this page with your own notes.
 
 == Next steps
@@ -317,21 +317,19 @@ Write your document here.
 \\end{document}
 `;
 
-export const DEFAULT_MARKDOWN_DOCUMENT_NAME = "markdown-starter.md";
+export const DEFAULT_MARKDOWN_DOCUMENT_NAME = "README.md";
 
-export const DEFAULT_MARKDOWN_DOCUMENT_CONTENT = `# Typr Markdown Starter
+export const DEFAULT_MARKDOWN_DOCUMENT_CONTENT = `# Typr Project
 
-This is a Markdown starter document. Edit the source and the preview updates instantly without compiling.
+Typr is a local-first writing workspace for Typst, LaTeX, and Markdown. Projects live in your browser, can be edited offline, and can be synced with a GitHub repository when you are ready.
 
-## Try it
+## Getting started
 
-- Write notes with headings, lists, links, and code.
-- Use \`inline code\` or fenced code blocks.
-- Switch back to main.typ or latex-starter.tex when you want document compilation.
-
-## Next steps
-
-Start writing your Markdown here.
+- Edit main.typ to try Typst preview.
+- Edit latex-starter.tex and compile when you want a LaTeX PDF.
+- Check Settings before you settle in, especially editor, preview, and package options.
+- Explore the left pane tabs for files, sync, search, diagrams, graphs, and project tools.
+- Use the files pane to add your own source files, folders, figures, and notes.
 `;
 
 const DEFAULT_CURSOR_SMEAR = 25;
@@ -2093,15 +2091,26 @@ function createUniqueDocumentName(
   const normalizedRequestedName = normalizeWorkspaceFolderPath(requestedName ?? "");
 
   if (normalizedRequestedName) {
+    const parentPath = getWorkspaceParentPath(normalizedRequestedName);
+    const baseName = getWorkspaceBaseName(normalizedRequestedName);
+
+    if (/^new-file-\d+$/i.test(baseName)) {
+      return createUniqueNewFileName(existingNames, parentPath);
+    }
+
     return createUniqueWorkspacePath(normalizedRequestedName, existingNames);
   }
 
-  let nextIndex = documents.length + 1;
-  let nextName = `section-${nextIndex}.typ`;
+  return createUniqueNewFileName(existingNames, null);
+}
+
+function createUniqueNewFileName(existingNames: Set<string>, parentPath: string | null): string {
+  let nextIndex = 1;
+  let nextName = joinWorkspacePath(parentPath, `new-file-${nextIndex}`);
 
   while (existingNames.has(nextName)) {
     nextIndex += 1;
-    nextName = `section-${nextIndex}.typ`;
+    nextName = joinWorkspacePath(parentPath, `new-file-${nextIndex}`);
   }
 
   return nextName;

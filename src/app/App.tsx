@@ -18,6 +18,7 @@ import {
   type SetStateAction
 } from "react";
 import { zipSync } from "fflate";
+import { DocsModal } from "./DocsModal";
 import {
   createDefaultSnapshot,
   DEFAULT_EDITOR_FONT_SIZE,
@@ -64,7 +65,6 @@ import {
   updateActiveDocument,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
-  updateAutoSyncGitProjectsPreference,
   updateEditorFontSizePreference,
   updateEditorToolingPreference,
   updateKeybindingsPreference,
@@ -800,6 +800,7 @@ interface GitHubDiscoveryState {
 
 interface GitHubCloneState {
   isOpen: boolean;
+  mode: "clone" | "create";
   status: "idle" | "loading" | "connected" | "error";
   token: string;
   owner: string;
@@ -1215,6 +1216,7 @@ function readStoredLatexPackageSelections(): string[] {
 function createInitialGitHubCloneState(): GitHubCloneState {
   return {
     isOpen: false,
+    mode: "clone",
     status: "idle",
     token: "",
     owner: "",
@@ -2689,6 +2691,7 @@ export function App() {
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isDocsOpen, setIsDocsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(storedSettingsMenu.tab);
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
@@ -2901,6 +2904,8 @@ ${nextLine}` : nextLine;
   const [projectStorage, setProjectStorage] = useState<TyprProjectStorageState>(() =>
     createProjectStorageFromSnapshot(defaultSnapshotRef.current as AppSnapshot)
   );
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+  const [projectDragOverId, setProjectDragOverId] = useState<string | null>(null);
   const snapshot = rawSnapshot;
   const selectedProjectRepository = useMemo(
     () => getSelectedProjectRepository(projectStorage),
@@ -2973,7 +2978,6 @@ ${nextLine}` : nextLine;
   const pendingSyncProgressRef = useRef<RemoteGitProgress | null>(null);
   const syncProgressFlushTimerRef = useRef<number | null>(null);
   const lastSyncProgressFlushAtRef = useRef(0);
-  const lastAutoSyncKeyRef = useRef<string | null>(null);
   const setSyncFeedback = useCallback((feedback: SyncFeedback) => {
     setSyncStatusSnapshot({ ...feedback, progress: null });
   }, []);
@@ -3292,14 +3296,6 @@ ${nextLine}` : nextLine;
       updateLiveCompilationPreference(
         currentSnapshot,
         !currentSnapshot.preferences.liveCompilation
-      )
-    );
-  }, []);
-  const handleAutoSyncGitProjectsToggle = useCallback(() => {
-    setSnapshot((currentSnapshot) =>
-      updateAutoSyncGitProjectsPreference(
-        currentSnapshot,
-        !currentSnapshot.preferences.autoSyncGitProjects
       )
     );
   }, []);
@@ -5763,6 +5759,7 @@ ${nextLine}` : nextLine;
       let result: CompileResult;
       let compileUsedCachedOutput = false;
       let generatedLatexPdf: {
+        activatePreview: boolean;
         projectId: string;
         result: Extract<CompileResult, { ok: true }>;
         sourcePath: string;
@@ -5794,6 +5791,7 @@ ${nextLine}` : nextLine;
 
             if (result.ok && result.output.kind === "pdf") {
               generatedLatexPdf = {
+                activatePreview: !getExistingLatexPdfPath(project, sourcePath),
                 projectId: project.id,
                 result,
                 sourcePath
@@ -5835,6 +5833,15 @@ ${nextLine}` : nextLine;
 
       if (generatedLatexPdf) {
         saveGeneratedLatexPdfToProject(generatedLatexPdf);
+
+        if (generatedLatexPdf.activatePreview) {
+          openPreviewTab(
+            getLatexPdfOutputPath(
+              getLatexPdfSourcePathForResult(generatedLatexPdf.sourcePath, generatedLatexPdf.result)
+            ),
+            { activate: true }
+          );
+        }
       }
 
       const compileDurationMs =
@@ -6007,7 +6014,7 @@ ${nextLine}` : nextLine;
         });
       }
     }
-  }, [appendBuildLogEntry, compiler, isHydrated, saveGeneratedLatexPdfToProject]);
+  }, [appendBuildLogEntry, compiler, isHydrated, openPreviewTab, saveGeneratedLatexPdfToProject]);
 
   const shouldCancelInFlightLatexCompile = useCallback(
     ({
@@ -7299,7 +7306,20 @@ ${nextLine}` : nextLine;
   );
 
   const handleNewDocument = () => {
-    setSnapshot((currentSnapshot) => createDocument(currentSnapshot));
+    const targetNode = selectedWorkspacePath
+      ? findWorkspaceNodeByPath(workspaceTree, selectedWorkspacePath)
+      : null;
+    const targetFolderPath = targetNode?.kind === "folder"
+      ? targetNode.path
+      : selectedWorkspacePath
+        ? getWorkspaceParentPath(selectedWorkspacePath)
+        : null;
+    const requestedName = targetFolderPath ? joinWorkspacePath(targetFolderPath, "new-file-1") : undefined;
+
+    setSnapshot((currentSnapshot) => createDocument(currentSnapshot, requestedName));
+    window.alert(
+      "Created an extensionless file. Typst and LaTeX compilation is only possible after .typ or .tex has been added to the filename."
+    );
   };
 
   const setThemeMode = (nextTheme: ThemePreference) => {
@@ -7562,7 +7582,7 @@ ${nextLine}` : nextLine;
 
   const handleToggleGitHubCloneFlow = useCallback(() => {
     setGitHubClone((current) => {
-      if (current.isOpen) {
+      if (current.isOpen && current.mode === "clone") {
         return {
           ...current,
           isOpen: false
@@ -7572,114 +7592,83 @@ ${nextLine}` : nextLine;
       return {
         ...createInitialGitHubCloneState(),
         isOpen: true,
-        token: current.token || selectedGitToken
+        mode: "clone",
+        status: gitHubDiscovery.status === "connected" ? "connected" : "idle",
+        token: selectedGitToken,
+        accountLogin: gitHubDiscovery.accountLogin,
+        owners: gitHubDiscovery.owners,
+        owner: gitHubDiscovery.accountLogin ?? "",
+        repos: gitHubDiscovery.repos,
+        isLoadingRepos: gitHubDiscovery.isLoadingRepos
       };
     });
-  }, [selectedGitToken]);
+  }, [
+    gitHubDiscovery.accountLogin,
+    gitHubDiscovery.owners,
+    gitHubDiscovery.repos,
+    gitHubDiscovery.isLoadingRepos,
+    gitHubDiscovery.status,
+    selectedGitToken
+  ]);
 
-  const handleGitHubCloneTokenChange = useCallback((value: string) => {
-    setGitHubClone((current) => ({
-      ...current,
-      token: value,
-      status: "idle",
-      message: "",
-      accountLogin: null,
-      owners: [],
-      repos: [],
-      branches: [],
-      isLoadingRepos: false,
-      isLoadingBranches: false
-    }));
-  }, []);
-
-  const handleGitHubCloneRepositoryUrlChange = useCallback((value: string) => {
+  const handleToggleGitHubCreateFlow = useCallback(() => {
     setGitHubClone((current) => {
-      const parsedUrl = parseGitHubRepositoryUrl(value);
-
-      if (!parsedUrl) {
+      if (current.isOpen && current.mode === "create") {
         return {
           ...current,
-          repositoryUrl: value
+          isOpen: false
         };
       }
 
-      const nextProjectName =
-        !current.projectName || current.projectName === current.repo
-          ? parsedUrl.repo
-          : current.projectName;
-
       return {
-        ...current,
-        repositoryUrl: value,
-        owner: parsedUrl.owner,
-        repo: parsedUrl.repo,
+        ...createInitialGitHubCloneState(),
+        isOpen: true,
+        mode: "create",
+        status: gitHubDiscovery.status === "connected" ? "connected" : "idle",
+        token: selectedGitToken,
+        accountLogin: gitHubDiscovery.accountLogin,
+        owners: gitHubDiscovery.owners,
+        owner: gitHubDiscovery.accountLogin ?? "",
+        repos: gitHubDiscovery.repos,
+        isLoadingRepos: gitHubDiscovery.isLoadingRepos,
         branch: "main",
-        projectName: nextProjectName,
-        branches: []
+        projectName: selectedProjectRepository?.displayName ?? ""
       };
     });
-  }, []);
+  }, [
+    gitHubDiscovery.accountLogin,
+    gitHubDiscovery.owners,
+    gitHubDiscovery.repos,
+    gitHubDiscovery.isLoadingRepos,
+    gitHubDiscovery.status,
+    selectedGitToken,
+    selectedProjectRepository?.displayName
+  ]);
 
-  const handleConnectGitHubClone = useCallback(async () => {
-    const token = gitHubClone.token.trim();
-
-    if (!token) {
-      setGitHubClone((current) => ({
-        ...current,
-        status: "error",
-        message: "Add a GitHub token before connecting."
-      }));
+  useEffect(() => {
+    if (!gitHubClone.isOpen || gitHubDiscovery.status !== "connected") {
       return;
     }
 
     setGitHubClone((current) => ({
       ...current,
-      status: "loading",
-      message: "Connecting to GitHub...",
-      repos: [],
-      branches: [],
-      isLoadingRepos: false,
-      isLoadingBranches: false
+      status: "connected",
+      token: selectedGitToken,
+      accountLogin: gitHubDiscovery.accountLogin,
+      owners: gitHubDiscovery.owners,
+      owner: current.owner || gitHubDiscovery.accountLogin || "",
+      repos: current.repos.length > 0 ? current.repos : gitHubDiscovery.repos,
+      isLoadingRepos: gitHubDiscovery.isLoadingRepos
     }));
-
-    const result = await remoteGitService.inspectToken(() => token);
-
-    if (!result.ok) {
-      setGitHubClone((current) => ({
-        ...current,
-        status: "error",
-        message: redactGitSecrets(result.message, [token]),
-        accountLogin: null,
-        owners: [],
-        repos: [],
-        branches: [],
-        isLoadingRepos: false,
-        isLoadingBranches: false
-      }));
-      return;
-    }
-
-    setGitHubClone((current) => {
-      const owner =
-        result.value.owners.find(
-          (entry) => entry.login.toLowerCase() === current.owner.trim().toLowerCase()
-        )?.login ??
-        (current.owner.trim() || result.value.user.login);
-
-      return {
-        ...current,
-        status: "connected",
-        message: result.message,
-        accountLogin: result.value.user.login,
-        owners: result.value.owners,
-        owner,
-        repos: [],
-        branches: [],
-        isLoadingRepos: false,
-        isLoadingBranches: false
-      };
-    });
-  }, [gitHubClone.token, remoteGitService]);
+  }, [
+    gitHubClone.isOpen,
+    gitHubDiscovery.accountLogin,
+    gitHubDiscovery.owners,
+    gitHubDiscovery.repos,
+    gitHubDiscovery.isLoadingRepos,
+    gitHubDiscovery.status,
+    selectedGitToken
+  ]);
 
   const handleGitHubCloneOwnerChange = useCallback((owner: string) => {
     setGitHubClone((current) => ({
@@ -8195,6 +8184,57 @@ ${nextLine}` : nextLine;
     [addDefaultGitManagedProject, projectStorage.projects, selectStoredProjectRepository]
   );
 
+  const handleProjectDragStart = useCallback((event: ReactDragEvent<HTMLElement>, projectId: string) => {
+    setDraggedProjectId(projectId);
+    setProjectDragOverId(projectId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", projectId);
+  }, []);
+
+  const handleProjectDragOver = useCallback((event: ReactDragEvent<HTMLElement>, projectId: string) => {
+    if (!draggedProjectId || draggedProjectId === projectId) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setProjectDragOverId(projectId);
+  }, [draggedProjectId]);
+
+  const handleProjectDrop = useCallback((event: ReactDragEvent<HTMLElement>, targetProjectId: string) => {
+    event.preventDefault();
+    const sourceProjectId = draggedProjectId ?? event.dataTransfer.getData("text/plain");
+    setDraggedProjectId(null);
+    setProjectDragOverId(null);
+
+    if (!sourceProjectId || sourceProjectId === targetProjectId) {
+      return;
+    }
+
+    setProjectStorage((currentStorage) => {
+      const sourceIndex = currentStorage.projects.findIndex((project) => project.id === sourceProjectId);
+      const targetIndex = currentStorage.projects.findIndex((project) => project.id === targetProjectId);
+
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return currentStorage;
+      }
+
+      const projects = [...currentStorage.projects];
+      const [movedProject] = projects.splice(sourceIndex, 1);
+      projects.splice(targetIndex, 0, movedProject);
+
+      return {
+        ...currentStorage,
+        projects
+      };
+    });
+  }, [draggedProjectId]);
+
+  const handleProjectDragEnd = useCallback(() => {
+    setDraggedProjectId(null);
+    setProjectDragOverId(null);
+  }, []);
+
   const handleOpenRecentFile = useCallback(
     (entry: RecentFileEntry) => {
       const normalizedPath = normalizeWorkspacePath(entry.path);
@@ -8340,43 +8380,8 @@ ${nextLine}` : nextLine;
   ]);
 
   const handleGitHubTokenConnectionAction = useCallback(async () => {
-    if (selectedGitProjectIsGitHubConnected) {
-      handleToggleSelectedGitHubConnection();
-      return;
-    }
-
-    if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim()) {
-      const tokenResult = await handleConnectGitHub();
-      if (tokenResult.ok) {
-        setSyncFeedback({
-          tone: "neutral",
-          text: "Choose a repository and branch, then click Connect again."
-        });
-      }
-      return;
-    }
-
-    const tokenResult = await handleConnectGitHub();
-    if (!tokenResult.ok) {
-      return;
-    }
-
-    updateSelectedGitProject((project) => ({
-      ...project,
-      connected: true
-    }));
-    setSyncFeedback({
-      tone: "success",
-      text: `Connected GitHub to ${remoteConfig.owner}/${remoteConfig.repo}.`
-    });
-  }, [
-    handleConnectGitHub,
-    handleToggleSelectedGitHubConnection,
-    remoteConfig,
-    selectedGitProjectIsGitHubConnected,
-    setSyncFeedback,
-    updateSelectedGitProject
-  ]);
+    await handleConnectGitHub();
+  }, [handleConnectGitHub]);
 
   const handleCreateLocalProject = useCallback(() => {
     const enteredName = window.prompt("Project name", "Untitled project");
@@ -8387,8 +8392,7 @@ ${nextLine}` : nextLine;
     const displayName = enteredName.trim() || "Untitled project";
     const nextProject = createEmptyProjectRepository({
       displayName,
-      defaultFileName: "main.typ",
-      defaultContent: ""
+      defaultFileName: null
     });
 
     selectProjectRepository(nextProject);
@@ -8494,8 +8498,7 @@ ${nextLine}` : nextLine;
       projectStorage.projects.length <= 1
         ? createEmptyProjectRepository({
             displayName: "Untitled project",
-            defaultFileName: "main.typ",
-            defaultContent: ""
+            defaultFileName: null
           })
         : undefined;
     const nextProjectStorage = removeProjectRepository(
@@ -8613,38 +8616,59 @@ ${nextLine}` : nextLine;
   );
 
   const createManagedProjectForRepository = useCallback(
-    (project: TyprProjectRepository, name: string) => ({
+    (project: TyprProjectRepository, name: string, config: RemoteGitConfig) => ({
       ...createEmptyGitManagedProject({
         projectId: project.id,
         projectName: name
       }),
       name,
-      owner: remoteConfig.owner,
-      repo: remoteConfig.repo,
+      owner: config.owner,
+      repo: config.repo,
       connected: true,
-      branch: remoteConfig.branch,
-      remoteName: remoteConfig.remoteName
+      branch: config.branch,
+      remoteName: config.remoteName
     }),
-    [remoteConfig]
+    []
   );
 
   const handleCreateGitHubRepoFromCurrentProject = useCallback(async () => {
-    if (!selectedProjectRepository || !selectedGitProject) {
-      setSyncFeedback({ tone: "error", text: "Create or select a managed git project first." });
+    const token = gitHubClone.token.trim();
+    const owner = gitHubClone.owner.trim();
+    const repo = gitHubClone.repo.trim();
+    const branch = gitHubClone.branch.trim() || "main";
+
+    if (!selectedProjectRepository) {
+      setSyncFeedback({ tone: "error", text: "Select a local project first." });
       return;
     }
-    if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim() || !selectedGitToken.trim()) {
-      setSyncFeedback({ tone: "error", text: "Fill in owner, repo, branch, and token first." });
+    if (!token || !owner || !repo || !branch) {
+      setGitHubClone((current) => ({
+        ...current,
+        status: current.status === "connected" ? current.status : "error",
+        message: "Connect GitHub, then choose owner, repo, and branch."
+      }));
+      setSyncFeedback({ tone: "error", text: "Connect GitHub, then choose owner, repo, and branch." });
       return;
     }
 
+    const createConfig: RemoteGitConfig = {
+      owner,
+      repo,
+      branch,
+      remoteName: "origin"
+    };
     const sourceEntries = listProjectEntries(selectedProjectRepository);
     setIsSyncing(true);
-    setSyncFeedback({ tone: "neutral", text: `Creating ${remoteConfig.owner}/${remoteConfig.repo}...` });
+    setSyncFeedback({ tone: "neutral", text: `Creating ${owner}/${repo}...` });
+    setGitHubClone((current) => ({
+      ...current,
+      message: `Creating ${owner}/${repo}...`,
+      progress: null
+    }));
 
     const createResult = await remoteGitService.createRepository(
-      remoteConfig,
-      () => selectedGitToken,
+      createConfig,
+      () => token,
       {
         private: createGitHubRepoPrivate,
         description: `Created from ${selectedProjectRepository.displayName} in Typr`
@@ -8652,8 +8676,10 @@ ${nextLine}` : nextLine;
       { onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message }) }
     );
     if (!createResult.ok) {
+      const message = redactGitSecrets(createResult.message, [token]);
       setIsSyncing(false);
-      setSyncFeedback({ tone: "error", text: createResult.message });
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
 
@@ -8663,43 +8689,57 @@ ${nextLine}` : nextLine;
     });
     const initResult = await repoBackend.initRepository(remoteProject);
     if (!initResult.ok) {
+      const message = formatRepoError(initResult.error);
       setIsSyncing(false);
-      setSyncFeedback({ tone: "error", text: formatRepoError(initResult.error) });
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
     remoteProject = initResult.value;
 
-    const pullResult = await remoteGitService.pull(remoteProject, remoteConfig, () => selectedGitToken);
+    const pullResult = await remoteGitService.pull(remoteProject, createConfig, () => token);
     if (!pullResult.ok || !pullResult.project) {
+      const message = redactGitSecrets(pullResult.message, [token]);
       setIsSyncing(false);
-      setSyncFeedback({ tone: "error", text: pullResult.message });
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
 
     remoteProject = replaceProjectEntries(pullResult.project, sourceEntries);
     const stageResult = await repoBackend.stagePaths(remoteProject, ["."]);
     if (!stageResult.ok) {
+      const message = formatRepoError(stageResult.error);
       setIsSyncing(false);
-      setSyncFeedback({ tone: "error", text: formatRepoError(stageResult.error) });
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
     const commitResult = await repoBackend.commit(remoteProject, {
       message: `Import ${selectedProjectRepository.displayName} from Typr`
     });
     if (!commitResult.ok) {
+      const message = formatRepoError(commitResult.error);
       setIsSyncing(false);
-      setSyncFeedback({ tone: "error", text: formatRepoError(commitResult.error) });
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
 
-    const pushResult = await remoteGitService.push(remoteProject, remoteConfig, () => selectedGitToken);
+    const pushResult = await remoteGitService.push(remoteProject, createConfig, () => token);
     setIsSyncing(false);
     if (!pushResult.ok) {
-      setSyncFeedback({ tone: "error", text: pushResult.message });
+      const message = redactGitSecrets(pushResult.message, [token]);
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
       return;
     }
 
-    const managedProject = createManagedProjectForRepository(remoteProject, selectedProjectRepository.displayName);
+    const managedProject = createManagedProjectForRepository(
+      remoteProject,
+      selectedProjectRepository.displayName,
+      createConfig
+    );
     selectProjectRepository(remoteProject);
     setGitWorkspace((currentWorkspace) => ({
       ...currentWorkspace,
@@ -8712,23 +8752,30 @@ ${nextLine}` : nextLine;
     }));
     setGitCredentials((currentCredentials) => ({
       ...currentCredentials,
-      [managedProject.id]: selectedGitToken
+      [managedProject.id]: token
     }));
-    setGitRefreshToken((token) => token + 1);
+    setGitHubClone((current) => ({
+      ...current,
+      status: "connected",
+      message: `Created ${owner}/${repo} and pushed ${commitResult.value.shortSha}.`,
+      progress: null
+    }));
+    setGitRefreshToken((current) => current + 1);
     setSyncFeedback({
       tone: "success",
-      text: `Created ${remoteConfig.owner}/${remoteConfig.repo} and pushed ${commitResult.value.shortSha}.`
+      text: `Created ${owner}/${repo} and pushed ${commitResult.value.shortSha}.`
     });
   }, [
     createGitHubRepoPrivate,
     createManagedProjectForRepository,
-    remoteConfig,
+    gitHubClone.branch,
+    gitHubClone.owner,
+    gitHubClone.repo,
+    gitHubClone.token,
     remoteGitService,
     repoBackend,
     replaceProjectEntries,
     selectProjectRepository,
-    selectedGitProject,
-    selectedGitToken,
     selectedProjectRepository
   ]);
 
@@ -9326,7 +9373,7 @@ ${nextLine}` : nextLine;
     );
   };
 
-  const handleDownloadActivePreview = useCallback((mode: PreviewDownloadMode = previewDownloadMode) => {
+  const handleDownloadActivePreview = useCallback(async (mode: PreviewDownloadMode = previewDownloadMode) => {
     const sourcePath = activePreviewPath ?? normalizedActiveSourcePath;
 
     if (!sourcePath) {
@@ -9380,6 +9427,25 @@ ${nextLine}` : nextLine;
       }
 
       if (renderedResult.output.kind === "svg") {
+        if (isTypstSourceFile(activePreviewCompileSourcePath ?? sourcePath)) {
+          try {
+            const pdfBytes = await exportTypstPdf(activePreviewTextContent, [
+              ...diagramShadowAssets,
+              ...graphShadowAssets
+            ]);
+            downloadFile(`${baseName}.pdf`, pdfBytes, "application/pdf");
+            setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.pdf.` });
+          } catch (error) {
+            setSyncFeedback({
+              tone: "error",
+              text: error instanceof Error
+                ? `Unable to export Typst PDF: ${error.message}`
+                : "Unable to export Typst PDF."
+            });
+          }
+          return;
+        }
+
         downloadFile(`${baseName}.svg`, renderedResult.output.content, "image/svg+xml");
         setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.svg.` });
         return;
@@ -9399,9 +9465,12 @@ ${nextLine}` : nextLine;
       zipName: `${getWorkspaceBaseName(sourcePath).replace(/\.[^.]+$/, "")}-bundle.zip`
     });
   }, [
+    activePreviewCompileSourcePath,
     activePreviewPath,
     activePreviewTextContent,
+    diagramShadowAssets,
     downloadWorkspaceFiles,
+    graphShadowAssets,
     normalizedActiveSourcePath,
     previewDownloadMode,
     visibleWorkspacePreview,
@@ -9982,6 +10051,12 @@ ${nextLine}` : nextLine;
     window.open("https://typst.app/docs/", "_blank", "noopener,noreferrer");
   };
 
+  const handleOpenTyprDocs = () => {
+    saveCurrentSettingsScrollPosition();
+    setIsSettingsOpen(false);
+    setIsDocsOpen(true);
+  };
+
   const handleOpenGitRemoteHelp = () => {
     setSettingsTab("git");
     setIsSettingsOpen(true);
@@ -10356,72 +10431,6 @@ ${nextLine}` : nextLine;
       ? { ok: true as const, message: "Sync complete." }
       : pushResult;
   }, [handlePullRemote, handlePushRemote]);
-
-  useEffect(() => {
-    if (!isHydrated) {
-      return;
-    }
-    if (!snapshot.preferences.autoSyncGitProjects) {
-      lastAutoSyncKeyRef.current = null;
-      return;
-    }
-    if (
-      !selectedProjectRepository ||
-      !selectedGitProject ||
-      selectedGitProject.backendId !== "browser" ||
-      !selectedGitProjectIsGitHubConnected ||
-      !isOnline ||
-      !selectedGitToken.trim() ||
-      !localRepoStatus ||
-      isGitStatusLoading ||
-      isSyncing
-    ) {
-      return;
-    }
-
-    const autoSyncKey = [
-      selectedProjectRepository.id,
-      selectedGitProject.id
-    ].join(":");
-    if (lastAutoSyncKeyRef.current === autoSyncKey) {
-      return;
-    }
-    lastAutoSyncKeyRef.current = autoSyncKey;
-
-    const conflictMessage = "Git conflicts need to be resolved before syncing.";
-    if (hasActiveMergeStop(localRepoStatus)) {
-      setFilesGitConflictNotice(conflictMessage);
-      setSyncFeedback({ tone: "error", text: conflictMessage });
-      return;
-    }
-
-    if (hasRepoChanges(localRepoStatus)) {
-      setSyncFeedback({
-        tone: "neutral",
-        text: "Auto-sync skipped because there are local changes."
-      });
-      return;
-    }
-
-    void handleSyncRemote().then((result) => {
-      if (!result.ok && isRemoteDivergenceMessage(result.message)) {
-        setFilesGitConflictNotice(conflictMessage);
-      }
-    });
-  }, [
-    handleSyncRemote,
-    isGitStatusLoading,
-    isHydrated,
-    isOnline,
-    isSyncing,
-    localRepoStatus,
-    selectedGitProject,
-    selectedGitProjectIsGitHubConnected,
-    selectedGitToken,
-    selectedProjectRepository,
-    setSyncFeedback,
-    snapshot.preferences.autoSyncGitProjects
-  ]);
 
   const terminalRuntime = useMemo(
     () => ({
@@ -11434,11 +11443,14 @@ ${nextLine}` : nextLine;
     selectedGitProjectIsGitHubConnected &&
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !isSyncing;
-  const canManageGitHubProjects =
+  const canCreateGitHubRepository =
     isOnline &&
+    gitHubClone.status === "connected" &&
     Boolean(selectedProjectRepository) &&
-    Boolean(selectedGitProject) &&
-    Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
+    Boolean(gitHubClone.token.trim()) &&
+    Boolean(gitHubClone.owner.trim()) &&
+    Boolean(gitHubClone.repo.trim()) &&
+    Boolean(gitHubClone.branch.trim()) &&
     !isSyncing;
   const gitHubCloneBranchGuidance =
     gitHubClone.status === "connected" &&
@@ -12223,8 +12235,9 @@ ${nextLine}` : nextLine;
         } else if (existingLatexPdfPath) {
           openPreviewTab(existingLatexPdfPath);
           setIsPreviewCollapsed(false);
-        } else if (previewTabPaths.length === 0 && isCompilableSourceFile(normalizedPath)) {
+        } else if (isCompilableSourceFile(normalizedPath)) {
           openPreviewTab(normalizedPath, { activate: true });
+          setIsPreviewCollapsed(false);
         }
         return;
       }
@@ -12833,48 +12846,6 @@ ${nextLine}` : nextLine;
   const visiblePreviewTabPaths = useMemo(
     () => normalizeUniqueWorkspacePaths(previewTabPaths),
     [previewTabPaths]
-  );
-  const recentProjectsForDisplay = useMemo(
-    () =>
-      recentWorkspaceState.projects
-        .map((recentProject) => {
-          const project = projectStorage.projects.find(
-            (candidate) => candidate.id === recentProject.id
-          );
-          return project ?? null;
-        })
-        .filter((project): project is TyprProjectRepository => Boolean(project))
-        .slice(0, RECENT_PROJECT_LIMIT),
-    [projectStorage.projects, recentWorkspaceState.projects]
-  );
-  const recentFilesForDisplay = useMemo(
-    () =>
-      recentWorkspaceState.files
-        .map((recentFile) => {
-          const project = projectStorage.projects.find(
-            (candidate) => candidate.id === recentFile.projectId
-          );
-
-          if (!project) {
-            return null;
-          }
-
-          const normalizedPath = normalizeWorkspacePath(recentFile.path);
-          const exists = listProjectEntries(project).some(
-            (entry) => entry.kind === "file" && normalizeWorkspacePath(entry.path) === normalizedPath
-          );
-
-          return exists
-            ? {
-                ...recentFile,
-                path: normalizedPath,
-                projectName: project.displayName
-              }
-            : null;
-        })
-        .filter((entry): entry is RecentFileEntry => Boolean(entry))
-        .slice(0, RECENT_FILE_LIMIT),
-    [projectStorage.projects, recentWorkspaceState.files]
   );
   const workspaceGitBadgeByPath = useMemo<Record<string, WorkspaceGitBadgeKind>>(() => {
     const badges: Record<string, WorkspaceGitBadgeKind> = {};
@@ -13498,6 +13469,206 @@ ${nextLine}` : nextLine;
     <div className="snippet-empty">Open an editable source file to use source tools.</div>
   );
 
+  const projectGitHubPanel = gitHubClone.isOpen ? (
+                      <div className={`project-clone-card project-clone-card--${gitHubClone.mode}`}>
+                          <div className="project-clone-card__header">
+                            <strong>
+                              {gitHubClone.mode === "create" ? "Create GitHub repo" : "Clone GitHub repo"}
+                            </strong>
+                          </div>
+                          {gitHubClone.status === "connected" && gitHubClone.accountLogin ? (
+                            <div className="project-github-account">
+                              <span className="toolbar-icon toolbar-icon--github" aria-hidden="true" />
+                              <strong>{gitHubClone.accountLogin}</strong>
+                            </div>
+                          ) : (
+                            <button
+                              className="pane__button project-github-settings-button"
+                              onClick={() => {
+                                setSettingsTab("git");
+                                setIsSettingsOpen(true);
+                              }}
+                              type="button"
+                            >
+                              Connect GitHub token in Settings
+                            </button>
+                          )}
+                          <div className="project-clone-grid">
+                            <label className="sync-field">
+                              <span>Owner</span>
+                              {gitHubClone.owners.length > 0 ? (
+                                <select
+                                  onChange={(event) => handleGitHubCloneOwnerChange(event.target.value)}
+                                  value={gitHubClone.owner}
+                                >
+                                  {gitHubClone.owners.map((owner) => (
+                                    <option key={owner.login} value={owner.login}>
+                                      {owner.login}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  autoCapitalize="none"
+                                  autoCorrect="off"
+                                  onChange={(event) => handleGitHubCloneOwnerChange(event.target.value)}
+                                  placeholder="owner"
+                                  type="text"
+                                  value={gitHubClone.owner}
+                                />
+                              )}
+                            </label>
+                            <label className="sync-field">
+                              <span>Repo</span>
+                              {gitHubClone.mode === "clone" ? (
+                                <select
+                                  disabled={gitHubClone.isLoadingRepos || gitHubClone.status !== "connected"}
+                                  onChange={(event) => handleGitHubCloneRepoSelection(event.target.value)}
+                                  value={
+                                    gitHubClone.repos.some((repo) => repo.name === gitHubClone.repo)
+                                      ? gitHubClone.repo
+                                      : ""
+                                  }
+                                >
+                                  <option value="">
+                                    {gitHubClone.isLoadingRepos ? "Loading repos..." : "Choose repo"}
+                                  </option>
+                                  {gitHubClone.repos.map((repo) => (
+                                    <option key={repo.fullName} value={repo.name}>
+                                      {repo.name}{repo.private ? " (private)" : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  autoCapitalize="none"
+                                  autoCorrect="off"
+                                  onChange={(event) => handleGitHubCloneRepoSelection(event.target.value)}
+                                  placeholder="New repository name"
+                                  type="text"
+                                  value={gitHubClone.repo}
+                                />
+                              )}
+                            </label>
+                          </div>
+                          <div className="project-clone-grid">
+                            <label className="sync-field">
+                              <span>Branch</span>
+                              {gitHubClone.mode === "clone" && gitHubClone.branches.length > 0 ? (
+                                <select
+                                  disabled={gitHubClone.isLoadingBranches}
+                                  onChange={(event) =>
+                                    setGitHubClone((current) => ({
+                                      ...current,
+                                      branch: event.target.value
+                                    }))
+                                  }
+                                  value={
+                                    gitHubClone.branches.some((branch) => branch.name === gitHubClone.branch)
+                                      ? gitHubClone.branch
+                                      : ""
+                                  }
+                                >
+                                  <option value="">
+                                    {gitHubClone.isLoadingBranches ? "Loading branches..." : "Choose branch"}
+                                  </option>
+                                  {gitHubClone.branches.map((branch) => (
+                                    <option key={branch.name} value={branch.name}>
+                                      {branch.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  autoCapitalize="none"
+                                  autoCorrect="off"
+                                  onChange={(event) =>
+                                    setGitHubClone((current) => ({
+                                      ...current,
+                                      branch: event.target.value
+                                    }))
+                                  }
+                                  placeholder={gitHubClone.isLoadingBranches ? "Loading branches..." : "main"}
+                                  type="text"
+                                  value={gitHubClone.branch}
+                                />
+                              )}
+                            </label>
+                            {gitHubClone.mode === "clone" ? (
+                              <label className="sync-field">
+                                <span>Local name</span>
+                                <input
+                                  onChange={(event) =>
+                                    setGitHubClone((current) => ({
+                                      ...current,
+                                      projectName: event.target.value
+                                    }))
+                                  }
+                                  placeholder={gitHubClone.repo || "Project name"}
+                                  type="text"
+                                  value={gitHubClone.projectName}
+                                />
+                              </label>
+                            ) : (
+                              <label className="sync-field project-create-private-field">
+                                <span>Visibility</span>
+                                <div className="project-create-private-toggle">
+                                  <strong>Private</strong>
+                                  <input
+                                    checked={createGitHubRepoPrivate}
+                                    onChange={(event) => setCreateGitHubRepoPrivate(event.target.checked)}
+                                    type="checkbox"
+                                  />
+                                </div>
+                              </label>
+                            )}
+                          </div>
+                          {gitHubClone.message ? (
+                            <p className="project-clone-card__message">{gitHubClone.message}</p>
+                          ) : null}
+                          {gitHubClone.mode === "clone" && gitHubCloneBranchGuidance ? (
+                            <p className="project-clone-card__message project-clone-card__message--warning">
+                              {gitHubCloneBranchGuidance}
+                            </p>
+                          ) : null}
+                          <div className="project-clone-actions">
+                            {gitHubClone.mode === "clone" ? (
+                              <button
+                                className={`pane__button project-clone-button ${
+                                  isSyncing && gitHubCloneProgressPercent !== null
+                                    ? "project-clone-button--active"
+                                    : ""
+                                }`}
+                                disabled={!canCloneGitHubRepository}
+                                onClick={() => {
+                                  void handleCloneGitHubRepository();
+                                }}
+                                style={
+                                  {
+                                    "--project-clone-progress": `${gitHubCloneProgressPercent ?? 0}%`
+                                  } as CSSProperties
+                                }
+                                type="button"
+                              >
+                                <span>{isSyncing ? "Cloning..." : "Clone"}</span>
+                              </button>
+                            ) : (
+                              <button
+                                className="pane__button project-clone-button"
+                                disabled={!canCreateGitHubRepository}
+                                onClick={() => {
+                                  void handleCreateGitHubRepoFromCurrentProject();
+                                }}
+                                type="button"
+                              >
+                                <span>{isSyncing ? "Creating..." : "Create and push"}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      
+  ) : null;
+
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""}`}>
       <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""} ${
@@ -13560,6 +13731,16 @@ ${nextLine}` : nextLine;
             ) : null}
           </div>
           <div className="activity-bar__section activity-bar__section--bottom">
+            <button
+              aria-label="Docs"
+              className="activity-bar__button"
+              onClick={handleOpenTyprDocs}
+              title="Docs"
+              type="button"
+            >
+              <span aria-hidden="true" className="activity-icon activity-icon--help">?</span>
+              <span className="visually-hidden">Docs</span>
+            </button>
             <button
               aria-label="Settings"
               className="activity-bar__button"
@@ -13647,6 +13828,16 @@ ${nextLine}` : nextLine;
                   </button>
                 ))}
                 <button
+                  aria-label="Docs"
+                  className="activity-bar__button"
+                  onClick={handleOpenTyprDocs}
+                  title="Docs"
+                  type="button"
+                >
+                  <span aria-hidden="true" className="activity-icon activity-icon--help">?</span>
+                  <span className="visually-hidden">Docs</span>
+                </button>
+                <button
                   aria-label="Settings"
                   className="activity-bar__button"
                   onClick={() => {
@@ -13680,30 +13871,8 @@ ${nextLine}` : nextLine;
                   <h2>{filesPanelTitle}</h2>
                 </div>
                 <div className="pane__header-actions">
-                  {activeSidebarTool === "projects" ? (
-                    <button
-                      className="pane__button pane__button--compact pane__icon-button"
-                      onClick={handleCreateLocalProject}
-                      type="button"
-                      aria-label="New project"
-                      title="New project"
-                    >
-                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-folder" />
-                    </button>
-                  ) : activeSidebarTool === "files" ? (
+                  {activeSidebarTool === "files" ? (
                     <>
-                      <button
-                        aria-label="Sync to Git"
-                        className="pane__button pane__button--compact pane__icon-button"
-                        disabled={!canQuickSaveToGit}
-                        onClick={() => {
-                          void handleQuickSaveToGit();
-                        }}
-                        title="Stage all changes, commit with the default message, and push to GitHub."
-                        type="button"
-                      >
-                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--sync" />
-                      </button>
                       <button
                         className="pane__button pane__button--compact pane__icon-button"
                         onClick={handleNewDocument}
@@ -13731,51 +13900,7 @@ ${nextLine}` : nextLine;
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
                       </button>
-                      <button
-                        aria-label={isTrashViewOpen ? "Close trash" : "Open trash"}
-                        aria-pressed={isTrashViewOpen}
-                        className="pane__button pane__button--compact pane__icon-button"
-                        onClick={handleToggleTrashView}
-                        title={isTrashViewOpen ? "Close trash" : "Open trash"}
-                        type="button"
-                      >
-                        <span aria-hidden="true" className="toolbar-icon toolbar-icon--trash" />
-                      </button>
                     </>
-                  ) : activeSidebarTool === "sync" && activeMergeState ? (
-                      <InlinePaneExpandControls
-                        collapseLabel={
-                          gitMergePaneMode === "preview"
-                            ? "Show two-way conflict view"
-                            : "Collapse conflict view"
-                        }
-                        expandLabel={
-                          gitMergePaneMode === "source"
-                            ? "Show three-way conflict view"
-                            : "Expand conflict view"
-                        }
-                        onExpandLeft={
-                          gitMergePaneMode !== "sidebar"
-                            ? expandGitMergePaneBackward
-                            : undefined
-                        }
-                        onExpandRight={
-                          !isMobileWorkspace && gitMergePaneMode !== "preview"
-                            ? expandGitMergePaneForward
-                            : undefined
-                        }
-                      />
-                  ) : activeSidebarTool === "diagram" &&
-                    isDiagramInlineExpanded &&
-                    !snapshot.preferences.liveCompilation ? (
-                    <button
-                      className="pane__button"
-                      onClick={handleCompile}
-                      title={`Compile (${compileShortcutLabel})`}
-                      type="button"
-                    >
-                      Compile
-                    </button>
                   ) : null}
                 </div>
               </div>
@@ -13783,42 +13908,77 @@ ${nextLine}` : nextLine;
               {activeSidebarTool === "projects" ? (
                 <section className="sidebar-section sidebar-section--scrollable sidebar-section--projects">
                   <div className="project-manager">
-                    <div className="project-manager__list" role="list">
+                    <div className="project-manager__actions project-manager__actions--primary">
+                      <button
+                        className="pane__button"
+                        onClick={handleCreateLocalProject}
+                        type="button"
+                      >
+                        New local project
+                      </button>
+                      <button
+                        className="pane__button"
+                        onClick={() => projectImportInputRef.current?.click()}
+                        type="button"
+                      >
+                        Import project
+                      </button>
+                    </div>
+                    <div className="project-manager__actions project-manager__actions--github">
+                      <button
+                        className={`pane__button project-github-action ${
+                          gitHubClone.isOpen && gitHubClone.mode === "clone" ? "project-github-action--active" : ""
+                        }`}
+                        onClick={handleToggleGitHubCloneFlow}
+                        type="button"
+                      >
+                        {gitHubClone.isOpen && gitHubClone.mode === "clone" ? "Hide clone" : "Clone GitHub repo"}
+                      </button>
+                      {gitHubClone.isOpen && gitHubClone.mode === "clone" ? projectGitHubPanel : null}
+                      <button
+                        className={`pane__button project-github-action ${
+                          gitHubClone.isOpen && gitHubClone.mode === "create" ? "project-github-action--active" : ""
+                        }`}
+                        onClick={handleToggleGitHubCreateFlow}
+                        type="button"
+                      >
+                        {gitHubClone.isOpen && gitHubClone.mode === "create" ? "Hide create" : "Create GitHub repo"}
+                      </button>
+                      {gitHubClone.isOpen && gitHubClone.mode === "create" ? projectGitHubPanel : null}
+                    </div>
+                    <div className="project-manager__list" role="list" aria-label="Projects">
                       {projectStorage.projects.map((project) => {
-                        const isSelectedProject = project.id === selectedProjectRepository?.id;
-                        const projectEntries = listProjectEntries(project).filter(
-                          (entry) => entry.path !== DEFAULT_PROJECT_GITIGNORE_PATH
-                        );
-                        const connectedRepoCount = gitWorkspace.projects.filter(
-                          (managedProject) =>
-                            managedProject.projectId === project.id &&
-                            managedProject.connected &&
-                            managedProject.owner.trim() &&
-                            managedProject.repo.trim()
+                        const isActiveProject = selectedProjectRepository?.id === project.id;
+                        const projectFileCount = listProjectEntries(project).filter(
+                          (entry) => entry.kind === "file"
                         ).length;
 
                         return (
                           <article
-                            className={`project-manager__row ${
-                              isSelectedProject ? "project-manager__row--active" : ""
-                            }`}
                             key={project.id}
+                            className={`project-manager__row ${
+                              isActiveProject ? "project-manager__row--active" : ""
+                            } ${
+                              draggedProjectId === project.id ? "project-manager__row--dragging" : ""
+                            } ${
+                              projectDragOverId === project.id && draggedProjectId !== project.id
+                                ? "project-manager__row--drop-target"
+                                : ""
+                            }`}
+                            draggable
+                            onDragEnd={handleProjectDragEnd}
+                            onDragOver={(event) => handleProjectDragOver(event, project.id)}
+                            onDragStart={(event) => handleProjectDragStart(event, project.id)}
+                            onDrop={(event) => handleProjectDrop(event, project.id)}
                             role="listitem"
                           >
                             <button
-                              aria-pressed={isSelectedProject}
                               className="project-manager__select"
                               onClick={() => handleSelectLocalProject(project.id)}
                               type="button"
                             >
                               <strong>{project.displayName}</strong>
-                              <span>
-                                {isSelectedProject
-                                  ? "Active"
-                                  : connectedRepoCount > 0
-                                    ? `${connectedRepoCount} GitHub repo${connectedRepoCount === 1 ? "" : "s"}`
-                                    : `${projectEntries.length} item${projectEntries.length === 1 ? "" : "s"}`}
-                              </span>
+                              <span>{projectFileCount} {projectFileCount === 1 ? "file" : "files"}</span>
                             </button>
                             <div className="project-manager__row-actions">
                               <button
@@ -13842,281 +14002,6 @@ ${nextLine}` : nextLine;
                         );
                       })}
                     </div>
-
-                    {recentProjectsForDisplay.length > 0 || recentFilesForDisplay.length > 0 ? (
-                      <div className="project-recent-card">
-                        {recentProjectsForDisplay.length > 0 ? (
-                          <section className="project-recent-card__section">
-                            <h4>Recent projects</h4>
-                            <div className="project-recent-list">
-                              {recentProjectsForDisplay.map((project) => (
-                                <button
-                                  className="project-recent-item"
-                                  disabled={project.id === selectedProjectRepository?.id}
-                                  key={project.id}
-                                  onClick={() => handleSelectLocalProject(project.id)}
-                                  title={project.displayName}
-                                  type="button"
-                                >
-                                  <span>{project.displayName}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </section>
-                        ) : null}
-                        {recentFilesForDisplay.length > 0 ? (
-                          <section className="project-recent-card__section">
-                            <h4>Recent files</h4>
-                            <div className="project-recent-list">
-                              {recentFilesForDisplay.map((entry) => (
-                                <button
-                                  className="project-recent-item project-recent-item--file"
-                                  key={`${entry.projectId}:${entry.path}`}
-                                  onClick={() => handleOpenRecentFile(entry)}
-                                  title={`${entry.projectName}/${entry.path}`}
-                                  type="button"
-                                >
-                                  <span>{getWorkspaceBaseName(entry.path)}</span>
-                                  <small>{entry.projectName}</small>
-                                </button>
-                              ))}
-                            </div>
-                          </section>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    <div className="project-manager__actions">
-                      <button
-                        className="pane__button"
-                        onClick={handleCreateLocalProject}
-                        type="button"
-                      >
-                        New local project
-                      </button>
-                      <button
-                        className="pane__button"
-                        onClick={handleToggleGitHubCloneFlow}
-                        type="button"
-                      >
-                        {gitHubClone.isOpen ? "Hide clone" : "Clone GitHub repo"}
-                      </button>
-                      <button
-                        className="pane__button"
-                        disabled={!canManageGitHubProjects}
-                        onClick={() => {
-                          void handleCreateGitHubRepoFromCurrentProject();
-                        }}
-                        type="button"
-                      >
-                        Create GitHub repo
-                      </button>
-                      <button
-                        className="pane__button pane__button--quiet"
-                        onClick={handleDownloadProject}
-                        type="button"
-                      >
-                        Export project
-                      </button>
-                      <button
-                        className="pane__button pane__button--quiet"
-                        onClick={() => projectImportInputRef.current?.click()}
-                        type="button"
-                      >
-                        Import project
-                      </button>
-                      <button
-                        className="pane__button pane__button--quiet"
-                        onClick={() => {
-                          setSettingsTab("git");
-                          setIsSettingsOpen(true);
-                        }}
-                        type="button"
-                      >
-                        Git setup
-                      </button>
-                    </div>
-                    {gitHubClone.isOpen ? (
-                      <div className="project-clone-card">
-                        <label className="sync-field">
-                          <span>GitHub token</span>
-                          <input
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            onChange={(event) => handleGitHubCloneTokenChange(event.target.value)}
-                            placeholder="Paste token"
-                            type="password"
-                            value={gitHubClone.token}
-                          />
-                        </label>
-                        <button
-                          className="pane__button"
-                          disabled={!gitHubClone.token.trim() || gitHubClone.status === "loading"}
-                          onClick={() => {
-                            void handleConnectGitHubClone();
-                          }}
-                          type="button"
-                        >
-                          {gitHubClone.status === "loading" ? "Connecting..." : "Connect"}
-                        </button>
-                        <label className="sync-field">
-                          <span>GitHub URL</span>
-                          <input
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            onChange={(event) => handleGitHubCloneRepositoryUrlChange(event.target.value)}
-                            placeholder="https://github.com/owner/repo"
-                            type="text"
-                            value={gitHubClone.repositoryUrl}
-                          />
-                        </label>
-                        <div className="project-clone-grid">
-                          <label className="sync-field">
-                            <span>Owner</span>
-                            {gitHubClone.owners.length > 0 ? (
-                              <select
-                                onChange={(event) => handleGitHubCloneOwnerChange(event.target.value)}
-                                value={gitHubClone.owner}
-                              >
-                                {gitHubClone.owners.map((owner) => (
-                                  <option key={owner.login} value={owner.login}>
-                                    {owner.login}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                                onChange={(event) => handleGitHubCloneOwnerChange(event.target.value)}
-                                placeholder="owner"
-                                type="text"
-                                value={gitHubClone.owner}
-                              />
-                            )}
-                          </label>
-                          <label className="sync-field">
-                            <span>Repo</span>
-                            {gitHubClone.repos.length > 0 ? (
-                              <select
-                                disabled={gitHubClone.isLoadingRepos}
-                                onChange={(event) => handleGitHubCloneRepoSelection(event.target.value)}
-                                value={
-                                  gitHubClone.repos.some((repo) => repo.name === gitHubClone.repo)
-                                    ? gitHubClone.repo
-                                    : ""
-                                }
-                              >
-                                <option value="">
-                                  {gitHubClone.isLoadingRepos ? "Loading repos..." : "Choose repo"}
-                                </option>
-                                {gitHubClone.repos.map((repo) => (
-                                  <option key={repo.fullName} value={repo.name}>
-                                    {repo.name}{repo.private ? " (private)" : ""}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                                onChange={(event) => handleGitHubCloneRepoSelection(event.target.value)}
-                                placeholder={gitHubClone.isLoadingRepos ? "Loading repos..." : "repo"}
-                                type="text"
-                                value={gitHubClone.repo}
-                              />
-                            )}
-                          </label>
-                        </div>
-                        <div className="project-clone-grid">
-                          <label className="sync-field">
-                            <span>Branch</span>
-                            {gitHubClone.branches.length > 0 ? (
-                              <select
-                                disabled={gitHubClone.isLoadingBranches}
-                                onChange={(event) =>
-                                  setGitHubClone((current) => ({
-                                    ...current,
-                                    branch: event.target.value
-                                  }))
-                                }
-                                value={
-                                  gitHubClone.branches.some((branch) => branch.name === gitHubClone.branch)
-                                    ? gitHubClone.branch
-                                    : ""
-                                }
-                              >
-                                <option value="">
-                                  {gitHubClone.isLoadingBranches ? "Loading branches..." : "Choose branch"}
-                                </option>
-                                {gitHubClone.branches.map((branch) => (
-                                  <option key={branch.name} value={branch.name}>
-                                    {branch.name}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                autoCapitalize="none"
-                                autoCorrect="off"
-                                onChange={(event) =>
-                                  setGitHubClone((current) => ({
-                                    ...current,
-                                    branch: event.target.value
-                                  }))
-                                }
-                                placeholder={gitHubClone.isLoadingBranches ? "Loading branches..." : "main"}
-                                type="text"
-                                value={gitHubClone.branch}
-                              />
-                            )}
-                          </label>
-                          <label className="sync-field">
-                            <span>Local name</span>
-                            <input
-                              onChange={(event) =>
-                                setGitHubClone((current) => ({
-                                  ...current,
-                                  projectName: event.target.value
-                                }))
-                              }
-                              placeholder={gitHubClone.repo || "Project name"}
-                              type="text"
-                              value={gitHubClone.projectName}
-                            />
-                          </label>
-                        </div>
-                        {gitHubClone.message ? (
-                          <p className="project-clone-card__message">{gitHubClone.message}</p>
-                        ) : null}
-                        {gitHubCloneBranchGuidance ? (
-                          <p className="project-clone-card__message project-clone-card__message--warning">
-                            {gitHubCloneBranchGuidance}
-                          </p>
-                        ) : null}
-                        <div className="project-clone-actions">
-                          <button
-                            className={`pane__button project-clone-button ${
-                              isSyncing && gitHubCloneProgressPercent !== null
-                                ? "project-clone-button--active"
-                                : ""
-                            }`}
-                            disabled={!canCloneGitHubRepository}
-                            onClick={() => {
-                              void handleCloneGitHubRepository();
-                            }}
-                            style={
-                              {
-                                "--project-clone-progress": `${gitHubCloneProgressPercent ?? 0}%`
-                              } as CSSProperties
-                            }
-                            type="button"
-                          >
-                            <span>{isSyncing ? "Cloning..." : "Clone"}</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
                 </section>
               ) : activeSidebarTool === "source-tools" ? (
@@ -15791,6 +15676,8 @@ ${nextLine}` : nextLine;
         </div>
       ) : null}
 
+      {isDocsOpen ? <DocsModal onClose={() => setIsDocsOpen(false)} /> : null}
+
       {isSettingsOpen ? (
         <div
           className="sheet-backdrop"
@@ -15828,16 +15715,18 @@ ${nextLine}` : nextLine;
                   ) : null}
                 </div>
               </div>
-              <button
-                className="pane__button"
-                onClick={() => {
-                  saveCurrentSettingsScrollPosition();
-                  setIsSettingsOpen(false);
-                }}
-                type="button"
-              >
-                Close
-              </button>
+              <div className="settings-sheet__header-actions">
+                <button
+                  className="pane__button"
+                  onClick={() => {
+                    saveCurrentSettingsScrollPosition();
+                    setIsSettingsOpen(false);
+                  }}
+                  type="button"
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
             <div
@@ -15931,32 +15820,7 @@ ${nextLine}` : nextLine;
 
               {settingsTab === "git" ? (
                 <div className="settings-panel settings-panel--git" role="tabpanel">
-                  <div className="git-settings-card git-settings-card--status">
-                    <div className="git-project-connection-row git-project-connection-row--status-only">
-                      <strong className="git-project-connection-row__name">
-                        {selectedGitProject?.name || "Git repo"}
-                      </strong>
-                      <span
-                        className={`git-project-status ${
-                          selectedGitProjectIsGitHubConnected
-                            ? "git-project-status--connected"
-                            : "git-project-status--disconnected"
-                        }`}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={`git-project-status__dot ${
-                            selectedGitProjectIsGitHubConnected
-                              ? "git-project-status__dot--connected"
-                              : "git-project-status__dot--disconnected"
-                          }`}
-                        />
-                        {selectedProjectGitConnectionLabel}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="git-setup-strip">
+                  <div className="git-setup-strip git-setup-strip--token-only">
                     <a
                       aria-label="Open GitHub personal access token settings"
                       className="git-setup-step git-setup-step--link"
@@ -15980,200 +15844,34 @@ ${nextLine}` : nextLine;
                     </label>
                     <button
                       className={`pane__button git-connect-button ${
-                        selectedGitProjectIsGitHubConnected ? "pane__button--danger" : ""
+                        gitHubDiscovery.status === "connected" ? "pane__button--success" : ""
                       }`}
-                      disabled={
-                        !selectedGitProject ||
-                        gitHubDiscovery.status === "loading" ||
-                        (!selectedGitProjectIsGitHubConnected && !selectedGitToken.trim())
-                      }
+                      disabled={!selectedGitProject || gitHubDiscovery.status === "loading" || !selectedGitToken.trim()}
                       onClick={() => {
                         void handleGitHubTokenConnectionAction();
                       }}
-                      title={
-                        selectedGitProjectIsGitHubConnected
-                          ? "Disconnect GitHub"
-                          : "Connect GitHub"
-                      }
                       type="button"
                     >
-                      {selectedGitProjectIsGitHubConnected
-                        ? "Disconnect"
-                        : gitHubDiscovery.status === "loading"
-                          ? "Connecting..."
-                          : "Connect"}
+                      {gitHubDiscovery.status === "loading"
+                        ? "Connecting..."
+                        : gitHubDiscovery.status === "connected"
+                          ? gitHubDiscovery.accountLogin
+                            ? `Connected as ${gitHubDiscovery.accountLogin}`
+                            : "Connected"
+                          : "Connect token"}
                     </button>
                   </div>
 
-                  <div className="git-settings-card">
-                    <div className="sync-grid git-remote-grid">
-                      <label className="sync-field">
-                        <span>Name</span>
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) => handleGitProjectFieldChange("name", event.target.value)}
-                          placeholder="Algebra notes repo"
-                          type="text"
-                          value={selectedGitProject?.name ?? ""}
-                        />
-                      </label>
-                      <label className="sync-field">
-                        <span>Owner</span>
-                        <input
-                          list="github-owner-options"
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) =>
-                            handleGitHubOwnerChange(event.target.value)
-                          }
-                          placeholder={
-                            gitHubDiscovery.status === "connected"
-                              ? "Choose or enter an owner"
-                              : "Connect token, then choose owner"
-                          }
-                          type="text"
-                          value={remoteConfig.owner}
-                        />
-                        <datalist id="github-owner-options">
-                          {gitHubDiscovery.owners.map((owner) => (
-                            <option key={owner.login} value={owner.login}>
-                              {owner.type}
-                            </option>
-                          ))}
-                        </datalist>
-                      </label>
-                      <label className="sync-field">
-                        <span>Repo</span>
-                        {gitHubDiscovery.repoMode === "select" ? (
-                          <select
-                            disabled={!remoteConfig.owner.trim() || gitHubDiscovery.isLoadingRepos}
-                            onChange={(event) => {
-                              if (event.target.value === "__create__") {
-                                handleGitHubRepoModeChange("create");
-                                return;
-                              }
-                              if (event.target.value === "__manual__") {
-                                handleGitHubRepoModeChange("manual");
-                                return;
-                              }
-                              handleGitHubRepoSelection(event.target.value);
-                            }}
-                            value={
-                              gitHubDiscovery.repos.some((repo) => repo.name === remoteConfig.repo)
-                                ? remoteConfig.repo
-                                : ""
-                            }
-                          >
-                            <option value="">
-                              {gitHubDiscovery.isLoadingRepos
-                                ? "Loading repositories..."
-                                : "Choose repository"}
-                            </option>
-                            {gitHubDiscovery.repos.map((repo) => (
-                              <option key={repo.fullName} value={repo.name}>
-                                {repo.name}{repo.private ? " (private)" : ""}
-                              </option>
-                            ))}
-                            <option value="__create__">Create new repository...</option>
-                            <option value="__manual__">Enter manually...</option>
-                          </select>
-                        ) : (
-                          <input
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            onChange={(event) =>
-                              handleGitRemoteConfigChange("repo", event.target.value)
-                            }
-                            onPaste={(event) => {
-                              if (handleGitHubUrlPaste(event.clipboardData.getData("text"))) {
-                                event.preventDefault();
-                              }
-                            }}
-                            placeholder={
-                              gitHubDiscovery.repoMode === "create"
-                                ? "New repository name"
-                                : "Repository name or GitHub URL"
-                            }
-                            type="text"
-                            value={remoteConfig.repo}
-                          />
-                        )}
-                        {gitHubDiscovery.repoMode !== "select" ? (
-                          <button
-                            className="pane__button pane__button--compact"
-                            onClick={() => handleGitHubRepoModeChange("select")}
-                            type="button"
-                          >
-                            Choose existing
-                          </button>
-                        ) : null}
-                      </label>
-                      <label className="sync-field">
-                        <span>Branch</span>
-                        {gitHubDiscovery.branches.length > 0 ? (
-                          <select
-                            onChange={(event) =>
-                              handleGitRemoteConfigChange("branch", event.target.value)
-                            }
-                            value={
-                              gitHubDiscovery.branches.some((branch) => branch.name === remoteConfig.branch)
-                                ? remoteConfig.branch
-                                : ""
-                            }
-                          >
-                            <option value="">
-                              {gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "Choose branch"}
-                            </option>
-                            {gitHubDiscovery.branches.map((branch) => (
-                              <option key={branch.name} value={branch.name}>
-                                {branch.name}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            onChange={(event) =>
-                              handleGitRemoteConfigChange("branch", event.target.value)
-                            }
-                            placeholder={gitHubDiscovery.isLoadingBranches ? "Loading branches..." : "main"}
-                            type="text"
-                            value={remoteConfig.branch}
-                          />
-                        )}
-                      </label>
-                      <label className="sync-field">
-                        <span>Remote</span>
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) =>
-                            handleGitRemoteConfigChange("remoteName", event.target.value)
-                          }
-                          placeholder="origin"
-                          type="text"
-                          value={remoteConfig.remoteName}
-                        />
-                      </label>
-                      <label className="sync-field">
-                        <span>Backend</span>
-                        <select
-                          onChange={(event) =>
-                            handleGitProjectBackendChange(
-                              event.target.value as GitManagedProject["backendId"]
-                            )
-                          }
-                          value={selectedGitProject?.backendId ?? "browser"}
-                        >
-                          <option value="browser">Browser</option>
-                        </select>
-                      </label>
-                    </div>
+                  <div className="git-settings-card git-settings-card--guidance">
+                    <p className="git-settings-note">
+                      Use a fine-grained GitHub token with repository Contents read/write access. To create repositories from Typr, also grant Administration read/write for the selected owner. Prefer a token that expires in 30 to 90 days instead of one with no expiration.
+                    </p>
+                    <p className="git-settings-note">
+                      Clone existing remote repositories from the Projects tab. Manage pulls, commits, pushes, and conflicts from the Sync tab.
+                    </p>
                     <div className="git-permission-list">
                       <div className="git-permission-row">
-                        <span>Existing repo</span>
+                        <span>Existing repos</span>
                         <strong>Contents read/write</strong>
                       </div>
                       <div className="git-permission-row">
@@ -16181,30 +15879,6 @@ ${nextLine}` : nextLine;
                         <strong>Contents + Administration read/write</strong>
                       </div>
                     </div>
-                  </div>
-
-                  <div className="git-option-grid">
-                    <label className="settings-toggle git-option-tile">
-                      <span>
-                        <strong>Private</strong>
-                      </span>
-                      <input
-                        checked={createGitHubRepoPrivate}
-                        onChange={(event) => setCreateGitHubRepoPrivate(event.target.checked)}
-                        type="checkbox"
-                      />
-                    </label>
-
-                    <label className="settings-toggle git-option-tile">
-                      <span>
-                        <strong>Auto-sync</strong>
-                      </span>
-                      <input
-                        checked={snapshot.preferences.autoSyncGitProjects}
-                        onChange={handleAutoSyncGitProjectsToggle}
-                        type="checkbox"
-                      />
-                    </label>
                   </div>
 
                   <div className="git-settings-card git-settings-card--advanced">

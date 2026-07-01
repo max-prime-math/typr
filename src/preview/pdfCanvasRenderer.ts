@@ -4,7 +4,7 @@ import {
   type PDFPageProxy,
   type PDFDocumentProxy
 } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+import pdfWorkerUrl from "./pdfWorker.ts?worker&url";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 

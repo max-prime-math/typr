@@ -76,6 +76,30 @@ export const diagnosticsCompartment = new Compartment();
 
 let latestVimCloseRequested: (() => void) | null = null;
 let vimCloseCommandsRegistered = false;
+let vimIpadInsertEscapePolicyRegistered = false;
+
+function isIPadLikePlatform(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  return (
+    /iPad/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function registerVimIpadInsertEscapePolicy(): void {
+  if (vimIpadInsertEscapePolicyRegistered || !isIPadLikePlatform()) {
+    return;
+  }
+
+  for (const key of ["<C-[>", "<C-c>", "<C-Esc>"]) {
+    Vim.unmap(key, "insert");
+  }
+
+  vimIpadInsertEscapePolicyRegistered = true;
+}
 
 function registerVimCloseCommands(onCloseRequested: () => void): void {
   latestVimCloseRequested = onCloseRequested;
@@ -275,6 +299,7 @@ export function createEditorExtensions({
   onCloseRequested
 }: EditorSetupOptions): Extension[] {
   if (vimMode) {
+    registerVimIpadInsertEscapePolicy();
     registerVimCloseCommands(onCloseRequested);
   }
 

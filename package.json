@@ -43,7 +43,8 @@
     "plotly.js-dist-min": "^3.5.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "texlyre-busytex": "^1.1.1"
+    "texlyre-busytex": "^1.1.1",
+    "marked": "^18.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

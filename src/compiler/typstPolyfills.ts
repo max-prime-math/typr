@@ -17,3 +17,34 @@ export function ensureTypstQueueMicrotask(): void {
       });
   };
 }
+
+export function ensureMapGetOrInsertComputed(): void {
+  const mapPrototype = Map.prototype as Map<unknown, unknown> & {
+    getOrInsertComputed?: (key: unknown, callback: (key: unknown) => unknown) => unknown;
+  };
+
+  if (typeof mapPrototype.getOrInsertComputed === "function") {
+    return;
+  }
+
+  Object.defineProperty(mapPrototype, "getOrInsertComputed", {
+    configurable: true,
+    writable: true,
+    value(this: Map<unknown, unknown>, key: unknown, callback: (key: unknown) => unknown): unknown {
+      if (this.has(key)) {
+        return this.get(key);
+      }
+
+      const value = callback(key);
+      this.set(key, value);
+      return value;
+    }
+  });
+}
+
+export function ensureRuntimePolyfills(): void {
+  ensureTypstQueueMicrotask();
+  ensureMapGetOrInsertComputed();
+}
+
+ensureRuntimePolyfills();

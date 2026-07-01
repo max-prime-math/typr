@@ -42,7 +42,10 @@ export async function syncProjectToOpfs(project: TyprProjectRepository): Promise
       continue;
     }
 
-    await writeWorkspaceFile(workspaceRoot, entry);
+    const didWriteFile = await writeWorkspaceFile(workspaceRoot, entry);
+    if (!didWriteFile) {
+      return;
+    }
   }
 }
 
@@ -161,17 +164,25 @@ async function getFileHandleByPath(
 async function writeWorkspaceFile(
   root: FileSystemDirectoryHandle,
   entry: WorkspaceFlatEntry
-): Promise<void> {
+): Promise<boolean> {
   const segments = normalizeProjectPath(entry.path).split("/");
   const fileName = segments.pop();
 
   if (!fileName) {
-    return;
+    return true;
   }
 
   const parent = segments.length > 0 ? await ensureDirectory(root, segments.join("/")) : root;
   const fileHandle = await parent.getFileHandle(fileName, { create: true });
-  const writer = await fileHandle.createWritable();
+  const writableFileHandle = fileHandle as FileSystemFileHandle & {
+    createWritable?: FileSystemFileHandle["createWritable"];
+  };
+
+  if (typeof writableFileHandle.createWritable !== "function") {
+    return false;
+  }
+
+  const writer = await writableFileHandle.createWritable();
 
   if (typeof entry.content === "string") {
     await writer.write(entry.content);
@@ -186,6 +197,7 @@ async function writeWorkspaceFile(
   }
 
   await writer.close();
+  return true;
 }
 
 async function collectWorkspaceEntries(
