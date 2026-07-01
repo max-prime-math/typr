@@ -2383,16 +2383,18 @@ button {
 }
 
 .project-manager__actions--primary {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.project-manager__actions--primary .pane__button,
+.project-manager__actions--github .pane__button {
+  width: 100%;
+  justify-content: center;
 }
 
 .project-manager__actions--github {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
-}
-
-.project-manager__actions--primary .pane__button:first-child {
-  grid-column: 1 / -1;
 }
 
 .project-github-action {
@@ -2503,7 +2505,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-strong);
-  padding: 0.48rem 0.58rem;
+  padding: 0.48rem 0.62rem;
 }
 
 .project-create-private-toggle strong {
@@ -2515,8 +2517,48 @@ button {
   white-space: nowrap;
 }
 
-.project-create-private-toggle input {
-  flex: 0 0 auto;
+.project-create-private-toggle input[type="checkbox"] {
+  position: relative;
+  width: 2.35rem;
+  min-height: 0;
+  height: 1.28rem;
+  flex: 0 0 2.35rem;
+  margin: 0;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, var(--text-muted));
+  border-radius: 999px;
+  background: var(--surface-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.project-create-private-toggle input[type="checkbox"]::after {
+  position: absolute;
+  top: 50%;
+  left: 0.16rem;
+  width: 0.86rem;
+  height: 0.86rem;
+  border-radius: 999px;
+  background: var(--text-muted);
+  content: "";
+  transform: translateY(-50%);
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.project-create-private-toggle input[type="checkbox"]:checked {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface-strong));
+}
+
+.project-create-private-toggle input[type="checkbox"]:checked::after {
+  background: var(--accent);
+  transform: translate(1.04rem, -50%);
+}
+
+.project-create-private-toggle input[type="checkbox"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .project-clone-grid {
