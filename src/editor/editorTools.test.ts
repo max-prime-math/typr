@@ -54,16 +54,11 @@ describe("Markdown formatter", () => {
 });
 
 describe("Markdown linter", () => {
-  it("detects trailing whitespace, heading jumps, and unclosed fences", () => {
+  it("detects heading jumps and unclosed fences without flagging trailing whitespace", () => {
     const diagnostics = lintMarkdownSource(["# Title  ", "### Jump", "```ts", "const x = 1;"].join("\n"), "notes.md");
 
     expect(diagnostics).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          severity: "warning",
-          line: 1,
-          message: "Markdown lint: trailing whitespace."
-        }),
         expect.objectContaining({
           severity: "warning",
           line: 2,
@@ -73,6 +68,13 @@ describe("Markdown linter", () => {
           severity: "error",
           line: 3,
           message: "Markdown lint: code fence is not closed."
+        })
+      ])
+    );
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Markdown lint: trailing whitespace."
         })
       ])
     );
@@ -110,6 +112,12 @@ describe("Typst linter", () => {
         })
       ])
     );
+  });
+
+  it("does not warn for prose apostrophes or trailing spaces", () => {
+    const diagnostics = lintTypstSource("It's fine to type a space here ", "main.typ");
+
+    expect(diagnostics).toEqual([]);
   });
 });
 

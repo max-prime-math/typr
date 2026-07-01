@@ -140,6 +140,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const latestOnChangeRef = useRef(onChange);
   const snippetsRef = useRef(snippets);
   const preservedViewStateRef = useRef<PreservedEditorViewState | null>(null);
+  const diagnosticsSignatureRef = useRef(createDiagnosticsSignature(diagnostics, highlightErrors));
   const snippetCompletionSource = useMemo<CompletionSource>(
     () => {
       const snippetLanguage = isSnippetLanguage(language) ? language : "markdown";
@@ -540,6 +541,13 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       return;
     }
 
+    const nextSignature = createDiagnosticsSignature(diagnostics, highlightErrors);
+
+    if (nextSignature === diagnosticsSignatureRef.current) {
+      return;
+    }
+
+    diagnosticsSignatureRef.current = nextSignature;
     view.dispatch({
       effects: diagnosticsCompartment.reconfigure(
         createEditorDiagnosticExtensions(diagnostics, highlightErrors)
@@ -551,6 +559,27 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
 });
 
 export const TypstEditor = memo(TypstEditorComponent);
+
+function createDiagnosticsSignature(
+  diagnostics: CompileDiagnostic[],
+  highlightErrors: boolean
+): string {
+  return `${highlightErrors ? "1" : "0"}|${diagnostics
+    .map((diagnostic) =>
+      [
+        diagnostic.severity,
+        diagnostic.path ?? "",
+        diagnostic.line ?? "",
+        diagnostic.column ?? "",
+        diagnostic.endLine ?? "",
+        diagnostic.endColumn ?? "",
+        diagnostic.range ?? "",
+        diagnostic.message
+      ].join("\u{1f}")
+    )
+    .join("\u{1e}")}`;
+}
+
 
 function applyEditorChanges(
   currentValueRef: MutableRefObject<string>,

@@ -275,16 +275,6 @@ export function lintMarkdownSource(source: string, path?: string): CompileDiagno
   lines.forEach((line, index) => {
     const lineNumber = index + 1;
 
-    if (/[ \t]+$/.test(line)) {
-      diagnostics.push({
-        severity: "warning",
-        path,
-        line: lineNumber,
-        column: line.length - (line.match(/[ \t]+$/)?.[0].length ?? 0) + 1,
-        message: "Markdown lint: trailing whitespace."
-      });
-    }
-
     const fenceMatch = line.match(/^(```+|~~~+)/);
     if (fenceMatch) {
       inFence = !inFence;
@@ -367,15 +357,12 @@ export function lintMarkdownSource(source: string, path?: string): CompileDiagno
 export function lintTypstSource(source: string, path?: string): CompileDiagnostic[] {
   const diagnostics: CompileDiagnostic[] = [];
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  const bracketStack: Array<{ character: string; line: number; column: number }> = [];
   let inRawBlock = false;
   let rawBlockStartLine = 0;
   let previousHeadingLevel = 0;
 
   lines.forEach((line, index) => {
     const lineNumber = index + 1;
-
-    pushTrailingWhitespaceDiagnostic(diagnostics, line, lineNumber, path, "Typst");
 
     const trimmed = line.trim();
     if (/^```/.test(trimmed)) {
@@ -423,7 +410,6 @@ export function lintTypstSource(source: string, path?: string): CompileDiagnosti
     }
 
     const commentlessLine = stripTypstLineComment(line);
-    pushBracketDiagnostics(diagnostics, commentlessLine, lineNumber, path, "Typst", bracketStack);
 
     if (countUnescaped(commentlessLine, "$") % 2 === 1) {
       diagnostics.push({
@@ -446,16 +432,6 @@ export function lintTypstSource(source: string, path?: string): CompileDiagnosti
     });
   }
 
-  for (const entry of bracketStack) {
-    diagnostics.push({
-      severity: "warning",
-      path,
-      line: entry.line,
-      column: entry.column,
-      message: `Typst lint: '${entry.character}' is not closed.`
-    });
-  }
-
   return diagnostics;
 }
 
@@ -469,7 +445,6 @@ export function lintLatexSource(source: string, path?: string): CompileDiagnosti
 
   lines.forEach((line, index) => {
     const lineNumber = index + 1;
-    pushTrailingWhitespaceDiagnostic(diagnostics, line, lineNumber, path, "LaTeX");
 
     const trimmed = line.trim();
     if (verbatimEnvironment !== null) {
@@ -674,63 +649,6 @@ function stripLatexLineComment(line: string): string {
     }
   }
   return line;
-}
-
-function pushTrailingWhitespaceDiagnostic(
-  diagnostics: CompileDiagnostic[],
-  line: string,
-  lineNumber: number,
-  path: string | undefined,
-  language: string
-): void {
-  const match = line.match(/[ \t]+$/);
-  if (!match) {
-    return;
-  }
-
-  diagnostics.push({
-    severity: "warning",
-    path,
-    line: lineNumber,
-    column: line.length - match[0].length + 1,
-    message: `${language} lint: trailing whitespace.`
-  });
-}
-
-function pushBracketDiagnostics(
-  diagnostics: CompileDiagnostic[],
-  line: string,
-  lineNumber: number,
-  path: string | undefined,
-  language: string,
-  stack: Array<{ character: string; line: number; column: number }>
-): void {
-  const closingToOpening: Record<string, string> = {
-    ")": "(",
-    "]": "[",
-    "}": "{"
-  };
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (character === "(" || character === "[" || character === "{") {
-      stack.push({ character, line: lineNumber, column: index + 1 });
-    } else if (character === ")" || character === "]" || character === "}") {
-      const last = stack.pop();
-      if (!last || last.character !== closingToOpening[character]) {
-        diagnostics.push({
-          severity: "warning",
-          path,
-          line: lineNumber,
-          column: index + 1,
-          message: `${language} lint: '${character}' has no matching opener.`
-        });
-        if (last) {
-          stack.push(last);
-        }
-      }
-    }
-  }
 }
 
 function countUnescaped(line: string, character: string): number {

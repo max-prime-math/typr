@@ -26,6 +26,7 @@ interface PreviewPaneProps {
   showToolbar?: boolean;
   activeSource?: SourcePosition | null;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  onDebugRequested?: () => void;
   sourceLineCount?: number;
   sourcePath?: string;
   zoom?: PreviewZoomState;
@@ -66,6 +67,7 @@ export function PreviewPane({
   showToolbar = true,
   activeSource = null,
   onSourceJump,
+  onDebugRequested,
   sourceLineCount,
   sourcePath,
   zoom,
@@ -94,7 +96,7 @@ export function PreviewPane({
             zoom={currentZoom}
           />
           {showCompilerActivity ? (
-            <PreviewActivityStatus docked status={compilerStatus} />
+            <PreviewActivityStatus docked onDebugRequested={onDebugRequested} status={compilerStatus} />
           ) : null}
         </div>
       </div>
@@ -168,7 +170,7 @@ export function PreviewPane({
               />
             )}
             {showCompilerActivity ? (
-              <PreviewActivityStatus docked status={compilerStatus} />
+              <PreviewActivityStatus docked onDebugRequested={onDebugRequested} status={compilerStatus} />
             ) : null}
           </div>
         ) : (
@@ -227,7 +229,7 @@ export function PreviewPane({
             />
         )}
         {showCompilerActivity ? (
-          <PreviewActivityStatus docked status={compilerStatus} />
+          <PreviewActivityStatus docked onDebugRequested={onDebugRequested} status={compilerStatus} />
         ) : null}
       </div>
     </div>
@@ -338,10 +340,12 @@ export function PreviewStatusIcon({
 function PreviewActivityStatus({
   centered = false,
   docked = false,
+  onDebugRequested,
   status
 }: {
   centered?: boolean;
   docked?: boolean;
+  onDebugRequested?: () => void;
   status: CompilerStatus | null;
 }) {
   if (!status) {
@@ -352,6 +356,7 @@ function PreviewActivityStatus({
     <PreviewActivityStatusBody
       centered={centered}
       docked={docked}
+      onDebugRequested={onDebugRequested}
       status={status}
     />
   );
@@ -360,13 +365,16 @@ function PreviewActivityStatus({
 function PreviewActivityStatusBody({
   centered,
   docked,
+  onDebugRequested,
   status
 }: {
   centered: boolean;
   docked: boolean;
+  onDebugRequested?: () => void;
   status: CompilerStatus;
 }) {
   const progress = usePreviewActivityProgress(status);
+  const showDebugButton = Boolean(onDebugRequested && /latex/i.test(`${status.label} ${status.detail ?? ""}`));
 
   return (
     <div
@@ -378,6 +386,17 @@ function PreviewActivityStatusBody({
     >
       <div className="preview-activity__row">
         <span className="preview-activity__label">{status.label}</span>
+        {showDebugButton ? (
+          <button
+            aria-label="Open Debug tab"
+            className="preview-activity__debug-button"
+            onClick={onDebugRequested}
+            title="Open Debug tab"
+            type="button"
+          >
+            i
+          </button>
+        ) : null}
       </div>
       {status.detail ? (
         <p className="preview-activity__detail">{status.detail}</p>
@@ -539,6 +558,7 @@ function PreviewDocument({
   markup,
   isFaulted = false,
   onSourceJump,
+  onDebugRequested,
   sourceLineCount,
   sourcePath,
   theme,
@@ -551,6 +571,7 @@ function PreviewDocument({
   markup: string;
   isFaulted?: boolean;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  onDebugRequested?: () => void;
   sourceLineCount?: number;
   sourcePath?: string;
   theme: ThemeDefinition;

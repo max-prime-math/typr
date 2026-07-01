@@ -88,7 +88,7 @@ const typstHighlightStyle = HighlightStyle.define([
   }
 ]);
 
-const typstStreamParser: StreamParser<TypstState> = {
+export const typstStreamParser: StreamParser<TypstState> = {
   name: "typst",
   startState() {
     return {
@@ -167,7 +167,7 @@ const typstStreamParser: StreamParser<TypstState> = {
       return "math";
     }
 
-    if (stream.peek() === "\"" || stream.peek() === "'") {
+    if (stream.peek() === "\"") {
       const quote = stream.next();
       let escaped = false;
 

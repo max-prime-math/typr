@@ -132,7 +132,7 @@ import {
   normalizeCompilerPath,
   type SourceLanguage
 } from "../compiler/sourceFileTypes";
-import type { CompileAssetFile, CompileMetadata } from "../compiler/types";
+import type { CompileAssetFile, CompileDiagnostic, CompileMetadata } from "../compiler/types";
 import { exportTypstPdf } from "../compiler/typstRuntime";
 import {
   clearTypstPackageCache,
@@ -332,6 +332,7 @@ const WORKSPACE_OPEN_FOLDERS_STORAGE_KEY = "typr.workspace-open-folders.v1";
 const LATEX_PACKAGE_SELECTIONS_STORAGE_KEY = "typr.latex-package-selections.v1";
 const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 const RECENT_WORKSPACE_STORAGE_KEY = "typr.recent-workspace.v1";
+const BUILD_LOG_STORAGE_KEY = "typr.build-log.v1";
 const PROJECT_EXPORT_INPUT_ACCEPT = ".json,application/json";
 const WORKSPACE_UPLOAD_ACCEPT = [
   ".typ",
@@ -384,6 +385,7 @@ const TEXT_REFERENCE_EXTENSIONS = [
 ];
 const RECENT_PROJECT_LIMIT = 6;
 const RECENT_FILE_LIMIT = 10;
+const EMPTY_COMPILE_DIAGNOSTICS: CompileDiagnostic[] = [];
 
 type WorkspaceOpenFolderStorage = Record<string, string[]>;
 
@@ -563,6 +565,8 @@ type TableAlignment = "left" | "center" | "right" | "horizon";
 type TableGutter = "none" | "small" | "medium";
 type TableInset = "none" | "small" | "medium";
 type TableStroke = "default" | "none";
+type BuildLogTrigger = "manual" | "auto" | "preview" | "export" | "agent" | "rerun";
+type BuildLogFilter = "all" | "errors" | "warnings" | "current-file" | "latex";
 
 interface WorkspaceClipboardState {
   mode: WorkspaceClipboardMode;
@@ -579,6 +583,25 @@ interface CompilePreviewState {
   lastSuccessfulResult: Extract<CompileResult, { ok: true }> | null;
   compilerStatus: CompilerStatus;
   isCompiling: boolean;
+}
+
+interface BuildLogEntry {
+  id: string;
+  sourcePath: string;
+  language: SourceLanguage;
+  engine: CompileResult["engine"];
+  ok: boolean;
+  startedAt: string;
+  durationMs: number;
+  diagnostics: CompileDiagnostic[];
+  metadata?: CompileMetadata;
+  trigger: BuildLogTrigger;
+  compileMode: "quick" | "full" | "none";
+  cached: boolean;
+  outputChanged: boolean;
+  rawLog?: string;
+  packageDetails: string[];
+  shellEscapeUnavailable: boolean;
 }
 
 interface WorkspaceReference {
@@ -2662,6 +2685,7 @@ export function App() {
   const compileInFlightSourcePathRef = useRef("");
   const compileInFlightDiagramRevisionRef = useRef("");
   const compileInFlightGraphRevisionRef = useRef("");
+  const pendingCompileTriggerRef = useRef<BuildLogTrigger>("auto");
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -2846,6 +2870,18 @@ export function App() {
     mode: "worker",
     label: "Waiting to compile"
   });
+  const [liveBuildOutput, setLiveBuildOutput] = useState("");
+  const handleCompilerStatusChange = useCallback((status: CompilerStatus) => {
+    setCompilerStatus(status);
+    setLiveBuildOutput((currentOutput) => {
+      const timestamp = new Date().toLocaleTimeString();
+      const detail = status.detail ? ` — ${status.detail}` : "";
+      const progress = status.progress ? ` (${status.progress.current}/${status.progress.total}${status.progress.label ? ` ${status.progress.label}` : ""})` : "";
+      const nextLine = `[${timestamp}] ${status.label}${detail}${progress}`;
+      return currentOutput ? `${currentOutput}
+${nextLine}` : nextLine;
+    });
+  }, []);
   const symbolHoverTimerRef = useRef<number | null>(null);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const symbolHoverItemRef = useRef<SourceSymbolItem | null>(null);
@@ -2853,9 +2889,9 @@ export function App() {
   const compiler = useMemo(
     () =>
       createTypstCompiler({
-        onStatusChange: setCompilerStatus
+        onStatusChange: handleCompilerStatusChange
       }),
-    []
+    [handleCompilerStatusChange]
   );
   const defaultSnapshotRef = useRef<AppSnapshot | null>(null);
   if (defaultSnapshotRef.current === null) {
@@ -2916,6 +2952,12 @@ export function App() {
   const [isHydrated, setIsHydrated] = useState(false);
   const [hasHydrationError, setHasHydrationError] = useState(false);
   const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
+  const [buildLogEntries, setBuildLogEntries] = useState<BuildLogEntry[]>([]);
+  const [buildLogFilter, setBuildLogFilter] = useState<BuildLogFilter>("all");
+  const [buildLogSearchQuery, setBuildLogSearchQuery] = useState("");
+  const [buildLogFeedback, setBuildLogFeedback] = useState("");
+  const [hideRepeatedBuildWarnings, setHideRepeatedBuildWarnings] = useState(true);
+  const [isBuildLogHydrated, setIsBuildLogHydrated] = useState(false);
   const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
     Extract<CompileResult, { ok: true }> | null
   >(null);
@@ -3735,6 +3777,21 @@ export function App() {
   const canPreviewActiveSource =
     isActiveSourceCompilable || activeSourceLanguage === "markdown";
   const activeProjectTabKey = selectedProjectRepository?.id ?? snapshot.project.id;
+  const buildLogStorageKey = `${BUILD_LOG_STORAGE_KEY}:${activeProjectTabKey}`;
+
+  useEffect(() => {
+    setIsBuildLogHydrated(false);
+    setBuildLogEntries(loadPersistedBuildLogEntries(buildLogStorageKey));
+    setIsBuildLogHydrated(true);
+  }, [buildLogStorageKey]);
+
+  useEffect(() => {
+    if (!isBuildLogHydrated) {
+      return;
+    }
+
+    persistBuildLogEntries(buildLogStorageKey, buildLogEntries);
+  }, [buildLogEntries, buildLogStorageKey, isBuildLogHydrated]);
   const workspaceFilePathSet = useMemo(
     () => new Set(collectWorkspaceFilePaths(workspaceTree)),
     [workspaceTree]
@@ -4267,6 +4324,16 @@ export function App() {
   useEffect(() => {
     compileResultRef.current = compileResult;
   }, [compileResult]);
+
+  const appendBuildLogEntry = useCallback((entry: Omit<BuildLogEntry, "id">) => {
+    setBuildLogEntries((currentEntries) => [
+      {
+        ...entry,
+        id: entry.startedAt + ":" + entry.sourcePath + ":" + currentEntries.length
+      },
+      ...currentEntries
+    ].slice(0, 20));
+  }, []);
 
   useEffect(() => {
     if (!compileInFlightRef.current && !isCompiling) {
@@ -5686,12 +5753,15 @@ export function App() {
     compileInFlightSourcePathRef.current = sourcePath;
     compileInFlightDiagramRevisionRef.current = diagramRevision;
     compileInFlightGraphRevisionRef.current = graphRevision;
+    const compileStartedAtIso = new Date().toISOString();
+    setLiveBuildOutput(`[${new Date(compileStartedAtIso).toLocaleTimeString()}] Starting ${formatSourceLanguageLabel(sourceLanguage)} compile for ${sourcePath}`);
     const compileStartedAt =
       typeof performance === "undefined" ? 0 : performance.now();
 
     try {
       const compileAssets = [...diagramAssets, ...graphAssets];
       let result: CompileResult;
+      let compileUsedCachedOutput = false;
       let generatedLatexPdf: {
         projectId: string;
         result: Extract<CompileResult, { ok: true }>;
@@ -5711,6 +5781,7 @@ export function App() {
 
           if (savedResult) {
             result = savedResult;
+            compileUsedCachedOutput = true;
           } else {
             result = await compileLatexDocument({
               mainFilePath: sourcePath,
@@ -5718,7 +5789,7 @@ export function App() {
               project,
               assets: compileAssets,
               compileMode: "quick",
-              onStatusChange: setCompilerStatus
+              onStatusChange: handleCompilerStatusChange
             });
 
             if (result.ok && result.output.kind === "pdf") {
@@ -5815,12 +5886,29 @@ export function App() {
         diagnosticsCount: result.ok ? result.diagnostics.length : result.errors.length,
         metadata: result.metadata
       });
+      appendBuildLogEntry({
+        sourcePath,
+        language: sourceLanguage,
+        engine: result.engine,
+        ok: result.ok,
+        startedAt: compileStartedAtIso,
+        durationMs: compileDurationMs,
+        diagnostics: result.ok ? result.diagnostics : result.errors,
+        metadata: result.metadata,
+        trigger: pendingCompileTriggerRef.current,
+        compileMode: sourceLanguage === "latex" ? "quick" : "none",
+        cached: compileUsedCachedOutput,
+        outputChanged: changedPreview,
+        rawLog: sourceLanguage === "latex" ? result.output?.content : undefined,
+        packageDetails: sourceLanguage === "latex" ? extractBuildLogPackageDetails(result.output?.content ?? "") : [],
+        shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(result.output?.content ?? "")
+      });
     } catch (error) {
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
         return;
       }
 
-      const failedResult = {
+      const failedResult: CompileResult = {
         ok: false,
         engine: sourceLanguage === "latex" ? "busytex" : "typst-ts",
         errors: [
@@ -5857,6 +5945,23 @@ export function App() {
       setCompilerStatus((currentStatus) =>
         createCompletedPreviewCompilerStatus(failedResult, currentStatus)
       );
+      appendBuildLogEntry({
+        sourcePath,
+        language: sourceLanguage,
+        engine: failedResult.engine,
+        ok: false,
+        startedAt: compileStartedAtIso,
+        durationMs: typeof performance === "undefined" ? 0 : performance.now() - compileStartedAt,
+        diagnostics: failedResult.errors,
+        metadata: failedResult.metadata,
+        trigger: pendingCompileTriggerRef.current,
+        compileMode: sourceLanguage === "latex" ? "quick" : "none",
+        cached: false,
+        outputChanged: false,
+        rawLog: sourceLanguage === "latex" ? failedResult.output?.content : undefined,
+        packageDetails: sourceLanguage === "latex" ? extractBuildLogPackageDetails(failedResult.output?.content ?? "") : [],
+        shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(failedResult.output?.content ?? "")
+      });
     } finally {
       compileInFlightRef.current = false;
       compileInFlightLanguageRef.current = null;
@@ -5902,7 +6007,7 @@ export function App() {
         });
       }
     }
-  }, [compiler, isHydrated, saveGeneratedLatexPdfToProject]);
+  }, [appendBuildLogEntry, compiler, isHydrated, saveGeneratedLatexPdfToProject]);
 
   const shouldCancelInFlightLatexCompile = useCallback(
     ({
@@ -5954,32 +6059,14 @@ export function App() {
 
     const sourcePath = activeSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
-    const previousPendingSourcePath = normalizeWorkspacePath(pendingSourcePathRef.current);
-    const nextSourcePathKey = normalizeWorkspacePath(sourcePath);
-
-    if (
+    const sourcePathKey = normalizeWorkspacePath(sourcePath);
+    const inFlightSourcePathKey = normalizeWorkspacePath(compileInFlightSourcePathRef.current);
+    const isQueuedBehindAnotherCompile = Boolean(
       compileInFlightRef.current &&
-      previousPendingSourcePath &&
-      nextSourcePathKey &&
-      previousPendingSourcePath !== nextSourcePathKey &&
-      previousPendingSourcePath !== normalizeWorkspacePath(compileInFlightSourcePathRef.current)
-    ) {
-      setCompilePreviewsByPath((currentPreviews) => {
-        const previousPreview = currentPreviews[previousPendingSourcePath];
-        if (!previousPreview?.isCompiling) {
-          return currentPreviews;
-        }
-
-        return {
-          ...currentPreviews,
-          [previousPendingSourcePath]: {
-            ...previousPreview,
-            isCompiling: false,
-            compilerStatus: createIdleCompilerStatusForSource(previousPendingSourcePath)
-          }
-        };
-      });
-    }
+        sourcePathKey &&
+        inFlightSourcePathKey &&
+        sourcePathKey !== inFlightSourcePathKey
+    );
 
     pendingSourcePathRef.current = sourcePath;
     pendingSourceRef.current =
@@ -5993,12 +6080,19 @@ export function App() {
     const nextCompilerStatus: CompilerStatus = {
       phase: "compiling",
       mode: "worker",
-      label: sourceLanguage === "latex" ? "Compiling LaTeX" : "Compiling"
+      label: isQueuedBehindAnotherCompile
+        ? sourceLanguage === "latex"
+          ? "Queued LaTeX compile"
+          : "Queued compile"
+        : sourceLanguage === "latex"
+          ? "Compiling LaTeX"
+          : "Compiling"
     };
     setIsCompiling(true);
-    setCompilerStatus(nextCompilerStatus);
+    if (!isQueuedBehindAnotherCompile) {
+      setCompilerStatus(nextCompilerStatus);
+    }
     setCompilePreviewsByPath((currentPreviews) => {
-      const sourcePathKey = normalizeWorkspacePath(sourcePath);
       const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
 
       return {
@@ -6115,6 +6209,26 @@ export function App() {
   const handleCompile = useCallback(() => {
     const sourcePath = activeSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
+    const normalizedSourcePath = normalizeWorkspacePath(sourcePath);
+    const latexPdfOutputPath = sourceLanguage === "latex" ? getLatexPdfOutputPath(sourcePath) : null;
+    const activePreviewCompileSourcePath = activePreviewPath
+      ? resolveLatexSourcePathForPdfPreview(
+          activePreviewPath,
+          selectedProjectRepository,
+          sourcePath
+        )
+      : null;
+    const activePreviewBelongsToSource = Boolean(
+      activePreviewPath &&
+        normalizedSourcePath &&
+        (normalizeWorkspacePath(activePreviewPath) === normalizedSourcePath ||
+          normalizeWorkspacePath(activePreviewPath) === latexPdfOutputPath ||
+          normalizeWorkspacePath(activePreviewCompileSourcePath ?? "") === normalizedSourcePath)
+    );
+    const shouldActivateCompilePreview = !activePreviewPath || activePreviewBelongsToSource;
+    const openCompilePreviewTab = (path: string) => {
+      openPreviewTab(path, { activate: shouldActivateCompilePreview });
+    };
 
     if (!isActiveSourceCompilableRef.current && sourceLanguage !== "markdown") {
       return;
@@ -6124,7 +6238,7 @@ export function App() {
     previewSourceDraftRef.current = nextSource;
 
     if (sourceLanguage === "markdown") {
-      openPreviewTab(sourcePath);
+      openCompilePreviewTab(sourcePath);
       setCompileResult(null);
       setCompilerStatus({
         phase: "ready",
@@ -6143,7 +6257,7 @@ export function App() {
       });
 
       if (savedResult?.ok) {
-        openPreviewTab(getExistingLatexPdfPreviewPath(sourcePath) ?? sourcePath);
+        openCompilePreviewTab(getExistingLatexPdfPreviewPath(sourcePath) ?? sourcePath);
 
         clearScheduledCompile();
 
@@ -6172,13 +6286,33 @@ export function App() {
             isCompiling: false
           })
         }));
+        appendBuildLogEntry({
+          sourcePath,
+          language: "latex",
+          engine: savedResult.engine,
+          ok: true,
+          startedAt: new Date().toISOString(),
+          durationMs: 0,
+          diagnostics: savedResult.diagnostics,
+          metadata: savedResult.metadata,
+          trigger: "manual",
+          compileMode: "quick",
+          cached: true,
+          outputChanged: false,
+          rawLog: savedResult.output.content,
+          packageDetails: extractBuildLogPackageDetails(savedResult.output.content),
+          shellEscapeUnavailable: hasShellEscapeConstraint(savedResult.output.content)
+        });
         return;
       }
     }
 
-    openPreviewTab(sourcePath);
+    openCompilePreviewTab(sourcePath);
+    pendingCompileTriggerRef.current = "manual";
     queueCompile(false);
   }, [
+    activePreviewPath,
+    appendBuildLogEntry,
     clearScheduledCompile,
     formatActiveSourceForCompile,
     getExistingLatexPdfPreviewPath,
@@ -6223,6 +6357,7 @@ export function App() {
     }
 
     if (compileResult === null || snapshot.preferences.liveCompilation) {
+      pendingCompileTriggerRef.current = "auto";
       queueCompile(compileResult !== null);
     }
   }, [
@@ -6254,6 +6389,7 @@ export function App() {
       return;
     }
 
+    pendingCompileTriggerRef.current = "preview";
     queueCompile(false);
   }, [
     activePreviewPath,
@@ -9586,6 +9722,9 @@ export function App() {
       let pdfBytes: Uint8Array;
 
       if (isLatexMainSourceFile(activeSourcePath)) {
+        const exportStartedAtIso = new Date().toISOString();
+        const exportStartedAt = typeof performance === "undefined" ? 0 : performance.now();
+
         if (!selectedProjectRepository) {
           throw new Error("Project filesystem is unavailable for LaTeX export.");
         }
@@ -9596,7 +9735,25 @@ export function App() {
           project: selectedProjectRepository,
           assets: [...diagramShadowAssets, ...graphShadowAssets],
           compileMode: "full",
-          onStatusChange: setCompilerStatus
+          onStatusChange: handleCompilerStatusChange
+        });
+        const exportDurationMs = typeof performance === "undefined" ? 0 : performance.now() - exportStartedAt;
+        appendBuildLogEntry({
+          sourcePath: activeSourcePath,
+          language: "latex",
+          engine: result.engine,
+          ok: result.ok,
+          startedAt: exportStartedAtIso,
+          durationMs: exportDurationMs,
+          diagnostics: result.ok ? result.diagnostics : result.errors,
+          metadata: result.metadata,
+          trigger: "export",
+          compileMode: "full",
+          cached: false,
+          outputChanged: true,
+          rawLog: result.output?.content,
+          packageDetails: extractBuildLogPackageDetails(result.output?.content ?? ""),
+          shellEscapeUnavailable: hasShellEscapeConstraint(result.output?.content ?? "")
         });
 
         if (!result.ok || result.output.kind !== "pdf" || !result.output.artifactData) {
@@ -9632,6 +9789,7 @@ export function App() {
   }, [
     activeSourcePath,
     activeDocumentTextContent,
+    appendBuildLogEntry,
     activeDocument.name,
     diagramShadowAssets,
     graphShadowAssets,
@@ -9697,7 +9855,7 @@ export function App() {
               project,
               assets: compileAssets,
               compileMode: options.latexMode ?? "full",
-              onStatusChange: setCompilerStatus
+              onStatusChange: handleCompilerStatusChange
             })
           : await compiler.compileDocument(
               createThemedPreviewSource(source, themeRef.current ?? theme, isPaperView),
@@ -10280,6 +10438,7 @@ export function App() {
       getIsOnline: () => isOnline,
       compileProjectFile,
       async compileActiveDocument() {
+        pendingCompileTriggerRef.current = "agent";
         await runCompile();
         return (
           compileResultRef.current ?? {
@@ -11425,28 +11584,98 @@ export function App() {
       </div>
     );
   };
+  const lintSourceEditorValue = useDebouncedValue(sourceEditorValue, 180);
   const lintDiagnostics = useMemo(
     () =>
       lintSourceWithEditorTooling({
         language: activeSourceLanguage,
         path: activeSourcePath,
         preferences: snapshot.preferences.editorTooling,
-        source: sourceEditorValue
+        source: lintSourceEditorValue
       }),
     [
       activeSourceLanguage,
       activeSourcePath,
       snapshot.preferences.editorTooling,
-      sourceEditorValue
+      lintSourceEditorValue
     ]
   );
   const compilerDiagnostics =
     compileResult === null
-      ? []
+      ? EMPTY_COMPILE_DIAGNOSTICS
       : compileResult.ok
         ? compileResult.diagnostics
         : compileResult.errors;
-  const editorDiagnostics = [...lintDiagnostics, ...compilerDiagnostics];
+  const editorDiagnostics = useMemo(
+    () => [...lintDiagnostics, ...compilerDiagnostics],
+    [compilerDiagnostics, lintDiagnostics]
+  );
+  const debugOutputResult = compileResult?.ok ? compileResult : lastSuccessfulResult;
+  const debugOutputContent = isCompiling && liveBuildOutput
+    ? liveBuildOutput
+    : activeSourceLanguage === "markdown"
+      ? sourceEditorValue
+      : debugOutputResult?.output.content ?? "";
+  const debugOutputExcerpt = formatDebugOutputExcerpt(debugOutputContent);
+  const debugOutputKind = activeSourceLanguage === "markdown"
+    ? "source"
+    : isCompiling && liveBuildOutput
+      ? "live log"
+      : debugOutputResult?.output.kind ?? "none";
+  const debugSourceLanguageLabel = formatSourceLanguageLabel(activeSourceLanguage);
+  const shouldShowPreviewInternals = activeSourceLanguage === "typst" && debugOutputContent.length > 0;
+  const filteredBuildLogEntries = useMemo(
+    () => filterBuildLogEntries(buildLogEntries, buildLogFilter, activeSourcePath, buildLogSearchQuery),
+    [activeSourcePath, buildLogEntries, buildLogFilter, buildLogSearchQuery]
+  );
+  const lastBuildFailed = buildLogEntries[0]?.ok === false;
+  const buildLogTimelineMaxMs = Math.max(...filteredBuildLogEntries.map((entry) => entry.durationMs), 1);
+
+  const handleCopyText = useCallback(async (text: string, feedback: string) => {
+    if (!text.trim()) {
+      setBuildLogFeedback("Nothing to copy.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setBuildLogFeedback(feedback);
+    } catch {
+      setBuildLogFeedback("Clipboard access is unavailable.");
+    }
+  }, []);
+
+  const handleCopyBuildLog = useCallback(() => {
+    void handleCopyText(formatBuildLogEntriesText(filteredBuildLogEntries), "Build log copied.");
+  }, [filteredBuildLogEntries, handleCopyText]);
+
+  const handleCopyDiagnostics = useCallback(() => {
+    void handleCopyText(
+      filteredBuildLogEntries
+        .flatMap((entry) => entry.diagnostics.map((diagnostic) => `${entry.sourcePath}: ${diagnostic.severity}: ${diagnostic.message}`))
+        .join("\n"),
+      "Diagnostics copied."
+    );
+  }, [filteredBuildLogEntries, handleCopyText]);
+
+  const handleExportBuildLogJson = useCallback(() => {
+    downloadFile(
+      `typr-build-log-${activeProjectTabKey}.json`,
+      JSON.stringify(filteredBuildLogEntries, null, 2),
+      "application/json"
+    );
+    setBuildLogFeedback("Build log exported.");
+  }, [activeProjectTabKey, downloadFile, filteredBuildLogEntries]);
+
+  const handleExportBuildLogText = useCallback(() => {
+    downloadFile(
+      `typr-build-log-${activeProjectTabKey}.txt`,
+      formatBuildLogEntriesText(filteredBuildLogEntries),
+      "text/plain"
+    );
+    setBuildLogFeedback("Build log text exported.");
+  }, [activeProjectTabKey, downloadFile, filteredBuildLogEntries]);
+
   const storageLabel =
     storageStatus === "saved"
       ? "Saved locally"
@@ -11759,6 +11988,17 @@ export function App() {
 
     setGitMergePaneMode("sidebar");
   }, [activeMergeState, activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
+
+  const openDebugSidebar = useCallback(() => {
+    setActiveSidebarTool("debug");
+    setIsSidebarCollapsed(false);
+
+    if (isMobileWorkspace) {
+      setMobileWorkspaceTab("files");
+    } else if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
+      setWorkspaceMode("split");
+    }
+  }, [isMobileWorkspace, workspaceMode]);
 
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
@@ -12477,6 +12717,45 @@ export function App() {
     },
     [isMobileWorkspace]
   );
+  const jumpToDiagnostic = useCallback((diagnostic: CompileDiagnostic, fallbackPath: string) => {
+    if (!diagnostic.line) {
+      return;
+    }
+
+    const diagnosticPath = normalizeWorkspacePath(diagnostic.path ?? fallbackPath);
+    const currentPath = normalizeWorkspacePath(activeSourcePathRef.current);
+    const column = diagnostic.column ?? 1;
+
+    if (!diagnosticPath || diagnosticPath === currentPath) {
+      editorRef.current?.focusRange({ line: diagnostic.line, column });
+      return;
+    }
+
+    const matchingNode = findWorkspaceNodeByPath(visibleWorkspaceTree, diagnosticPath);
+    if (matchingNode?.kind === "file" && matchingNode.source.kind === "document") {
+      focusDocumentLocation(matchingNode.source.id, diagnostic.line, column);
+    }
+  }, [focusDocumentLocation, visibleWorkspaceTree]);
+
+  const rerunBuildLogEntry = useCallback((entry: BuildLogEntry) => {
+    const targetPath = normalizeWorkspacePath(entry.sourcePath);
+    const matchingNode = findWorkspaceNodeByPath(visibleWorkspaceTree, targetPath);
+
+    pendingCompileTriggerRef.current = "rerun";
+
+    if (matchingNode?.kind === "file" && matchingNode.source.kind === "document") {
+      focusDocumentLocation(matchingNode.source.id, 1, 1);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => queueCompile(false));
+      });
+      return;
+    }
+
+    if (targetPath === normalizeWorkspacePath(activeSourcePathRef.current)) {
+      queueCompile(false);
+    }
+  }, [focusDocumentLocation, queueCompile, visibleWorkspaceTree]);
+
   const renderLatexPackageResolutionRow = (
     entry: LatexPackageResolution,
     key: string
@@ -13246,6 +13525,7 @@ export function App() {
                     aria-hidden="true"
                     className={`activity-icon activity-icon--${tool.id}`}
                   />
+                  {tool.id === "debug" && lastBuildFailed ? <span className="activity-status-badge" aria-hidden="true" /> : null}
                   <span className="visually-hidden">{tool.label}</span>
                 </button>
               ))}
@@ -13362,6 +13642,7 @@ export function App() {
                       aria-hidden="true"
                       className={`activity-icon activity-icon--${tool.id}`}
                     />
+                    {tool.id === "debug" && lastBuildFailed ? <span className="activity-status-badge" aria-hidden="true" /> : null}
                     <span className="visually-hidden">{tool.label}</span>
                   </button>
                 ))}
@@ -14839,130 +15120,353 @@ export function App() {
 
               {activeSidebarTool === "debug" ? (
                 <section className="sidebar-section sidebar-section--scrollable">
-                  <div className="sync-stack">
-                    <div className="sidebar-card">
-                      <div className="sidebar-card__row">
-                        <span>Preview debug</span>
-                        <span className="pane__meta">
-                          {isPreviewDebugVisible ? "Visible" : "Hidden"}
-                        </span>
-                      </div>
-                      <p className="sidebar-card__copy">
-                        Show the debug panel beneath the preview when you need it.
-                      </p>
-                      <div className="sidebar-card__actions">
-                        <button
-                          className="pane__button pane__button--compact"
-                          onClick={togglePreviewDebug}
-                          type="button"
-                        >
-                          {isPreviewDebugVisible ? "Hide debug" : "Show debug"}
-                        </button>
-                      </div>
-                    </div>
+                  <div className="sync-stack debug-stack">
+                    <details className="sidebar-card debug-section" open>
+                      <summary className="debug-section__summary">
+                        <span>Current file</span>
+                        <span className="pane__meta">{debugSourceLanguageLabel}</span>
+                      </summary>
+                      <ul className="sidebar-card__list">
+                        <li>
+                          <span>Path</span>
+                          <span>{activeSourcePath}</span>
+                        </li>
+                        <li>
+                          <span>Type</span>
+                          <span>{debugSourceLanguageLabel}</span>
+                        </li>
+                        <li>
+                          <span>Compiler</span>
+                          <span>{isActiveSourceCompilable ? compilerStatus.label : "No compiler"}</span>
+                        </li>
+                        <li>
+                          <span>Output</span>
+                          <span>{debugOutputKind}</span>
+                        </li>
+                      </ul>
+                    </details>
 
-                    {isPreviewDebugVisible ? (
-                      <div className="sidebar-preview-debug">
-                        <PreviewDebugPanel
-                          markup={
-                            compileResult?.output?.content ??
-                            lastSuccessfulResult?.output.content ??
-                            ""
-                          }
-                        />
-                      </div>
+                    <details className="sidebar-card debug-section" open>
+                      <summary className="debug-section__summary">
+                        <span>Output excerpt</span>
+                        <span className="pane__meta">{debugOutputKind}</span>
+                      </summary>
+                      <pre className="debug-output-excerpt">{debugOutputExcerpt}</pre>
+                    </details>
+
+                    {activeSourceLanguage === "typst" || activeSourceLanguage === "latex" ? (
+                      <details className="sidebar-card debug-section" open>
+                        <summary className="debug-section__summary">
+                          <span>Build log</span>
+                          <span className="pane__meta">{filteredBuildLogEntries.length}/{buildLogEntries.length}</span>
+                        </summary>
+                        <div className="debug-control-grid">
+                          <label>
+                            <span>Filter</span>
+                            <select value={buildLogFilter} onChange={(event) => setBuildLogFilter(event.target.value as BuildLogFilter)}>
+                              <option value="all">All builds</option>
+                              <option value="errors">Errors only</option>
+                              <option value="warnings">Warnings only</option>
+                              <option value="current-file">Current file</option>
+                              <option value="latex">LaTeX only</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>Search</span>
+                            <input
+                              onChange={(event) => setBuildLogSearchQuery(event.target.value)}
+                              placeholder="log, file, package"
+                              type="search"
+                              value={buildLogSearchQuery}
+                            />
+                          </label>
+                          <label className="debug-toggle">
+                            <input
+                              checked={hideRepeatedBuildWarnings}
+                              onChange={(event) => setHideRepeatedBuildWarnings(event.target.checked)}
+                              type="checkbox"
+                            />
+                            <span className="debug-toggle__track" aria-hidden="true" />
+                            <span>Hide repeated warnings</span>
+                          </label>
+                        </div>
+                        <div className="sidebar-card__actions debug-action-row">
+                          <button className="pane__button pane__button--compact" onClick={handleCopyBuildLog} type="button">
+                            Copy filtered build log
+                          </button>
+                          <button className="pane__button pane__button--compact" onClick={handleCopyDiagnostics} type="button">
+                            Copy filtered diagnostics
+                          </button>
+                          <button className="pane__button pane__button--compact" onClick={handleExportBuildLogText} type="button">
+                            Export filtered build log text
+                          </button>
+                          <button className="pane__button pane__button--compact" onClick={handleExportBuildLogJson} type="button">
+                            Export filtered build log JSON
+                          </button>
+                          <button
+                            className="pane__button pane__button--compact"
+                            onClick={() => setBuildLogEntries([])}
+                            type="button"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        {buildLogFeedback ? <p className="sidebar-card__copy">{buildLogFeedback}</p> : null}
+                        {filteredBuildLogEntries.length > 0 ? (
+                          <>
+                            <div className="build-log-timeline-header">
+                              <span>Recent build durations</span>
+                            </div>
+                            <div className="build-log-timeline" aria-label="Recent build duration timeline">
+                              {filteredBuildLogEntries.slice(0, 12).map((entry) => (
+                                <span
+                                  className={`build-log-timeline__bar build-log-timeline__bar--${entry.ok ? "success" : "error"}`}
+                                  key={`timeline:${entry.id}`}
+                                  style={{ height: `${Math.max(12, Math.round((entry.durationMs / buildLogTimelineMaxMs) * 42))}px` }}
+                                  title={`${entry.sourcePath}: ${formatDurationMs(entry.durationMs)}`}
+                                />
+                              ))}
+                            </div>
+                            <div className="build-log-list">
+                              {filteredBuildLogEntries.map((entry, index) => {
+                                const previousEntry = getPreviousBuildLogEntry(filteredBuildLogEntries, index);
+                                const visibleDiagnostics = hideRepeatedBuildWarnings
+                                  ? dedupeRepeatedWarnings(entry.diagnostics)
+                                  : entry.diagnostics;
+
+                                return (
+                                  <details className="build-log-entry" key={entry.id}>
+                                    <summary>
+                                      <span className={`build-log-status build-log-status--${entry.ok ? "success" : "error"}`}>
+                                        {entry.ok ? "ok" : "error"}
+                                      </span>
+                                      <span className="build-log-entry__main">
+                                        <strong>{entry.sourcePath}</strong>
+                                        <span>
+                                          {formatSourceLanguageLabel(entry.language)} · {entry.engine} · {entry.trigger} · {formatDurationMs(entry.durationMs)}
+                                        </span>
+                                      </span>
+                                      <time>{new Date(entry.startedAt).toLocaleTimeString()}</time>
+                                    </summary>
+                                    <div className="sidebar-card__actions build-log-entry__actions">
+                                      <button className="pane__button pane__button--compact" onClick={() => rerunBuildLogEntry(entry)} type="button">
+                                        Rerun
+                                      </button>
+                                      <button className="pane__button pane__button--compact" onClick={() => void handleCopyText(formatBuildLogEntryText(entry), "Build entry copied.")} type="button">
+                                        Copy
+                                      </button>
+                                    </div>
+                                    <ul className="sidebar-card__list build-log-entry__details">
+                                      <li>
+                                        <span>Started</span>
+                                        <span>{new Date(entry.startedAt).toLocaleString()}</span>
+                                      </li>
+                                      <li>
+                                        <span>Trigger</span>
+                                        <span>{entry.trigger}</span>
+                                      </li>
+                                      <li>
+                                        <span>Mode</span>
+                                        <span>{entry.compileMode}{entry.cached ? " · cached" : ""}</span>
+                                      </li>
+                                      <li>
+                                        <span>Output</span>
+                                        <span>{entry.outputChanged ? "changed" : "unchanged"}</span>
+                                      </li>
+                                      {previousEntry ? (
+                                        <li>
+                                          <span>Previous</span>
+                                          <span>
+                                            {formatDurationMs(entry.durationMs - previousEntry.durationMs)} duration · {entry.diagnostics.length - previousEntry.diagnostics.length} diagnostics
+                                          </span>
+                                        </li>
+                                      ) : null}
+                                      {entry.shellEscapeUnavailable ? (
+                                        <li>
+                                          <span>Shell escape</span>
+                                          <span>Unavailable in browser BusyTeX</span>
+                                        </li>
+                                      ) : null}
+                                      {entry.metadata?.strategy ? (
+                                        <li>
+                                          <span>Strategy</span>
+                                          <span>{formatCompileStrategySummary(entry.metadata)}</span>
+                                        </li>
+                                      ) : null}
+                                      {entry.metadata?.timings?.map((timing) => (
+                                        <li key={`${entry.id}:${timing.label}:${timing.durationMs}`}>
+                                          <span>{timing.label}</span>
+                                          <span>{formatDurationMs(timing.durationMs)}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    {entry.packageDetails.length > 0 ? (
+                                      <details className="build-log-nested-details">
+                                        <summary>Package resolution</summary>
+                                        <pre>{entry.packageDetails.join("\n")}</pre>
+                                      </details>
+                                    ) : null}
+                                    {entry.rawLog ? (
+                                      <details className="build-log-nested-details">
+                                        <summary>Raw LaTeX log</summary>
+                                        <pre>{formatDebugOutputExcerpt(entry.rawLog)}</pre>
+                                      </details>
+                                    ) : null}
+                                    {visibleDiagnostics.length > 0 ? (
+                                      <div className="sidebar-diagnostics build-log-entry__diagnostics" role="list">
+                                        {groupDiagnosticsByFile(visibleDiagnostics).map((group) => (
+                                          <div className="build-log-diagnostic-group" key={`${entry.id}:${group.file}`}>
+                                            <strong>{group.file}</strong>
+                                            {group.diagnostics.map((diagnostic, diagnosticIndex) => (
+                                              <div className="sidebar-diagnostic" key={`${entry.id}:${group.file}:${diagnostic.message}:${diagnosticIndex}`}>
+                                                <strong>
+                                                  {diagnostic.severity}
+                                                  {formatDiagnosticRange(diagnostic) ? ` · ${formatDiagnosticRange(diagnostic)}` : ""}
+                                                </strong>
+                                                <span>{diagnostic.message}</span>
+                                                {diagnostic.line ? (
+                                                  <button className="pane__button pane__button--compact" onClick={() => jumpToDiagnostic(diagnostic, entry.sourcePath)} type="button">
+                                                    Jump
+                                                  </button>
+                                                ) : null}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : null}
+                                  </details>
+                                );
+                              })}
+                            </div>
+                          </>
+                        ) : (
+                          <p className="sidebar-card__copy">No builds match the current filters.</p>
+                        )}
+                      </details>
                     ) : null}
 
-                    <div className="sidebar-card">
-                      <div className="sidebar-card__row">
-                        <span>Compiler</span>
-                        <span className="pane__meta">{compilerStatus.label}</span>
-                      </div>
-                      <p className="sidebar-card__copy">
-                        {compilerStatus.detail ?? "Live preview pipeline is active."}
-                      </p>
-                    </div>
-
-                    {compileResult?.metadata ? (
-                      <div className="sidebar-card">
-                        <div className="sidebar-card__row">
-                          <span>Compile performance</span>
-                          <span className="pane__meta">
-                            {formatCompileTimingTotal(compileResult.metadata)}
-                          </span>
-                        </div>
-                        {compileResult.metadata.strategy ? (
-                          <p className="sidebar-card__copy">
-                            {formatCompileStrategySummary(compileResult.metadata)}
-                          </p>
-                        ) : null}
-                        <ul className="sidebar-card__list">
-                          {compileResult.metadata.timings?.map((timing) => (
-                            <li key={`${timing.label}-${timing.durationMs}`}>
-                              <span>{timing.label}</span>
-                              <span>{formatDurationMs(timing.durationMs)}</span>
-                            </li>
-                          ))}
-                          {compileResult.metadata.fileSync ? (
-                            <li>
-                              <span>Worker file cache</span>
-                              <span>
-                                {compileResult.metadata.fileSync.changedFiles} changed ·{" "}
-                                {compileResult.metadata.fileSync.deletedFiles} deleted ·{" "}
-                                {compileResult.metadata.fileSync.cachedFiles} cached ·{" "}
-                                {compileResult.metadata.fileSync.compileFiles} compiled
-                              </span>
-                            </li>
-                          ) : null}
-                          {compileResult.metadata.dirty ? (
-                            <>
-                              <li>
-                                <span>Dirty state</span>
-                                <span>
-                                  {compileResult.metadata.dirty.status}
-                                  {compileResult.metadata.dirty.requiresFullCompile ? " · full required" : ""}
-                                </span>
-                              </li>
-                              {compileResult.metadata.dirty.categories.length > 0 ? (
+                    {activeSourceLanguage === "typst" || activeSourceLanguage === "latex" ? (
+                      <details className="sidebar-card debug-section">
+                        <summary className="debug-section__summary">
+                          <span>Compiler and performance</span>
+                          <span className="pane__meta">{compilerStatus.label}</span>
+                        </summary>
+                        <p className="sidebar-card__copy">
+                          {compilerStatus.detail ?? `${debugSourceLanguageLabel} preview pipeline is active.`}
+                        </p>
+                        {compileResult?.metadata ? (
+                          <>
+                            <p className="sidebar-card__copy">
+                              {formatCompileTimingTotal(compileResult.metadata)} · {compileResult.metadata.strategy ? formatCompileStrategySummary(compileResult.metadata) : "No strategy metadata"}
+                            </p>
+                            <ul className="sidebar-card__list">
+                              {compileResult.metadata.timings?.map((timing) => (
+                                <li key={`${timing.label}-${timing.durationMs}`}>
+                                  <span>{timing.label}</span>
+                                  <span>{formatDurationMs(timing.durationMs)}</span>
+                                </li>
+                              ))}
+                              {compileResult.metadata.fileSync ? (
                                 <li>
-                                  <span>Changed categories</span>
+                                  <span>Worker file cache</span>
                                   <span>
-                                    {compileResult.metadata.dirty.categories
-                                      .map((entry) => `${entry.category} ${entry.count}`)
-                                      .join(" · ")}
+                                    {compileResult.metadata.fileSync.changedFiles} changed ·{" "}
+                                    {compileResult.metadata.fileSync.deletedFiles} deleted ·{" "}
+                                    {compileResult.metadata.fileSync.cachedFiles} cached ·{" "}
+                                    {compileResult.metadata.fileSync.compileFiles} compiled
                                   </span>
                                 </li>
                               ) : null}
-                              {compileResult.metadata.dirty.samplePaths.length > 0 ? (
-                                <li>
-                                  <span>Changed paths</span>
-                                  <span>{compileResult.metadata.dirty.samplePaths.join(", ")}</span>
-                                </li>
+                              {compileResult.metadata.dirty ? (
+                                <>
+                                  <li>
+                                    <span>Dirty state</span>
+                                    <span>
+                                      {compileResult.metadata.dirty.status}
+                                      {compileResult.metadata.dirty.requiresFullCompile ? " · full required" : ""}
+                                    </span>
+                                  </li>
+                                  {compileResult.metadata.dirty.categories.length > 0 ? (
+                                    <li>
+                                      <span>Changed categories</span>
+                                      <span>
+                                        {compileResult.metadata.dirty.categories
+                                          .map((entry) => `${entry.category} ${entry.count}`)
+                                          .join(" · ")}
+                                      </span>
+                                    </li>
+                                  ) : null}
+                                  {compileResult.metadata.dirty.samplePaths.length > 0 ? (
+                                    <li>
+                                      <span>Changed paths</span>
+                                      <span>{compileResult.metadata.dirty.samplePaths.join(", ")}</span>
+                                    </li>
+                                  ) : null}
+                                </>
                               ) : null}
-                            </>
-                          ) : null}
-                        </ul>
-                      </div>
+                            </ul>
+                          </>
+                        ) : null}
+                      </details>
                     ) : null}
 
-                    <div className="sidebar-card">
-                      <div className="sidebar-card__row">
+                    <details className="sidebar-card debug-section">
+                      <summary className="debug-section__summary">
                         <span>Diagnostics</span>
                         <span className="pane__meta">{editorDiagnostics.length}</span>
-                      </div>
+                      </summary>
                       {editorDiagnostics.length > 0 ? (
                         <div className="sidebar-diagnostics" role="list">
-                          {editorDiagnostics.map((diagnostic, index) => (
-                            <div className="sidebar-diagnostic" key={`${diagnostic.message}:${index}`}>
-                              <strong>{diagnostic.severity}</strong>
-                              <span>{diagnostic.message}</span>
+                          {groupDiagnosticsByFile(editorDiagnostics).map((group) => (
+                            <div className="build-log-diagnostic-group" key={`current:${group.file}`}>
+                              <strong>{group.file}</strong>
+                              {group.diagnostics.map((diagnostic, index) => (
+                                <div className="sidebar-diagnostic" key={`${group.file}:${diagnostic.message}:${index}`}>
+                                  <strong>
+                                    {diagnostic.severity}
+                                    {formatDiagnosticRange(diagnostic) ? ` · ${formatDiagnosticRange(diagnostic)}` : ""}
+                                  </strong>
+                                  <span>{diagnostic.message}</span>
+                                  {diagnostic.line ? (
+                                    <button className="pane__button pane__button--compact" onClick={() => jumpToDiagnostic(diagnostic, activeSourcePath)} type="button">
+                                      Jump
+                                    </button>
+                                  ) : null}
+                                </div>
+                              ))}
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <p className="sidebar-card__copy">No compiler diagnostics right now.</p>
+                        <p className="sidebar-card__copy">No diagnostics right now.</p>
                       )}
-                    </div>
+                    </details>
+
+                    {shouldShowPreviewInternals ? (
+                      <details className="sidebar-card debug-section">
+                        <summary className="debug-section__summary">
+                          <span>Preview internals</span>
+                          <span className="pane__meta">{isPreviewDebugVisible ? "Visible" : "Hidden"}</span>
+                        </summary>
+                        <div className="sidebar-card__actions">
+                          <button
+                            className="pane__button pane__button--compact"
+                            onClick={togglePreviewDebug}
+                            type="button"
+                          >
+                            {isPreviewDebugVisible ? "Hide preview panel" : "Show preview panel"}
+                          </button>
+                        </div>
+                        {isPreviewDebugVisible ? (
+                          <div className="sidebar-preview-debug">
+                            <PreviewDebugPanel markup={debugOutputContent} />
+                          </div>
+                        ) : (
+                          <p className="sidebar-card__copy">SVG structure and rendering checks for the current Typst output.</p>
+                        )}
+                      </details>
+                    ) : null}
                   </div>
                 </section>
               ) : null}
@@ -15224,6 +15728,7 @@ export function App() {
             isErrorSettled={isErrorSettled}
             isCompiling={visiblePreviewIsCompiling}
             lastSuccessfulResult={visibleLastSuccessfulResult}
+            onDebugRequested={openDebugSidebar}
             onSourceJump={handlePreviewSourceJump}
             paperView={isPaperView}
             showToolbar={false}
@@ -15271,6 +15776,7 @@ export function App() {
               isErrorSettled={isErrorSettled}
               isCompiling={visiblePreviewIsCompiling}
               lastSuccessfulResult={visibleLastSuccessfulResult}
+              onDebugRequested={openDebugSidebar}
               onSourceJump={handlePreviewSourceJump}
               paperView={isPaperView}
               showToolbar={true}
@@ -17949,6 +18455,221 @@ function renderOutlineEntries(
     );
   });
 }
+
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedValue(value);
+    }, delayMs);
+
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+
+  return debouncedValue;
+}
+
+function loadPersistedBuildLogEntries(storageKey: string): BuildLogEntry[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const stored = window.localStorage.getItem(storageKey);
+    if (!stored) {
+      return [];
+    }
+
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isBuildLogEntry).map(normalizeBuildLogEntry).slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+
+function normalizeBuildLogEntry(entry: BuildLogEntry): BuildLogEntry {
+  return {
+    ...entry,
+    diagnostics: entry.diagnostics ?? [],
+    trigger: entry.trigger ?? "manual",
+    compileMode: entry.compileMode ?? (entry.language === "latex" ? "quick" : "none"),
+    cached: entry.cached ?? false,
+    outputChanged: entry.outputChanged ?? false,
+    rawLog: entry.rawLog,
+    packageDetails: entry.packageDetails ?? [],
+    shellEscapeUnavailable: entry.shellEscapeUnavailable ?? false
+  };
+}
+
+function persistBuildLogEntries(storageKey: string, entries: BuildLogEntry[]): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(entries.slice(0, 20)));
+  } catch {
+    // Build logs are useful but non-critical; ignore quota/private-mode failures.
+  }
+}
+
+function isBuildLogEntry(value: unknown): value is BuildLogEntry {
+  const entry = value as Partial<BuildLogEntry> | null;
+  return Boolean(
+    entry &&
+      typeof entry.id === "string" &&
+      typeof entry.sourcePath === "string" &&
+      typeof entry.language === "string" &&
+      typeof entry.engine === "string" &&
+      typeof entry.ok === "boolean" &&
+      typeof entry.startedAt === "string" &&
+      typeof entry.durationMs === "number" &&
+      Array.isArray(entry.diagnostics)
+  );
+}
+
+function extractBuildLogPackageDetails(log: string): string[] {
+  return log
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      /^(TeX packages|TeX packages local|TeX packages unresolved|Data packages used|Because of unresolved TeX packages)/i.test(line)
+    )
+    .slice(0, 12);
+}
+
+function hasShellEscapeConstraint(log: string): boolean {
+  return /shell escape|write18|minted|biber|makeglossaries|external tool/i.test(log);
+}
+
+function filterBuildLogEntries(
+  entries: BuildLogEntry[],
+  filter: BuildLogFilter,
+  currentPath: string,
+  searchQuery: string
+): BuildLogEntry[] {
+  const normalizedCurrentPath = normalizeWorkspacePath(currentPath);
+  const query = searchQuery.trim().toLowerCase();
+
+  return entries.filter((entry) => {
+    if (filter === "errors" && entry.ok && !entry.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+      return false;
+    }
+
+    if (filter === "warnings" && !entry.diagnostics.some((diagnostic) => diagnostic.severity === "warning")) {
+      return false;
+    }
+
+    if (filter === "current-file" && normalizeWorkspacePath(entry.sourcePath) !== normalizedCurrentPath) {
+      return false;
+    }
+
+    if (filter === "latex" && entry.language !== "latex") {
+      return false;
+    }
+
+    if (!query) {
+      return true;
+    }
+
+    return formatBuildLogEntryText(entry).toLowerCase().includes(query);
+  });
+}
+
+function groupDiagnosticsByFile(diagnostics: CompileDiagnostic[]): Array<{ file: string; diagnostics: CompileDiagnostic[] }> {
+  const groups = new Map<string, CompileDiagnostic[]>();
+
+  for (const diagnostic of diagnostics) {
+    const key = diagnostic.path || "Current file";
+    groups.set(key, [...(groups.get(key) ?? []), diagnostic]);
+  }
+
+  return [...groups.entries()].map(([file, groupedDiagnostics]) => ({
+    file,
+    diagnostics: groupedDiagnostics
+  }));
+}
+
+function formatBuildLogEntryText(entry: BuildLogEntry): string {
+  const diagnostics = entry.diagnostics
+    .map((diagnostic) => `${diagnostic.severity} ${formatDiagnosticRange(diagnostic) ?? ""} ${diagnostic.message}`)
+    .join("\n");
+  const packages = entry.packageDetails.length > 0 ? `\nPackages:\n${entry.packageDetails.join("\n")}` : "";
+  const rawLog = entry.rawLog ? `\nRaw log:\n${entry.rawLog}` : "";
+
+  return [
+    `${entry.ok ? "OK" : "ERROR"} ${entry.sourcePath}`,
+    `Started: ${new Date(entry.startedAt).toLocaleString()}`,
+    `Language: ${formatSourceLanguageLabel(entry.language)}`,
+    `Engine: ${entry.engine}`,
+    `Trigger: ${entry.trigger}`,
+    `Compile mode: ${entry.compileMode}`,
+    `Duration: ${formatDurationMs(entry.durationMs)}`,
+    `Cached: ${entry.cached ? "yes" : "no"}`,
+    `Output changed: ${entry.outputChanged ? "yes" : "no"}`,
+    `Shell escape unavailable: ${entry.shellEscapeUnavailable ? "yes" : "no"}`,
+    `Diagnostics: ${entry.diagnostics.length}`,
+    diagnostics,
+    packages,
+    rawLog
+  ].filter(Boolean).join("\n");
+}
+
+function formatBuildLogEntriesText(entries: BuildLogEntry[]): string {
+  return entries.map(formatBuildLogEntryText).join("\n\n---\n\n");
+}
+
+function getPreviousBuildLogEntry(entries: BuildLogEntry[], index: number): BuildLogEntry | null {
+  return entries.slice(index + 1).find((entry) => entry.sourcePath === entries[index]?.sourcePath) ?? null;
+}
+
+function dedupeRepeatedWarnings(diagnostics: CompileDiagnostic[]): CompileDiagnostic[] {
+  const seenWarnings = new Set<string>();
+  const visible: CompileDiagnostic[] = [];
+
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.severity !== "warning") {
+      visible.push(diagnostic);
+      continue;
+    }
+
+    const key = `${diagnostic.path ?? ""}:${diagnostic.message}`;
+    if (seenWarnings.has(key)) {
+      continue;
+    }
+
+    seenWarnings.add(key);
+    visible.push(diagnostic);
+  }
+
+  return visible;
+}
+
+function formatDebugOutputExcerpt(output: string): string {
+  const limit = 1800;
+
+  if (!output.trim()) {
+    return "No output available for the current file.";
+  }
+
+  if (output.length <= limit * 2) {
+    return output;
+  }
+
+  return [
+    output.slice(0, limit),
+    "\n\n... output truncated ...\n\n",
+    output.slice(-limit)
+  ].join("");
+}
+
 
 function formatDiagnosticRange(diagnostic: {
   range?: string;

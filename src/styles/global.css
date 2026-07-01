@@ -7512,3 +7512,318 @@ button {
     box-shadow: none;
   }
 }
+
+.build-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.build-log-entry {
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.build-log-entry summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.62rem 0.7rem;
+  cursor: pointer;
+}
+
+.build-log-entry summary::marker {
+  content: "";
+}
+
+.build-log-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.2rem;
+  padding: 0.18rem 0.35rem;
+  border: 1px solid currentColor;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.build-log-status--success {
+  color: color-mix(in srgb, var(--success, #2f855a) 82%, var(--text));
+}
+
+.build-log-status--error {
+  color: var(--danger);
+}
+
+.build-log-entry__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.build-log-entry__main strong,
+.build-log-entry__main span,
+.build-log-entry time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-log-entry__main span,
+.build-log-entry time {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.build-log-entry__details {
+  margin: 0;
+  padding: 0.25rem 0.75rem 0.7rem 1.8rem;
+}
+
+.build-log-entry__diagnostics {
+  padding: 0 0.7rem 0.7rem;
+}
+
+.activity-bar__button {
+  position: relative;
+}
+
+.activity-status-badge {
+  position: absolute;
+  top: 0.34rem;
+  right: 0.34rem;
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+.debug-stack {
+  gap: 0.65rem;
+}
+
+.debug-section {
+  padding: 0;
+  overflow: hidden;
+}
+
+.debug-section__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.8rem;
+  cursor: pointer;
+}
+
+.debug-section__summary + * {
+  margin-top: 0;
+}
+
+.debug-section > :not(summary) {
+  margin-left: 0.8rem;
+  margin-right: 0.8rem;
+}
+
+.debug-section > :last-child {
+  margin-bottom: 0.8rem;
+}
+
+.debug-output-excerpt,
+.build-log-nested-details pre {
+  max-height: 22rem;
+  margin: 0 0 0.8rem;
+  overflow: auto;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.debug-control-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.55rem;
+  margin-bottom: 0.7rem;
+}
+
+.debug-control-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.debug-control-grid input,
+.debug-control-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+.debug-control-grid .debug-checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+
+.debug-action-row {
+  justify-content: flex-start;
+}
+
+.build-log-timeline {
+  display: flex;
+  align-items: end;
+  gap: 0.2rem;
+  min-height: 3.1rem;
+  margin-bottom: 0.7rem;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.build-log-timeline__bar {
+  width: 0.55rem;
+  min-height: 0.75rem;
+  border: 1px solid currentColor;
+  background: currentColor;
+  opacity: 0.76;
+}
+
+.build-log-timeline__bar--success {
+  color: color-mix(in srgb, var(--success, #2f855a) 82%, var(--text));
+}
+
+.build-log-timeline__bar--error {
+  color: var(--danger);
+}
+
+.build-log-entry__actions {
+  justify-content: flex-start;
+  padding: 0 0.7rem 0.45rem;
+}
+
+.build-log-nested-details {
+  margin: 0 0.7rem 0.7rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.build-log-nested-details summary {
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.build-log-nested-details pre {
+  max-height: 18rem;
+  margin: 0;
+  border-width: 1px 0 0;
+}
+
+.build-log-diagnostic-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.build-log-diagnostic-group > strong {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.preview-activity__debug-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-strong);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.preview-activity__debug-button:hover,
+.preview-activity__debug-button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  color: var(--accent-strong);
+  outline: none;
+}
+
+.build-log-timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  margin-bottom: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.debug-toggle {
+  display: inline-flex;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+  width: fit-content;
+  padding: 0.32rem 0.45rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.debug-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.debug-toggle__track {
+  position: relative;
+  width: 1.9rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-strong);
+}
+
+.debug-toggle__track::after {
+  content: "";
+  position: absolute;
+  top: 0.13rem;
+  left: 0.14rem;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: var(--text-muted);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.debug-toggle input:checked + .debug-toggle__track {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-strong));
+}
+
+.debug-toggle input:checked + .debug-toggle__track::after {
+  transform: translateX(0.78rem);
+  background: var(--accent-strong);
+}
+
+.debug-toggle:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
