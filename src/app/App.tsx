@@ -18,7 +18,7 @@ import {
   type SetStateAction
 } from "react";
 import { zipSync } from "fflate";
-import { DocsModal } from "./DocsModal";
+import { DocsModal, DocsPanel } from "./DocsModal";
 import {
   createDefaultSnapshot,
   DEFAULT_EDITOR_FONT_SIZE,
@@ -70,11 +70,13 @@ import {
   updateKeybindingsPreference,
   updateLatexMathPreviewPreference,
   updateLiveCompilationPreference,
+  updateMobileKeyboardPreference,
   updateRelativeLineNumbersPreference,
   updateSidebarFontSizePreference,
   updateThemePreference,
   updateVimPreference,
   type AppSnapshot,
+  type MobileKeyboardLanguage,
   type ThemePreference
 } from "./appState";
 import {
@@ -223,6 +225,7 @@ import {
   deleteProjectPath,
   ensureProjectFolder,
   GENERATED_LATEX_PDF_SOURCE_ID,
+  GENERATED_LATEX_SYNCTEX_SOURCE_ID,
   getSelectedProjectRepository,
   listProjectEntries,
   normalizeProjectStorageState,
@@ -333,6 +336,7 @@ const WORKSPACE_OPEN_FOLDERS_STORAGE_KEY = "typr.workspace-open-folders.v1";
 const LATEX_PACKAGE_SELECTIONS_STORAGE_KEY = "typr.latex-package-selections.v1";
 const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 const RECENT_WORKSPACE_STORAGE_KEY = "typr.recent-workspace.v1";
+const LEFT_PANE_STORAGE_KEY = "typr.left-pane.v1";
 const BUILD_LOG_STORAGE_KEY = "typr.build-log.v1";
 const PROJECT_EXPORT_INPUT_ACCEPT = ".json,application/json";
 const WORKSPACE_UPLOAD_ACCEPT = [
@@ -506,10 +510,98 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "debug", label: "Debug" }
 ];
 
+const MOBILE_SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
+  ...SIDEBAR_TOOLS,
+  { id: "docs", label: "Docs" },
+  { id: "settings", label: "Settings" }
+];
+
 interface SourceSymbolTooltipState {
   item: SourceSymbolItem;
   x: number;
   y: number;
+}
+
+type MobileKeyboardKeyAction =
+  | { type: "text"; value: string }
+  | { type: "template"; value: string }
+  | { type: "wrap"; before: string; after?: string }
+  | { type: "lineToggle"; prefix: string; alternatePrefix?: string };
+
+interface MobileKeyboardKey {
+  label: string;
+  title: string;
+  action: MobileKeyboardKeyAction;
+}
+
+const MOBILE_KEYBOARD_KEYS_BY_LANGUAGE: Record<MobileKeyboardLanguage, MobileKeyboardKey[]> = {
+  typst: [
+    { label: "#", title: "Insert #", action: { type: "text", value: "#" } },
+    { label: "$", title: "Insert math delimiters", action: { type: "template", value: "$${1:x}$" } },
+    { label: "[]", title: "Insert brackets", action: { type: "template", value: "[${1:text}]" } },
+    { label: "()", title: "Insert parentheses", action: { type: "template", value: "(${1})" } },
+    { label: "{}", title: "Insert braces", action: { type: "template", value: "{${1}}" } },
+    { label: "=", title: "Toggle heading", action: { type: "lineToggle", prefix: "= ", alternatePrefix: "" } },
+    { label: "*", title: "Wrap selection in bold", action: { type: "wrap", before: "*", after: "*" } },
+    { label: "_", title: "Wrap selection in italic", action: { type: "wrap", before: "_", after: "_" } },
+    { label: "@", title: "Insert reference marker", action: { type: "text", value: "@" } },
+    { label: "`", title: "Wrap selection in raw text", action: { type: "wrap", before: "`", after: "`" } },
+    { label: "fn", title: "Insert Typst function call", action: { type: "template", value: "#${1:name}(${2})" } }
+  ],
+  latex: [
+    { label: "\\", title: "Insert backslash", action: { type: "text", value: "\\" } },
+    { label: "$", title: "Insert math delimiters", action: { type: "template", value: "$${1:x}$" } },
+    { label: "{}", title: "Insert braces", action: { type: "template", value: "{${1}}" } },
+    { label: "[]", title: "Insert brackets", action: { type: "template", value: "[${1}]" } },
+    { label: "^", title: "Insert superscript", action: { type: "template", value: "^{${1}}" } },
+    { label: "_", title: "Insert subscript", action: { type: "template", value: "_{${1}}" } },
+    { label: "&", title: "Insert alignment marker", action: { type: "text", value: "&" } },
+    { label: "%", title: "Insert comment marker", action: { type: "text", value: "%" } },
+    { label: "#", title: "Insert parameter marker", action: { type: "text", value: "#" } },
+    { label: "frac", title: "Insert fraction", action: { type: "template", value: "\\frac{${1:numerator}}{${2:denominator}}" } },
+    { label: "env", title: "Insert environment", action: { type: "template", value: "\\begin{${1:environment}}\n  ${2}\n\\end{${1:environment}}" } }
+  ],
+  markdown: [
+    { label: "#", title: "Toggle heading", action: { type: "lineToggle", prefix: "# ", alternatePrefix: "" } },
+    { label: "-", title: "Toggle bullet list", action: { type: "lineToggle", prefix: "- ", alternatePrefix: "" } },
+    { label: "*", title: "Wrap selection in bold", action: { type: "wrap", before: "**", after: "**" } },
+    { label: "_", title: "Wrap selection in italic", action: { type: "wrap", before: "_", after: "_" } },
+    { label: "`", title: "Wrap selection in code", action: { type: "wrap", before: "`", after: "`" } },
+    { label: "[]", title: "Insert link text brackets", action: { type: "template", value: "[${1:text}]" } },
+    { label: "()", title: "Insert link URL parentheses", action: { type: "template", value: "(${1:url})" } },
+    { label: ">", title: "Toggle quote", action: { type: "lineToggle", prefix: "> ", alternatePrefix: "" } },
+    { label: "|", title: "Insert table separator", action: { type: "text", value: "|" } },
+    { label: "```", title: "Insert fenced code block", action: { type: "template", value: "```${1:language}\n${2:code}\n```" } },
+    { label: "link", title: "Insert Markdown link", action: { type: "template", value: "[${1:text}](${2:url})" } }
+  ]
+};
+
+function parseMobileKeyboardLabels(value: string): string[] {
+  return value
+    .split(",")
+    .map((label) => label.trim())
+    .filter(Boolean)
+    .slice(0, 18);
+}
+
+function formatMobileKeyboardLabels(labels: string[]): string {
+  return labels.join(", ");
+}
+
+function resolveMobileKeyboardKeys(language: SourceLanguage, labels: string[]): MobileKeyboardKey[] {
+  if (language !== "typst" && language !== "latex" && language !== "markdown") {
+    return [];
+  }
+
+  const builtInKeys = new Map(
+    MOBILE_KEYBOARD_KEYS_BY_LANGUAGE[language].map((key) => [key.label, key])
+  );
+
+  return labels.map((label) => builtInKeys.get(label) ?? {
+    label,
+    title: `Insert ${label}`,
+    action: { type: "text", value: label }
+  });
 }
 
 type WorkspaceContextMenuState =
@@ -552,7 +644,9 @@ type SidebarTool =
   | "sync"
   | "debug"
   | "diagram"
-  | "graph";
+  | "graph"
+  | "docs"
+  | "settings";
 type DiagramPaneMode = "sidebar" | "source" | "preview";
 type GraphPaneMode = "sidebar" | "source" | "preview";
 type GitMergePaneMode = "sidebar" | "source" | "preview";
@@ -645,6 +739,13 @@ type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
 interface StoredSettingsMenuState {
   tab: SettingsTab;
   scrollByTab: SettingsScrollPositions;
+}
+
+interface StoredLeftPaneState {
+  activeSidebarTool: SidebarTool;
+  mobileWorkspaceTab: MobileWorkspaceTab;
+  isTrashViewOpen: boolean;
+  scrollByPane: Record<string, number>;
 }
 
 const SETTINGS_TABS: readonly SettingsTab[] = [
@@ -1028,6 +1129,84 @@ function writeStoredSettingsMenuState(
       scrollByTab
     })
   );
+}
+
+function isSidebarTool(value: unknown): value is SidebarTool {
+  return (
+    value === "files" ||
+    value === "source-tools" ||
+    value === "projects" ||
+    value === "search" ||
+    value === "outline" ||
+    value === "mitex" ||
+    value === "sync" ||
+    value === "debug" ||
+    value === "diagram" ||
+    value === "graph" ||
+    value === "docs" ||
+    value === "settings"
+  );
+}
+
+function isMobileWorkspaceTab(value: unknown): value is MobileWorkspaceTab {
+  return value === "files" || value === "editor" || value === "preview";
+}
+
+function normalizeLeftPaneScrollPositions(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.entries(value).reduce<Record<string, number>>((positions, [key, scrollTop]) => {
+    if (typeof scrollTop === "number" && Number.isFinite(scrollTop) && scrollTop > 0) {
+      positions[key] = Math.round(scrollTop);
+    }
+
+    return positions;
+  }, {});
+}
+
+function readStoredLeftPaneState(): StoredLeftPaneState {
+  const fallback: StoredLeftPaneState = {
+    activeSidebarTool: "files",
+    mobileWorkspaceTab: "editor",
+    isTrashViewOpen: false,
+    scrollByPane: {}
+  };
+
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(LEFT_PANE_STORAGE_KEY);
+    if (!stored) {
+      return fallback;
+    }
+
+    const parsed = JSON.parse(stored);
+
+    return {
+      activeSidebarTool: isSidebarTool(parsed?.activeSidebarTool)
+        ? parsed.activeSidebarTool
+        : fallback.activeSidebarTool,
+      mobileWorkspaceTab: isMobileWorkspaceTab(parsed?.mobileWorkspaceTab)
+        ? parsed.mobileWorkspaceTab
+        : fallback.mobileWorkspaceTab,
+      isTrashViewOpen: Boolean(parsed?.isTrashViewOpen),
+      scrollByPane: normalizeLeftPaneScrollPositions(parsed?.scrollByPane)
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStoredLeftPaneState(state: StoredLeftPaneState): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LEFT_PANE_STORAGE_KEY, JSON.stringify(state));
 }
 
 function readRecentWorkspaceState(): {
@@ -2619,12 +2798,15 @@ function buildGraphShadowFiles(graphs: GraphAsset[]): CompileAssetFile[] {
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
   const [storedSettingsMenu] = useState(readStoredSettingsMenuState);
+  const [storedLeftPane] = useState(readStoredLeftPaneState);
   const menuStripRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const settingsBodyRef = useRef<HTMLDivElement | null>(null);
   const settingsScrollByTabRef = useRef<SettingsScrollPositions>(storedSettingsMenu.scrollByTab);
   const settingsTabRef = useRef<SettingsTab>(storedSettingsMenu.tab);
   const settingsScrollRestoreFrameRef = useRef<number | null>(null);
+  const leftPaneScrollByPaneRef = useRef<Record<string, number>>(storedLeftPane.scrollByPane);
+  const leftPaneScrollRestoreFrameRef = useRef<number | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
   const previewPaneRef = useRef<HTMLElement | null>(null);
   const sidebarPaneRef = useRef<HTMLElement | null>(null);
@@ -2691,15 +2873,20 @@ export function App() {
   const pendingCompileTriggerRef = useRef<BuildLogTrigger>("auto");
   const isMountedRef = useRef(true);
   const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(
+    () => storedLeftPane.activeSidebarTool === "settings"
+  );
   const [isDocsOpen, setIsDocsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(storedSettingsMenu.tab);
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
+  const [isMobileSettingsNavOpen, setIsMobileSettingsNavOpen] = useState(false);
   const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
   const [previewDownloadMode, setPreviewDownloadMode] = useState<PreviewDownloadMode>("output");
   const [isPreviewDownloadMenuOpen, setIsPreviewDownloadMenuOpen] = useState(false);
   const [recentWorkspaceState, setRecentWorkspaceState] = useState(readRecentWorkspaceState);
-  const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>("files");
+  const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>(
+    storedLeftPane.activeSidebarTool
+  );
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
     search: "",
     replace: "",
@@ -2723,7 +2910,7 @@ export function App() {
     inset: "small",
     stroke: "default"
   });
-  const [openToolbarMenu, setOpenToolbarMenu] = useState<"matrix" | "table" | null>(null);
+  const [openToolbarMenu, setOpenToolbarMenu] = useState<"matrix" | "table" | "symbols" | null>(null);
   const [themeImportFeedback, setThemeImportFeedback] = useState<SyncFeedback>({
     tone: "neutral",
     text: ""
@@ -2748,7 +2935,7 @@ export function App() {
   const [workspaceOpenFoldersByProject, setWorkspaceOpenFoldersByProject] =
     useState<WorkspaceOpenFolderStorage>(() => readStoredWorkspaceOpenFolders());
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
-  const [isTrashViewOpen, setIsTrashViewOpen] = useState(false);
+  const [isTrashViewOpen, setIsTrashViewOpen] = useState(storedLeftPane.isTrashViewOpen);
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<string[]>([]);
   const [sourceTabPaths, setSourceTabPaths] = useState<string[]>([]);
@@ -2867,8 +3054,14 @@ export function App() {
   const [viewportWidth, setViewportWidth] = useState(getCurrentViewportWidth);
   const [viewportHeight, setViewportHeight] = useState(getCurrentViewportHeight);
   const isMobileWorkspace = isMobileWorkspaceViewport(viewportWidth);
+  const [isEditorFocused, setIsEditorFocused] = useState(false);
+  const [isEditorFullscreen, setIsEditorFullscreen] = useState(false);
+  const [previewForwardSearchSource, setPreviewForwardSearchSource] = useState<SourcePosition | null>(null);
+  const isMobileEditorFullscreen = isMobileWorkspace && isEditorFullscreen;
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
-  const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>("editor");
+  const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>(
+    storedLeftPane.mobileWorkspaceTab
+  );
   const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
     phase: "idle",
     mode: "worker",
@@ -3078,6 +3271,15 @@ ${nextLine}` : nextLine;
     },
     [saveCurrentSettingsScrollPosition]
   );
+
+  const handleSettingsTabSelect = useCallback(
+    (tab: SettingsTab) => {
+      handleSettingsTabChange(tab);
+      setIsMobileSettingsNavOpen(false);
+    },
+    [handleSettingsTabChange]
+  );
+
   const settingsSearchMatchingTabs = useMemo(() => {
     const query = settingsSearchQuery.trim().toLowerCase();
 
@@ -3329,6 +3531,29 @@ ${nextLine}` : nextLine;
       updateEditorToolingPreference(currentSnapshot, {
         ...currentSnapshot.preferences.editorTooling,
         formatOnCompile: !currentSnapshot.preferences.editorTooling.formatOnCompile
+      })
+    );
+  }, []);
+  const handleMobileKeyboardEnabledToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateMobileKeyboardPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.mobileKeyboard,
+        enabled: !currentSnapshot.preferences.mobileKeyboard.enabled
+      })
+    );
+  }, []);
+
+  const handleMobileKeyboardLabelsChange = useCallback((
+    language: MobileKeyboardLanguage,
+    value: string
+  ) => {
+    setSnapshot((currentSnapshot) =>
+      updateMobileKeyboardPreference(currentSnapshot, {
+        ...currentSnapshot.preferences.mobileKeyboard,
+        keys: {
+          ...currentSnapshot.preferences.mobileKeyboard.keys,
+          [language]: parseMobileKeyboardLabels(value)
+        }
       })
     );
   }, []);
@@ -3872,6 +4097,21 @@ ${nextLine}` : nextLine;
   const activePreviewCompileState = activePreviewCompileSourcePath
     ? compilePreviewsByPath[activePreviewCompileSourcePath] ?? null
     : null;
+  const activePreviewCompileSourceDocument = activePreviewCompileSourcePath
+    ? snapshot.project.documents.find(
+        (document) => normalizeWorkspacePath(document.name) === normalizeWorkspacePath(activePreviewCompileSourcePath)
+      ) ?? null
+    : null;
+  const activePreviewCompileSourceTextContent = activePreviewCompileSourcePath === normalizedActiveSourcePath
+    ? sourceEditorValue
+    : typeof activePreviewCompileSourceDocument?.content === "string"
+      ? activePreviewCompileSourceDocument.content
+      : activePreviewTextContent;
+  const activePreviewHasCompiledPdfResult = Boolean(
+    activePreviewCompileState?.result?.ok &&
+      activePreviewCompileState.result.output.kind === "pdf" &&
+      activePreviewCompileState.result.output.artifactData
+  );
   const activePreviewSourcePosition = useMemo<SourcePosition | null>(
     () =>
       activePreviewPath === normalizedActiveSourcePath
@@ -3884,8 +4124,8 @@ ${nextLine}` : nextLine;
     [activePreviewPath, currentEditorLineNumber, normalizedActiveSourcePath]
   );
   const activePreviewSourceLineCount = useMemo(
-    () => countSourceTextLines(activePreviewTextContent),
-    [activePreviewTextContent]
+    () => countSourceTextLines(activePreviewCompileSourceTextContent),
+    [activePreviewCompileSourceTextContent]
   );
   useEffect(() => {
     let cancelled = false;
@@ -4004,7 +4244,7 @@ ${nextLine}` : nextLine;
   );
   const visiblePreviewIsCompiling = Boolean(activePreviewCompileState?.isCompiling);
   const visibleWorkspacePreview =
-    activePreviewPath && selectedWorkspacePreview?.path === activePreviewPath
+    activePreviewPath && selectedWorkspacePreview?.path === activePreviewPath && !activePreviewHasCompiledPdfResult
       ? selectedWorkspacePreview
       : null;
   const visiblePreviewResult =
@@ -4027,6 +4267,24 @@ ${nextLine}` : nextLine;
         ? createIdleCompilerStatusForSource(activePreviewCompileSourcePath)
         : compilerStatus
       : rawVisiblePreviewCompilerStatus;
+  const compiledLatexPdfPreviewPathSet = useMemo(() => {
+    const pdfPaths = new Set<string>();
+
+    for (const [sourcePath, preview] of Object.entries(compilePreviewsByPath)) {
+      const result = preview.result;
+      if (result?.ok && result.output.kind === "pdf" && result.output.artifactData) {
+        pdfPaths.add(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(sourcePath, result)));
+      }
+    }
+
+    const currentResult = compileResultRef.current;
+    const currentSourcePath = compileInFlightSourcePathRef.current || activeSourcePathRef.current;
+    if (currentResult?.ok && currentResult.output.kind === "pdf" && currentResult.output.artifactData) {
+      pdfPaths.add(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(currentSourcePath, currentResult)));
+    }
+
+    return pdfPaths;
+  }, [compilePreviewsByPath]);
   const openSourceTab = useCallback((path: string) => {
     const normalizedPath = normalizeWorkspacePath(path);
 
@@ -4076,6 +4334,19 @@ ${nextLine}` : nextLine;
       setActivePreviewPath(normalizedPath);
     }
   }, [activePreviewPath]);
+  const isAvailablePreviewTabPath = useCallback(
+    (path: string) => {
+      const normalizedPath = normalizeWorkspacePath(path);
+
+      return (
+        !!normalizedPath &&
+        getSourceLanguage(normalizedPath) !== "latex" &&
+        (workspaceFilePathSet.has(normalizedPath) ||
+          compiledLatexPdfPreviewPathSet.has(normalizedPath))
+      );
+    },
+    [compiledLatexPdfPreviewPathSet, workspaceFilePathSet]
+  );
   useEffect(() => {
     if (
       isTrashViewOpen ||
@@ -4123,8 +4394,27 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    const storedPreviewTabs = normalizeUniqueWorkspacePaths([
+      ...(selectedProjectRepository?.editor.previewTabPaths ?? []),
+      selectedProjectRepository?.editor.previewPath ?? ""
+    ]).filter(isAvailablePreviewTabPath);
+    const storedActivePreviewPath = normalizeWorkspacePath(
+      selectedProjectRepository?.editor.previewPath ?? ""
+    );
+
+    setPreviewTabPaths(storedPreviewTabs);
+    setActivePreviewPath(
+      storedActivePreviewPath && storedPreviewTabs.includes(storedActivePreviewPath)
+        ? storedActivePreviewPath
+        : storedPreviewTabs[0] ?? null
+    );
     previewTabsInitializedProjectRef.current = activeProjectTabKey;
-  }, [activeProjectTabKey, isTrashViewOpen]);
+  }, [
+    activeProjectTabKey,
+    isAvailablePreviewTabPath,
+    isTrashViewOpen,
+    selectedProjectRepository
+  ]);
   useEffect(() => {
     const nextSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths).filter(
       (path) => workspaceFilePathSet.has(path) && isTextWorkspaceFile(path)
@@ -4175,8 +4465,8 @@ ${nextLine}` : nextLine;
     }
   }, [sourceTabPaths, transientSourceTabPath, workspaceFilePathSet]);
   useEffect(() => {
-    const nextPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter((path) =>
-      workspaceFilePathSet.has(path)
+    const nextPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter(
+      isAvailablePreviewTabPath
     );
 
     if (
@@ -4186,10 +4476,129 @@ ${nextLine}` : nextLine;
       setPreviewTabPaths(nextPreviewTabs);
     }
 
-    if (activePreviewPath && !workspaceFilePathSet.has(activePreviewPath)) {
+    const normalizedActivePreviewPath = activePreviewPath
+      ? normalizeWorkspacePath(activePreviewPath)
+      : "";
+
+    if (
+      normalizedActivePreviewPath &&
+      !nextPreviewTabs.includes(normalizedActivePreviewPath)
+    ) {
       setActivePreviewPath(nextPreviewTabs[0] ?? null);
     }
-  }, [activePreviewPath, previewTabPaths, workspaceFilePathSet]);
+  }, [activePreviewPath, isAvailablePreviewTabPath, previewTabPaths]);
+  useEffect(() => {
+    if (
+      !selectedProjectRepository ||
+      isTrashViewOpen ||
+      previewTabsInitializedProjectRef.current !== activeProjectTabKey
+    ) {
+      return;
+    }
+
+    const nextPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter(
+      isAvailablePreviewTabPath
+    );
+    const normalizedActivePreviewPath = activePreviewPath
+      ? normalizeWorkspacePath(activePreviewPath)
+      : "";
+    const nextPreviewPath =
+      normalizedActivePreviewPath && nextPreviewTabs.includes(normalizedActivePreviewPath)
+        ? normalizedActivePreviewPath
+        : null;
+    const storedPreviewTabs = normalizeUniqueWorkspacePaths(
+      selectedProjectRepository.editor.previewTabPaths ?? []
+    ).filter(isAvailablePreviewTabPath);
+    const storedPreviewPath = normalizeWorkspacePath(
+      selectedProjectRepository.editor.previewPath ?? ""
+    ) || null;
+
+    if (
+      areWorkspacePathListsEqual(nextPreviewTabs, storedPreviewTabs) &&
+      nextPreviewPath === storedPreviewPath
+    ) {
+      return;
+    }
+
+    setProjectRepository((project) =>
+      project.id === selectedProjectRepository.id
+        ? {
+            ...project,
+            editor: {
+              ...project.editor,
+              previewPath: nextPreviewPath,
+              previewTabPaths: nextPreviewTabs
+            }
+          }
+        : project
+    );
+  }, [
+    activePreviewPath,
+    activeProjectTabKey,
+    isAvailablePreviewTabPath,
+    isTrashViewOpen,
+    previewTabPaths,
+    selectedProjectRepository,
+    setProjectRepository
+  ]);
+  useEffect(() => {
+    if (!selectedProjectRepository) {
+      return;
+    }
+
+    const pdfPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter(
+      (path) => path.toLowerCase().endsWith(".pdf")
+    );
+
+    if (pdfPreviewTabs.length === 0) {
+      return;
+    }
+
+    setCompilePreviewsByPath((currentPreviews) => {
+      let nextPreviews = currentPreviews;
+
+      for (const previewPath of pdfPreviewTabs) {
+        const sourcePath = resolveLatexSourcePathForPdfPreview(
+          previewPath,
+          selectedProjectRepository,
+          activeSourcePathRef.current
+        );
+        const sourcePathKey = sourcePath ? normalizeWorkspacePath(sourcePath) : "";
+
+        if (!sourcePathKey) {
+          continue;
+        }
+
+        const currentPreview = currentPreviews[sourcePathKey];
+
+        if (currentPreview?.isCompiling || currentPreview?.lastSuccessfulResult?.ok) {
+          continue;
+        }
+
+        const savedResult = loadSavedLatexPdfCompileResult({
+          allowStale: true,
+          project: selectedProjectRepository,
+          source: readProjectTextFileOrDefault(selectedProjectRepository, sourcePathKey, ""),
+          sourcePath: sourcePathKey
+        });
+
+        if (!savedResult?.ok || savedResult.output.kind !== "pdf") {
+          continue;
+        }
+
+        if (nextPreviews === currentPreviews) {
+          nextPreviews = { ...currentPreviews };
+        }
+
+        nextPreviews[sourcePathKey] = createCompilePreviewState(sourcePathKey, {
+          result: savedResult,
+          lastSuccessfulResult: savedResult
+        });
+      }
+
+      return nextPreviews;
+    });
+  }, [previewTabPaths, selectedProjectRepository]);
   const projectGitignoreContent = useMemo(
     () =>
       selectedProjectRepository
@@ -4758,19 +5167,32 @@ ${nextLine}` : nextLine;
     }
 
     const updateViewportSize = () => {
-      setViewportWidth(getCurrentViewportWidth());
-      setViewportHeight(getCurrentViewportHeight());
+      const nextWidth = getCurrentViewportWidth();
+      const nextHeight = getCurrentViewportHeight();
+
+      setViewportWidth(nextWidth);
+      setViewportHeight(nextHeight);
+      document.documentElement.style.setProperty("--app-viewport-height", `${Math.round(nextHeight)}px`);
     };
 
     updateViewportSize();
     window.addEventListener("resize", updateViewportSize);
     window.visualViewport?.addEventListener("resize", updateViewportSize);
+    window.visualViewport?.addEventListener("scroll", updateViewportSize);
 
     return () => {
       window.removeEventListener("resize", updateViewportSize);
       window.visualViewport?.removeEventListener("resize", updateViewportSize);
+      window.visualViewport?.removeEventListener("scroll", updateViewportSize);
+      document.documentElement.style.removeProperty("--app-viewport-height");
     };
   }, []);
+
+  useEffect(() => {
+    if (!isMobileWorkspace && isEditorFullscreen) {
+      setIsEditorFullscreen(false);
+    }
+  }, [isEditorFullscreen, isMobileWorkspace]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -5800,7 +6222,7 @@ ${nextLine}` : nextLine;
 
             if (result.ok && result.output.kind === "pdf") {
               generatedLatexPdf = {
-                activatePreview: !getExistingLatexPdfPath(project, sourcePath),
+                activatePreview: true,
                 projectId: project.id,
                 result,
                 sourcePath
@@ -6242,8 +6664,8 @@ ${nextLine}` : nextLine;
           normalizeWorkspacePath(activePreviewCompileSourcePath ?? "") === normalizedSourcePath)
     );
     const shouldActivateCompilePreview = !activePreviewPath || activePreviewBelongsToSource;
-    const openCompilePreviewTab = (path: string) => {
-      openPreviewTab(path, { activate: shouldActivateCompilePreview });
+    const openCompilePreviewTab = (path: string, options: { forceActivate?: boolean } = {}) => {
+      openPreviewTab(path, { activate: options.forceActivate ?? shouldActivateCompilePreview });
     };
 
     if (!isActiveSourceCompilableRef.current && sourceLanguage !== "markdown") {
@@ -6273,7 +6695,7 @@ ${nextLine}` : nextLine;
       });
 
       if (savedResult?.ok) {
-        openCompilePreviewTab(getExistingLatexPdfPreviewPath(sourcePath) ?? sourcePath);
+        openCompilePreviewTab(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(sourcePath, savedResult)), { forceActivate: true });
 
         clearScheduledCompile();
 
@@ -6323,7 +6745,10 @@ ${nextLine}` : nextLine;
       }
     }
 
-    openCompilePreviewTab(sourcePath);
+    if (sourceLanguage !== "latex") {
+      openCompilePreviewTab(sourcePath);
+    }
+
     pendingCompileTriggerRef.current = "manual";
     queueCompile(false);
   }, [
@@ -6331,7 +6756,6 @@ ${nextLine}` : nextLine;
     appendBuildLogEntry,
     clearScheduledCompile,
     formatActiveSourceForCompile,
-    getExistingLatexPdfPreviewPath,
     openPreviewTab,
     queueCompile,
     selectedProjectRepository
@@ -6584,9 +7008,45 @@ ${nextLine}` : nextLine;
     handleInsertEditorTemplate(buildTableTemplate(tableSettings));
   }, [handleInsertEditorTemplate, tableSettings]);
 
-  const toggleToolbarMenu = useCallback((menu: "matrix" | "table") => {
+  const toggleToolbarMenu = useCallback((menu: "matrix" | "table" | "symbols") => {
     setOpenToolbarMenu((current) => (current === menu ? null : menu));
   }, []);
+
+  const mobileKeyboardLabels = activeSourceLanguage === "typst" || activeSourceLanguage === "latex" || activeSourceLanguage === "markdown"
+    ? snapshot.preferences.mobileKeyboard.keys[activeSourceLanguage]
+    : [];
+  const mobileKeyboardKeys = resolveMobileKeyboardKeys(activeSourceLanguage, mobileKeyboardLabels);
+
+  const handleMobileKeyboardKey = useCallback((key: MobileKeyboardKey) => {
+    switch (key.action.type) {
+      case "text":
+        editorRef.current?.insertText(key.action.value);
+        break;
+      case "template":
+        editorRef.current?.insertTemplate(key.action.value);
+        break;
+      case "wrap":
+        editorRef.current?.surroundSelection(key.action.before, key.action.after);
+        break;
+      case "lineToggle":
+        editorRef.current?.toggleCurrentLines(key.action.prefix, key.action.alternatePrefix);
+        break;
+    }
+  }, []);
+
+  const handleEditorSourceDoubleClick = useCallback((position: { line: number; column: number }) => {
+    setPreviewForwardSearchSource({
+      path: normalizedActiveSourcePath,
+      line: position.line,
+      column: position.column
+    });
+
+    if (isMobileWorkspace) {
+      setMobileWorkspaceTab("preview");
+    } else if (isPreviewCollapsed) {
+      setIsPreviewCollapsed(false);
+    }
+  }, [isMobileWorkspace, isPreviewCollapsed, normalizedActiveSourcePath]);
 
   const handlePreviewSourceJump = useCallback((sourceLink: PreviewSourceLink) => {
     const sourceRange = sourceLink.source;
@@ -6599,6 +7059,7 @@ ${nextLine}` : nextLine;
 
     if (!sourcePath) {
       editorRef.current?.focusRange(sourceRange);
+      resetDocumentScrollPosition();
       return;
     }
 
@@ -6619,6 +7080,7 @@ ${nextLine}` : nextLine;
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         editorRef.current?.focusRange(sourceRange);
+        resetDocumentScrollPosition();
       });
     });
   }, [activePreviewPath, normalizedActiveSourcePath, openSourceTab, snapshot.project.documents]);
@@ -10063,12 +10525,44 @@ ${nextLine}` : nextLine;
   const handleOpenTyprDocs = () => {
     saveCurrentSettingsScrollPosition();
     setIsSettingsOpen(false);
+
+    if (isMobileWorkspace) {
+      setIsDocsOpen(false);
+      setActiveSidebarTool("docs");
+      setMobileWorkspaceTab("files");
+      return;
+    }
+
     setIsDocsOpen(true);
   };
 
-  const handleOpenGitRemoteHelp = () => {
-    setSettingsTab("git");
+  const handleOpenSettings = () => {
+    setActiveMenu(null);
+    setIsDocsOpen(false);
+    setIsMobileSettingsNavOpen(false);
     setIsSettingsOpen(true);
+
+    if (isMobileWorkspace) {
+      setActiveSidebarTool("settings");
+      setMobileWorkspaceTab("files");
+    }
+  };
+
+  const handleOpenSettingsTab = (tab: SettingsTab) => {
+    setSettingsTab(tab);
+    setActiveMenu(null);
+    setIsDocsOpen(false);
+    setIsMobileSettingsNavOpen(false);
+    setIsSettingsOpen(true);
+
+    if (isMobileWorkspace) {
+      setActiveSidebarTool("settings");
+      setMobileWorkspaceTab("files");
+    }
+  };
+
+  const handleOpenGitRemoteHelp = () => {
+    handleOpenSettingsTab("git");
   };
 
   const handleRemoveCustomTheme = (themeId: string) => {
@@ -10083,8 +10577,7 @@ ${nextLine}` : nextLine;
     if (!selectedGitProject) {
       const message = "Create or select a managed git project first.";
       setSyncFeedback({ tone: "error", text: message });
-      setSettingsTab("git");
-      setIsSettingsOpen(true);
+      handleOpenSettingsTab("git");
       return { ok: false as const, message };
     }
     if (selectedGitProject.backendId !== "browser") {
@@ -10100,15 +10593,13 @@ ${nextLine}` : nextLine;
     if (!selectedGitProject.connected) {
       const message = "Connect GitHub first.";
       setSyncFeedback({ tone: "error", text: message });
-      setSettingsTab("git");
-      setIsSettingsOpen(true);
+      handleOpenSettingsTab("git");
       return { ok: false as const, message };
     }
     if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim() || !selectedGitToken.trim()) {
       const message = "Fill in owner, repo, branch, and token first.";
       setSyncFeedback({ tone: "error", text: message });
-      setSettingsTab("git");
-      setIsSettingsOpen(true);
+      handleOpenSettingsTab("git");
       return { ok: false as const, message };
     }
     if (!selectedProjectRepository) {
@@ -11953,9 +12444,69 @@ ${nextLine}` : nextLine;
   const visibleDesktopPaneCount = getVisibleDesktopPaneCount();
   const sidebarToolTitle = getSidebarToolTitle(activeSidebarTool);
   const filesPanelTitle = activeSidebarTool === "files" && isTrashViewOpen ? "Trash" : sidebarToolTitle;
+  const mobileSidebarTabLabel = filesPanelTitle;
   const sidebarPaneStyle = {
     "--sidebar-font-size": `${snapshot.preferences.sidebarFontSize}px`
   } as CSSProperties;
+
+  const leftPaneScrollKey = activeSidebarTool === "files"
+    ? isTrashViewOpen
+      ? "files:trash"
+      : "files"
+    : activeSidebarTool;
+
+  const saveCurrentLeftPaneScrollPosition = useCallback(() => {
+    const element = filesSectionRef.current;
+    if (!element) {
+      return;
+    }
+
+    leftPaneScrollByPaneRef.current = {
+      ...leftPaneScrollByPaneRef.current,
+      [leftPaneScrollKey]: Math.max(0, Math.round(element.scrollTop))
+    };
+
+    writeStoredLeftPaneState({
+      activeSidebarTool,
+      mobileWorkspaceTab,
+      isTrashViewOpen,
+      scrollByPane: leftPaneScrollByPaneRef.current
+    });
+  }, [activeSidebarTool, isTrashViewOpen, leftPaneScrollKey, mobileWorkspaceTab]);
+
+  const handleLeftPaneScroll = useCallback(() => {
+    saveCurrentLeftPaneScrollPosition();
+  }, [saveCurrentLeftPaneScrollPosition]);
+
+  useEffect(() => {
+    if (leftPaneScrollRestoreFrameRef.current !== null) {
+      window.cancelAnimationFrame(leftPaneScrollRestoreFrameRef.current);
+    }
+
+    leftPaneScrollRestoreFrameRef.current = window.requestAnimationFrame(() => {
+      const element = filesSectionRef.current;
+      if (element) {
+        element.scrollTop = leftPaneScrollByPaneRef.current[leftPaneScrollKey] ?? 0;
+      }
+      leftPaneScrollRestoreFrameRef.current = null;
+    });
+
+    return () => {
+      if (leftPaneScrollRestoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(leftPaneScrollRestoreFrameRef.current);
+        leftPaneScrollRestoreFrameRef.current = null;
+      }
+    };
+  }, [leftPaneScrollKey]);
+
+  useEffect(() => {
+    writeStoredLeftPaneState({
+      activeSidebarTool,
+      mobileWorkspaceTab,
+      isTrashViewOpen,
+      scrollByPane: leftPaneScrollByPaneRef.current
+    });
+  }, [activeSidebarTool, isTrashViewOpen, mobileWorkspaceTab]);
 
   useEffect(() => {
     if (isMobileWorkspace || workspaceMode !== "split" || visibleDesktopPaneCount > 0) {
@@ -12025,6 +12576,11 @@ ${nextLine}` : nextLine;
     (tool: SidebarTool) => {
       const shouldOpenSearchPane = tool === "search" && (isSidebarCollapsed || activeSidebarTool !== tool);
 
+      if (isMobileWorkspace && activeSidebarTool === "settings" && isSettingsOpen) {
+        saveCurrentSettingsScrollPosition();
+        setIsSettingsOpen(false);
+      }
+
       if (
         !isMobileWorkspace &&
         activeSidebarTool === tool &&
@@ -12061,7 +12617,27 @@ ${nextLine}` : nextLine;
         });
       }
     },
-    [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, openSearchPane, visibleDesktopPaneCount, workspaceMode]
+    [
+      activeSidebarTool,
+      isMobileWorkspace,
+      isSettingsOpen,
+      isSidebarCollapsed,
+      openSearchPane,
+      saveCurrentSettingsScrollPosition,
+      visibleDesktopPaneCount,
+      workspaceMode
+    ]
+  );
+
+  const handleMobileWorkspaceTabChange = useCallback(
+    (tab: MobileWorkspaceTab) => {
+      if (isMobileWorkspace && tab !== "files" && activeSidebarTool === "settings" && isSettingsOpen) {
+        saveCurrentSettingsScrollPosition();
+      }
+
+      setMobileWorkspaceTab(tab);
+    },
+    [activeSidebarTool, isMobileWorkspace, isSettingsOpen, saveCurrentSettingsScrollPosition]
   );
 
   const handleOpenWorkspaceDiagram = useCallback(
@@ -12244,7 +12820,7 @@ ${nextLine}` : nextLine;
         } else if (existingLatexPdfPath) {
           openPreviewTab(existingLatexPdfPath);
           setIsPreviewCollapsed(false);
-        } else if (isCompilableSourceFile(normalizedPath)) {
+        } else if (sourceLanguage !== "latex" && isCompilableSourceFile(normalizedPath)) {
           openPreviewTab(normalizedPath, { activate: true });
           setIsPreviewCollapsed(false);
         }
@@ -13059,17 +13635,6 @@ ${nextLine}` : nextLine;
   };
   const sourceToolsPanel = isSourceFileEditable ? (
     <div className="source-tools-panel">
-      {showSourceCompileButton ? (
-        <button
-          className="pane__button source-tools-panel__compile"
-          onClick={handleCompile}
-          title={`Compile (${compileShortcutLabel})`}
-          type="button"
-        >
-          Compile
-        </button>
-      ) : null}
-
       <div className="source-tools-panel__section">
         <div className="pane__toolbar-group source-tools-panel__grid">
           <button
@@ -13179,12 +13744,12 @@ ${nextLine}` : nextLine;
           <button
             aria-expanded={openToolbarMenu === "matrix"}
             aria-label="Matrix options"
-            className="pane__button pane__button--compact pane__icon-button"
+            className="pane__button source-tools-panel__dropdown-button"
             onClick={() => toggleToolbarMenu("matrix")}
             title="Matrix options"
             type="button"
           >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--matrix" />
+            <span>Matrix</span>
           </button>
           {openToolbarMenu === "matrix" ? (
             <div className="matrix-menu__panel" role="menu" aria-label="Matrix options">
@@ -13263,12 +13828,12 @@ ${nextLine}` : nextLine;
           <button
             aria-expanded={openToolbarMenu === "table"}
             aria-label="Table options"
-            className="pane__button pane__button--compact pane__icon-button"
+            className="pane__button source-tools-panel__dropdown-button"
             onClick={() => toggleToolbarMenu("table")}
             title="Table options"
             type="button"
           >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--table" />
+            <span>Table</span>
           </button>
           {openToolbarMenu === "table" ? (
             <div className="table-menu__panel" role="menu" aria-label="Table options">
@@ -13436,42 +14001,44 @@ ${nextLine}` : nextLine;
       </div>
 
       <div className="source-tools-panel__section">
-        <details className="source-symbol-menu">
-          <summary
-            className="pane__button pane__button--compact pane__icon-button"
+        <div className={`source-symbol-menu ${openToolbarMenu === "symbols" ? "source-symbol-menu--open" : ""}`}>
+          <button
+            aria-expanded={openToolbarMenu === "symbols"}
             aria-label="Symbols"
+            className="pane__button source-tools-panel__dropdown-button"
+            onClick={() => toggleToolbarMenu("symbols")}
             title="Symbols"
+            type="button"
           >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--symbols" />
-          </summary>
-          <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
-            {SOURCE_SYMBOL_ITEMS.map((item) => (
-              <button
-                key={item.template}
-                className="source-symbol-menu__item"
-                onBlur={clearSourceSymbolPreview}
-                onClick={(event) => {
-                  handleInsertSymbol(item.template);
-                  clearSourceSymbolPreview();
-                  const details = event.currentTarget.closest("details");
-                  if (details instanceof HTMLDetailsElement) {
-                    details.open = false;
-                  }
-                }}
-                onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
-                onPointerMove={positionSourceSymbolTooltip}
-                onPointerLeave={clearSourceSymbolPreview}
-                title={item.label}
-                type="button"
-              >
-                <span aria-hidden="true" className="source-symbol-menu__glyph">
-                  {item.glyph}
-                </span>
-                <span className="visually-hidden">{item.label}</span>
-              </button>
-            ))}
-          </div>
-        </details>
+            <span>Symbols</span>
+          </button>
+          {openToolbarMenu === "symbols" ? (
+            <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
+              {SOURCE_SYMBOL_ITEMS.map((item) => (
+                <button
+                  key={item.template}
+                  className="source-symbol-menu__item"
+                  onBlur={clearSourceSymbolPreview}
+                  onClick={() => {
+                    handleInsertSymbol(item.template);
+                    clearSourceSymbolPreview();
+                    setOpenToolbarMenu(null);
+                  }}
+                  onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
+                  onPointerMove={positionSourceSymbolTooltip}
+                  onPointerLeave={clearSourceSymbolPreview}
+                  title={item.label}
+                  type="button"
+                >
+                  <span aria-hidden="true" className="source-symbol-menu__glyph">
+                    {item.glyph}
+                  </span>
+                  <span className="visually-hidden">{item.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   ) : (
@@ -13493,10 +14060,7 @@ ${nextLine}` : nextLine;
                           ) : (
                             <button
                               className="pane__button project-github-settings-button"
-                              onClick={() => {
-                                setSettingsTab("git");
-                                setIsSettingsOpen(true);
-                              }}
+                              onClick={() => handleOpenSettingsTab("git")}
                               type="button"
                             >
                               Connect GitHub token in Settings
@@ -13678,11 +14242,1394 @@ ${nextLine}` : nextLine;
                       
   ) : null;
 
+  const renderSettingsSheet = (embedded: boolean) => (
+    <section
+      aria-label="Typr settings"
+      className={`settings-sheet ${embedded ? "settings-sheet--embedded" : ""} ${isMobileSettingsNavOpen ? "settings-sheet--mobile-nav-open" : ""}`}
+      onClick={embedded ? undefined : (event) => event.stopPropagation()}
+    >
+      <div className="settings-sheet__header">
+        <div className="settings-sheet__header-main">
+          <h2>Settings</h2>
+          <div className="settings-search-field">
+            <input
+              aria-label="Search settings"
+              onChange={(event) => setSettingsSearchQuery(event.target.value)}
+              placeholder="Search settings"
+              type="search"
+              value={settingsSearchQuery}
+            />
+            {settingsSearchQuery ? (
+              <button
+                aria-label="Clear settings search"
+                className="settings-search-field__clear"
+                onClick={() => setSettingsSearchQuery("")}
+                type="button"
+              >
+                <span aria-hidden="true" className="package-search-clear__icon" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <div className="settings-sheet__header-actions">
+          <button
+            className="pane__button"
+            onClick={() => {
+              saveCurrentSettingsScrollPosition();
+              setIsMobileSettingsNavOpen(false);
+              setIsSettingsOpen(false);
+              if (embedded) {
+                setActiveSidebarTool("files");
+              }
+            }}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+
+      <button
+        aria-expanded={isMobileSettingsNavOpen}
+        className="settings-sheet__mobile-nav-toggle"
+        onClick={() => setIsMobileSettingsNavOpen((current) => !current)}
+        type="button"
+      >
+        <span>{getSettingsTabTitle(settingsTab)}</span>
+        <span aria-hidden="true" className="settings-sheet__mobile-nav-chevron" />
+      </button>
+      <div className="settings-sheet__mobile-search">
+        <div className="settings-search-field">
+          <input
+            aria-label="Search settings"
+            onChange={(event) => setSettingsSearchQuery(event.target.value)}
+            placeholder="Search settings"
+            type="search"
+            value={settingsSearchQuery}
+          />
+          {settingsSearchQuery ? (
+            <button
+              aria-label="Clear settings search"
+              className="settings-search-field__clear"
+              onClick={() => setSettingsSearchQuery("")}
+              type="button"
+            >
+              <span aria-hidden="true" className="package-search-clear__icon" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+      <div className="settings-tabs" role="tablist" aria-label="Settings tabs">
+          <button
+            aria-selected={settingsTab === "git"}
+            className={`settings-tab ${settingsTab === "git" ? "settings-tab--active" : ""} ${
+              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("git")
+                ? "settings-tab--muted"
+                : ""
+            }`}
+            onClick={() => handleSettingsTabSelect("git")}
+            role="tab"
+            type="button"
+          >
+            Git
+          </button>
+          <button
+            aria-selected={settingsTab === "themes"}
+            className={`settings-tab ${settingsTab === "themes" ? "settings-tab--active" : ""} ${
+              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("themes")
+                ? "settings-tab--muted"
+                : ""
+            }`}
+            onClick={() => handleSettingsTabSelect("themes")}
+            role="tab"
+            type="button"
+          >
+            Themes
+          </button>
+          <button
+            aria-selected={settingsTab === "editor"}
+            className={`settings-tab ${settingsTab === "editor" ? "settings-tab--active" : ""} ${
+              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("editor")
+                ? "settings-tab--muted"
+                : ""
+            }`}
+            onClick={() => handleSettingsTabSelect("editor")}
+            role="tab"
+            type="button"
+          >
+            Editor
+          </button>
+          <button
+            aria-selected={settingsTab === "keybindings"}
+            className={`settings-tab ${settingsTab === "keybindings" ? "settings-tab--active" : ""} ${
+              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("keybindings")
+                ? "settings-tab--muted"
+                : ""
+            }`}
+            onClick={() => handleSettingsTabSelect("keybindings")}
+            role="tab"
+            type="button"
+          >
+            Keybindings
+          </button>
+          <button
+            aria-selected={settingsTab === "snippets"}
+            className={`settings-tab ${settingsTab === "snippets" ? "settings-tab--active" : ""} ${
+              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("snippets")
+                ? "settings-tab--muted"
+                : ""
+            }`}
+            onClick={() => handleSettingsTabSelect("snippets")}
+            role="tab"
+            type="button"
+          >
+            Snippets
+          </button>
+          <button
+            aria-selected={settingsTab === "packages"}
+            className={`settings-tab ${settingsTab === "packages" ? "settings-tab--active" : ""} ${
+              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("packages")
+                ? "settings-tab--muted"
+                : ""
+            }`}
+            onClick={() => handleSettingsTabSelect("packages")}
+            role="tab"
+            type="button"
+          >
+            Packages
+          </button>
+      </div>
+      <div
+        className="settings-sheet__body"
+        onScroll={handleSettingsBodyScroll}
+        ref={settingsBodyRef}
+      >
+        {settingsSearchQuery.trim() && settingsSearchMatchingTabs.length === 0 ? (
+          <div className="settings-search-empty">No matching settings.</div>
+        ) : null}
+
+        {settingsTab === "git" ? (
+          <div className="settings-panel settings-panel--git" role="tabpanel">
+            <div className="git-setup-strip git-setup-strip--token-only">
+              <a
+                aria-label="Open GitHub personal access token settings"
+                className="git-setup-step git-setup-step--link"
+                href="https://github.com/settings/personal-access-tokens/new"
+                rel="noreferrer"
+                target="_blank"
+                title="Open GitHub"
+              >
+                <span aria-hidden="true" className="git-setup-step__icon toolbar-icon toolbar-icon--github" />
+              </a>
+              <label className="sync-field git-token-field">
+                <span>Fine-grained token</span>
+                <input
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  onChange={(event) => handleGitCredentialChange(event.target.value)}
+                  placeholder="Paste token"
+                  type="password"
+                  value={selectedGitToken}
+                />
+              </label>
+              <button
+                className={`pane__button git-connect-button ${
+                  gitHubDiscovery.status === "connected" ? "pane__button--success" : ""
+                }`}
+                disabled={!selectedGitProject || gitHubDiscovery.status === "loading" || !selectedGitToken.trim()}
+                onClick={() => {
+                  void handleGitHubTokenConnectionAction();
+                }}
+                type="button"
+              >
+                {gitHubDiscovery.status === "loading"
+                  ? "Connecting..."
+                  : gitHubDiscovery.status === "connected"
+                    ? gitHubDiscovery.accountLogin
+                      ? `Connected as ${gitHubDiscovery.accountLogin}`
+                      : "Connected"
+                    : "Connect token"}
+              </button>
+            </div>
+
+            <div className="git-settings-card git-settings-card--guidance">
+              <p className="git-settings-note">
+                Use a fine-grained GitHub token with repository Contents read/write access. To create repositories from Typr, also grant Administration read/write for the selected owner. Prefer a token that expires in 30 to 90 days instead of one with no expiration.
+              </p>
+              <p className="git-settings-note">
+                Clone existing remote repositories from the Projects tab. Manage pulls, commits, pushes, and conflicts from the Sync tab.
+              </p>
+              <div className="git-permission-list">
+                <div className="git-permission-row">
+                  <span>Existing repos</span>
+                  <strong>Contents read/write</strong>
+                </div>
+                <div className="git-permission-row">
+                  <span>Create repos</span>
+                  <strong>Contents + Administration read/write</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="git-settings-card git-settings-card--advanced">
+              <div className="git-advanced-grid">
+                <label className="sync-field">
+                  <span>.gitignore</span>
+                  <textarea
+                    disabled={!selectedProjectRepository}
+                    onChange={(event) => handleProjectGitignoreChange(event.target.value)}
+                    placeholder={"*.pdf\n.env\nbuild/"}
+                    rows={6}
+                    value={projectGitignoreContent}
+                  />
+                </label>
+
+                <label className="sync-field">
+                  <span>Status ignore patterns</span>
+                  <textarea
+                    onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
+                    placeholder={"figures/\n*.pdf\nnotes/private/**"}
+                    rows={4}
+                    value={stringifyIgnorePatterns(selectedGitProject?.ignorePatterns ?? [])}
+                  />
+                </label>
+              </div>
+
+              <label className="sync-field">
+                <span>Default push message</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  onChange={(event) =>
+                    handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
+                  }
+                  placeholder="Sync from Typr"
+                  type="text"
+                  value={selectedGitProject?.commitMessageTemplate ?? ""}
+                />
+              </label>
+            </div>
+
+          </div>
+        ) : settingsTab === "themes" ? (
+          <div className="settings-panel" role="tabpanel">
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Theme</h3>
+              </div>
+
+              <div className="theme-auto-row">
+                <label
+                  className={`theme-auto-option ${
+                    snapshot.preferences.theme === AUTO_THEME_ID ? "theme-auto-option--active" : ""
+                  }`}
+                >
+                  <span>
+                    <strong>Follow system default</strong>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.theme === AUTO_THEME_ID}
+                    onChange={(event) =>
+                      setThemeMode(event.target.checked ? AUTO_THEME_ID : theme.id)
+                    }
+                    type="checkbox"
+                  />
+                </label>
+              </div>
+
+              <div className="theme-columns">
+                <section className="theme-column">
+                  <div className="theme-column__header">
+                    <h4>Light</h4>
+                  </div>
+                  <div className="theme-column__list">
+                    {lightThemes.map((themeDefinition) => (
+                      <ThemeCard
+                        key={themeDefinition.id}
+                        active={themeDefinition.id === theme.id}
+                        themeDefinition={themeDefinition}
+                        onClick={() => setThemeMode(themeDefinition.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
+
+                <section className="theme-column">
+                  <div className="theme-column__header">
+                    <h4>Dark</h4>
+                  </div>
+                  <div className="theme-column__list">
+                    {darkThemes.map((themeDefinition) => (
+                      <ThemeCard
+                        key={themeDefinition.id}
+                        active={themeDefinition.id === theme.id}
+                        themeDefinition={themeDefinition}
+                        onClick={() => setThemeMode(themeDefinition.id)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              {customThemes.length > 0 ? (
+                <section className="settings-section settings-section--nested">
+                  <div className="settings-section__header">
+                    <h3>Imported themes</h3>
+                    <span className="pane__meta">{customThemes.length}</span>
+                  </div>
+                  <div className="theme-column__list">
+                    {customThemes.map((themeDefinition) => (
+                      <div className="theme-card-shell" key={themeDefinition.id}>
+                        <ThemeCard
+                          active={themeDefinition.id === theme.id}
+                          themeDefinition={themeDefinition}
+                          onClick={() => setThemeMode(themeDefinition.id)}
+                        />
+                        <button
+                          className="theme-card__remove"
+                          onClick={() => handleRemoveCustomTheme(themeDefinition.id)}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              <section className="theme-import-card">
+                <div className="theme-import-card__copy">
+                  <h4>Import a theme</h4>
+                  <p>
+                    Upload a JSON file with <code>name</code>, <code>mode</code>, and a full
+                    <code>colors</code> palette.
+                  </p>
+                </div>
+                <div className="theme-import-card__actions">
+                  <button
+                    className="pane__button"
+                    onClick={() => themeImportInputRef.current?.click()}
+                    type="button"
+                  >
+                    Import JSON
+                  </button>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    onClick={handleDownloadThemeTemplate}
+                    type="button"
+                  >
+                    Download template
+                  </button>
+                </div>
+                {themeImportFeedback.text ? (
+                  <div
+                    className={`sync-feedback theme-import-card__feedback ${
+                      themeImportFeedback.tone === "success"
+                        ? "sync-feedback--success"
+                        : themeImportFeedback.tone === "error"
+                          ? "sync-feedback--error"
+                          : ""
+                    }`}
+                  >
+                    <span>{themeImportFeedback.text}</span>
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          </div>
+        ) : settingsTab === "editor" ? (
+          <div className="settings-panel" role="tabpanel">
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Editor</h3>
+              </div>
+
+              <div className="settings-toggle-stack">
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Live compilation (experimental)</strong>
+                    <small>
+                      Recompile the active Typst document automatically while you edit.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.liveCompilation}
+                    onChange={handleLiveCompilationToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Lint while editing</strong>
+                    <small>
+                      Show browser-available linter diagnostics in the source editor.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.editorTooling.lintOnEdit}
+                    onChange={handleLintOnEditToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Format on compile</strong>
+                    <small>
+                      Run the selected formatter before compile or Markdown preview.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.editorTooling.formatOnCompile}
+                    onChange={handleFormatOnCompileToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Relative line numbers</strong>
+                    <small>
+                      Show line numbers relative to the cursor line.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.relativeLineNumbers}
+                    onChange={handleRelativeLineNumbersToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>LaTeX math preview</strong>
+                    <small>
+                      Show an inline RaTeX preview while typing valid math in LaTeX files.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.latexMathPreview}
+                    onChange={handleLatexMathPreviewToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <div className="settings-toggle settings-toggle--stacked">
+                  <label className="settings-toggle__row">
+                    <span>
+                      <strong>Smooth cursor</strong>
+                      <small>Animate the source cursor as it moves through text.</small>
+                    </span>
+                    <input
+                      checked={snapshot.preferences.cursorSmooth}
+                      onChange={handleCursorSmoothToggle}
+                      type="checkbox"
+                    />
+                  </label>
+
+                  {snapshot.preferences.cursorSmooth ? (
+                    <label className="settings-slider settings-slider--embedded">
+                      <span>
+                        <strong>Smear cursor</strong>
+                      </span>
+                      <div className="settings-slider__control">
+                        <input
+                          max="100"
+                          min="0"
+                          onChange={handleCursorSmearChange}
+                          type="range"
+                          value={snapshot.preferences.cursorSmear}
+                        />
+                        <output>{snapshot.preferences.cursorSmear}%</output>
+                      </div>
+                    </label>
+                  ) : null}
+                </div>
+              </div>
+
+              <section className="settings-section settings-section--nested mobile-keyboard-settings">
+                <div className="settings-section__header">
+                  <h3>Mobile quick keys</h3>
+                  <span className="pane__meta">Editor footer</span>
+                </div>
+
+                <div className="settings-toggle-stack">
+                  <label className="settings-toggle">
+                    <span>
+                      <strong>Show extra keyboard row</strong>
+                      <small>Show language-specific quick keys below the mobile source editor.</small>
+                    </span>
+                    <input
+                      checked={snapshot.preferences.mobileKeyboard.enabled}
+                      onChange={handleMobileKeyboardEnabledToggle}
+                      type="checkbox"
+                    />
+                  </label>
+                </div>
+
+                <div className="mobile-keyboard-settings__list">
+                  {(["typst", "latex", "markdown"] as MobileKeyboardLanguage[]).map((language) => (
+                    <label className="sync-field mobile-keyboard-settings__field" key={language}>
+                      <span>{formatSourceLanguageLabel(language)} keys</span>
+                      <textarea
+                        onChange={(event) => handleMobileKeyboardLabelsChange(language, event.target.value)}
+                        rows={2}
+                        spellCheck={false}
+                        value={formatMobileKeyboardLabels(snapshot.preferences.mobileKeyboard.keys[language])}
+                      />
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              <section className="settings-section settings-section--nested">
+                <div className="settings-section__header">
+                  <h3>Formatters and linters</h3>
+                  <span className="pane__meta">Browser mode</span>
+                </div>
+
+                <div className="package-repository-list" role="list">
+                  {(["typst", "latex", "markdown"] as EditorToolLanguage[]).map((language) => {
+                    const languageTools = snapshot.preferences.editorTooling.languages[language];
+                    const builtInDescription =
+                      language === "typst"
+                        ? "Built-in Typst formatting and linting run offline in the browser."
+                        : language === "latex"
+                          ? "Built-in LaTeX formatting and BusyTeX-oriented linting run offline in the browser."
+                          : "Built-in Markdown formatting and linting run offline in the browser.";
+
+                    return (
+                      <article className="package-cache-row" key={language} role="listitem">
+                        <div className="package-cache-row__main">
+                          <strong>{formatEditorToolLanguageLabel(language)}</strong>
+                          <span>{builtInDescription}</span>
+                        </div>
+                        <label className="sync-field">
+                          <span>Formatter</span>
+                          <select
+                            onChange={(event) =>
+                              handleFormatterChange(language, event.target.value as EditorFormatterId)
+                            }
+                            value={languageTools.formatter}
+                          >
+                            <option value="disabled">Disabled</option>
+                            <option value="built-in">
+                              Built in
+                            </option>
+                          </select>
+                        </label>
+                        <label className="sync-field">
+                          <span>Linter</span>
+                          <select
+                            onChange={(event) =>
+                              handleLinterChange(language, event.target.value as EditorLinterId)
+                            }
+                            value={languageTools.linter}
+                          >
+                            <option value="disabled">Disabled</option>
+                            <option value="built-in">
+                              Built in
+                            </option>
+                          </select>
+                        </label>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            </div>
+          </div>
+        ) : settingsTab === "keybindings" ? (
+          <div className="settings-panel" role="tabpanel">
+            <div className="settings-section">
+              <div className="keybindings-search-field">
+                <input
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  onChange={(event) => setKeybindingSearchQuery(event.target.value)}
+                  placeholder="Search keybindings"
+                  type="search"
+                  value={keybindingSearchQuery}
+                />
+                {keybindingSearchQuery ? (
+                  <button
+                    aria-label="Clear keybinding search"
+                    className="package-search-clear"
+                    onClick={() => setKeybindingSearchQuery("")}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className="package-search-clear__icon" />
+                  </button>
+                ) : null}
+              </div>
+              <div className="keybindings-table" role="table" aria-label="Keyboard shortcuts">
+                <div className="keybindings-table__row keybindings-table__row--head" role="row">
+                  <span role="columnheader">Action</span>
+                  <span role="columnheader">Shortcut</span>
+                </div>
+                {visibleKeybindingDefinitions.map((definition, index) => {
+                  const binding = keybindings[definition.id];
+                  const conflicts = getKeybindingConflictsForBinding(
+                    keybindings,
+                    definition.id,
+                    binding
+                  );
+                  const pendingConflict =
+                    pendingKeybindingConflict?.commandId === definition.id
+                      ? pendingKeybindingConflict
+                      : null;
+                  const displayedConflictIds = pendingConflict?.conflictIds ?? conflicts;
+                  const displayedConflictBinding = pendingConflict?.binding ?? binding;
+                  const conflictLabels = displayedConflictIds
+                    .map((conflictId) => getKeybindingLabel(conflictId))
+                    .join(", ");
+                  const isRecording = recordingKeybindingId === definition.id;
+                  const isModified = binding !== definition.defaultBinding;
+                  const previousDefinition = visibleKeybindingDefinitions[index - 1];
+                  const showGroupHeader = previousDefinition?.group !== definition.group;
+
+                  return (
+                    <Fragment key={definition.id}>
+                      {showGroupHeader ? (
+                        <div className="keybindings-table__group" role="row">
+                          <span role="cell">{definition.group}</span>
+                        </div>
+                      ) : null}
+                      <div className="keybindings-table__row" role="row">
+                        <span className="keybindings-table__action" role="cell">
+                          <strong>{definition.label}</strong>
+                        </span>
+                        <div className="keybindings-table__binding" role="cell">
+                          <button
+                            className={`keybinding-recorder ${
+                              isRecording ? "keybinding-recorder--active" : ""
+                            }`}
+                            data-keybinding-recorder={definition.id}
+                            onClick={() => {
+                              setPendingKeybindingConflict(null);
+                              setRecordingKeybindingId(definition.id);
+                            }}
+                            onKeyDown={(event) => {
+                              if (!isRecording) {
+                                return;
+                              }
+
+                              event.preventDefault();
+                              event.stopPropagation();
+
+                              if (event.key === "Escape") {
+                                setRecordingKeybindingId(null);
+                                return;
+                              }
+
+                              const nextBinding = keybindingFromKeyboardEvent(
+                                event.nativeEvent,
+                                isAppleShortcutPlatform
+                              );
+                              if (!nextBinding) {
+                                return;
+                              }
+
+                              handleRecordedKeybinding(definition.id, nextBinding);
+                              setRecordingKeybindingId(null);
+                            }}
+                            type="button"
+                          >
+                            {isRecording
+                              ? "Press keys"
+                              : formatKeybinding(binding, isAppleShortcutPlatform)}
+                          </button>
+                          {isModified ? (
+                            <button
+                              aria-label={`Reset ${definition.label}`}
+                              className="pane__button pane__button--compact pane__icon-button keybinding-reset-button"
+                              onClick={() => handleKeybindingReset(definition.id)}
+                              title={`Reset to ${formatKeybinding(
+                                definition.defaultBinding,
+                                isAppleShortcutPlatform
+                              )}`}
+                              type="button"
+                            >
+                              <span aria-hidden="true" className="toolbar-icon toolbar-icon--reset" />
+                            </button>
+                          ) : null}
+                        </div>
+                        {displayedConflictIds.length > 0 ? (
+                          <div className="keybinding-conflict" role="alert">
+                            <span>
+                              <strong>
+                                {formatKeybinding(
+                                  displayedConflictBinding,
+                                  isAppleShortcutPlatform
+                                )}
+                              </strong>{" "}
+                              is already used by {conflictLabels}.
+                            </span>
+                            <div className="keybinding-conflict__actions">
+                              <button
+                                className="pane__button pane__button--compact"
+                                onClick={() =>
+                                  pendingConflict
+                                    ? handleResolvePendingKeybindingConflict()
+                                    : handleWhackKeybindingConflicts(
+                                        definition.id,
+                                        displayedConflictBinding
+                                      )
+                                }
+                                type="button"
+                              >
+                                Whack-a-mole
+                              </button>
+                              {pendingConflict ? (
+                                <button
+                                  className="pane__button pane__button--compact pane__button--quiet"
+                                  onClick={handleCancelPendingKeybindingConflict}
+                                  type="button"
+                                >
+                                  Cancel
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </Fragment>
+                  );
+                })}
+                {visibleKeybindingDefinitions.length === 0 ? (
+                  <div className="snippet-empty">No matching keybindings.</div>
+                ) : null}
+              </div>
+
+              <section className="keybindings-card">
+                <div className="keybindings-card__header">
+                  <h4>Mouse gestures</h4>
+                  <span className="pane__meta">Fixed</span>
+                </div>
+                <div className="keybindings-gesture-list">
+                  <div>
+                    <span>Insert cursor</span>
+                    <kbd>{isAppleShortcutPlatform ? "Option+Click" : "Alt+Click"}</kbd>
+                  </div>
+                  <div>
+                    <span>Rectangular selection</span>
+                    <kbd>{isAppleShortcutPlatform ? "Shift+Option+Drag" : "Shift+Alt+Drag"}</kbd>
+                  </div>
+                  <div>
+                    <span>Zoom pane under pointer</span>
+                    <kbd>{isAppleShortcutPlatform ? "Option+Scroll" : "Alt+Scroll"}</kbd>
+                  </div>
+                </div>
+              </section>
+
+              <div className="keybindings-footer">
+                <button
+                  className="pane__button pane__button--quiet"
+                  onClick={handleResetAllKeybindings}
+                  type="button"
+                >
+                  Reset all
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : settingsTab === "snippets" ? (
+          <div className="settings-panel" role="tabpanel">
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Snippets</h3>
+                <span className="pane__meta">
+                  {activeSnippetLanguageLabel} · {activeAllSnippets.length} total ·{" "}
+                  {activeCustomSnippets.length} custom
+                </span>
+              </div>
+
+              <div
+                className="snippet-language-tabs"
+                role="tablist"
+                aria-label="Snippet language"
+              >
+                {SNIPPET_LANGUAGES.map((language) => (
+                  <button
+                    aria-selected={activeSnippetLanguage === language}
+                    className={`snippet-language-tab ${
+                      activeSnippetLanguage === language ? "snippet-language-tab--active" : ""
+                    }`}
+                    key={language}
+                    onClick={() => handleSnippetLanguageChange(language)}
+                    role="tab"
+                    type="button"
+                  >
+                    {SNIPPET_LANGUAGE_LABELS[language]}
+                  </button>
+                ))}
+              </div>
+
+              <div className="snippet-columns">
+                <section className="snippet-column">
+                  <div className="snippet-column__header">
+                    <h4>Built in</h4>
+                    <span className="pane__meta">{activeDefaultSnippets.length}</span>
+                  </div>
+                  <div className="snippet-list">
+                    {activeDefaultSnippets.map((snippet) => (
+                      <article className="snippet-card" key={snippet.prefix}>
+                        <div className="snippet-card__top">
+                          <strong>{snippet.prefix}</strong>
+                          <span className="snippet-card__detail">{snippet.description}</span>
+                        </div>
+                        <code className="snippet-card__body">{snippet.body}</code>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="snippet-column">
+                  <div className="snippet-column__header">
+                    <h4>Custom</h4>
+                    <span className="pane__meta">{activeCustomSnippets.length}</span>
+                  </div>
+                  {activeCustomSnippets.length > 0 ? (
+                    <div className="snippet-list">
+                      {activeCustomSnippets.map((snippet) => (
+                        <article className="snippet-card" key={snippet.prefix}>
+                          <div className="snippet-card__top">
+                            <strong>{snippet.prefix}</strong>
+                            <button
+                              className="snippet-card__remove"
+                              onClick={() => handleRemoveCustomSnippet(snippet.prefix)}
+                              type="button"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <code className="snippet-card__body">{snippet.body}</code>
+                          {snippet.description ? (
+                            <span className="snippet-card__detail">{snippet.description}</span>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="snippet-empty">
+                      Import your own {activeSnippetLanguageLabel} snippets to extend
+                      autocomplete.
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              <section className="snippet-import-card">
+                <div className="snippet-import-card__copy">
+                  <h4>Import snippets</h4>
+                  <p>
+                    Paste JSON here or upload a file for {activeSnippetLanguageLabel}. Accepted
+                    shapes include a <code>snippets</code> array or a simple object map of{" "}
+                    <code>prefix</code> to snippet body.
+                  </p>
+                </div>
+                <textarea
+                  className="snippet-import-card__textarea"
+                  onChange={handleSnippetImportTextChange}
+                  placeholder={JSON.stringify(
+                    getSnippetImportTemplate(activeSnippetLanguage),
+                    null,
+                    2
+                  )}
+                  value={snippetImportText}
+                />
+                <div className="snippet-import-card__actions">
+                  <button
+                    className="pane__button"
+                    onClick={() => snippetImportInputRef.current?.click()}
+                    type="button"
+                  >
+                    Import JSON
+                  </button>
+                  <button
+                    className="pane__button"
+                    onClick={handleImportPastedSnippets}
+                    type="button"
+                  >
+                    Import pasted JSON
+                  </button>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    onClick={handleDownloadSnippetTemplate}
+                    type="button"
+                  >
+                    Download template
+                  </button>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    onClick={handleDownloadCustomSnippets}
+                    type="button"
+                  >
+                    Download current
+                  </button>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    onClick={handleClearCustomSnippets}
+                    type="button"
+                  >
+                    Clear custom
+                  </button>
+                </div>
+                {snippetImportFeedback.text ? (
+                  <div
+                    className={`sync-feedback snippet-import-card__feedback ${
+                      snippetImportFeedback.tone === "success"
+                        ? "sync-feedback--success"
+                        : snippetImportFeedback.tone === "error"
+                          ? "sync-feedback--error"
+                          : ""
+                    }`}
+                  >
+                    <span>{snippetImportFeedback.text}</span>
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          </div>
+        ) : settingsTab === "packages" ? (
+          <div className="settings-panel" role="tabpanel">
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Packages</h3>
+                <span className="pane__meta">
+                  {packageSettingsScope === "typst"
+                    ? `${packageCacheEntries.length} installed · ${formatByteSize(packageCacheTotalBytes)}`
+                    : `${detectedLatexPackages.length} detected · ${
+                        latexPackageBundleEntries.filter((entry) => entry.cached).length
+                      } bundles ready`}
+                </span>
+              </div>
+
+              <div className="package-scope-tabs" role="tablist" aria-label="Package type">
+                <button
+                  aria-selected={packageSettingsScope === "typst"}
+                  className={`package-scope-tab ${
+                    packageSettingsScope === "typst" ? "package-scope-tab--active" : ""
+                  }`}
+                  onClick={() => setPackageSettingsScope("typst")}
+                  role="tab"
+                  type="button"
+                >
+                  Typst
+                </button>
+                <button
+                  aria-selected={packageSettingsScope === "latex"}
+                  className={`package-scope-tab ${
+                    packageSettingsScope === "latex" ? "package-scope-tab--active" : ""
+                  }`}
+                  onClick={() => setPackageSettingsScope("latex")}
+                  role="tab"
+                  type="button"
+                >
+                  LaTeX
+                </button>
+              </div>
+
+              {packageSettingsScope === "typst" ? (
+                <>
+                  <section className="package-cache-card">
+                <div className="package-cache-card__copy">
+                  <h4>Add from Universe</h4>
+                  <p>
+                    Search Typst Universe for packages while online, then download them now so
+                    they stay available offline later.
+                  </p>
+                </div>
+                <div className="package-search-field">
+                  <input
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    className="package-search-input"
+                    disabled={!isOnline}
+                    onChange={(event) => setPackageSearchQuery(event.target.value)}
+                    placeholder={
+                      isOnline
+                        ? "Search Universe packages like cetz or oxifmt"
+                        : "Go online to search Typst Universe"
+                    }
+                    type="search"
+                    value={packageSearchQuery}
+                  />
+                  {packageSearchQuery ? (
+                    <button
+                      aria-label="Clear package search"
+                      className="package-search-clear"
+                      onClick={() => setPackageSearchQuery("")}
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="package-search-clear__icon" />
+                    </button>
+                  ) : null}
+                </div>
+                {!isOnline ? (
+                  <div className="snippet-empty">
+                    Universe search is only available while you are online.
+                  </div>
+                ) : isPackageSearchLoading ? (
+                  <div className="snippet-empty">Searching Typst Universe...</div>
+                ) : filteredRepositoryPackages.length > 0 ? (
+                  <div className="package-repository-list" role="list">
+                    {visibleRepositoryPackages.map((entry) => (
+                      <article className="package-cache-row" key={entry.name} role="listitem">
+                        <div className="package-cache-row__main">
+                          <strong>
+                            <a
+                              className="package-cache-row__link"
+                              href={`https://typst.app/universe/package/${entry.name}/`}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              @{entry.namespace}/{entry.name}
+                            </a>
+                          </strong>
+                          <span>
+                            v{entry.version}
+                            {entry.description ? ` · ${entry.description}` : ""}
+                          </span>
+                        </div>
+                        <button
+                          className="pane__button"
+                          disabled={
+                            !isOnline ||
+                            installingPackageName === entry.name ||
+                            installedPackageKeys.has(`${entry.namespace}/${entry.name}:${entry.version}`)
+                          }
+                          onClick={() => {
+                            void handleInstallTypstPackage(entry);
+                          }}
+                          type="button"
+                        >
+                          {installingPackageName === entry.name
+                            ? "Installing..."
+                            : installedPackageKeys.has(
+                                  `${entry.namespace}/${entry.name}:${entry.version}`
+                                )
+                              ? "Installed"
+                              : "Install"}
+                        </button>
+                      </article>
+                    ))}
+                    {filteredRepositoryPackages.length > visibleRepositoryPackages.length ? (
+                      <button
+                        className="pane__button pane__button--quiet package-repository-list__more"
+                        onClick={() =>
+                          setPackageSearchVisibleCount((currentCount) => currentCount + 5)
+                        }
+                        type="button"
+                      >
+                        Show more...
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="snippet-empty">
+                    {packageSearchQuery.trim()
+                      ? "No matching packages found on Typst Universe."
+                      : "Start typing to search Typst Universe packages."}
+                  </div>
+                )}
+              </section>
+
+              <section className="package-cache-card">
+                <div className="package-cache-card__copy">
+                  <h4>Offline package storage</h4>
+                  <p>
+                    Cached Typst packages stay available offline and are reused until you
+                    remove them here.
+                  </p>
+                </div>
+                <div className="package-cache-card__actions">
+                  <button
+                    className="pane__button"
+                    onClick={() => {
+                      void refreshTypstPackageCache();
+                    }}
+                    type="button"
+                  >
+                    {isPackageCacheLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <button
+                    className="pane__button pane__button--quiet"
+                    disabled={packageCacheEntries.length === 0 || isPackageCacheClearing}
+                    onClick={() => {
+                      void handleClearTypstPackages();
+                    }}
+                    type="button"
+                  >
+                    {isPackageCacheClearing ? "Clearing..." : "Clear cache"}
+                  </button>
+                </div>
+                {packageCacheFeedback.text ? (
+                  <div
+                    className={`sync-feedback package-cache-card__feedback ${
+                      packageCacheFeedback.tone === "success"
+                        ? "sync-feedback--success"
+                        : packageCacheFeedback.tone === "error"
+                          ? "sync-feedback--error"
+                          : ""
+                    }`}
+                  >
+                    <span>{packageCacheFeedback.text}</span>
+                  </div>
+                ) : null}
+              </section>
+
+              {isPackageCacheLoading && packageCacheEntries.length === 0 ? (
+                <div className="snippet-empty">Loading cached packages...</div>
+              ) : packageCacheEntries.length > 0 ? (
+                <div className="package-cache-list" role="list">
+                  {packageCacheEntries.map((entry) => (
+                    <article className="package-cache-row" key={entry.reference.key} role="listitem">
+                      <div className="package-cache-row__main">
+                        <strong>{entry.reference.key}</strong>
+                        <span>{formatByteSize(entry.sizeBytes)}</span>
+                      </div>
+                      <button
+                        className="pane__button pane__button--quiet"
+                        onClick={() => {
+                          void handleRemoveTypstPackage(entry);
+                        }}
+                        type="button"
+                      >
+                        Remove
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="snippet-empty">
+                  No Typst packages are cached yet. Import a package in a document to install
+                  it here.
+                </div>
+              )}
+                </>
+              ) : (
+                <>
+                  <section className="package-cache-card">
+                    <div className="package-cache-card__copy">
+                      <h4>Manual download</h4>
+                      <p>
+                        Search LaTeX package names from the local BusyTeX catalog, then cache the
+                        TeX Live bundle that contains them.
+                      </p>
+                    </div>
+                    <div className="package-search-field">
+                      <input
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        className="package-search-input"
+                        onChange={(event) => setLatexPackageSearchQuery(event.target.value)}
+                        placeholder="Search LaTeX packages like amsmath or tikz"
+                        type="search"
+                        value={latexPackageSearchQuery}
+                      />
+                      {latexPackageSearchQuery ? (
+                        <button
+                          aria-label="Clear package search"
+                          className="package-search-clear"
+                          onClick={() => setLatexPackageSearchQuery("")}
+                          type="button"
+                        >
+                          <span aria-hidden="true" className="package-search-clear__icon" />
+                        </button>
+                      ) : null}
+                    </div>
+                    {isLatexPackageCacheLoading && !latexPackageCatalog ? (
+                      <div className="snippet-empty">Loading LaTeX package catalog...</div>
+                    ) : latexPackageSearchResults.length > 0 ? (
+                      <div className="package-repository-list" role="list">
+                        {latexPackageSearchResults.map((entry) =>
+                          renderLatexPackageResolutionRow(entry, `search-${entry.name}`)
+                        )}
+                      </div>
+                    ) : (
+                      <div className="snippet-empty">
+                        {latexPackageSearchQuery.trim()
+                          ? "No matching LaTeX packages found in the bundled catalog."
+                          : "Start typing to find the bundle for a LaTeX package."}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="package-cache-card">
+                    <div className="package-cache-card__copy">
+                      <h4>Used in project</h4>
+                      <p>
+                        Packages from LaTeX source files appear here automatically. Uncached
+                        entries can be downloaded from their row.
+                      </p>
+                    </div>
+                    {detectedLatexPackages.length > 0 ? (
+                      <div className="package-cache-list" role="list">
+                        {uncachedDetectedLatexPackages.map((entry) =>
+                          renderLatexPackageResolutionRow(entry, `detected-missing-${entry.name}`)
+                        )}
+                        {detectedLatexPackages
+                          .filter(
+                            (entry) =>
+                              !uncachedDetectedLatexPackages.some(
+                                (missingEntry) => missingEntry.name === entry.name
+                              )
+                          )
+                          .map((entry) =>
+                            renderLatexPackageResolutionRow(entry, `detected-cached-${entry.name}`)
+                          )}
+                      </div>
+                    ) : (
+                      <div className="snippet-empty">
+                        No LaTeX packages have been detected in this project yet.
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="package-cache-card">
+                    <div className="package-cache-card__copy">
+                      <h4>Manual extra packages</h4>
+                      <p>Extra packages cached from search.</p>
+                    </div>
+                    {manualExtraLatexPackages.length > 0 ? (
+                      <div className="package-cache-list" role="list">
+                        {manualExtraLatexPackages.map((entry) => (
+                          <article className="package-cache-row" key={entry.name} role="listitem">
+                            <div className="package-cache-row__main">
+                              <strong>{entry.name}</strong>
+                              <span>{formatLatexPackageBundleLabel("texlive-extra")}</span>
+                            </div>
+                            <button
+                              className="pane__button pane__button--quiet"
+                              onClick={() => handleRemoveCachedLatexPackage(entry.name)}
+                              type="button"
+                            >
+                              Remove
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="snippet-empty">
+                        No manually cached extra packages.
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="package-cache-card">
+                    <div className="package-cache-card__copy">
+                      <h4>TeX Live bundle storage</h4>
+                      <p>
+                        BusyTeX downloads LaTeX packages as grouped TeX Live data bundles. Basic
+                        is loaded by default; Recommended and Extra can be cached manually.
+                      </p>
+                    </div>
+                    <div className="package-cache-card__actions">
+                      <button
+                        className="pane__button"
+                        onClick={() => {
+                          void refreshLatexPackageCache();
+                        }}
+                        type="button"
+                      >
+                        {isLatexPackageCacheLoading ? "Refreshing..." : "Refresh"}
+                      </button>
+                      <button
+                        className="pane__button pane__button--quiet"
+                        disabled={
+                          isLatexPackageCacheClearing ||
+                          latexPackageBundleEntries.every((entry) => entry.defaultLoaded || !entry.cached)
+                        }
+                        onClick={() => {
+                          void handleClearLatexBundles();
+                        }}
+                        type="button"
+                      >
+                        {isLatexPackageCacheClearing ? "Clearing..." : "Clear cache"}
+                      </button>
+                    </div>
+                    {latexPackageFeedback.text ? (
+                      <div
+                        className={`sync-feedback package-cache-card__feedback ${
+                          latexPackageFeedback.tone === "success"
+                            ? "sync-feedback--success"
+                            : latexPackageFeedback.tone === "error"
+                              ? "sync-feedback--error"
+                              : ""
+                        }`}
+                      >
+                        <span>{latexPackageFeedback.text}</span>
+                      </div>
+                    ) : null}
+                    {isLatexPackageCacheLoading && latexPackageBundleEntries.length === 0 ? (
+                      <div className="snippet-empty">Loading LaTeX package bundles...</div>
+                    ) : (
+                      <div className="package-cache-list" role="list">
+                        {latexPackageBundleEntries.map((entry) => (
+                          <article className="package-cache-row" key={entry.id} role="listitem">
+                            <div className="package-cache-row__main">
+                              <strong>{entry.label}</strong>
+                              <span>
+                                {entry.packageCount.toLocaleString()} packages ·{" "}
+                                {entry.sizeBytes > 0
+                                  ? formatByteSize(entry.sizeBytes)
+                                  : "size unavailable"}{" "}
+                                ·{" "}
+                                {entry.defaultLoaded
+                                  ? "Loaded by default"
+                                  : entry.cached
+                                    ? "Cached"
+                                    : "Not cached"}
+                              </span>
+                            </div>
+                            {entry.defaultLoaded ? (
+                              <span className="package-cache-row__badge">Default</span>
+                            ) : entry.cached ? (
+                              <button
+                                className="pane__button pane__button--quiet"
+                                disabled={installingLatexBundleId === entry.id}
+                                onClick={() => {
+                                  void handleRemoveLatexBundle(entry.id);
+                                }}
+                                type="button"
+                              >
+                                Remove
+                              </button>
+                            ) : (
+                              <button
+                                className="pane__button"
+                                disabled={installingLatexBundleId === entry.id}
+                                onClick={() => {
+                                  void handleCacheLatexBundle(entry.id);
+                                }}
+                                type="button"
+                              >
+                                {installingLatexBundleId === entry.id ? "Caching..." : "Cache"}
+                              </button>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+    </section>
+  );
+
   return (
-    <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""}`}>
+    <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""}`}>
       <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""} ${
         isZenMode ? "workspace-shell--zen" : ""
-      }`}>
+      } ${isMobileEditorFullscreen ? "workspace-shell--editor-fullscreen" : ""}`}>
       {isMobileWorkspace || isZenMode ? null : (
         <aside className="activity-bar" aria-label="Sidebar tools">
           <div className="activity-bar__scroll">
@@ -13703,7 +15650,7 @@ ${nextLine}` : nextLine;
                 >
                   <span
                     aria-hidden="true"
-                    className={`activity-icon activity-icon--${tool.id}`}
+                    className={`activity-icon activity-icon--${tool.id === "docs" ? "help" : tool.id}`}
                   />
                   {tool.id === "debug" && lastBuildFailed ? <span className="activity-status-badge" aria-hidden="true" /> : null}
                   <span className="visually-hidden">{tool.label}</span>
@@ -13753,10 +15700,7 @@ ${nextLine}` : nextLine;
             <button
               aria-label="Settings"
               className="activity-bar__button"
-              onClick={() => {
-                setIsSettingsOpen(true);
-                setActiveMenu(null);
-              }}
+              onClick={handleOpenSettings}
               title="Settings"
               type="button"
             >
@@ -13771,7 +15715,7 @@ ${nextLine}` : nextLine;
       <main
         className={`workspace workspace--triple workspace--${workspaceMode} ${
           isMobileWorkspace ? "workspace--mobile" : ""
-        }`}
+        } ${isMobileEditorFullscreen ? "workspace--editor-fullscreen" : ""}`}
         ref={workspaceRef}
         style={workspaceGridStyle}
       >
@@ -13783,18 +15727,18 @@ ${nextLine}` : nextLine;
                 className={`workspace-mobile-tab ${
                   mobileWorkspaceTab === "files" ? "workspace-mobile-tab--active" : ""
                 }`}
-                onClick={() => setMobileWorkspaceTab("files")}
+                onClick={() => handleMobileWorkspaceTabChange("files")}
                 role="tab"
                 type="button"
               >
-                Files
+                <span className="workspace-mobile-tab__label">{mobileSidebarTabLabel}</span>
               </button>
               <button
                 aria-selected={mobileWorkspaceTab === "editor"}
                 className={`workspace-mobile-tab ${
                   mobileWorkspaceTab === "editor" ? "workspace-mobile-tab--active" : ""
                 }`}
-                onClick={() => setMobileWorkspaceTab("editor")}
+                onClick={() => handleMobileWorkspaceTabChange("editor")}
                 role="tab"
                 type="button"
               >
@@ -13805,7 +15749,7 @@ ${nextLine}` : nextLine;
                 className={`workspace-mobile-tab ${
                   mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
                 }`}
-                onClick={() => setMobileWorkspaceTab("preview")}
+                onClick={() => handleMobileWorkspaceTabChange("preview")}
                 role="tab"
                 type="button"
               >
@@ -13814,7 +15758,7 @@ ${nextLine}` : nextLine;
             </div>
             {mobileWorkspaceTab === "files" ? (
               <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
-                {SIDEBAR_TOOLS.map((tool) => (
+                {MOBILE_SIDEBAR_TOOLS.map((tool) => (
                   <button
                     key={tool.id}
                     aria-label={tool.label}
@@ -13824,41 +15768,28 @@ ${nextLine}` : nextLine;
                         ? "activity-bar__button--active"
                         : ""
                     }`}
-                    onClick={() => handleOpenSidebarTool(tool.id)}
+                    onClick={() => {
+                      if (tool.id === "docs") {
+                        handleOpenTyprDocs();
+                      } else if (tool.id === "settings") {
+                        handleOpenSettings();
+                      } else {
+                        handleOpenSidebarTool(tool.id);
+                      }
+                    }}
                     title={tool.label}
                     type="button"
                   >
                     <span
                       aria-hidden="true"
-                      className={`activity-icon activity-icon--${tool.id}`}
-                    />
+                      className={`activity-icon activity-icon--${tool.id === "docs" ? "help" : tool.id}`}
+                    >
+                      {tool.id === "docs" ? "?" : null}
+                    </span>
                     {tool.id === "debug" && lastBuildFailed ? <span className="activity-status-badge" aria-hidden="true" /> : null}
                     <span className="visually-hidden">{tool.label}</span>
                   </button>
                 ))}
-                <button
-                  aria-label="Docs"
-                  className="activity-bar__button"
-                  onClick={handleOpenTyprDocs}
-                  title="Docs"
-                  type="button"
-                >
-                  <span aria-hidden="true" className="activity-icon activity-icon--help">?</span>
-                  <span className="visually-hidden">Docs</span>
-                </button>
-                <button
-                  aria-label="Settings"
-                  className="activity-bar__button"
-                  onClick={() => {
-                    setIsSettingsOpen(true);
-                    setActiveMenu(null);
-                  }}
-                  title="Settings"
-                  type="button"
-                >
-                  <span aria-hidden="true" className="activity-icon activity-icon--settings" />
-                  <span className="visually-hidden">Settings</span>
-                </button>
               </div>
             ) : null}
           </>
@@ -13915,7 +15846,11 @@ ${nextLine}` : nextLine;
               </div>
 
               {activeSidebarTool === "projects" ? (
-                <section className="sidebar-section sidebar-section--scrollable sidebar-section--projects">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--projects"
+                  onScroll={handleLeftPaneScroll}
+                >
                   <div className="project-manager">
                     <div className="project-manager__actions project-manager__actions--primary">
                       <button
@@ -14014,13 +15949,18 @@ ${nextLine}` : nextLine;
                   </div>
                 </section>
               ) : activeSidebarTool === "source-tools" ? (
-                <section className="sidebar-section sidebar-section--scrollable sidebar-section--source-tools">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--source-tools"
+                  onScroll={handleLeftPaneScroll}
+                >
                   {sourceToolsPanel}
                 </section>
               ) : activeSidebarTool === "files" ? (
                 <section
                   ref={filesSectionRef}
                   className="sidebar-section sidebar-section--scrollable sidebar-section--files"
+                  onScroll={handleLeftPaneScroll}
                 >
                   {!isTrashViewOpen && filesGitConflictNotice ? (
                     <div className="files-git-notice">
@@ -14227,8 +16167,32 @@ ${nextLine}` : nextLine;
                 </section>
               ) : null}
 
+              {activeSidebarTool === "docs" ? (
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--embedded-docs"
+                  onScroll={handleLeftPaneScroll}
+                >
+                  <DocsPanel embedded />
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "settings" && isSettingsOpen ? (
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--embedded-settings"
+                  onScroll={handleLeftPaneScroll}
+                >
+                  {renderSettingsSheet(true)}
+                </section>
+              ) : null}
+
               {activeSidebarTool === "search" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable"
+                  onScroll={handleLeftPaneScroll}
+                >
                   <div className="sidebar-search-panel">
                     <div className="sidebar-search-panel__row">
                       <label className="sync-field sidebar-search-panel__field">
@@ -14348,7 +16312,11 @@ ${nextLine}` : nextLine;
               ) : null}
 
               {activeSidebarTool === "outline" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable"
+                  onScroll={handleLeftPaneScroll}
+                >
                   {outlineEntries.length > 0 ? (
                     <div className="outline-list" role="list">
                       {renderOutlineEntries(
@@ -14369,7 +16337,11 @@ ${nextLine}` : nextLine;
               ) : null}
 
               {activeSidebarTool === "mitex" ? (
-                <section className="sidebar-section sidebar-section--scrollable sidebar-section--mitex">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--mitex"
+                  onScroll={handleLeftPaneScroll}
+                >
                   <MitexPanel
                     canInsert={isSourceFileEditable}
                     compiler={compiler}
@@ -14382,9 +16354,11 @@ ${nextLine}` : nextLine;
 
               {activeSidebarTool === "diagram" ? (
                 <section
+                  ref={filesSectionRef}
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
                     isDiagramInlineExpanded ? "sidebar-section--pane-expanded" : ""
                   }`}
+                  onScroll={handleLeftPaneScroll}
                 >
                   <DiagramEditorErrorBoundary>
                     <DiagramEditor
@@ -14432,9 +16406,11 @@ ${nextLine}` : nextLine;
 
               {activeSidebarTool === "graph" ? (
                 <section
+                  ref={filesSectionRef}
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
                     isGraphInlineExpanded ? "sidebar-section--pane-expanded" : ""
                   }`}
+                  onScroll={handleLeftPaneScroll}
                 >
                   <GraphEditorErrorBoundary>
                     <GraphEditor
@@ -14462,11 +16438,13 @@ ${nextLine}` : nextLine;
 
               {activeSidebarTool === "sync" ? (
                 <section
+                  ref={filesSectionRef}
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--sync ${
                     activeMergeState ? "sidebar-section--git-merge" : ""
                   } ${
                     isGitMergeInlineExpanded ? "sidebar-section--pane-expanded" : ""
                   }`}
+                  onScroll={handleLeftPaneScroll}
                 >
                   <div className="sync-stack">
                     <div className="sidebar-card">
@@ -14509,10 +16487,7 @@ ${nextLine}` : nextLine;
                       <div className="sidebar-card__actions">
                         <button
                           className="pane__button pane__button--compact"
-                          onClick={() => {
-                            setSettingsTab("git");
-                            setIsSettingsOpen(true);
-                          }}
+                          onClick={() => handleOpenSettingsTab("git")}
                           type="button"
                         >
                           Settings
@@ -15013,7 +16988,11 @@ ${nextLine}` : nextLine;
               ) : null}
 
               {activeSidebarTool === "debug" ? (
-                <section className="sidebar-section sidebar-section--scrollable">
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable"
+                  onScroll={handleLeftPaneScroll}
+                >
                   <div className="sync-stack debug-stack">
                     <details className="sidebar-card debug-section" open>
                       <summary className="debug-section__summary">
@@ -15261,6 +17240,28 @@ ${nextLine}` : nextLine;
                                   <span>{formatDurationMs(timing.durationMs)}</span>
                                 </li>
                               ))}
+                              {compileResult.metadata.synctexFiles ? (
+                                <li>
+                                  <span>Generated SyncTeX files</span>
+                                  <span>
+                                    {compileResult.metadata.synctexFiles.length > 0
+                                      ? compileResult.metadata.synctexFiles
+                                          .map((file) => file.path + " (" + formatByteSize(file.size) + ")")
+                                          .join(", ")
+                                      : "none"}
+                                  </span>
+                                </li>
+                              ) : null}
+                              {compileResult?.ok && compileResult.output.kind === "pdf" ? (
+                                <li>
+                                  <span>SyncTeX artifact</span>
+                                  <span>
+                                    {compileResult.output.sourceMapData?.length
+                                      ? formatByteSize(compileResult.output.sourceMapData.length)
+                                      : "missing"}
+                                  </span>
+                                </li>
+                              ) : null}
                               {compileResult.metadata.fileSync ? (
                                 <li>
                                   <span>Worker file cache</span>
@@ -15401,6 +17402,18 @@ ${nextLine}` : nextLine;
           data-zoom-pane="source"
           aria-label="Source editor"
         >
+          {isMobileEditorFullscreen ? (
+            <button
+              aria-label="Close full screen"
+              className="editor-fullscreen-exit pane__button pane__button--compact pane__icon-button"
+              onClick={() => setIsEditorFullscreen(false)}
+              title="Close full screen"
+              type="button"
+            >
+              <span aria-hidden="true" className="toolbar-icon toolbar-icon--minimize" />
+              <span className="visually-hidden">Close full screen</span>
+            </button>
+          ) : null}
           {isZenMode ? null : (
             <>
               <div className="pane__header">
@@ -15408,6 +17421,18 @@ ${nextLine}` : nextLine;
                   <h2>Source</h2>
                 </div>
                 <div className="pane__header-actions">
+                  {isMobileWorkspace ? (
+                    <button
+                      aria-label="Full screen"
+                      className="pane__button pane__button--compact pane__icon-button"
+                      onClick={() => setIsEditorFullscreen(true)}
+                      title="Full screen"
+                      type="button"
+                    >
+                      <span aria-hidden="true" className="toolbar-icon toolbar-icon--maximize" />
+                      <span className="visually-hidden">Full screen</span>
+                    </button>
+                  ) : null}
                   {showSourceCompileButton && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
                     <button
                       className="pane__button pane__button--compact"
@@ -15452,17 +17477,41 @@ ${nextLine}` : nextLine;
                 onCloseRequested={handleCloseActiveSourceTab}
                 onSearchRequested={openSearchPane}
                 onSelectionChange={setCurrentEditorLineNumber}
+                onSourceDoubleClick={handleEditorSourceDoubleClick}
+                onFocusChange={setIsEditorFocused}
                 value={sourceEditorValue}
                 vimMode={snapshot.preferences.vimMode}
                 editorFontSize={snapshot.preferences.editorFontSize}
                 keybindings={keybindings}
                 relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
-                cursorSmooth={snapshot.preferences.cursorSmooth}
-                cursorSmear={snapshot.preferences.cursorSmear}
+                cursorSmooth={!isMobileWorkspace && snapshot.preferences.cursorSmooth}
+                cursorSmear={isMobileWorkspace ? 0 : snapshot.preferences.cursorSmear}
                 latexMathPreview={snapshot.preferences.latexMathPreview}
+                constrainMobileScroll={isMobileWorkspace}
                 theme={theme}
                 onChange={handleDocumentChange}
               />
+              {snapshot.preferences.mobileKeyboard.enabled && isMobileWorkspace && isEditorFocused && mobileWorkspaceTab === "editor" && mobileKeyboardKeys.length > 0 ? (
+                <div className="mobile-keyboard-extension" aria-label={`${formatSourceLanguageLabel(activeSourceLanguage)} quick keys`}>
+                  <div className="mobile-keyboard-extension__label">
+                    {formatSourceLanguageLabel(activeSourceLanguage)}
+                  </div>
+                  <div className="mobile-keyboard-extension__keys" role="toolbar" aria-label="Mobile editor quick keys">
+                    {mobileKeyboardKeys.map((key) => (
+                      <button
+                        className="mobile-keyboard-extension__key"
+                        key={`${key.label}-${key.title}`}
+                        onClick={() => handleMobileKeyboardKey(key)}
+                        onPointerDown={(event) => event.preventDefault()}
+                        title={key.title}
+                        type="button"
+                      >
+                        {key.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               <TerminalDrawer
                 isOpen={isTerminalOpen}
                 onClose={() => setIsTerminalOpen(false)}
@@ -15546,13 +17595,19 @@ ${nextLine}` : nextLine;
             <div className="pane__header-group">
               <h2>Preview</h2>
             </div>
-            <div className="pane__header-center">
+            <div className="pane__header-center pane__header-center--preview-zoom">
               <PreviewZoomControls
                 onZoomChange={setPreviewZoom}
                 zoom={previewZoom}
               />
             </div>
             <div className="pane__header-actions">
+              <div className="pane__header-mobile-zoom">
+                <PreviewZoomControls
+                  onZoomChange={setPreviewZoom}
+                  zoom={previewZoom}
+                />
+              </div>
               {visiblePreviewIsCompiling ? (
                 <span className="pane__meta pane__meta--status">
                   <PreviewStatusIcon kind="compiling" label={visiblePreviewCompilerStatus.label} />
@@ -15620,6 +17675,7 @@ ${nextLine}` : nextLine;
           <PreviewPane
             activeSource={activePreviewSourcePosition}
             compilerStatus={visiblePreviewCompilerStatus}
+            forwardSearchSource={previewForwardSearchSource}
             isErrorSettled={isErrorSettled}
             isCompiling={visiblePreviewIsCompiling}
             lastSuccessfulResult={visibleLastSuccessfulResult}
@@ -15630,7 +17686,7 @@ ${nextLine}` : nextLine;
             onZoomChange={setPreviewZoom}
             result={visiblePreviewResult}
             sourceLineCount={activePreviewSourceLineCount}
-            sourcePath={activePreviewPath ?? undefined}
+            sourcePath={activePreviewCompileSourcePath ?? activePreviewPath ?? undefined}
             workspacePreview={visibleWorkspacePreview}
             zoom={previewZoom}
           />
@@ -15668,6 +17724,7 @@ ${nextLine}` : nextLine;
             <PreviewPane
               activeSource={activePreviewSourcePosition}
               compilerStatus={visiblePreviewCompilerStatus}
+              forwardSearchSource={previewForwardSearchSource}
               isErrorSettled={isErrorSettled}
               isCompiling={visiblePreviewIsCompiling}
               lastSuccessfulResult={visibleLastSuccessfulResult}
@@ -15678,7 +17735,7 @@ ${nextLine}` : nextLine;
               onZoomChange={setPreviewZoom}
               result={visiblePreviewResult}
               sourceLineCount={activePreviewSourceLineCount}
-              sourcePath={activePreviewPath ?? undefined}
+              sourcePath={activePreviewCompileSourcePath ?? activePreviewPath ?? undefined}
               workspacePreview={visibleWorkspacePreview}
               zoom={previewZoom}
             />
@@ -15688,7 +17745,7 @@ ${nextLine}` : nextLine;
 
       {isDocsOpen ? <DocsModal onClose={() => setIsDocsOpen(false)} /> : null}
 
-      {isSettingsOpen ? (
+      {isSettingsOpen && !(isMobileWorkspace && activeSidebarTool === "settings") ? (
         <div
           className="sheet-backdrop"
           onClick={() => {
@@ -15697,1319 +17754,10 @@ ${nextLine}` : nextLine;
           }}
           role="presentation"
         >
-          <section
-            aria-label="Typr settings"
-            className="settings-sheet"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="settings-sheet__header">
-              <div className="settings-sheet__header-main">
-                <h2>Settings</h2>
-                <div className="settings-search-field">
-                  <input
-                    aria-label="Search settings"
-                    onChange={(event) => setSettingsSearchQuery(event.target.value)}
-                    placeholder="Search settings"
-                    type="search"
-                    value={settingsSearchQuery}
-                  />
-                  {settingsSearchQuery ? (
-                    <button
-                      aria-label="Clear settings search"
-                      className="settings-search-field__clear"
-                      onClick={() => setSettingsSearchQuery("")}
-                      type="button"
-                    >
-                      <span aria-hidden="true" className="package-search-clear__icon" />
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              <div className="settings-sheet__header-actions">
-                <button
-                  className="pane__button"
-                  onClick={() => {
-                    saveCurrentSettingsScrollPosition();
-                    setIsSettingsOpen(false);
-                  }}
-                  type="button"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-
-            <div
-              className="settings-sheet__body"
-              onScroll={handleSettingsBodyScroll}
-              ref={settingsBodyRef}
-            >
-              <div className="settings-tabs" role="tablist" aria-label="Settings tabs">
-                <button
-                  aria-selected={settingsTab === "git"}
-                  className={`settings-tab ${settingsTab === "git" ? "settings-tab--active" : ""} ${
-                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("git")
-                      ? "settings-tab--muted"
-                      : ""
-                  }`}
-                  onClick={() => handleSettingsTabChange("git")}
-                  role="tab"
-                  type="button"
-                >
-                  Git
-                </button>
-                <button
-                  aria-selected={settingsTab === "themes"}
-                  className={`settings-tab ${settingsTab === "themes" ? "settings-tab--active" : ""} ${
-                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("themes")
-                      ? "settings-tab--muted"
-                      : ""
-                  }`}
-                  onClick={() => handleSettingsTabChange("themes")}
-                  role="tab"
-                  type="button"
-                >
-                  Themes
-                </button>
-                <button
-                  aria-selected={settingsTab === "editor"}
-                  className={`settings-tab ${settingsTab === "editor" ? "settings-tab--active" : ""} ${
-                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("editor")
-                      ? "settings-tab--muted"
-                      : ""
-                  }`}
-                  onClick={() => handleSettingsTabChange("editor")}
-                  role="tab"
-                  type="button"
-                >
-                  Editor
-                </button>
-                <button
-                  aria-selected={settingsTab === "keybindings"}
-                  className={`settings-tab ${settingsTab === "keybindings" ? "settings-tab--active" : ""} ${
-                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("keybindings")
-                      ? "settings-tab--muted"
-                      : ""
-                  }`}
-                  onClick={() => handleSettingsTabChange("keybindings")}
-                  role="tab"
-                  type="button"
-                >
-                  Keybindings
-                </button>
-                <button
-                  aria-selected={settingsTab === "snippets"}
-                  className={`settings-tab ${settingsTab === "snippets" ? "settings-tab--active" : ""} ${
-                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("snippets")
-                      ? "settings-tab--muted"
-                      : ""
-                  }`}
-                  onClick={() => handleSettingsTabChange("snippets")}
-                  role="tab"
-                  type="button"
-                >
-                  Snippets
-                </button>
-                <button
-                  aria-selected={settingsTab === "packages"}
-                  className={`settings-tab ${settingsTab === "packages" ? "settings-tab--active" : ""} ${
-                    settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("packages")
-                      ? "settings-tab--muted"
-                      : ""
-                  }`}
-                  onClick={() => handleSettingsTabChange("packages")}
-                  role="tab"
-                  type="button"
-                >
-                  Packages
-                </button>
-              </div>
-              {settingsSearchQuery.trim() && settingsSearchMatchingTabs.length === 0 ? (
-                <div className="settings-search-empty">No matching settings.</div>
-              ) : null}
-
-              {settingsTab === "git" ? (
-                <div className="settings-panel settings-panel--git" role="tabpanel">
-                  <div className="git-setup-strip git-setup-strip--token-only">
-                    <a
-                      aria-label="Open GitHub personal access token settings"
-                      className="git-setup-step git-setup-step--link"
-                      href="https://github.com/settings/personal-access-tokens/new"
-                      rel="noreferrer"
-                      target="_blank"
-                      title="Open GitHub"
-                    >
-                      <span aria-hidden="true" className="git-setup-step__icon toolbar-icon toolbar-icon--github" />
-                    </a>
-                    <label className="sync-field git-token-field">
-                      <span>Fine-grained token</span>
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) => handleGitCredentialChange(event.target.value)}
-                        placeholder="Paste token"
-                        type="password"
-                        value={selectedGitToken}
-                      />
-                    </label>
-                    <button
-                      className={`pane__button git-connect-button ${
-                        gitHubDiscovery.status === "connected" ? "pane__button--success" : ""
-                      }`}
-                      disabled={!selectedGitProject || gitHubDiscovery.status === "loading" || !selectedGitToken.trim()}
-                      onClick={() => {
-                        void handleGitHubTokenConnectionAction();
-                      }}
-                      type="button"
-                    >
-                      {gitHubDiscovery.status === "loading"
-                        ? "Connecting..."
-                        : gitHubDiscovery.status === "connected"
-                          ? gitHubDiscovery.accountLogin
-                            ? `Connected as ${gitHubDiscovery.accountLogin}`
-                            : "Connected"
-                          : "Connect token"}
-                    </button>
-                  </div>
-
-                  <div className="git-settings-card git-settings-card--guidance">
-                    <p className="git-settings-note">
-                      Use a fine-grained GitHub token with repository Contents read/write access. To create repositories from Typr, also grant Administration read/write for the selected owner. Prefer a token that expires in 30 to 90 days instead of one with no expiration.
-                    </p>
-                    <p className="git-settings-note">
-                      Clone existing remote repositories from the Projects tab. Manage pulls, commits, pushes, and conflicts from the Sync tab.
-                    </p>
-                    <div className="git-permission-list">
-                      <div className="git-permission-row">
-                        <span>Existing repos</span>
-                        <strong>Contents read/write</strong>
-                      </div>
-                      <div className="git-permission-row">
-                        <span>Create repos</span>
-                        <strong>Contents + Administration read/write</strong>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="git-settings-card git-settings-card--advanced">
-                    <div className="git-advanced-grid">
-                      <label className="sync-field">
-                        <span>.gitignore</span>
-                        <textarea
-                          disabled={!selectedProjectRepository}
-                          onChange={(event) => handleProjectGitignoreChange(event.target.value)}
-                          placeholder={"*.pdf\n.env\nbuild/"}
-                          rows={6}
-                          value={projectGitignoreContent}
-                        />
-                      </label>
-
-                      <label className="sync-field">
-                        <span>Status ignore patterns</span>
-                        <textarea
-                          onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
-                          placeholder={"figures/\n*.pdf\nnotes/private/**"}
-                          rows={4}
-                          value={stringifyIgnorePatterns(selectedGitProject?.ignorePatterns ?? [])}
-                        />
-                      </label>
-                    </div>
-
-                    <label className="sync-field">
-                      <span>Default push message</span>
-                      <input
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        onChange={(event) =>
-                          handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
-                        }
-                        placeholder="Sync from Typr"
-                        type="text"
-                        value={selectedGitProject?.commitMessageTemplate ?? ""}
-                      />
-                    </label>
-                  </div>
-
-                </div>
-              ) : settingsTab === "themes" ? (
-                <div className="settings-panel" role="tabpanel">
-                  <div className="settings-section">
-                    <div className="settings-section__header">
-                      <h3>Theme</h3>
-                    </div>
-
-                    <div className="theme-auto-row">
-                      <label
-                        className={`theme-auto-option ${
-                          snapshot.preferences.theme === AUTO_THEME_ID ? "theme-auto-option--active" : ""
-                        }`}
-                      >
-                        <span>
-                          <strong>Follow system default</strong>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.theme === AUTO_THEME_ID}
-                          onChange={(event) =>
-                            setThemeMode(event.target.checked ? AUTO_THEME_ID : theme.id)
-                          }
-                          type="checkbox"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="theme-columns">
-                      <section className="theme-column">
-                        <div className="theme-column__header">
-                          <h4>Light</h4>
-                        </div>
-                        <div className="theme-column__list">
-                          {lightThemes.map((themeDefinition) => (
-                            <ThemeCard
-                              key={themeDefinition.id}
-                              active={themeDefinition.id === theme.id}
-                              themeDefinition={themeDefinition}
-                              onClick={() => setThemeMode(themeDefinition.id)}
-                            />
-                          ))}
-                        </div>
-                      </section>
-
-                      <section className="theme-column">
-                        <div className="theme-column__header">
-                          <h4>Dark</h4>
-                        </div>
-                        <div className="theme-column__list">
-                          {darkThemes.map((themeDefinition) => (
-                            <ThemeCard
-                              key={themeDefinition.id}
-                              active={themeDefinition.id === theme.id}
-                              themeDefinition={themeDefinition}
-                              onClick={() => setThemeMode(themeDefinition.id)}
-                            />
-                          ))}
-                        </div>
-                      </section>
-                    </div>
-
-                    {customThemes.length > 0 ? (
-                      <section className="settings-section settings-section--nested">
-                        <div className="settings-section__header">
-                          <h3>Imported themes</h3>
-                          <span className="pane__meta">{customThemes.length}</span>
-                        </div>
-                        <div className="theme-column__list">
-                          {customThemes.map((themeDefinition) => (
-                            <div className="theme-card-shell" key={themeDefinition.id}>
-                              <ThemeCard
-                                active={themeDefinition.id === theme.id}
-                                themeDefinition={themeDefinition}
-                                onClick={() => setThemeMode(themeDefinition.id)}
-                              />
-                              <button
-                                className="theme-card__remove"
-                                onClick={() => handleRemoveCustomTheme(themeDefinition.id)}
-                                type="button"
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </section>
-                    ) : null}
-
-                    <section className="theme-import-card">
-                      <div className="theme-import-card__copy">
-                        <h4>Import a theme</h4>
-                        <p>
-                          Upload a JSON file with <code>name</code>, <code>mode</code>, and a full
-                          <code>colors</code> palette.
-                        </p>
-                      </div>
-                      <div className="theme-import-card__actions">
-                        <button
-                          className="pane__button"
-                          onClick={() => themeImportInputRef.current?.click()}
-                          type="button"
-                        >
-                          Import JSON
-                        </button>
-                        <button
-                          className="pane__button pane__button--quiet"
-                          onClick={handleDownloadThemeTemplate}
-                          type="button"
-                        >
-                          Download template
-                        </button>
-                      </div>
-                      {themeImportFeedback.text ? (
-                        <div
-                          className={`sync-feedback theme-import-card__feedback ${
-                            themeImportFeedback.tone === "success"
-                              ? "sync-feedback--success"
-                              : themeImportFeedback.tone === "error"
-                                ? "sync-feedback--error"
-                                : ""
-                          }`}
-                        >
-                          <span>{themeImportFeedback.text}</span>
-                        </div>
-                      ) : null}
-                    </section>
-                  </div>
-                </div>
-              ) : settingsTab === "editor" ? (
-                <div className="settings-panel" role="tabpanel">
-                  <div className="settings-section">
-                    <div className="settings-section__header">
-                      <h3>Editor</h3>
-                    </div>
-
-                    <div className="settings-toggle-stack">
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>Live compilation (experimental)</strong>
-                          <small>
-                            Recompile the active Typst document automatically while you edit.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.liveCompilation}
-                          onChange={handleLiveCompilationToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>Lint while editing</strong>
-                          <small>
-                            Show browser-available linter diagnostics in the source editor.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.editorTooling.lintOnEdit}
-                          onChange={handleLintOnEditToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>Format on compile</strong>
-                          <small>
-                            Run the selected formatter before compile or Markdown preview.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.editorTooling.formatOnCompile}
-                          onChange={handleFormatOnCompileToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>Relative line numbers</strong>
-                          <small>
-                            Show line numbers relative to the cursor line.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.relativeLineNumbers}
-                          onChange={handleRelativeLineNumbersToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <label className="settings-toggle">
-                        <span>
-                          <strong>LaTeX math preview</strong>
-                          <small>
-                            Show an inline RaTeX preview while typing valid math in LaTeX files.
-                          </small>
-                        </span>
-                        <input
-                          checked={snapshot.preferences.latexMathPreview}
-                          onChange={handleLatexMathPreviewToggle}
-                          type="checkbox"
-                        />
-                      </label>
-
-                      <div className="settings-toggle settings-toggle--stacked">
-                        <label className="settings-toggle__row">
-                          <span>
-                            <strong>Smooth cursor</strong>
-                            <small>Animate the source cursor as it moves through text.</small>
-                          </span>
-                          <input
-                            checked={snapshot.preferences.cursorSmooth}
-                            onChange={handleCursorSmoothToggle}
-                            type="checkbox"
-                          />
-                        </label>
-
-                        {snapshot.preferences.cursorSmooth ? (
-                          <label className="settings-slider settings-slider--embedded">
-                            <span>
-                              <strong>Smear cursor</strong>
-                            </span>
-                            <div className="settings-slider__control">
-                              <input
-                                max="100"
-                                min="0"
-                                onChange={handleCursorSmearChange}
-                                type="range"
-                                value={snapshot.preferences.cursorSmear}
-                              />
-                              <output>{snapshot.preferences.cursorSmear}%</output>
-                            </div>
-                          </label>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <section className="settings-section settings-section--nested">
-                      <div className="settings-section__header">
-                        <h3>Formatters and linters</h3>
-                        <span className="pane__meta">Browser mode</span>
-                      </div>
-
-                      <div className="package-repository-list" role="list">
-                        {(["typst", "latex", "markdown"] as EditorToolLanguage[]).map((language) => {
-                          const languageTools = snapshot.preferences.editorTooling.languages[language];
-                          const builtInDescription =
-                            language === "typst"
-                              ? "Built-in Typst formatting and linting run offline in the browser."
-                              : language === "latex"
-                                ? "Built-in LaTeX formatting and BusyTeX-oriented linting run offline in the browser."
-                                : "Built-in Markdown formatting and linting run offline in the browser.";
-
-                          return (
-                            <article className="package-cache-row" key={language} role="listitem">
-                              <div className="package-cache-row__main">
-                                <strong>{formatEditorToolLanguageLabel(language)}</strong>
-                                <span>{builtInDescription}</span>
-                              </div>
-                              <label className="sync-field">
-                                <span>Formatter</span>
-                                <select
-                                  onChange={(event) =>
-                                    handleFormatterChange(language, event.target.value as EditorFormatterId)
-                                  }
-                                  value={languageTools.formatter}
-                                >
-                                  <option value="disabled">Disabled</option>
-                                  <option value="built-in">
-                                    Built in
-                                  </option>
-                                </select>
-                              </label>
-                              <label className="sync-field">
-                                <span>Linter</span>
-                                <select
-                                  onChange={(event) =>
-                                    handleLinterChange(language, event.target.value as EditorLinterId)
-                                  }
-                                  value={languageTools.linter}
-                                >
-                                  <option value="disabled">Disabled</option>
-                                  <option value="built-in">
-                                    Built in
-                                  </option>
-                                </select>
-                              </label>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    </section>
-                  </div>
-                </div>
-              ) : settingsTab === "keybindings" ? (
-                <div className="settings-panel" role="tabpanel">
-                  <div className="settings-section">
-                    <div className="keybindings-search-field">
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        onChange={(event) => setKeybindingSearchQuery(event.target.value)}
-                        placeholder="Search keybindings"
-                        type="search"
-                        value={keybindingSearchQuery}
-                      />
-                      {keybindingSearchQuery ? (
-                        <button
-                          aria-label="Clear keybinding search"
-                          className="package-search-clear"
-                          onClick={() => setKeybindingSearchQuery("")}
-                          type="button"
-                        >
-                          <span aria-hidden="true" className="package-search-clear__icon" />
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="keybindings-table" role="table" aria-label="Keyboard shortcuts">
-                      <div className="keybindings-table__row keybindings-table__row--head" role="row">
-                        <span role="columnheader">Action</span>
-                        <span role="columnheader">Shortcut</span>
-                      </div>
-                      {visibleKeybindingDefinitions.map((definition, index) => {
-                        const binding = keybindings[definition.id];
-                        const conflicts = getKeybindingConflictsForBinding(
-                          keybindings,
-                          definition.id,
-                          binding
-                        );
-                        const pendingConflict =
-                          pendingKeybindingConflict?.commandId === definition.id
-                            ? pendingKeybindingConflict
-                            : null;
-                        const displayedConflictIds = pendingConflict?.conflictIds ?? conflicts;
-                        const displayedConflictBinding = pendingConflict?.binding ?? binding;
-                        const conflictLabels = displayedConflictIds
-                          .map((conflictId) => getKeybindingLabel(conflictId))
-                          .join(", ");
-                        const isRecording = recordingKeybindingId === definition.id;
-                        const isModified = binding !== definition.defaultBinding;
-                        const previousDefinition = visibleKeybindingDefinitions[index - 1];
-                        const showGroupHeader = previousDefinition?.group !== definition.group;
-
-                        return (
-                          <Fragment key={definition.id}>
-                            {showGroupHeader ? (
-                              <div className="keybindings-table__group" role="row">
-                                <span role="cell">{definition.group}</span>
-                              </div>
-                            ) : null}
-                            <div className="keybindings-table__row" role="row">
-                              <span className="keybindings-table__action" role="cell">
-                                <strong>{definition.label}</strong>
-                              </span>
-                              <div className="keybindings-table__binding" role="cell">
-                                <button
-                                  className={`keybinding-recorder ${
-                                    isRecording ? "keybinding-recorder--active" : ""
-                                  }`}
-                                  data-keybinding-recorder={definition.id}
-                                  onClick={() => {
-                                    setPendingKeybindingConflict(null);
-                                    setRecordingKeybindingId(definition.id);
-                                  }}
-                                  onKeyDown={(event) => {
-                                    if (!isRecording) {
-                                      return;
-                                    }
-
-                                    event.preventDefault();
-                                    event.stopPropagation();
-
-                                    if (event.key === "Escape") {
-                                      setRecordingKeybindingId(null);
-                                      return;
-                                    }
-
-                                    const nextBinding = keybindingFromKeyboardEvent(
-                                      event.nativeEvent,
-                                      isAppleShortcutPlatform
-                                    );
-                                    if (!nextBinding) {
-                                      return;
-                                    }
-
-                                    handleRecordedKeybinding(definition.id, nextBinding);
-                                    setRecordingKeybindingId(null);
-                                  }}
-                                  type="button"
-                                >
-                                  {isRecording
-                                    ? "Press keys"
-                                    : formatKeybinding(binding, isAppleShortcutPlatform)}
-                                </button>
-                                {isModified ? (
-                                  <button
-                                    aria-label={`Reset ${definition.label}`}
-                                    className="pane__button pane__button--compact pane__icon-button keybinding-reset-button"
-                                    onClick={() => handleKeybindingReset(definition.id)}
-                                    title={`Reset to ${formatKeybinding(
-                                      definition.defaultBinding,
-                                      isAppleShortcutPlatform
-                                    )}`}
-                                    type="button"
-                                  >
-                                    <span aria-hidden="true" className="toolbar-icon toolbar-icon--reset" />
-                                  </button>
-                                ) : null}
-                              </div>
-                              {displayedConflictIds.length > 0 ? (
-                                <div className="keybinding-conflict" role="alert">
-                                  <span>
-                                    <strong>
-                                      {formatKeybinding(
-                                        displayedConflictBinding,
-                                        isAppleShortcutPlatform
-                                      )}
-                                    </strong>{" "}
-                                    is already used by {conflictLabels}.
-                                  </span>
-                                  <div className="keybinding-conflict__actions">
-                                    <button
-                                      className="pane__button pane__button--compact"
-                                      onClick={() =>
-                                        pendingConflict
-                                          ? handleResolvePendingKeybindingConflict()
-                                          : handleWhackKeybindingConflicts(
-                                              definition.id,
-                                              displayedConflictBinding
-                                            )
-                                      }
-                                      type="button"
-                                    >
-                                      Whack-a-mole
-                                    </button>
-                                    {pendingConflict ? (
-                                      <button
-                                        className="pane__button pane__button--compact pane__button--quiet"
-                                        onClick={handleCancelPendingKeybindingConflict}
-                                        type="button"
-                                      >
-                                        Cancel
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              ) : null}
-                            </div>
-                          </Fragment>
-                        );
-                      })}
-                      {visibleKeybindingDefinitions.length === 0 ? (
-                        <div className="snippet-empty">No matching keybindings.</div>
-                      ) : null}
-                    </div>
-
-                    <section className="keybindings-card">
-                      <div className="keybindings-card__header">
-                        <h4>Mouse gestures</h4>
-                        <span className="pane__meta">Fixed</span>
-                      </div>
-                      <div className="keybindings-gesture-list">
-                        <div>
-                          <span>Insert cursor</span>
-                          <kbd>{isAppleShortcutPlatform ? "Option+Click" : "Alt+Click"}</kbd>
-                        </div>
-                        <div>
-                          <span>Rectangular selection</span>
-                          <kbd>{isAppleShortcutPlatform ? "Shift+Option+Drag" : "Shift+Alt+Drag"}</kbd>
-                        </div>
-                        <div>
-                          <span>Zoom pane under pointer</span>
-                          <kbd>{isAppleShortcutPlatform ? "Option+Scroll" : "Alt+Scroll"}</kbd>
-                        </div>
-                      </div>
-                    </section>
-
-                    <div className="keybindings-footer">
-                      <button
-                        className="pane__button pane__button--quiet"
-                        onClick={handleResetAllKeybindings}
-                        type="button"
-                      >
-                        Reset all
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : settingsTab === "snippets" ? (
-                <div className="settings-panel" role="tabpanel">
-                  <div className="settings-section">
-                    <div className="settings-section__header">
-                      <h3>Snippets</h3>
-                      <span className="pane__meta">
-                        {activeSnippetLanguageLabel} · {activeAllSnippets.length} total ·{" "}
-                        {activeCustomSnippets.length} custom
-                      </span>
-                    </div>
-
-                    <div
-                      className="snippet-language-tabs"
-                      role="tablist"
-                      aria-label="Snippet language"
-                    >
-                      {SNIPPET_LANGUAGES.map((language) => (
-                        <button
-                          aria-selected={activeSnippetLanguage === language}
-                          className={`snippet-language-tab ${
-                            activeSnippetLanguage === language ? "snippet-language-tab--active" : ""
-                          }`}
-                          key={language}
-                          onClick={() => handleSnippetLanguageChange(language)}
-                          role="tab"
-                          type="button"
-                        >
-                          {SNIPPET_LANGUAGE_LABELS[language]}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="snippet-columns">
-                      <section className="snippet-column">
-                        <div className="snippet-column__header">
-                          <h4>Built in</h4>
-                          <span className="pane__meta">{activeDefaultSnippets.length}</span>
-                        </div>
-                        <div className="snippet-list">
-                          {activeDefaultSnippets.map((snippet) => (
-                            <article className="snippet-card" key={snippet.prefix}>
-                              <div className="snippet-card__top">
-                                <strong>{snippet.prefix}</strong>
-                                <span className="snippet-card__detail">{snippet.description}</span>
-                              </div>
-                              <code className="snippet-card__body">{snippet.body}</code>
-                            </article>
-                          ))}
-                        </div>
-                      </section>
-
-                      <section className="snippet-column">
-                        <div className="snippet-column__header">
-                          <h4>Custom</h4>
-                          <span className="pane__meta">{activeCustomSnippets.length}</span>
-                        </div>
-                        {activeCustomSnippets.length > 0 ? (
-                          <div className="snippet-list">
-                            {activeCustomSnippets.map((snippet) => (
-                              <article className="snippet-card" key={snippet.prefix}>
-                                <div className="snippet-card__top">
-                                  <strong>{snippet.prefix}</strong>
-                                  <button
-                                    className="snippet-card__remove"
-                                    onClick={() => handleRemoveCustomSnippet(snippet.prefix)}
-                                    type="button"
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                                <code className="snippet-card__body">{snippet.body}</code>
-                                {snippet.description ? (
-                                  <span className="snippet-card__detail">{snippet.description}</span>
-                                ) : null}
-                              </article>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="snippet-empty">
-                            Import your own {activeSnippetLanguageLabel} snippets to extend
-                            autocomplete.
-                          </div>
-                        )}
-                      </section>
-                    </div>
-
-                    <section className="snippet-import-card">
-                      <div className="snippet-import-card__copy">
-                        <h4>Import snippets</h4>
-                        <p>
-                          Paste JSON here or upload a file for {activeSnippetLanguageLabel}. Accepted
-                          shapes include a <code>snippets</code> array or a simple object map of{" "}
-                          <code>prefix</code> to snippet body.
-                        </p>
-                      </div>
-                      <textarea
-                        className="snippet-import-card__textarea"
-                        onChange={handleSnippetImportTextChange}
-                        placeholder={JSON.stringify(
-                          getSnippetImportTemplate(activeSnippetLanguage),
-                          null,
-                          2
-                        )}
-                        value={snippetImportText}
-                      />
-                      <div className="snippet-import-card__actions">
-                        <button
-                          className="pane__button"
-                          onClick={() => snippetImportInputRef.current?.click()}
-                          type="button"
-                        >
-                          Import JSON
-                        </button>
-                        <button
-                          className="pane__button"
-                          onClick={handleImportPastedSnippets}
-                          type="button"
-                        >
-                          Import pasted JSON
-                        </button>
-                        <button
-                          className="pane__button pane__button--quiet"
-                          onClick={handleDownloadSnippetTemplate}
-                          type="button"
-                        >
-                          Download template
-                        </button>
-                        <button
-                          className="pane__button pane__button--quiet"
-                          onClick={handleDownloadCustomSnippets}
-                          type="button"
-                        >
-                          Download current
-                        </button>
-                        <button
-                          className="pane__button pane__button--quiet"
-                          onClick={handleClearCustomSnippets}
-                          type="button"
-                        >
-                          Clear custom
-                        </button>
-                      </div>
-                      {snippetImportFeedback.text ? (
-                        <div
-                          className={`sync-feedback snippet-import-card__feedback ${
-                            snippetImportFeedback.tone === "success"
-                              ? "sync-feedback--success"
-                              : snippetImportFeedback.tone === "error"
-                                ? "sync-feedback--error"
-                                : ""
-                          }`}
-                        >
-                          <span>{snippetImportFeedback.text}</span>
-                        </div>
-                      ) : null}
-                    </section>
-                  </div>
-                </div>
-              ) : settingsTab === "packages" ? (
-                <div className="settings-panel" role="tabpanel">
-                  <div className="settings-section">
-                    <div className="settings-section__header">
-                      <h3>Packages</h3>
-                      <span className="pane__meta">
-                        {packageSettingsScope === "typst"
-                          ? `${packageCacheEntries.length} installed · ${formatByteSize(packageCacheTotalBytes)}`
-                          : `${detectedLatexPackages.length} detected · ${
-                              latexPackageBundleEntries.filter((entry) => entry.cached).length
-                            } bundles ready`}
-                      </span>
-                    </div>
-
-                    <div className="package-scope-tabs" role="tablist" aria-label="Package type">
-                      <button
-                        aria-selected={packageSettingsScope === "typst"}
-                        className={`package-scope-tab ${
-                          packageSettingsScope === "typst" ? "package-scope-tab--active" : ""
-                        }`}
-                        onClick={() => setPackageSettingsScope("typst")}
-                        role="tab"
-                        type="button"
-                      >
-                        Typst
-                      </button>
-                      <button
-                        aria-selected={packageSettingsScope === "latex"}
-                        className={`package-scope-tab ${
-                          packageSettingsScope === "latex" ? "package-scope-tab--active" : ""
-                        }`}
-                        onClick={() => setPackageSettingsScope("latex")}
-                        role="tab"
-                        type="button"
-                      >
-                        LaTeX
-                      </button>
-                    </div>
-
-                    {packageSettingsScope === "typst" ? (
-                      <>
-                        <section className="package-cache-card">
-                      <div className="package-cache-card__copy">
-                        <h4>Add from Universe</h4>
-                        <p>
-                          Search Typst Universe for packages while online, then download them now so
-                          they stay available offline later.
-                        </p>
-                      </div>
-                      <div className="package-search-field">
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          className="package-search-input"
-                          disabled={!isOnline}
-                          onChange={(event) => setPackageSearchQuery(event.target.value)}
-                          placeholder={
-                            isOnline
-                              ? "Search Universe packages like cetz or oxifmt"
-                              : "Go online to search Typst Universe"
-                          }
-                          type="search"
-                          value={packageSearchQuery}
-                        />
-                        {packageSearchQuery ? (
-                          <button
-                            aria-label="Clear package search"
-                            className="package-search-clear"
-                            onClick={() => setPackageSearchQuery("")}
-                            type="button"
-                          >
-                            <span aria-hidden="true" className="package-search-clear__icon" />
-                          </button>
-                        ) : null}
-                      </div>
-                      {!isOnline ? (
-                        <div className="snippet-empty">
-                          Universe search is only available while you are online.
-                        </div>
-                      ) : isPackageSearchLoading ? (
-                        <div className="snippet-empty">Searching Typst Universe...</div>
-                      ) : filteredRepositoryPackages.length > 0 ? (
-                        <div className="package-repository-list" role="list">
-                          {visibleRepositoryPackages.map((entry) => (
-                            <article className="package-cache-row" key={entry.name} role="listitem">
-                              <div className="package-cache-row__main">
-                                <strong>
-                                  <a
-                                    className="package-cache-row__link"
-                                    href={`https://typst.app/universe/package/${entry.name}/`}
-                                    rel="noreferrer"
-                                    target="_blank"
-                                  >
-                                    @{entry.namespace}/{entry.name}
-                                  </a>
-                                </strong>
-                                <span>
-                                  v{entry.version}
-                                  {entry.description ? ` · ${entry.description}` : ""}
-                                </span>
-                              </div>
-                              <button
-                                className="pane__button"
-                                disabled={
-                                  !isOnline ||
-                                  installingPackageName === entry.name ||
-                                  installedPackageKeys.has(`${entry.namespace}/${entry.name}:${entry.version}`)
-                                }
-                                onClick={() => {
-                                  void handleInstallTypstPackage(entry);
-                                }}
-                                type="button"
-                              >
-                                {installingPackageName === entry.name
-                                  ? "Installing..."
-                                  : installedPackageKeys.has(
-                                        `${entry.namespace}/${entry.name}:${entry.version}`
-                                      )
-                                    ? "Installed"
-                                    : "Install"}
-                              </button>
-                            </article>
-                          ))}
-                          {filteredRepositoryPackages.length > visibleRepositoryPackages.length ? (
-                            <button
-                              className="pane__button pane__button--quiet package-repository-list__more"
-                              onClick={() =>
-                                setPackageSearchVisibleCount((currentCount) => currentCount + 5)
-                              }
-                              type="button"
-                            >
-                              Show more...
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <div className="snippet-empty">
-                          {packageSearchQuery.trim()
-                            ? "No matching packages found on Typst Universe."
-                            : "Start typing to search Typst Universe packages."}
-                        </div>
-                      )}
-                    </section>
-
-                    <section className="package-cache-card">
-                      <div className="package-cache-card__copy">
-                        <h4>Offline package storage</h4>
-                        <p>
-                          Cached Typst packages stay available offline and are reused until you
-                          remove them here.
-                        </p>
-                      </div>
-                      <div className="package-cache-card__actions">
-                        <button
-                          className="pane__button"
-                          onClick={() => {
-                            void refreshTypstPackageCache();
-                          }}
-                          type="button"
-                        >
-                          {isPackageCacheLoading ? "Refreshing..." : "Refresh"}
-                        </button>
-                        <button
-                          className="pane__button pane__button--quiet"
-                          disabled={packageCacheEntries.length === 0 || isPackageCacheClearing}
-                          onClick={() => {
-                            void handleClearTypstPackages();
-                          }}
-                          type="button"
-                        >
-                          {isPackageCacheClearing ? "Clearing..." : "Clear cache"}
-                        </button>
-                      </div>
-                      {packageCacheFeedback.text ? (
-                        <div
-                          className={`sync-feedback package-cache-card__feedback ${
-                            packageCacheFeedback.tone === "success"
-                              ? "sync-feedback--success"
-                              : packageCacheFeedback.tone === "error"
-                                ? "sync-feedback--error"
-                                : ""
-                          }`}
-                        >
-                          <span>{packageCacheFeedback.text}</span>
-                        </div>
-                      ) : null}
-                    </section>
-
-                    {isPackageCacheLoading && packageCacheEntries.length === 0 ? (
-                      <div className="snippet-empty">Loading cached packages...</div>
-                    ) : packageCacheEntries.length > 0 ? (
-                      <div className="package-cache-list" role="list">
-                        {packageCacheEntries.map((entry) => (
-                          <article className="package-cache-row" key={entry.reference.key} role="listitem">
-                            <div className="package-cache-row__main">
-                              <strong>{entry.reference.key}</strong>
-                              <span>{formatByteSize(entry.sizeBytes)}</span>
-                            </div>
-                            <button
-                              className="pane__button pane__button--quiet"
-                              onClick={() => {
-                                void handleRemoveTypstPackage(entry);
-                              }}
-                              type="button"
-                            >
-                              Remove
-                            </button>
-                          </article>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="snippet-empty">
-                        No Typst packages are cached yet. Import a package in a document to install
-                        it here.
-                      </div>
-                    )}
-                      </>
-                    ) : (
-                      <>
-                        <section className="package-cache-card">
-                          <div className="package-cache-card__copy">
-                            <h4>Manual download</h4>
-                            <p>
-                              Search LaTeX package names from the local BusyTeX catalog, then cache the
-                              TeX Live bundle that contains them.
-                            </p>
-                          </div>
-                          <div className="package-search-field">
-                            <input
-                              autoCapitalize="none"
-                              autoCorrect="off"
-                              className="package-search-input"
-                              onChange={(event) => setLatexPackageSearchQuery(event.target.value)}
-                              placeholder="Search LaTeX packages like amsmath or tikz"
-                              type="search"
-                              value={latexPackageSearchQuery}
-                            />
-                            {latexPackageSearchQuery ? (
-                              <button
-                                aria-label="Clear package search"
-                                className="package-search-clear"
-                                onClick={() => setLatexPackageSearchQuery("")}
-                                type="button"
-                              >
-                                <span aria-hidden="true" className="package-search-clear__icon" />
-                              </button>
-                            ) : null}
-                          </div>
-                          {isLatexPackageCacheLoading && !latexPackageCatalog ? (
-                            <div className="snippet-empty">Loading LaTeX package catalog...</div>
-                          ) : latexPackageSearchResults.length > 0 ? (
-                            <div className="package-repository-list" role="list">
-                              {latexPackageSearchResults.map((entry) =>
-                                renderLatexPackageResolutionRow(entry, `search-${entry.name}`)
-                              )}
-                            </div>
-                          ) : (
-                            <div className="snippet-empty">
-                              {latexPackageSearchQuery.trim()
-                                ? "No matching LaTeX packages found in the bundled catalog."
-                                : "Start typing to find the bundle for a LaTeX package."}
-                            </div>
-                          )}
-                        </section>
-
-                        <section className="package-cache-card">
-                          <div className="package-cache-card__copy">
-                            <h4>Used in project</h4>
-                            <p>
-                              Packages from LaTeX source files appear here automatically. Uncached
-                              entries can be downloaded from their row.
-                            </p>
-                          </div>
-                          {detectedLatexPackages.length > 0 ? (
-                            <div className="package-cache-list" role="list">
-                              {uncachedDetectedLatexPackages.map((entry) =>
-                                renderLatexPackageResolutionRow(entry, `detected-missing-${entry.name}`)
-                              )}
-                              {detectedLatexPackages
-                                .filter(
-                                  (entry) =>
-                                    !uncachedDetectedLatexPackages.some(
-                                      (missingEntry) => missingEntry.name === entry.name
-                                    )
-                                )
-                                .map((entry) =>
-                                  renderLatexPackageResolutionRow(entry, `detected-cached-${entry.name}`)
-                                )}
-                            </div>
-                          ) : (
-                            <div className="snippet-empty">
-                              No LaTeX packages have been detected in this project yet.
-                            </div>
-                          )}
-                        </section>
-
-                        <section className="package-cache-card">
-                          <div className="package-cache-card__copy">
-                            <h4>Manual extra packages</h4>
-                            <p>Extra packages cached from search.</p>
-                          </div>
-                          {manualExtraLatexPackages.length > 0 ? (
-                            <div className="package-cache-list" role="list">
-                              {manualExtraLatexPackages.map((entry) => (
-                                <article className="package-cache-row" key={entry.name} role="listitem">
-                                  <div className="package-cache-row__main">
-                                    <strong>{entry.name}</strong>
-                                    <span>{formatLatexPackageBundleLabel("texlive-extra")}</span>
-                                  </div>
-                                  <button
-                                    className="pane__button pane__button--quiet"
-                                    onClick={() => handleRemoveCachedLatexPackage(entry.name)}
-                                    type="button"
-                                  >
-                                    Remove
-                                  </button>
-                                </article>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="snippet-empty">
-                              No manually cached extra packages.
-                            </div>
-                          )}
-                        </section>
-
-                        <section className="package-cache-card">
-                          <div className="package-cache-card__copy">
-                            <h4>TeX Live bundle storage</h4>
-                            <p>
-                              BusyTeX downloads LaTeX packages as grouped TeX Live data bundles. Basic
-                              is loaded by default; Recommended and Extra can be cached manually.
-                            </p>
-                          </div>
-                          <div className="package-cache-card__actions">
-                            <button
-                              className="pane__button"
-                              onClick={() => {
-                                void refreshLatexPackageCache();
-                              }}
-                              type="button"
-                            >
-                              {isLatexPackageCacheLoading ? "Refreshing..." : "Refresh"}
-                            </button>
-                            <button
-                              className="pane__button pane__button--quiet"
-                              disabled={
-                                isLatexPackageCacheClearing ||
-                                latexPackageBundleEntries.every((entry) => entry.defaultLoaded || !entry.cached)
-                              }
-                              onClick={() => {
-                                void handleClearLatexBundles();
-                              }}
-                              type="button"
-                            >
-                              {isLatexPackageCacheClearing ? "Clearing..." : "Clear cache"}
-                            </button>
-                          </div>
-                          {latexPackageFeedback.text ? (
-                            <div
-                              className={`sync-feedback package-cache-card__feedback ${
-                                latexPackageFeedback.tone === "success"
-                                  ? "sync-feedback--success"
-                                  : latexPackageFeedback.tone === "error"
-                                    ? "sync-feedback--error"
-                                    : ""
-                              }`}
-                            >
-                              <span>{latexPackageFeedback.text}</span>
-                            </div>
-                          ) : null}
-                          {isLatexPackageCacheLoading && latexPackageBundleEntries.length === 0 ? (
-                            <div className="snippet-empty">Loading LaTeX package bundles...</div>
-                          ) : (
-                            <div className="package-cache-list" role="list">
-                              {latexPackageBundleEntries.map((entry) => (
-                                <article className="package-cache-row" key={entry.id} role="listitem">
-                                  <div className="package-cache-row__main">
-                                    <strong>{entry.label}</strong>
-                                    <span>
-                                      {entry.packageCount.toLocaleString()} packages ·{" "}
-                                      {entry.sizeBytes > 0
-                                        ? formatByteSize(entry.sizeBytes)
-                                        : "size unavailable"}{" "}
-                                      ·{" "}
-                                      {entry.defaultLoaded
-                                        ? "Loaded by default"
-                                        : entry.cached
-                                          ? "Cached"
-                                          : "Not cached"}
-                                    </span>
-                                  </div>
-                                  {entry.defaultLoaded ? (
-                                    <span className="package-cache-row__badge">Default</span>
-                                  ) : entry.cached ? (
-                                    <button
-                                      className="pane__button pane__button--quiet"
-                                      disabled={installingLatexBundleId === entry.id}
-                                      onClick={() => {
-                                        void handleRemoveLatexBundle(entry.id);
-                                      }}
-                                      type="button"
-                                    >
-                                      Remove
-                                    </button>
-                                  ) : (
-                                    <button
-                                      className="pane__button"
-                                      disabled={installingLatexBundleId === entry.id}
-                                      onClick={() => {
-                                        void handleCacheLatexBundle(entry.id);
-                                      }}
-                                      type="button"
-                                    >
-                                      {installingLatexBundleId === entry.id ? "Caching..." : "Cache"}
-                                    </button>
-                                  )}
-                                </article>
-                              ))}
-                            </div>
-                          )}
-                        </section>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-          </section>
+          {renderSettingsSheet(false)}
         </div>
       ) : null}
+
       <input
         ref={documentUploadInputRef}
         accept={WORKSPACE_UPLOAD_ACCEPT}
@@ -17342,12 +18090,20 @@ function loadSavedLatexPdfCompileResult(
       artifactData:
         typeof pdfEntry.content === "string"
           ? new TextEncoder().encode(pdfEntry.content)
-          : new Uint8Array(pdfEntry.content)
+          : new Uint8Array(pdfEntry.content),
+      sourceMapData: readSavedLatexSynctexBytes(options.project, options.sourcePath)
     },
     metadata: {
       timings: [{ label: "Load saved PDF", durationMs: 0 }]
     }
   } satisfies CompileResult;
+}
+
+function readSavedLatexSynctexBytes(
+  project: TyprProjectRepository,
+  sourcePath: string
+): Uint8Array | undefined {
+  return readProjectFileBytes(project, getLatexSynctexOutputPath(sourcePath)) ?? undefined;
 }
 
 function writeGeneratedLatexPdfFile(
@@ -17367,11 +18123,32 @@ function writeGeneratedLatexPdfFile(
   const pdfBytes =
     existingBytes && areBytesEqual(existingBytes, nextBytes) ? existingBytes : nextBytes;
 
-  return writeProjectFile(
+  const projectWithPdf = writeProjectFile(
     project,
     pdfPath,
     pdfBytes,
     { kind: "virtual", id: GENERATED_LATEX_PDF_SOURCE_ID }
+  );
+
+  if (!result.output.sourceMapData || result.output.sourceMapData.length === 0) {
+    return projectWithPdf;
+  }
+
+  const synctexPath = getLatexSynctexOutputPath(
+    getLatexPdfSourcePathForResult(sourcePath, result)
+  );
+  const existingSynctexBytes = readProjectFileBytes(projectWithPdf, synctexPath);
+  const nextSynctexBytes = new Uint8Array(result.output.sourceMapData);
+  const synctexBytes =
+    existingSynctexBytes && areBytesEqual(existingSynctexBytes, nextSynctexBytes)
+      ? existingSynctexBytes
+      : nextSynctexBytes;
+
+  return writeProjectFile(
+    projectWithPdf,
+    synctexPath,
+    synctexBytes,
+    { kind: "virtual", id: GENERATED_LATEX_SYNCTEX_SOURCE_ID }
   );
 }
 
@@ -17439,6 +18216,16 @@ function getLatexPdfOutputPath(sourcePath: string): string {
   return `${normalizedSourcePath}.pdf`;
 }
 
+function getLatexSynctexOutputPath(sourcePath: string): string {
+  const normalizedSourcePath = normalizeCompilerPath(sourcePath) || sourcePath;
+
+  if (/\.(tex|ltx|latex)$/i.test(normalizedSourcePath)) {
+    return normalizedSourcePath.replace(/\.(tex|ltx|latex)$/i, ".synctex.gz");
+  }
+
+  return normalizedSourcePath + ".synctex.gz";
+}
+
 function getExistingLatexPdfPath(
   project: TyprProjectRepository,
   sourcePath: string
@@ -17481,11 +18268,7 @@ function resolveLatexSourcePathForPdfPreview(
   return matchingSourceEntry?.[0] ?? null;
 }
 
-function getWorkspaceTabDisplayPath(kind: WorkspaceTabKind, path: string): string {
-  if (kind === "preview" && getSourceLanguage(path) === "latex") {
-    return getLatexPdfOutputPath(path);
-  }
-
+function getWorkspaceTabDisplayPath(_kind: WorkspaceTabKind, path: string): string {
   return path;
 }
 
@@ -17773,6 +18556,16 @@ function resolvePreviewSourcePath(
   return normalizedPath;
 }
 
+function resetDocumentScrollPosition(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
+
 function countSourceTextLines(source: string): number {
   if (!source) {
     return 1;
@@ -17819,6 +18612,23 @@ function readProjectTextFileOrDefault(
   return bytes ? new TextDecoder().decode(bytes) : fallback;
 }
 
+function getSettingsTabTitle(tab: SettingsTab): string {
+  switch (tab) {
+    case "git":
+      return "Git";
+    case "themes":
+      return "Themes";
+    case "editor":
+      return "Editor";
+    case "keybindings":
+      return "Keybindings";
+    case "snippets":
+      return "Snippets";
+    case "packages":
+      return "Packages";
+  }
+}
+
 function getSidebarToolTitle(tool: SidebarTool): string {
   switch (tool) {
     case "projects":
@@ -17841,6 +18651,10 @@ function getSidebarToolTitle(tool: SidebarTool): string {
       return "Sync";
     case "debug":
       return "Debug";
+    case "docs":
+      return "Docs";
+    case "settings":
+      return "Settings";
   }
 }
 
@@ -17866,6 +18680,10 @@ function getSidebarToolSubtitle(tool: SidebarTool): string {
       return "Version control";
     case "debug":
       return "Compiler and diagnostics";
+    case "docs":
+      return "User guide";
+    case "settings":
+      return "Preferences";
   }
 }
 

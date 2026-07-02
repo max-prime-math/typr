@@ -27,6 +27,21 @@ import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from ".
 export type ThemePreference = string;
 export type GraphProvider = "simple-plot";
 export type GraphContentType = "typ";
+export type MobileKeyboardLanguage = "typst" | "latex" | "markdown";
+
+export interface MobileKeyboardPreferences {
+  enabled: boolean;
+  keys: Record<MobileKeyboardLanguage, string[]>;
+}
+
+export const DEFAULT_MOBILE_KEYBOARD_PREFERENCES: MobileKeyboardPreferences = {
+  enabled: true,
+  keys: {
+    typst: ["#", "$", "[]", "()", "{}", "=", "*", "_", "@", "`", "fn"],
+    latex: ["\\", "$", "{}", "[]", "^", "_", "&", "%", "#", "frac", "env"],
+    markdown: ["#", "-", "*", "_", "`", "[]", "()", ">", "|", "```", "link"]
+  }
+};
 
 export interface GraphStyle {
   width: number;
@@ -266,6 +281,7 @@ export interface AppPreferences {
   editorTooling: EditorToolingPreferences;
   graphProvider: GraphProvider;
   keybindings: KeybindingMap;
+  mobileKeyboard: MobileKeyboardPreferences;
   editorFontSize: number;
   sidebarFontSize: number;
 }
@@ -448,6 +464,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       editorTooling: DEFAULT_EDITOR_TOOLING_PREFERENCES,
       graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
+      mobileKeyboard: DEFAULT_MOBILE_KEYBOARD_PREFERENCES,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
       sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE
     }
@@ -511,6 +528,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       graphProvider: normalizeGraphProvider(storedGraphProvider),
       keybindings: normalizeKeybindings(
         (snapshot.preferences as Partial<AppPreferences>).keybindings
+      ),
+      mobileKeyboard: normalizeMobileKeyboardPreferences(
+        (snapshot.preferences as Partial<AppPreferences>).mobileKeyboard
       ),
       editorFontSize: clampEditorFontSize(
         (snapshot.preferences as Partial<AppPreferences>).editorFontSize
@@ -2163,6 +2183,39 @@ function createUniqueWorkspacePath(requestedPath: string, existingPaths: Set<str
   return nextPath;
 }
 
+function normalizeMobileKeyboardPreferences(value: unknown): MobileKeyboardPreferences {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return DEFAULT_MOBILE_KEYBOARD_PREFERENCES;
+  }
+
+  const candidate = value as Partial<MobileKeyboardPreferences>;
+  const keys = candidate.keys && typeof candidate.keys === "object" && !Array.isArray(candidate.keys)
+    ? candidate.keys as Partial<Record<MobileKeyboardLanguage, unknown>>
+    : {};
+
+  return {
+    enabled: candidate.enabled ?? DEFAULT_MOBILE_KEYBOARD_PREFERENCES.enabled,
+    keys: {
+      typst: normalizeMobileKeyboardKeyLabels(keys.typst, DEFAULT_MOBILE_KEYBOARD_PREFERENCES.keys.typst),
+      latex: normalizeMobileKeyboardKeyLabels(keys.latex, DEFAULT_MOBILE_KEYBOARD_PREFERENCES.keys.latex),
+      markdown: normalizeMobileKeyboardKeyLabels(keys.markdown, DEFAULT_MOBILE_KEYBOARD_PREFERENCES.keys.markdown)
+    }
+  };
+}
+
+function normalizeMobileKeyboardKeyLabels(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const labels = value
+    .filter((label): label is string => typeof label === "string")
+    .map((label) => label.trim())
+    .filter(Boolean);
+
+  return labels.length > 0 ? labels.slice(0, 18) : fallback;
+}
+
 export function updateThemePreference(
   snapshot: AppSnapshot,
   theme: ThemePreference
@@ -2315,6 +2368,19 @@ export function updateEditorToolingPreference(
     preferences: {
       ...snapshot.preferences,
       editorTooling: normalizeEditorToolingPreferences(editorTooling)
+    }
+  };
+}
+
+export function updateMobileKeyboardPreference(
+  snapshot: AppSnapshot,
+  mobileKeyboard: MobileKeyboardPreferences
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      mobileKeyboard: normalizeMobileKeyboardPreferences(mobileKeyboard)
     }
   };
 }

@@ -46,6 +46,7 @@ interface TypstEditorProps {
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  constrainMobileScroll?: boolean;
   latexMathPreview: boolean;
   editorFontSize: number;
   keybindings: KeybindingMap;
@@ -59,6 +60,8 @@ interface TypstEditorProps {
   onFormatRequested: () => void;
   onCloseRequested: () => void;
   onSelectionChange: (lineNumber: number) => void;
+  onSourceDoubleClick?: (position: { line: number; column: number }) => void;
+  onFocusChange?: (focused: boolean) => void;
   onChange: (value: string) => void;
 }
 
@@ -120,6 +123,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
+  constrainMobileScroll = false,
   latexMathPreview,
   editorFontSize,
   keybindings,
@@ -133,6 +137,8 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   onFormatRequested,
   onCloseRequested,
   onSelectionChange,
+  onSourceDoubleClick,
+  onFocusChange,
   onChange
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -140,6 +146,13 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const currentValueRef = useRef(value);
   const isApplyingExternalValueRef = useRef(false);
   const latestOnChangeRef = useRef(onChange);
+  const latestOnSelectionChangeRef = useRef(onSelectionChange);
+  const latestOnSourceDoubleClickRef = useRef(onSourceDoubleClick);
+  const latestOnFocusChangeRef = useRef(onFocusChange);
+  const latestOnSearchRequestedRef = useRef(onSearchRequested);
+  const latestOnCompileRequestedRef = useRef(onCompileRequested);
+  const latestOnFormatRequestedRef = useRef(onFormatRequested);
+  const latestOnCloseRequestedRef = useRef(onCloseRequested);
   const snippetsRef = useRef(snippets);
   const preservedViewStateRef = useRef<PreservedEditorViewState | null>(null);
   const diagnosticsSignatureRef = useRef(createDiagnosticsSignature(diagnostics, highlightErrors));
@@ -156,6 +169,34 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   }, [onChange]);
 
   useEffect(() => {
+    latestOnSelectionChangeRef.current = onSelectionChange;
+  }, [onSelectionChange]);
+
+  useEffect(() => {
+    latestOnSourceDoubleClickRef.current = onSourceDoubleClick;
+  }, [onSourceDoubleClick]);
+
+  useEffect(() => {
+    latestOnFocusChangeRef.current = onFocusChange;
+  }, [onFocusChange]);
+
+  useEffect(() => {
+    latestOnSearchRequestedRef.current = onSearchRequested;
+  }, [onSearchRequested]);
+
+  useEffect(() => {
+    latestOnCompileRequestedRef.current = onCompileRequested;
+  }, [onCompileRequested]);
+
+  useEffect(() => {
+    latestOnFormatRequestedRef.current = onFormatRequested;
+  }, [onFormatRequested]);
+
+  useEffect(() => {
+    latestOnCloseRequestedRef.current = onCloseRequested;
+  }, [onCloseRequested]);
+
+  useEffect(() => {
     snippetsRef.current = snippets;
   }, [snippets]);
 
@@ -163,7 +204,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     ref,
     () => ({
       focus() {
-        viewRef.current?.focus();
+        focusEditorView(viewRef.current);
       },
       focusRange(range) {
         const view = viewRef.current;
@@ -183,7 +224,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           ? endLine.from + clampColumn(range.endColumn ?? range.column, endLine.length)
           : anchor;
 
-        view.focus();
+        focusEditorView(view);
         view.dispatch({
           selection: EditorSelection.range(anchor, head),
           effects: [
@@ -314,7 +355,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
       },
       search() {
-        onSearchRequested();
+        latestOnSearchRequestedRef.current();
       },
       goToLine() {
         const view = viewRef.current;
@@ -412,7 +453,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
       }
     }),
-    [language, onCompileRequested, onFormatRequested, onSearchRequested]
+    [language]
   );
 
   useEffect(() => {
@@ -432,13 +473,15 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
         },
         onSelectionChange: (update) => {
-          onSelectionChange(update.state.doc.lineAt(update.state.selection.main.head).number);
+          latestOnSelectionChangeRef.current(update.state.doc.lineAt(update.state.selection.main.head).number);
         },
+        onSourceDoubleClick: (position) => latestOnSourceDoubleClickRef.current?.(position),
         readOnly,
         vimMode,
         relativeLineNumbers,
         cursorSmooth,
         cursorSmear,
+        constrainMobileScroll,
         latexMathPreviewEnabled: latexMathPreview,
         editorFontSize,
         keybindings,
@@ -447,10 +490,11 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         highlightErrors,
         language,
         snippetSource: snippetCompletionSource,
-        onSearchRequested,
-        onCompileRequested,
-        onFormatRequested,
-        onCloseRequested
+        onSearchRequested: () => latestOnSearchRequestedRef.current(),
+        onCompileRequested: () => latestOnCompileRequestedRef.current(),
+        onFormatRequested: () => latestOnFormatRequestedRef.current(),
+        onCloseRequested: () => latestOnCloseRequestedRef.current(),
+        onFocusChange: (focused) => latestOnFocusChangeRef.current?.(focused)
       }),
       parent: containerRef.current
     });
@@ -479,9 +523,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       }
     }
 
+    latestOnFocusChangeRef.current?.(view.hasFocus);
     viewRef.current = view;
     preservedViewStateRef.current = null;
-    onSelectionChange(view.state.doc.lineAt(view.state.selection.main.head).number);
+    latestOnSelectionChangeRef.current(view.state.doc.lineAt(view.state.selection.main.head).number);
 
     return () => {
       preservedViewStateRef.current = {
@@ -494,20 +539,18 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         scrollLeft: view.scrollDOM.scrollLeft,
         hadFocus: view.hasFocus
       };
+      latestOnFocusChangeRef.current?.(false);
       view.destroy();
       viewRef.current = null;
     };
   }, [
+    constrainMobileScroll,
     cursorSmear,
     cursorSmooth,
     editorFontSize,
     latexMathPreview,
     keybindings,
     language,
-    onCloseRequested,
-    onCompileRequested,
-    onFormatRequested,
-    onSelectionChange,
     readOnly,
     relativeLineNumbers,
     theme,
@@ -559,7 +602,20 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     });
   }, [diagnostics, highlightErrors]);
 
-  return <div className="editor-root" ref={containerRef} />;
+  return (
+    <div
+      className="editor-root"
+      onBlurCapture={() => {
+        window.setTimeout(() => {
+          if (!containerRef.current?.contains(document.activeElement)) {
+            latestOnFocusChangeRef.current?.(false);
+          }
+        }, 0);
+      }}
+      onFocusCapture={() => latestOnFocusChangeRef.current?.(true)}
+      ref={containerRef}
+    />
+  );
 });
 
 export const TypstEditor = memo(TypstEditorComponent);
@@ -820,6 +876,14 @@ function getSelectedLineNumbers(view: EditorView): number[] {
   }
 
   return [...lineNumbers].sort((left, right) => left - right);
+}
+
+function focusEditorView(view: EditorView | null): void {
+  if (!view) {
+    return;
+  }
+
+  view.contentDOM.focus({ preventScroll: true });
 }
 
 function clampLineNumber(view: EditorView, lineNumber: number): number {

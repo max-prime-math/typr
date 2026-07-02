@@ -18,6 +18,11 @@ import remoteGitTransportSource from "../../docs/remote-git-transport.md?raw";
 import roadmapSource from "../../docs/roadmap.md?raw";
 import limitationsSource from "../../docs/limitations.md?raw";
 
+interface DocsPanelProps {
+  embedded?: boolean;
+  onClose?: () => void;
+}
+
 interface DocsModalProps {
   onClose: () => void;
 }
@@ -155,10 +160,11 @@ function normalizeDocsHref(href: string, currentPath: string): DocsPage | null {
   return DOCS_PAGE_BY_PATH.get(segments.join("/") || "index") ?? null;
 }
 
-export function DocsModal({ onClose }: DocsModalProps) {
+export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
   const [storedDocsState] = useState(readStoredDocsModalState);
   const [activePageId, setActivePageId] = useState(storedDocsState.pageId);
   const [searchQuery, setSearchQuery] = useState("");
+  const [isMobileTocOpen, setIsMobileTocOpen] = useState(false);
   const contentRef = useRef<HTMLElement | null>(null);
   const activePageIdRef = useRef(activePageId);
   const scrollByPageRef = useRef<StoredDocsModalState["scrollByPage"]>(storedDocsState.scrollByPage);
@@ -197,13 +203,14 @@ export function DocsModal({ onClose }: DocsModalProps) {
     (pageId: string) => {
       saveCurrentScrollPosition();
       setActivePageId(pageId);
+      setIsMobileTocOpen(false);
     },
     [saveCurrentScrollPosition]
   );
 
   const handleClose = useCallback(() => {
     saveCurrentScrollPosition();
-    onClose();
+    onClose?.();
   }, [onClose, saveCurrentScrollPosition]);
 
   useEffect(() => {
@@ -218,11 +225,11 @@ export function DocsModal({ onClose }: DocsModalProps) {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") handleClose();
+      if (!embedded && event.key === "Escape") handleClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleClose]);
+  }, [embedded, handleClose]);
 
   const handleContentClick = (event: MouseEvent<HTMLElement>) => {
     const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[href]");
@@ -234,16 +241,30 @@ export function DocsModal({ onClose }: DocsModalProps) {
   };
 
   return (
-    <div className="docs-modal-backdrop" onClick={handleClose} role="presentation">
-      <section aria-label="Typr documentation" aria-modal="true" className="docs-modal" onClick={(event) => event.stopPropagation()} role="dialog">
+      <section
+        aria-label="Typr documentation"
+        aria-modal={embedded ? undefined : true}
+        className={`docs-modal ${embedded ? "docs-modal--embedded" : ""} ${isMobileTocOpen ? "docs-modal--mobile-toc-open" : ""}`}
+        onClick={(event) => event.stopPropagation()}
+        role={embedded ? undefined : "dialog"}
+      >
         <header className="docs-modal__header">
           <div>
             <h2>Docs</h2>
             <p>Typr user guide and architecture notes.</p>
           </div>
-          <button className="pane__button" onClick={handleClose} type="button">Close</button>
+          {onClose ? <button className="pane__button" onClick={handleClose} type="button">Close</button> : null}
         </header>
         <div className="docs-modal__body">
+          <button
+            aria-expanded={isMobileTocOpen}
+            className="docs-modal__mobile-toc-toggle"
+            onClick={() => setIsMobileTocOpen((current) => !current)}
+            type="button"
+          >
+            <span>{activePage.title}</span>
+            <span aria-hidden="true" className="docs-modal__mobile-toc-chevron" />
+          </button>
           <nav className="docs-modal__nav" aria-label="Documentation pages">
             <div className="docs-modal__search">
               <input
@@ -296,6 +317,13 @@ export function DocsModal({ onClose }: DocsModalProps) {
           />
         </div>
       </section>
+  );
+}
+
+export function DocsModal({ onClose }: DocsModalProps) {
+  return (
+    <div className="docs-modal-backdrop" onClick={onClose} role="presentation">
+      <DocsPanel onClose={onClose} />
     </div>
   );
 }

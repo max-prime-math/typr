@@ -10,6 +10,7 @@ export interface SourceRange extends SourcePosition {
 }
 
 export interface PreviewRect {
+  pageNumber?: number;
   left: number;
   top: number;
   width: number;

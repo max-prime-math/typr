@@ -120,6 +120,34 @@ describe("projectState", () => {
     expect(gitignore?.source.kind).toBe("document");
   });
 
+  it("normalizes persisted preview tabs", () => {
+    const snapshot = createDefaultSnapshot();
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const project = getSelectedProjectRepository(storage);
+    expect(project).not.toBeNull();
+    if (!project) return;
+
+    const normalized = normalizeProjectStorageState(
+      {
+        ...storage,
+        projects: [
+          {
+            ...project,
+            editor: {
+              previewPath: "./build/main.pdf",
+              previewTabPaths: ["build/main.pdf", "./build/main.pdf", "../escape.pdf"]
+            }
+          }
+        ]
+      },
+      snapshot
+    );
+    const normalizedProject = getSelectedProjectRepository(normalized);
+
+    expect(normalizedProject?.editor.previewPath).toBe("build/main.pdf");
+    expect(normalizedProject?.editor.previewTabPaths).toEqual(["build/main.pdf"]);
+  });
+
   it("exposes project .gitignore as an editable legacy document", () => {
     const snapshot = createDefaultSnapshot();
     const storage = createProjectStorageFromSnapshot(snapshot);

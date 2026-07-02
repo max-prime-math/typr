@@ -48,6 +48,10 @@ interface TypstSnippetModule {
   };
 }
 
+interface TypstIncrementalServer {
+  setAttachDebugInfo(enable: boolean): void;
+}
+
 interface TypstCompilerDriver {
   addSource(path: string, source: string): void;
   mapShadow(path: string, content: Uint8Array): void;
@@ -56,11 +60,14 @@ interface TypstCompilerDriver {
     mainFilePath: string;
     root?: string;
     diagnostics: "full";
+    format?: "vector";
+    incrementalServer?: TypstIncrementalServer;
   }): Promise<{
     hasError?: boolean;
     diagnostics?: TypstStructuredDiagnostic[];
     result?: Uint8Array;
   }>;
+  withIncrementalServer<T>(callback: (server: TypstIncrementalServer) => Promise<T>): Promise<T>;
 }
 
 interface TypstStructuredDiagnostic {
@@ -218,11 +225,7 @@ export function createMainThreadTypstCompiler(
               mode: "main-thread",
               label: "Compiling Typst document"
             });
-            const compileOutput = await compiler.compile({
-              mainFilePath: MAIN_FILE_PATH,
-              root: DIAGRAM_COMPILER_ROOT,
-              diagnostics: "full"
-            });
+            const compileOutput = await compileTypstVectorWithSourceMap(compiler);
             fontsPrimed = true;
 
             const diagnostics = normalizeTypstDiagnostics(
@@ -304,6 +307,25 @@ export function createMainThreadTypstCompiler(
     },
     dispose(): void {}
   };
+}
+
+function compileTypstVectorWithSourceMap(
+  compiler: TypstCompilerDriver
+): Promise<{
+  hasError?: boolean;
+  diagnostics?: TypstStructuredDiagnostic[];
+  result?: Uint8Array;
+}> {
+  return compiler.withIncrementalServer(async (server) => {
+    server.setAttachDebugInfo(true);
+    return compiler.compile({
+      mainFilePath: MAIN_FILE_PATH,
+      root: DIAGRAM_COMPILER_ROOT,
+      diagnostics: "full",
+      format: "vector",
+      incrementalServer: server
+    });
+  });
 }
 
 function normalizeTypstDiagnostics(

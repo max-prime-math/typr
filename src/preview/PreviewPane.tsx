@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
 import { useTheme } from "../theme/ThemeProvider";
@@ -6,6 +6,7 @@ import type { ThemeDefinition } from "../theme/themes";
 import { applyPdfCanvasZoom, renderPdfArtifactToCanvas } from "./pdfCanvasRenderer";
 import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
 import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
+import { resolveSynctexForwardSearch, resolveSynctexReverseSearch, type PdfPreviewPoint } from "./synctex";
 import {
   createSourceRange,
   parseSourceLocation,
@@ -25,6 +26,7 @@ interface PreviewPaneProps {
   paperView?: boolean;
   showToolbar?: boolean;
   activeSource?: SourcePosition | null;
+  forwardSearchSource?: SourcePosition | null;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
   onDebugRequested?: () => void;
   sourceLineCount?: number;
@@ -66,6 +68,7 @@ export function PreviewPane({
   paperView = false,
   showToolbar = true,
   activeSource = null,
+  forwardSearchSource = null,
   onSourceJump,
   onDebugRequested,
   sourceLineCount,
@@ -90,6 +93,7 @@ export function PreviewPane({
           <WorkspaceFilePreview
             activeSource={activeSource}
             file={workspacePreview}
+            forwardSearchSource={forwardSearchSource}
             onSourceJump={onSourceJump}
             paperView={paperView}
             theme={theme}
@@ -208,7 +212,12 @@ export function PreviewPane({
               `compile:${sourcePath ?? "preview"}`,
               result.output.artifactData
             )}
+            forwardSearchSource={forwardSearchSource}
+            onSourceJump={onSourceJump}
             paperView={paperView}
+            sourceLineCount={sourceLineCount}
+            sourceMapData={result.output.sourceMapData}
+            sourcePath={sourcePath}
             theme={theme}
             zoom={currentZoom}
           />
@@ -217,6 +226,7 @@ export function PreviewPane({
         ) : (
             <PreviewDocument
               artifactData={result.output.artifactData}
+              forwardSearchSource={forwardSearchSource}
               isCompiling={isCompiling}
               paperView={paperView}
               markup={result.output.content}
@@ -553,6 +563,7 @@ function getPreviewNow(): number {
 
 function PreviewDocument({
   artifactData,
+  forwardSearchSource,
   isCompiling = false,
   paperView = false,
   markup,
@@ -566,6 +577,7 @@ function PreviewDocument({
   viewportPadding = 28
 }: {
   artifactData?: Uint8Array;
+  forwardSearchSource?: SourcePosition | null;
   isCompiling?: boolean;
   paperView?: boolean;
   markup: string;
@@ -584,6 +596,9 @@ function PreviewDocument({
   );
   const displayMarkup = normalizedMarkup;
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const semanticForwardSearchKeyRef = useRef<string | null>(null);
+  const [typstSyncMarker, setTypstSyncMarker] = useState<PreviewRect | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [imageState, setImageState] = useState<{
     blobUrl: string;
@@ -615,6 +630,15 @@ function PreviewDocument({
       URL.revokeObjectURL(blobUrl);
     };
   }, [blobStartedAt, blobUrl]);
+
+  useEffect(() => {
+    if (!typstSyncMarker) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setTypstSyncMarker(null), 1200);
+    return () => window.clearTimeout(timeout);
+  }, [typstSyncMarker]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -649,6 +673,39 @@ function PreviewDocument({
   const hasStablePreviewLayout = hasMeasuredViewport && dimensions !== null;
   const currentImageStatus =
     imageState?.blobUrl === blobUrl ? imageState.status : "loading";
+  const typstForwardSearchKey = forwardSearchSource
+    ? createPreviewSourcePositionKey(forwardSearchSource)
+    : null;
+  const handleTypstForwardSearch = useCallback((element: HTMLElement, source: SourcePosition) => {
+    if (!canvasRef.current) {
+      return;
+    }
+
+    semanticForwardSearchKeyRef.current = createPreviewSourcePositionKey(source);
+    scrollPreviewElementIntoView(viewportRef.current, element);
+    setTypstSyncMarker(getLocalPreviewRect(canvasRef.current, element));
+  }, []);
+
+  useEffect(() => {
+    if (!forwardSearchSource || !typstForwardSearchKey || !canvasRef.current) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      if (semanticForwardSearchKeyRef.current === typstForwardSearchKey || !canvasRef.current) {
+        return;
+      }
+
+      scrollTypstPreviewToApproximateSourceLine(
+        viewportRef.current,
+        canvasRef.current,
+        forwardSearchSource,
+        sourceLineCount
+      );
+    }, 420);
+
+    return () => window.clearTimeout(timeout);
+  }, [forwardSearchSource, sourceLineCount, typstForwardSearchKey]);
 
   return (
     <div
@@ -659,6 +716,7 @@ function PreviewDocument({
         className={`preview-document__canvas ${
           hasStablePreviewLayout ? "" : "preview-document__canvas--pending"
         }`}
+        ref={canvasRef}
         onDoubleClick={onSourceJump
           ? (event) => {
               if (event.defaultPrevented) {
@@ -703,11 +761,16 @@ function PreviewDocument({
             Preview image failed to load.
           </div>
         ) : null}
+        {typstSyncMarker ? <PreviewSyncMarker rect={typstSyncMarker} /> : null}
         {artifactData && onSourceJump ? (
           <PreviewSourceMappingOverlay
             artifactData={artifactData}
             isCompiling={isCompiling}
+            forwardSearchSource={forwardSearchSource}
+            onForwardSearch={handleTypstForwardSearch}
             onSourceJump={onSourceJump}
+            sourceLineCount={sourceLineCount}
+            sourcePath={sourcePath}
             overlayWidth={contentWidth}
             paperView={paperView}
           />
@@ -719,6 +782,7 @@ function PreviewDocument({
 
 function WorkspaceFilePreview({
   activeSource,
+  forwardSearchSource,
   file,
   onSourceJump,
   paperView,
@@ -726,6 +790,7 @@ function WorkspaceFilePreview({
   zoom
 }: {
   activeSource: SourcePosition | null;
+  forwardSearchSource?: SourcePosition | null;
   file: WorkspacePreviewFile;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
   paperView: boolean;
@@ -748,6 +813,7 @@ function WorkspaceFilePreview({
       <MarkdownFilePreview
         activeSource={activeSource}
         file={file}
+        forwardSearchSource={forwardSearchSource}
         onSourceJump={onSourceJump}
         paperView={paperView}
       />
@@ -813,11 +879,13 @@ function WorkspaceBinaryFilePreview({
 
 function MarkdownFilePreview({
   activeSource,
+  forwardSearchSource,
   file,
   onSourceJump,
   paperView
 }: {
   activeSource: SourcePosition | null;
+  forwardSearchSource?: SourcePosition | null;
   file: WorkspacePreviewFile;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
   paperView: boolean;
@@ -827,6 +895,10 @@ function MarkdownFilePreview({
   const activeMarkdownSource =
     activeSource && normalizeSourcePathForPreview(activeSource.path) === normalizeSourcePathForPreview(sourcePath)
       ? activeSource
+      : null;
+  const forwardMarkdownSource =
+    forwardSearchSource && normalizeSourcePathForPreview(forwardSearchSource.path) === normalizeSourcePathForPreview(sourcePath)
+      ? forwardSearchSource
       : null;
   const blocks = useMemo(
     () => renderMarkdownBlocks(source, {
@@ -840,7 +912,39 @@ function MarkdownFilePreview({
     () => findActiveMarkdownBlockKey(source, activeMarkdownSource),
     [activeMarkdownSource, source]
   );
+  const forwardBlockKey = useMemo(
+    () => findActiveMarkdownBlockKey(source, forwardMarkdownSource),
+    [forwardMarkdownSource, source]
+  );
   const articleRef = useRef<HTMLElement | null>(null);
+  const documentRef = useRef<HTMLDivElement | null>(null);
+  const [markdownSyncMarker, setMarkdownSyncMarker] = useState<PreviewRect | null>(null);
+
+  useEffect(() => {
+    if (!markdownSyncMarker) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setMarkdownSyncMarker(null), 1200);
+    return () => window.clearTimeout(timeout);
+  }, [markdownSyncMarker]);
+
+  useEffect(() => {
+    if (!forwardBlockKey || !articleRef.current || !documentRef.current) {
+      return;
+    }
+
+    const forwardBlock = articleRef.current.querySelector<HTMLElement>(
+      `[data-source-block-key="${forwardBlockKey}"]`
+    );
+
+    if (!forwardBlock) {
+      return;
+    }
+
+    scrollPreviewElementIntoView(documentRef.current, forwardBlock);
+    setMarkdownSyncMarker(getLocalPreviewRect(documentRef.current, forwardBlock));
+  }, [forwardBlockKey]);
 
   useEffect(() => {
     if (!activeBlockKey || !articleRef.current) {
@@ -863,10 +967,12 @@ function MarkdownFilePreview({
 
   return (
     <div
+      ref={documentRef}
       className={`preview-document preview-document--markdown ${
         paperView ? "preview-document--paper" : ""
       }`}
     >
+      {markdownSyncMarker ? <PreviewSyncMarker rect={markdownSyncMarker} /> : null}
       <article className="preview-markdown" aria-label={`${file.name} preview`} ref={articleRef}>
         {blocks.length > 0 ? blocks : (
           <p className="preview-markdown__empty">Empty Markdown file.</p>
@@ -1414,18 +1520,27 @@ function isExternalMarkdownHref(href: string): boolean {
 
 function PreviewSourceMappingOverlay({
   artifactData,
+  forwardSearchSource,
   isCompiling,
+  onForwardSearch,
   onSourceJump,
+  sourceLineCount,
+  sourcePath,
   overlayWidth,
   paperView
 }: {
   artifactData: Uint8Array;
+  forwardSearchSource?: SourcePosition | null;
   isCompiling: boolean;
+  onForwardSearch?: (element: HTMLElement, source: SourcePosition) => void;
   onSourceJump: (sourceLink: PreviewSourceLink) => void;
+  sourceLineCount?: number;
+  sourcePath?: string;
   overlayWidth: number;
   paperView: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<Awaited<ReturnType<typeof renderSourceMappingOverlay>> | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1445,6 +1560,17 @@ function PreviewSourceMappingOverlay({
             return;
           }
 
+          overlayRef.current = overlay;
+          const pendingForwardElement = forwardSearchSource
+            ? overlay.resolveElementForSource(forwardSearchSource)
+            : null;
+
+          if (pendingForwardElement && forwardSearchSource) {
+            onForwardSearch?.(pendingForwardElement, forwardSearchSource);
+          } else if (forwardSearchSource) {
+            logTypstSyncDebug("forward source not resolved", forwardSearchSource);
+          }
+
           disposeOverlay = overlay.dispose;
           const interactionHost = container.parentElement ?? container;
           const handleDoubleClick = (event: MouseEvent) => {
@@ -1456,6 +1582,7 @@ function PreviewSourceMappingOverlay({
             if (source) {
               event.preventDefault();
               event.stopPropagation();
+              logTypstSyncDebug("reverse source resolved", source);
               onSourceJump({
                 previewRect: getPreviewRectFromElement(
                   event.target instanceof HTMLElement && container.contains(event.target)
@@ -1464,6 +1591,14 @@ function PreviewSourceMappingOverlay({
                 ),
                 source
               });
+            } else {
+              logTypstSyncDebug("reverse source not resolved", getTypstSemanticDebugSample(container));
+              onSourceJump(createFallbackPreviewSourceLink(
+                container.parentElement ?? container,
+                event.clientY,
+                sourcePath,
+                sourceLineCount
+              ));
             }
           };
           interactionHost.addEventListener("dblclick", handleDoubleClick, true);
@@ -1471,7 +1606,8 @@ function PreviewSourceMappingOverlay({
             interactionHost.removeEventListener("dblclick", handleDoubleClick, true);
           };
         })
-        .catch(() => {
+        .catch((error) => {
+          logTypstSyncDebug("overlay render failed", error);
           container.innerHTML = "";
           disposeDoubleClickListener();
           disposeDoubleClickListener = () => {};
@@ -1482,9 +1618,22 @@ function PreviewSourceMappingOverlay({
       cancelled = true;
       window.clearTimeout(handle);
       disposeDoubleClickListener();
+      overlayRef.current = null;
       disposeOverlay();
     };
-  }, [artifactData, isCompiling, onSourceJump, overlayWidth, paperView]);
+  }, [artifactData, forwardSearchSource, isCompiling, onForwardSearch, onSourceJump, overlayWidth, paperView]);
+
+  useEffect(() => {
+    if (!forwardSearchSource || !onForwardSearch) {
+      return;
+    }
+
+    const element = overlayRef.current?.resolveElementForSource(forwardSearchSource) ?? null;
+
+    if (element) {
+      onForwardSearch(element, forwardSearchSource);
+    }
+  }, [forwardSearchSource, onForwardSearch]);
 
   return (
     <div
@@ -1539,6 +1688,7 @@ function ChromiumCanvasPreview({
     };
   }, [artifactData, containerRef, paperView]);
 
+
   if (renderError) {
     return (
       <div className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}>
@@ -1562,6 +1712,11 @@ function PdfPreview({
   cacheKey,
   paperView = false,
   isFaulted = false,
+  forwardSearchSource = null,
+  onSourceJump,
+  sourceLineCount,
+  sourceMapData,
+  sourcePath,
   theme,
   zoom
 }: {
@@ -1569,12 +1724,18 @@ function PdfPreview({
   cacheKey?: string;
   paperView?: boolean;
   isFaulted?: boolean;
+  forwardSearchSource?: SourcePosition | null;
+  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  sourceLineCount?: number;
+  sourceMapData?: Uint8Array;
+  sourcePath?: string;
   theme: ThemeDefinition;
   zoom: PreviewZoomState;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const zoomRef = useRef(zoom);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [synctexMarker, setSynctexMarker] = useState<PreviewRect | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
 
   zoomRef.current = zoom;
@@ -1694,6 +1855,30 @@ function PdfPreview({
     applyPdfCanvasZoom(container, zoom);
   }, [viewportSize.height, viewportSize.width, zoom]);
 
+
+  useEffect(() => {
+    if (!sourceMapData || !forwardSearchSource) {
+      return;
+    }
+
+    const sourceLink = resolveSynctexForwardSearch(sourceMapData, forwardSearchSource);
+
+    if (!sourceLink?.previewRect) {
+      return;
+    }
+
+    scrollPdfPreviewToRect(containerRef.current, sourceLink.previewRect);
+    setSynctexMarker(getPdfContainerRect(containerRef.current, sourceLink.previewRect));
+  }, [forwardSearchSource, sourceMapData]);
+
+  useEffect(() => {
+    if (!synctexMarker) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setSynctexMarker(null), 1200);
+    return () => window.clearTimeout(timeout);
+  }, [synctexMarker]);
   if (renderError) {
     return (
       <div className={`preview-document ${isFaulted ? "preview-document--faulted" : ""}`}>
@@ -1707,9 +1892,218 @@ function PdfPreview({
       className={`preview-document preview-document--canvas preview-document--pdf-canvas ${
         paperView ? "preview-document--pdf-paper" : ""
       } ${isFaulted ? "preview-document--faulted" : ""}`}
+      onDoubleClick={onSourceJump
+        ? (event) => {
+            const point = getPdfPreviewPointFromEvent(event, containerRef.current);
+            const sourceLink = point && sourceMapData
+              ? resolveSynctexReverseSearch(sourceMapData, point)
+              : null;
+            const fallbackLink = !sourceLink && point
+              ? createFallbackPreviewSourceLink(
+                  findPdfPageElement(event.target, containerRef.current ?? event.currentTarget) ?? event.currentTarget,
+                  event.clientY,
+                  sourcePath,
+                  sourceLineCount
+                )
+              : null;
+
+            event.preventDefault();
+            event.stopPropagation();
+            logPdfSourceJumpMode(sourceLink ? "synctex" : "fallback", Boolean(sourceMapData));
+            onSourceJump(sourceLink ?? fallbackLink ?? createFallbackPreviewSourceLink(
+              event.currentTarget,
+              event.clientY,
+              sourcePath,
+              sourceLineCount
+            ));
+          }
+        : undefined}
       ref={containerRef}
+    >
+      {synctexMarker ? <PreviewSyncMarker rect={synctexMarker} /> : null}
+    </div>
+  );
+}
+
+function scrollPreviewElementIntoView(container: HTMLElement | null, element: HTMLElement): void {
+  if (!container) {
+    return;
+  }
+
+  const rect = getLocalPreviewRect(container, element);
+  container.scrollTo({
+    left: Math.max(0, rect.left + rect.width / 2 - container.clientWidth / 2),
+    top: Math.max(0, rect.top + rect.height / 2 - container.clientHeight / 2),
+    behavior: "smooth"
+  });
+}
+
+function getLocalPreviewRect(container: HTMLElement, element: HTMLElement): PreviewRect {
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+
+  return {
+    left: elementRect.left - containerRect.left + container.scrollLeft,
+    top: elementRect.top - containerRect.top + container.scrollTop,
+    width: elementRect.width,
+    height: elementRect.height
+  };
+}
+
+function createPreviewSourcePositionKey(source: SourcePosition): string {
+  return [source.path ?? "", source.line, source.column].join(":");
+}
+
+function scrollTypstPreviewToApproximateSourceLine(
+  viewport: HTMLElement | null,
+  canvas: HTMLElement,
+  source: SourcePosition,
+  sourceLineCount: number | undefined
+): void {
+  if (!viewport) {
+    return;
+  }
+
+  const totalLines = Math.max(1, Math.floor(sourceLineCount ?? source.line));
+  const ratio = totalLines <= 1 ? 0 : Math.min(1, Math.max(0, (source.line - 1) / (totalLines - 1)));
+  const targetTop = ratio * Math.max(0, canvas.offsetHeight - viewport.clientHeight);
+
+  viewport.scrollTo({
+    left: viewport.scrollLeft,
+    top: Math.max(0, targetTop),
+    behavior: "smooth"
+  });
+}
+
+function logPdfSourceJumpMode(mode: "synctex" | "fallback", hasSourceMapData: boolean): void {
+  if (typeof console === "undefined") {
+    return;
+  }
+
+  console.debug("[typr] PDF source jump used " + mode + (hasSourceMapData ? " with" : " without") + " SyncTeX data");
+}
+
+function PreviewSyncMarker({ rect }: { rect: PreviewRect }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="pdf-synctex-marker"
+      style={{
+        left: String(rect.left + rect.width / 2) + "px",
+        top: String(rect.top + rect.height / 2) + "px"
+      }}
     />
   );
+}
+
+function getPdfPreviewPointFromEvent(
+  event: ReactMouseEvent<HTMLElement>,
+  container: HTMLElement | null
+): PdfPreviewPoint | null {
+  if (!container) {
+    return null;
+  }
+
+  const page = findPdfPageElement(event.target, container);
+
+  if (!page) {
+    return null;
+  }
+
+  const pageRect = page.getBoundingClientRect();
+  const naturalWidth = Number.parseFloat(page.dataset.pdfNaturalWidth ?? "");
+  const naturalHeight = Number.parseFloat(page.dataset.pdfNaturalHeight ?? "");
+  const pageIndex = Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas")).indexOf(page);
+
+  if (pageIndex < 0 || pageRect.width <= 0 || pageRect.height <= 0) {
+    return null;
+  }
+
+  return {
+    pageNumber: pageIndex + 1,
+    x: ((event.clientX - pageRect.left) / pageRect.width) * (Number.isFinite(naturalWidth) ? naturalWidth : page.offsetWidth),
+    y: ((event.clientY - pageRect.top) / pageRect.height) * (Number.isFinite(naturalHeight) ? naturalHeight : page.offsetHeight)
+  };
+}
+
+function getPdfContainerRect(container: HTMLElement | null, rect: PreviewRect): PreviewRect | null {
+  if (!container) {
+    return null;
+  }
+
+  const pages = Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas"));
+  const page = pages[Math.max(0, (rect.pageNumber ?? 1) - 1)];
+
+  if (!page) {
+    return null;
+  }
+
+  const naturalWidth = Number.parseFloat(page.dataset.pdfNaturalWidth ?? "");
+  const naturalHeight = Number.parseFloat(page.dataset.pdfNaturalHeight ?? "");
+  const scaleX = page.offsetWidth / (Number.isFinite(naturalWidth) && naturalWidth > 0 ? naturalWidth : page.offsetWidth || 1);
+  const scaleY = page.offsetHeight / (Number.isFinite(naturalHeight) && naturalHeight > 0 ? naturalHeight : page.offsetHeight || 1);
+
+  return {
+    pageNumber: rect.pageNumber,
+    left: page.offsetLeft + rect.left * scaleX,
+    top: page.offsetTop + rect.top * scaleY,
+    width: rect.width * scaleX,
+    height: rect.height * scaleY
+  };
+}
+
+function scrollPdfPreviewToRect(container: HTMLElement | null, rect: PreviewRect): void {
+  if (!container) {
+    return;
+  }
+
+  const pages = Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas"));
+  const page = pages[Math.max(0, (rect.pageNumber ?? 1) - 1)];
+
+  if (!page) {
+    return;
+  }
+
+  const naturalWidth = Number.parseFloat(page.dataset.pdfNaturalWidth ?? "");
+  const naturalHeight = Number.parseFloat(page.dataset.pdfNaturalHeight ?? "");
+  const scaleX = page.offsetWidth / (Number.isFinite(naturalWidth) && naturalWidth > 0 ? naturalWidth : page.offsetWidth || 1);
+  const scaleY = page.offsetHeight / (Number.isFinite(naturalHeight) && naturalHeight > 0 ? naturalHeight : page.offsetHeight || 1);
+  const targetLeft = page.offsetLeft + (rect.left + rect.width / 2) * scaleX - container.clientWidth / 2;
+  const targetTop = page.offsetTop + (rect.top + rect.height / 2) * scaleY - container.clientHeight / 2;
+
+  container.scrollTo({
+    left: Math.max(0, targetLeft),
+    top: Math.max(0, targetTop),
+    behavior: "smooth"
+  });
+}
+
+function findPdfPageElement(target: EventTarget | null, container: HTMLElement): HTMLElement | null {
+  return target instanceof Element
+    ? target.closest<HTMLElement>(".pdf-page.canvas")
+    : container.querySelector<HTMLElement>(".pdf-page.canvas");
+}
+
+function getTypstSemanticDebugSample(container: HTMLElement): Array<Record<string, string>> {
+  return Array.from(container.querySelectorAll<HTMLElement>(".typst-html-semantics *"))
+    .slice(0, 8)
+    .map((element) => {
+      const attrs: Record<string, string> = { tag: element.tagName.toLowerCase() };
+
+      for (const attribute of Array.from(element.attributes).slice(0, 8)) {
+        attrs[attribute.name] = attribute.value.slice(0, 160);
+      }
+
+      return attrs;
+    });
+}
+
+function logTypstSyncDebug(message: string, detail?: unknown): void {
+  if (typeof console === "undefined") {
+    return;
+  }
+
+  console.debug("[typr] Typst sync " + message, detail ?? "");
 }
 
 function parseZoomSelection(value: string): PreviewZoomState {

@@ -346,6 +346,7 @@ TSWLatexianTemp*
 `;
 const DEFAULT_PROJECT_GITIGNORE_DOCUMENT_ID = "project-gitignore";
 export const GENERATED_LATEX_PDF_SOURCE_ID = "latex-preview-pdf";
+export const GENERATED_LATEX_SYNCTEX_SOURCE_ID = "latex-preview-synctex";
 
 export type ProjectFileContent = string | Uint8Array;
 export type ProjectFilesystemEntryKind = "file" | "folder";
@@ -405,6 +406,7 @@ export interface ProjectSelectionState {
 
 export interface ProjectEditorState {
   previewPath: string | null;
+  previewTabPaths: string[];
 }
 
 export interface ProjectLegacyRecovery {
@@ -691,7 +693,8 @@ export function createEmptyProjectRepository(options: {
       openFilePaths: defaultFileName ? [defaultFileName] : []
     },
     editor: {
-      previewPath: null
+      previewPath: null,
+      previewTabPaths: []
     },
     legacyRecovery: {
       migratedAt: now,
@@ -1131,9 +1134,12 @@ function createRepositoryFromLegacyProject(
       activeFilePath,
       openFilePaths
     },
-    editor: existingProject?.editor ?? {
-      previewPath: null
-    },
+    editor: existingProject?.editor
+      ? normalizeProjectEditorState(existingProject.editor)
+      : {
+          previewPath: null,
+          previewTabPaths: []
+        },
     legacyRecovery: {
       migratedAt: existingProject?.legacyRecovery.migratedAt ?? now,
       snapshotVersion: snapshot.version ?? null,
@@ -1208,12 +1214,57 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
         ? project.selection.openFilePaths.map(normalizeProjectPath)
         : []
     },
-    editor: {
-      previewPath: project.editor?.previewPath ?? null
-    },
+    editor: normalizeProjectEditorState(project.editor),
     legacyRecovery: project.legacyRecovery,
     updatedAt: project.updatedAt ?? now
   };
+}
+
+function normalizeProjectEditorState(
+  editor: Partial<ProjectEditorState> | undefined
+): ProjectEditorState {
+  return {
+    previewPath: normalizeOptionalProjectPath(editor?.previewPath),
+    previewTabPaths: normalizeProjectPathList(editor?.previewTabPaths)
+  };
+}
+
+function normalizeOptionalProjectPath(path: string | null | undefined): string | null {
+  if (!path) {
+    return null;
+  }
+
+  try {
+    return normalizeProjectPath(path) || null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProjectPathList(paths: readonly string[] | undefined): string[] {
+  if (!Array.isArray(paths)) {
+    return [];
+  }
+
+  const seenPaths = new Set<string>();
+  const normalizedPaths: string[] = [];
+
+  for (const path of paths) {
+    if (typeof path !== "string") {
+      continue;
+    }
+
+    const normalizedPath = normalizeOptionalProjectPath(path);
+
+    if (!normalizedPath || seenPaths.has(normalizedPath)) {
+      continue;
+    }
+
+    seenPaths.add(normalizedPath);
+    normalizedPaths.push(normalizedPath);
+  }
+
+  return normalizedPaths;
 }
 
 function normalizeRepoMetadata(

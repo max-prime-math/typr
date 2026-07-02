@@ -41,6 +41,7 @@ export interface CompileOutput {
   kind: "svg" | "html" | "pdf" | "placeholder";
   content: string;
   artifactData?: Uint8Array;
+  sourceMapData?: Uint8Array;
 }
 
 export interface CompileTiming {
@@ -50,6 +51,7 @@ export interface CompileTiming {
 
 export interface CompileMetadata {
   timings?: CompileTiming[];
+  synctexFiles?: Array<{ path: string; size: number }>;
   fileSync?: {
     changedFiles: number;
     deletedFiles: number;

@@ -29,6 +29,7 @@ interface BusyTexWorkerMessage {
   print?: string;
   pdf?: Uint8Array | null;
   synctex?: Uint8Array;
+  synctex_files?: Array<{ path: string; size: number }>;
   log?: string;
   logs?: LogEntry[];
   exit_code?: number;
@@ -42,6 +43,7 @@ const REQUIRED_BUSY_TEX_RUNTIME_FILES = ["busytex_pipeline.js", "busytex.js", "b
 
 export type BusyTexCompileResultWithMetadata = CompileResult & {
   metadata?: CompileMetadata;
+  synctexFiles?: Array<{ path: string; size: number }>;
 };
 
 export class BusyTexWorkerRunner {
@@ -163,6 +165,7 @@ export class BusyTexWorkerRunner {
         }
 
         if (data.pdf !== undefined) {
+          this.rememberMessage(`SyncTeX bytes: ${data.synctex?.length ?? 0}`);
           cleanup();
           resolve({
             success: data.exit_code === 0,
@@ -171,6 +174,7 @@ export class BusyTexWorkerRunner {
             log: data.log ?? "",
             exitCode: data.exit_code ?? 1,
             logs: data.logs ?? [],
+            synctexFiles: data.synctex_files ?? [],
             metadata: createCompileMetadata(data.typr_stats)
           });
           return;

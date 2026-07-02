@@ -456,7 +456,7 @@ async function compileLatexPlan(
     onStatusChange,
     { previewKind: compilePlan.previewKind }
   );
-  result.metadata = mergeCompileMetadata(result.metadata, metadata);
+  result.metadata = attachBusyTexSynctexMetadata(mergeCompileMetadata(result.metadata, metadata), result);
 
   if (!result.success || !result.pdf || result.pdf.length === 0) {
     if (initialProfile === "standard" && shouldRetryWithFullBusyTexPackages(result.log)) {
@@ -476,7 +476,7 @@ async function compileLatexPlan(
           previewKind: compilePlan.previewKind
         }
       );
-      retryResult.metadata = mergeCompileMetadata(retryResult.metadata, metadata);
+      retryResult.metadata = attachBusyTexSynctexMetadata(mergeCompileMetadata(retryResult.metadata, metadata), retryResult);
 
       if (retryResult.success && retryResult.pdf && retryResult.pdf.length > 0) {
         preferFullBusyTexPackages = true;
@@ -495,7 +495,8 @@ async function compileLatexPlan(
           output: {
             kind: "pdf",
             content: retryResult.log,
-            artifactData: retryResult.pdf
+            artifactData: retryResult.pdf,
+            sourceMapData: retryResult.synctex
           },
           metadata: retryResult.metadata
         } satisfies CompileSuccess;
@@ -525,7 +526,7 @@ async function compileLatexPlan(
           previewKind: compilePlan.previewKind
         }
       );
-      retryResult.metadata = mergeCompileMetadata(retryResult.metadata, metadata);
+      retryResult.metadata = attachBusyTexSynctexMetadata(mergeCompileMetadata(retryResult.metadata, metadata), retryResult);
 
       if (retryResult.success && retryResult.pdf && retryResult.pdf.length > 0) {
         return {
@@ -540,7 +541,8 @@ async function compileLatexPlan(
           output: {
             kind: "pdf",
             content: retryResult.log,
-            artifactData: retryResult.pdf
+            artifactData: retryResult.pdf,
+            sourceMapData: retryResult.synctex
           },
           metadata: retryResult.metadata
         } satisfies CompileSuccess;
@@ -567,7 +569,8 @@ async function compileLatexPlan(
     output: {
       kind: "pdf",
       content: result.log,
-      artifactData: result.pdf
+      artifactData: result.pdf,
+      sourceMapData: result.synctex
     },
     metadata: result.metadata
   } satisfies CompileSuccess;
@@ -812,6 +815,20 @@ function fail(message: string, path?: string, log?: string, metadata?: CompileMe
         }
       : undefined,
     metadata
+  };
+}
+
+function attachBusyTexSynctexMetadata(
+  metadata: CompileMetadata | undefined,
+  result: BusyTexCompileResultWithMetadata
+): CompileMetadata | undefined {
+  if (!result.synctexFiles) {
+    return metadata;
+  }
+
+  return {
+    ...metadata,
+    synctexFiles: result.synctexFiles
   };
 }
 

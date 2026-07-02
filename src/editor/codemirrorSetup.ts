@@ -15,7 +15,7 @@ import {
   historyKeymap,
   indentMore
 } from "@codemirror/commands";
-import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import {
   search as searchExtension,
   searchKeymap,
@@ -49,17 +49,20 @@ import { toggleMathDelimiterCommand } from "./mathActions";
 import { toggleTextFormatCommand } from "./textFormatting";
 import { latexMathPreview } from "./latexMathPreview";
 import { smoothCursor } from "./smoothCursor";
+import { EDITOR_INDENT, getSmartNewlineInsertion } from "./editorWhitespace";
 import { typstLanguage } from "./typstLanguage";
 import type { ThemeDefinition } from "../theme/themes";
 
 interface EditorSetupOptions {
   onChange: (update: ViewUpdate) => void;
   onSelectionChange: (update: ViewUpdate) => void;
+  onSourceDoubleClick?: (position: { line: number; column: number }) => void;
   readOnly: boolean;
   vimMode: boolean;
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  constrainMobileScroll: boolean;
   latexMathPreviewEnabled: boolean;
   editorFontSize: number;
   keybindings: KeybindingMap;
@@ -72,6 +75,7 @@ interface EditorSetupOptions {
   onCompileRequested: () => void;
   onFormatRequested: () => void;
   onCloseRequested: () => void;
+  onFocusChange: (focused: boolean) => void;
 }
 
 export const diagnosticsCompartment = new Compartment();
@@ -288,6 +292,7 @@ export function createEditorExtensions({
   relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
+  constrainMobileScroll,
   latexMathPreviewEnabled,
   editorFontSize,
   keybindings,
@@ -299,7 +304,9 @@ export function createEditorExtensions({
   onSearchRequested,
   onCompileRequested,
   onFormatRequested,
-  onCloseRequested
+  onCloseRequested,
+  onFocusChange,
+  onSourceDoubleClick
 }: EditorSetupOptions): Extension[] {
   if (vimMode) {
     registerVimIpadInsertEscapePolicy();
@@ -368,11 +375,30 @@ export function createEditorExtensions({
 
     return toggleMathDelimiterCommand(view);
   };
+  const smartNewlineCommand = createSmartNewlineCommand(language);
 
   return [
     EditorState.readOnly.of(readOnly),
     EditorState.allowMultipleSelections.of(true),
+    EditorState.tabSize.of(2),
+    indentUnit.of(EDITOR_INDENT),
     EditorView.clickAddsSelectionRange.of((event) => event.altKey),
+    EditorView.domEventHandlers({
+      dblclick: (event, view) => {
+        const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+
+        if (position === null) {
+          return false;
+        }
+
+        const line = view.state.doc.lineAt(position);
+        onSourceDoubleClick?.({
+          line: line.number,
+          column: position - line.from
+        });
+        return false;
+      }
+    }),
     rectangularSelection({
       eventFilter: isRectangularSelectionGesture
     }),
@@ -395,12 +421,14 @@ export function createEditorExtensions({
     ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
     keymap.of([
       { key: "$", run: mathDelimiterCommand },
+      { key: "Enter", run: smartNewlineCommand },
       { key: "Tab", run: tabCommand },
       { key: "Shift-Tab", run: prevSnippetField },
       { key: "Escape", run: clearSnippet },
       ...keymaps
     ]),
     EditorView.lineWrapping,
+    ...(constrainMobileScroll ? [createMobileScrollConstraint()] : []),
     createEditorTheme(theme, cursorSmooth, editorFontSize),
     ...(cursorSmooth ? [smoothCursor(vimMode, cursorSmear)] : []),
     EditorView.updateListener.of((update) => {
@@ -411,9 +439,64 @@ export function createEditorExtensions({
       if (update.selectionSet) {
         onSelectionChange(update);
       }
+
+      if (update.focusChanged) {
+        onFocusChange(update.view.hasFocus);
+      }
     }),
     ...(vimMode ? [vim()] : [])
   ];
+}
+
+function createSmartNewlineCommand(language: SourceLanguage): Command {
+  return (view) => {
+    if (view.state.selection.ranges.length !== 1) {
+      return false;
+    }
+
+    const selection = view.state.selection.main;
+    const source = view.state.doc.toString();
+    const insertion = getSmartNewlineInsertion(source, selection.from, language);
+
+    if (insertion === null) {
+      return false;
+    }
+
+    view.dispatch({
+      changes: {
+        from: selection.from,
+        to: selection.to,
+        insert: insertion
+      },
+      selection: EditorSelection.cursor(selection.from + insertion.length),
+      scrollIntoView: true,
+      userEvent: "input"
+    });
+
+    return true;
+  };
+}
+
+function createMobileScrollConstraint(): Extension {
+  return EditorView.scrollHandler.of((view, range, options) => {
+    if (options.y !== "nearest") {
+      return false;
+    }
+
+    const cursorRect = view.coordsAtPos(range.head);
+    if (!cursorRect) {
+      return true;
+    }
+
+    const scrollRect = view.scrollDOM.getBoundingClientRect();
+    const bottomLimit = scrollRect.bottom - 12;
+
+    if (cursorRect.bottom > bottomLimit) {
+      view.scrollDOM.scrollTop += Math.ceil(cursorRect.bottom - bottomLimit);
+    }
+
+    return true;
+  });
 }
 
 function createLanguageExtension(language: SourceLanguage): Extension {
