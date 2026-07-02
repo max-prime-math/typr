@@ -47,6 +47,7 @@ import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { toggleMathDelimiterCommand } from "./mathActions";
 import { toggleTextFormatCommand } from "./textFormatting";
+import { latexMathPreview } from "./latexMathPreview";
 import { smoothCursor } from "./smoothCursor";
 import { typstLanguage } from "./typstLanguage";
 import type { ThemeDefinition } from "../theme/themes";
@@ -59,6 +60,7 @@ interface EditorSetupOptions {
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  latexMathPreviewEnabled: boolean;
   editorFontSize: number;
   keybindings: KeybindingMap;
   theme: ThemeDefinition;
@@ -286,6 +288,7 @@ export function createEditorExtensions({
   relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
+  latexMathPreviewEnabled,
   editorFontSize,
   keybindings,
   theme,
@@ -389,6 +392,7 @@ export function createEditorExtensions({
     }),
     syntaxHighlighting(editorHighlightStyle, { fallback: true }),
     createLanguageExtension(language),
+    ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
     keymap.of([
       { key: "$", run: mathDelimiterCommand },
       { key: "Tab", run: tabCommand },

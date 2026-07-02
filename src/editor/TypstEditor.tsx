@@ -46,6 +46,7 @@ interface TypstEditorProps {
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
+  latexMathPreview: boolean;
   editorFontSize: number;
   keybindings: KeybindingMap;
   theme: ThemeDefinition;
@@ -119,6 +120,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   relativeLineNumbers,
   cursorSmooth,
   cursorSmear,
+  latexMathPreview,
   editorFontSize,
   keybindings,
   theme,
@@ -437,6 +439,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         relativeLineNumbers,
         cursorSmooth,
         cursorSmear,
+        latexMathPreviewEnabled: latexMathPreview,
         editorFontSize,
         keybindings,
         theme,
@@ -498,6 +501,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     cursorSmear,
     cursorSmooth,
     editorFontSize,
+    latexMathPreview,
     keybindings,
     language,
     onCloseRequested,

@@ -261,6 +261,7 @@ export interface AppPreferences {
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
+  latexMathPreview: boolean;
   autoSyncGitProjects: boolean;
   editorTooling: EditorToolingPreferences;
   graphProvider: GraphProvider;
@@ -442,6 +443,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
+      latexMathPreview: true,
       autoSyncGitProjects: true,
       editorTooling: DEFAULT_EDITOR_TOOLING_PREFERENCES,
       graphProvider: "simple-plot",
@@ -499,6 +501,8 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
             ? 0
             : DEFAULT_CURSOR_SMEAR,
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
+      latexMathPreview:
+        (snapshot.preferences as Partial<AppPreferences>).latexMathPreview ?? true,
       autoSyncGitProjects:
         (snapshot.preferences as Partial<AppPreferences>).autoSyncGitProjects ?? true,
       editorTooling: normalizeEditorToolingPreferences(
@@ -2272,6 +2276,19 @@ export function updateLiveCompilationPreference(
     preferences: {
       ...snapshot.preferences,
       liveCompilation
+    }
+  };
+}
+
+export function updateLatexMathPreviewPreference(
+  snapshot: AppSnapshot,
+  latexMathPreview: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      latexMathPreview
     }
   };
 }

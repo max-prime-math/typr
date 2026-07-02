@@ -65,6 +65,9 @@ export default defineConfig(({ command }) => {
         }
       })
     ],
+    optimizeDeps: {
+      exclude: ["ratex-wasm"]
+    },
     worker: {
       format: "es"
     },

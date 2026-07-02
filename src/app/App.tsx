@@ -68,6 +68,7 @@ import {
   updateEditorFontSizePreference,
   updateEditorToolingPreference,
   updateKeybindingsPreference,
+  updateLatexMathPreviewPreference,
   updateLiveCompilationPreference,
   updateRelativeLineNumbersPreference,
   updateSidebarFontSizePreference,
@@ -3296,6 +3297,14 @@ ${nextLine}` : nextLine;
       updateLiveCompilationPreference(
         currentSnapshot,
         !currentSnapshot.preferences.liveCompilation
+      )
+    );
+  }, []);
+  const handleLatexMathPreviewToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateLatexMathPreviewPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.latexMathPreview
       )
     );
   }, []);
@@ -15450,6 +15459,7 @@ ${nextLine}` : nextLine;
                 relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
                 cursorSmooth={snapshot.preferences.cursorSmooth}
                 cursorSmear={snapshot.preferences.cursorSmear}
+                latexMathPreview={snapshot.preferences.latexMathPreview}
                 theme={theme}
                 onChange={handleDocumentChange}
               />
@@ -16108,6 +16118,20 @@ ${nextLine}` : nextLine;
                         <input
                           checked={snapshot.preferences.relativeLineNumbers}
                           onChange={handleRelativeLineNumbersToggle}
+                          type="checkbox"
+                        />
+                      </label>
+
+                      <label className="settings-toggle">
+                        <span>
+                          <strong>LaTeX math preview</strong>
+                          <small>
+                            Show an inline RaTeX preview while typing valid math in LaTeX files.
+                          </small>
+                        </span>
+                        <input
+                          checked={snapshot.preferences.latexMathPreview}
+                          onChange={handleLatexMathPreviewToggle}
                           type="checkbox"
                         />
                       </label>
