@@ -73,6 +73,7 @@ import {
   updateLiveCompilationPreference,
   updateMobileKeyboardPreference,
   updateRelativeLineNumbersPreference,
+  updateShowGitignoreInFileTreePreference,
   updateSidebarFontSizePreference,
   updateThemePreference,
   updateVimPreference,
@@ -1455,6 +1456,19 @@ function renameProjectRepositoryDisplayName(
     },
     updatedAt: now
   };
+}
+
+function filterGitignoreFromWorkspaceTree(nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] {
+  return nodes
+    .filter((node) => normalizeWorkspacePath(node.path) !== ".gitignore")
+    .map((node) =>
+      node.kind === "folder"
+        ? {
+            ...node,
+            children: filterGitignoreFromWorkspaceTree(node.children)
+          }
+        : node
+    );
 }
 
 function collectWorkspaceFolderPaths(nodes: WorkspaceTreeNode[]): string[] {
@@ -2861,6 +2875,8 @@ export function App() {
   const compileFrameRef = useRef<number | null>(null);
   const previewPendingGTimerRef = useRef<number | null>(null);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
+  const panelResizePendingWidthRef = useRef<number | null>(null);
+  const panelResizePendingRatioRef = useRef<number | null>(null);
   const panelResizeRef = useRef<{
     edge: "sidebar" | "preview" | ZenResizeEdge;
     startX: number;
@@ -3558,6 +3574,14 @@ ${nextLine}` : nextLine;
       )
     );
   }, []);
+  const handleShowGitignoreInFileTreeToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateShowGitignoreInFileTreePreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.showGitignoreInFileTree
+      )
+    );
+  }, []);
   const handleLintOnEditToggle = useCallback(() => {
     setSnapshot((currentSnapshot) =>
       updateEditorToolingPreference(currentSnapshot, {
@@ -3880,7 +3904,15 @@ ${nextLine}` : nextLine;
     () => buildWorkspaceTree(buildTrashWorkspaceEntries(snapshot.project.trash ?? [])),
     [snapshot.project.trash]
   );
-  const visibleWorkspaceTree = isTrashViewOpen ? trashWorkspaceTree : workspaceTree;
+  const visibleWorkspaceTree = useMemo(() => {
+    if (isTrashViewOpen) {
+      return trashWorkspaceTree;
+    }
+
+    return snapshot.preferences.showGitignoreInFileTree
+      ? workspaceTree
+      : filterGitignoreFromWorkspaceTree(workspaceTree);
+  }, [isTrashViewOpen, snapshot.preferences.showGitignoreInFileTree, trashWorkspaceTree, workspaceTree]);
   const workspaceFolderStorageKey = `${selectedProjectRepository?.id ?? snapshot.project.id}:${
     isTrashViewOpen ? "trash" : "files"
   }`;
@@ -11835,6 +11867,14 @@ ${nextLine}` : nextLine;
       const previewPaneVisibleDuringResize = !previewExpandedDuringResize && !isPreviewCollapsed;
       const openPaneCount = [!isSidebarCollapsed, sourcePaneVisibleDuringResize, previewPaneVisibleDuringResize].filter(Boolean).length;
       const handleWidthTotal = Math.max(0, openPaneCount - 1) * PANEL_HANDLE_WIDTH;
+      const sidebarHandleWidthDuringResize =
+        !isSidebarCollapsed && (sourcePaneVisibleDuringResize || previewPaneVisibleDuringResize)
+          ? PANEL_HANDLE_WIDTH
+          : 0;
+      const previewHandleWidthDuringResize =
+        sourcePaneVisibleDuringResize && previewPaneVisibleDuringResize
+          ? PANEL_HANDLE_WIDTH
+          : 0;
       const remainingWidth = Math.max(0, workspaceWidth - sidebarPaneWidth - handleWidthTotal);
       const sourceMinWidth = sourcePaneVisibleDuringResize ? EDITOR_MIN_WIDTH : 0;
       const startWidth =
@@ -11847,6 +11887,37 @@ ${nextLine}` : nextLine;
         startY: event.clientY,
         startWidth,
         startHeight: 0
+      };
+
+      const applyWorkspaceGridColumns = (nextSidebarWidth: number, nextPreviewWidth: number) => {
+        if (sidebarInlineExpandedDuringResize) {
+          const expandedSidebarWidth = Math.max(
+            0,
+            workspaceWidth - nextPreviewWidth - previewHandleWidthDuringResize
+          );
+          workspace.style.gridTemplateColumns = `${expandedSidebarWidth}px ${previewHandleWidthDuringResize}px ${nextPreviewWidth}px`;
+          return;
+        }
+
+        const nextSourceWidth =
+          sourcePaneVisibleDuringResize && workspaceMode === "split"
+            ? Math.max(
+                0,
+                workspaceWidth - nextSidebarWidth - nextPreviewWidth - handleWidthTotal
+              )
+            : 0;
+        workspace.style.gridTemplateColumns =
+          [
+            !isSidebarCollapsed ? `${nextSidebarWidth}px` : null,
+            !isSidebarCollapsed && (sourcePaneVisibleDuringResize || previewPaneVisibleDuringResize)
+              ? `${sidebarHandleWidthDuringResize}px`
+              : null,
+            sourcePaneVisibleDuringResize ? `${nextSourceWidth}px` : null,
+            sourcePaneVisibleDuringResize && previewPaneVisibleDuringResize
+              ? `${previewHandleWidthDuringResize}px`
+              : null,
+            previewPaneVisibleDuringResize ? `${nextPreviewWidth}px` : null
+          ].filter(Boolean).join(" ") || "minmax(0, 1fr)";
       };
 
       const handleMove = (moveEvent: PointerEvent) => {
@@ -11874,7 +11945,17 @@ ${nextLine}` : nextLine;
             SIDEBAR_MIN_WIDTH,
             maxWidth
           );
-          setSidebarWidth(clampedWidth);
+          const nextPreviewWidth = previewPaneVisibleDuringResize
+            ? getPreviewPaneWidth(
+                workspaceWidth,
+                clampedWidth,
+                handleWidthTotal,
+                previewRatio,
+                sourceMinWidth
+              )
+            : 0;
+          applyWorkspaceGridColumns(clampedWidth, nextPreviewWidth);
+          panelResizePendingWidthRef.current = clampedWidth;
           if (isSidebarCollapsed) {
             setIsSidebarCollapsed(false);
           }
@@ -11882,7 +11963,8 @@ ${nextLine}` : nextLine;
           const maxWidth = Math.max(0, remainingWidth - sourceMinWidth);
           const minWidth = Math.min(PREVIEW_MIN_WIDTH, maxWidth);
           const clampedWidth = clampPanelWidth(nextWidth, minWidth, maxWidth);
-          setPreviewRatio(remainingWidth > 0 ? clampPreviewRatio(clampedWidth / remainingWidth) : previewRatio);
+          applyWorkspaceGridColumns(sidebarPaneWidth, clampedWidth);
+          panelResizePendingRatioRef.current = remainingWidth > 0 ? clampPreviewRatio(clampedWidth / remainingWidth) : previewRatio;
           if (isPreviewCollapsed) {
             setIsPreviewCollapsed(false);
           }
@@ -11893,6 +11975,16 @@ ${nextLine}` : nextLine;
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", stopResize);
         window.removeEventListener("pointercancel", stopResize);
+        const pendingWidth = panelResizePendingWidthRef.current;
+        panelResizePendingWidthRef.current = null;
+        if (pendingWidth !== null) {
+          setSidebarWidth(pendingWidth);
+        }
+        const pendingRatio = panelResizePendingRatioRef.current;
+        panelResizePendingRatioRef.current = null;
+        if (pendingRatio !== null) {
+          setPreviewRatio(pendingRatio);
+        }
         panelResizeRef.current = null;
         panelResizeCleanupRef.current = null;
         document.body.style.cursor = "";
@@ -14550,6 +14642,20 @@ ${nextLine}` : nextLine;
             </div>
 
             <div className="git-settings-card git-settings-card--advanced">
+              <div className="settings-toggle-stack">
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Show .gitignore in Files</strong>
+                    <small>Keep .gitignore editable here without showing it in the file tree.</small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.showGitignoreInFileTree}
+                    onChange={handleShowGitignoreInFileTreeToggle}
+                    type="checkbox"
+                  />
+                </label>
+              </div>
+
               <div className="git-advanced-grid">
                 <label className="sync-field">
                   <span>.gitignore</span>

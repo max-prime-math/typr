@@ -11,6 +11,8 @@ import {
 export const WORKSPACE_ROOT_PATH = "__workspace_root__";
 const TOUCH_CONTEXT_MENU_DELAY_MS = 500;
 const TOUCH_CONTEXT_MENU_MOVE_TOLERANCE_PX = 10;
+const WORKSPACE_TREE_COLLAPSED_CARET = "";
+const WORKSPACE_TREE_EXPANDED_CARET = "";
 
 export type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
 
@@ -92,6 +94,14 @@ function getWorkspaceIconTone(badge: WorkspaceFileBadge): string {
 
 function getWorkspaceIconClassName(badge: WorkspaceFileBadge, colorful: boolean): string {
   return colorful ? `file-tree__icon file-tree__icon--${getWorkspaceIconTone(badge)}` : "file-tree__icon";
+}
+
+function getWorkspaceFolderCaret(isEmpty: boolean, isCollapsed: boolean): string {
+  if (isEmpty) {
+    return "";
+  }
+
+  return isCollapsed ? WORKSPACE_TREE_COLLAPSED_CARET : WORKSPACE_TREE_EXPANDED_CARET;
 }
 
 function getWorkspaceGitBadgeLabel(
@@ -426,6 +436,7 @@ function WorkspaceTreeBranch({
     const canMove = canMoveWorkspaceNode(node);
     const canOpenContextMenu = canRename || canDeleteWorkspaceNode(node) || canMove;
     const folderBadge: WorkspaceFileBadge = isEmpty ? "empty" : "dir";
+    const folderCaret = getWorkspaceFolderCaret(isEmpty, isCollapsed);
     const folderIcon = getWorkspaceIconGlyph(folderBadge, { open: !isCollapsed && !isEmpty });
     const folderIconClassName = getWorkspaceIconClassName(folderBadge, colorfulIcons);
     const handleFolderClick = (event: ReactMouseEvent) => {
@@ -479,8 +490,8 @@ function WorkspaceTreeBranch({
           {isRenaming ? (
             <>
               <span aria-hidden="true">{indent}</span>
+              <span aria-hidden="true" className="file-tree__caret">{folderCaret}</span>
               <span aria-hidden="true" className={folderIconClassName}>{folderIcon}</span>
-              <span aria-hidden="true"> </span>
               <input
                 autoFocus
                 className="file-tree__rename-input"
@@ -505,8 +516,9 @@ function WorkspaceTreeBranch({
           ) : (
             <span className="file-tree__text" title={node.name}>
               <span aria-hidden="true">{indent}</span>
+              <span aria-hidden="true" className="file-tree__caret">{folderCaret}</span>
               <span aria-hidden="true" className={folderIconClassName}>{folderIcon}</span>
-              <span>{` ${node.name}`}</span>
+              <span>{node.name}</span>
             </span>
           )}
           {gitStatus ? (
@@ -578,8 +590,8 @@ function WorkspaceTreeBranch({
         role="treeitem"
       >
         <span aria-hidden="true">{indent}</span>
+        <span aria-hidden="true" className="file-tree__caret" />
         <span aria-hidden="true" className={fileIconClassName}>{fileIcon}</span>
-        <span aria-hidden="true"> </span>
         <input
           autoFocus
           className="file-tree__rename-input"
@@ -634,8 +646,9 @@ function WorkspaceTreeBranch({
     >
       <span className="file-tree__text" title={node.name}>
         <span aria-hidden="true">{indent}</span>
+        <span aria-hidden="true" className="file-tree__caret" />
         <span aria-hidden="true" className={fileIconClassName}>{fileIcon}</span>
-        <span>{` ${node.name}`}</span>
+        <span>{node.name}</span>
       </span>
       {gitStatus ? (
         <span

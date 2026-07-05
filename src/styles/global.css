@@ -6,6 +6,14 @@
   font-display: block;
 }
 
+@font-face {
+  font-family: "Typr File Tree Symbols Nerd Font";
+  src: url("../fonts/SymbolsNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   color-scheme: light;
   font-family:
@@ -2401,7 +2409,20 @@ button {
 }
 
 .sidebar-section--files {
+  --file-tree-edge-fade-width: 0.85rem;
   position: relative;
+  mask-image: linear-gradient(
+    90deg,
+    #000 0,
+    #000 calc(100% - var(--file-tree-edge-fade-width)),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 0,
+    #000 calc(100% - var(--file-tree-edge-fade-width)),
+    transparent 100%
+  );
 }
 
 .sidebar-section--mitex {
@@ -2911,9 +2932,10 @@ button {
 
 .file-tree__branch-header,
 .file-tree .file-row {
-  display: block;
-  width: 100%;
-  min-width: 0;
+  box-sizing: border-box;
+  display: inline-block;
+  width: max-content;
+  min-width: 100%;
   padding: 0 0.35rem 0 0.2rem;
   border: 0;
   border-radius: 0;
@@ -2956,8 +2978,15 @@ button {
   white-space: pre;
 }
 
+.file-tree__caret,
 .file-tree__icon {
+  display: inline-block;
+  width: 2ch;
   color: inherit;
+}
+
+.file-tree__icon {
+  font-family: "Typr File Tree Symbols Nerd Font", "Symbols Nerd Font", "Symbols Nerd Font Mono", monospace;
 }
 
 .file-tree__icon--folder {

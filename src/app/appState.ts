@@ -285,6 +285,7 @@ export interface AppPreferences {
   editorFontSize: number;
   sidebarFontSize: number;
   colorfulFileTreeIcons: boolean;
+  showGitignoreInFileTree: boolean;
 }
 
 export interface AppSnapshot {
@@ -468,7 +469,8 @@ export function createDefaultSnapshot(): AppSnapshot {
       mobileKeyboard: DEFAULT_MOBILE_KEYBOARD_PREFERENCES,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
       sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
-      colorfulFileTreeIcons: false
+      colorfulFileTreeIcons: false,
+      showGitignoreInFileTree: false
     }
   };
 }
@@ -541,7 +543,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
         (snapshot.preferences as Partial<AppPreferences>).sidebarFontSize
       ),
       colorfulFileTreeIcons:
-        (snapshot.preferences as Partial<AppPreferences>).colorfulFileTreeIcons ?? false
+        (snapshot.preferences as Partial<AppPreferences>).colorfulFileTreeIcons ?? false,
+      showGitignoreInFileTree:
+        (snapshot.preferences as Partial<AppPreferences>).showGitignoreInFileTree ?? false
     },
     project: {
       ...snapshot.project,
@@ -2333,6 +2337,19 @@ export function updateColorfulFileTreeIconsPreference(
     preferences: {
       ...snapshot.preferences,
       colorfulFileTreeIcons
+    }
+  };
+}
+
+export function updateShowGitignoreInFileTreePreference(
+  snapshot: AppSnapshot,
+  showGitignoreInFileTree: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      showGitignoreInFileTree
     }
   };
 }
