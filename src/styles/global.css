@@ -963,7 +963,6 @@ button {
 
 .pane--sidebar .project-manager__select span,
 .pane--sidebar .file-row__meta,
-.pane--sidebar .file-tree__chevron-text,
 .pane--sidebar .sidebar-search-toggle,
 .pane--sidebar .sidebar-diagnostic strong {
   font-size: calc(var(--sidebar-font-size) * 0.84);
@@ -2918,11 +2917,10 @@ button {
 }
 
 .file-tree__branch-header {
-  display: flex;
-  position: relative;
+  display: grid;
+  grid-template-columns: 1ch 1ch minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: flex-start;
-  gap: 1ch;
+  gap: 0;
   min-height: var(--file-tree-row-height);
   padding: 0 0.35rem 0 0.2rem;
   color: var(--editor-foreground);
@@ -2932,15 +2930,6 @@ button {
   border-radius: 0;
 }
 
-.file-tree__branch-header--button {
-  width: 100%;
-  border: 0;
-  background: transparent;
-  text-align: left;
-}
-
-.file-tree__branch-header--button:hover,
-.file-tree__branch-header--button:focus-visible,
 .file-tree__branch-header:hover,
 .file-tree__branch-header:focus-within {
   outline: none;
@@ -2961,30 +2950,8 @@ button {
   color: color-mix(in srgb, var(--editor-foreground) 72%, var(--editor-background));
 }
 
-.file-tree__toggle-button {
-  display: inline-flex;
-  position: absolute;
-  left: calc(0.2rem - 1.15ch);
-  align-items: center;
-  justify-content: center;
-  width: 1.1ch;
-  height: var(--file-tree-row-height);
-  flex: 0 0 auto;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: color-mix(in srgb, var(--editor-foreground) 70%, var(--editor-background));
-  font: inherit;
-}
-
-.file-tree__toggle-button:hover,
-.file-tree__toggle-button:focus-visible {
-  outline: none;
-  color: var(--editor-foreground);
-}
-
 .file-tree__branch-label {
-  flex: 1 1 auto;
+  grid-column: 3;
   min-width: 0;
   overflow: hidden;
   font-weight: 400;
@@ -2994,7 +2961,7 @@ button {
 }
 
 .file-tree__rename-input {
-  flex: 1 1 auto;
+  grid-column: 3;
   min-width: 0;
   height: calc(var(--file-tree-row-height) - 0.1rem);
   padding: 0 0.25rem;
@@ -3009,27 +2976,6 @@ button {
 .file-tree__rename-input:focus {
   outline: none;
   border-color: var(--accent);
-}
-
-.file-tree__chevron-text,
-.tree-disclosure-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.1ch;
-  flex: 0 0 1.1ch;
-  color: color-mix(in srgb, var(--editor-foreground) 68%, var(--editor-background));
-  font: inherit;
-  line-height: 1;
-}
-
-.file-tree__branch-header > .file-tree__chevron-text {
-  position: absolute;
-  left: calc(0.2rem - 1.15ch);
-}
-
-.file-tree__chevron-text--empty {
-  color: transparent;
 }
 
 .file-tree__items {
@@ -3065,14 +3011,15 @@ button {
 }
 
 .file-tree__entry-row {
+  display: grid;
+  grid-template-columns: 1ch 1ch minmax(0, 1fr) auto;
   width: 100%;
   align-items: center;
-  justify-content: flex-start;
-  gap: 1ch;
+  gap: 0;
 }
 
 .file-tree__entry-row .file-row__name {
-  flex: 1 1 auto;
+  grid-column: 3;
   min-width: 0;
   overflow: hidden;
   font-weight: 400;
@@ -3082,14 +3029,15 @@ button {
 }
 
 .file-tree__entry-row .file-row__meta {
-  flex: 0 0 auto;
+  grid-column: 4;
 }
 
 .file-tree__node-icon {
   display: inline-flex;
-  width: 2ch;
+  grid-column: 1;
+  width: 1ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 2ch;
+  overflow: visible;
   align-items: center;
   justify-content: flex-start;
   font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "Symbols Nerd Font Mono", monospace;
@@ -3345,6 +3293,17 @@ button {
   height: 1rem;
   flex: 0 0 1rem;
   padding: 0;
+}
+
+.tree-disclosure-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1ch;
+  flex: 0 0 1.1ch;
+  color: color-mix(in srgb, var(--editor-foreground) 68%, var(--editor-background));
+  font: inherit;
+  line-height: 1;
 }
 
 .outline-row:hover .tree-disclosure-icon,

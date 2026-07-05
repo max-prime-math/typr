@@ -439,10 +439,6 @@ function WorkspaceTreeBranch({
       return false;
     }
 
-    if ((event.target as HTMLElement).closest(".file-tree__toggle-button")) {
-      return false;
-    }
-
     onActivateNode(node, {
       additive: event.metaKey || event.ctrlKey,
       range: event.shiftKey
@@ -505,30 +501,6 @@ function WorkspaceTreeBranch({
           role="treeitem"
           aria-expanded={isEmpty ? undefined : !isCollapsed}
         >
-          {isEmpty ? (
-            <span
-              aria-hidden="true"
-              className="file-tree__chevron-text file-tree__chevron-text--empty"
-              title="Empty folder"
-            >
-              •
-            </span>
-          ) : (
-            <button
-              className="file-tree__toggle-button"
-              onClick={() => onToggleFolder(node.path)}
-              type="button"
-              aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
-              title={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
-            >
-              <span
-                aria-hidden="true"
-                className="tree-disclosure-icon"
-              >
-                {isCollapsed ? "▸" : "▾"}
-              </span>
-            </button>
-          )}
           <span
             className={`file-tree__node-icon file-tree__node-icon--${getWorkspaceIconTone(isEmpty ? "empty" : "dir")}`}
             aria-hidden="true"
