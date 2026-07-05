@@ -9855,18 +9855,27 @@ ${nextLine}` : nextLine;
   };
 
   const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
+    const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
 
-    if (!file) {
+    if (files.length === 0) {
       return;
     }
 
-    const content = isTextWorkspaceFile(file.name)
-      ? await file.text()
-      : new Uint8Array(await file.arrayBuffer());
+    const uploadedFiles = await Promise.all(
+      files.map(async (file) => ({
+        name: file.name,
+        content: isTextWorkspaceFile(file.name)
+          ? await file.text()
+          : new Uint8Array(await file.arrayBuffer())
+      }))
+    );
+
     setSnapshot((currentSnapshot) =>
-      createDocumentFromFile(currentSnapshot, file.name, content)
+      uploadedFiles.reduce(
+        (nextSnapshot, file) => createDocumentFromFile(nextSnapshot, file.name, file.content),
+        currentSnapshot
+      )
     );
   };
 
@@ -17822,6 +17831,7 @@ ${nextLine}` : nextLine;
         ref={documentUploadInputRef}
         accept={WORKSPACE_UPLOAD_ACCEPT}
         className="visually-hidden"
+        multiple
         onChange={handleUploadDocument}
         tabIndex={-1}
         type="file"
