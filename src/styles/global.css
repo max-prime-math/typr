@@ -2921,6 +2921,7 @@ button {
   display: flex;
   position: relative;
   align-items: center;
+  justify-content: flex-start;
   gap: 0;
   min-height: var(--file-tree-row-height);
   padding: 0 0.35rem 0 0.2rem;
@@ -3066,6 +3067,7 @@ button {
 .file-tree__entry-row {
   width: 100%;
   align-items: center;
+  justify-content: flex-start;
   gap: 0;
 }
 
@@ -3073,6 +3075,8 @@ button {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  font-weight: 400;
+  letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3083,9 +3087,10 @@ button {
 
 .file-tree__node-icon {
   display: inline-flex;
-  width: 2ch;
+  width: 1ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 2ch;
+  flex: 0 0 1ch;
+  margin-right: 1ch;
   align-items: center;
   justify-content: flex-start;
   font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "Symbols Nerd Font Mono", monospace;
