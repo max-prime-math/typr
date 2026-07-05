@@ -284,6 +284,7 @@ export interface AppPreferences {
   mobileKeyboard: MobileKeyboardPreferences;
   editorFontSize: number;
   sidebarFontSize: number;
+  colorfulFileTreeIcons: boolean;
 }
 
 export interface AppSnapshot {
@@ -466,7 +467,8 @@ export function createDefaultSnapshot(): AppSnapshot {
       keybindings: DEFAULT_KEYBINDINGS,
       mobileKeyboard: DEFAULT_MOBILE_KEYBOARD_PREFERENCES,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
-      sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE
+      sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
+      colorfulFileTreeIcons: false
     }
   };
 }
@@ -537,7 +539,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       ),
       sidebarFontSize: clampSidebarFontSize(
         (snapshot.preferences as Partial<AppPreferences>).sidebarFontSize
-      )
+      ),
+      colorfulFileTreeIcons:
+        (snapshot.preferences as Partial<AppPreferences>).colorfulFileTreeIcons ?? false
     },
     project: {
       ...snapshot.project,
@@ -2316,6 +2320,19 @@ export function updateSidebarFontSizePreference(
     preferences: {
       ...snapshot.preferences,
       sidebarFontSize: clampSidebarFontSize(sidebarFontSize)
+    }
+  };
+}
+
+export function updateColorfulFileTreeIconsPreference(
+  snapshot: AppSnapshot,
+  colorfulFileTreeIcons: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      colorfulFileTreeIcons
     }
   };
 }

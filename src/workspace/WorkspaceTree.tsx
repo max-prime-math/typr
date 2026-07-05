@@ -14,45 +14,84 @@ const TOUCH_CONTEXT_MENU_MOVE_TOLERANCE_PX = 10;
 
 export type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
 
-function getWorkspaceIconTitle(badge: WorkspaceFileBadge): string {
+function getWorkspaceIconGlyph(badge: WorkspaceFileBadge, options: { open?: boolean } = {}): string {
   switch (badge) {
-    case "typ":
-      return "Typst file";
-    case "tex":
-      return "TeX/LaTeX file";
-    case "md":
-      return "Markdown file";
-    case "img":
-      return "Image file";
-    case "pdf":
-      return "PDF file";
-    case "json":
-      return "JSON file";
-    case "yaml":
-      return "YAML file";
-    case "csv":
-      return "CSV file";
-    case "config":
-      return "Configuration file";
-    case "git":
-      return "Git file";
-    case "info":
-      return "Readme file";
-    case "bib":
-      return "Bibliography file";
-    case "code":
-      return "Code file";
-    case "txt":
-      return "Text file";
-    case "archive":
-      return "Archive file";
-    case "bin":
-      return "Binary file";
     case "dir":
-      return "Folder";
+      return options.open ? "" : "";
     case "empty":
-      return "Empty folder";
+      return "";
+    case "typ":
+      return "";
+    case "tex":
+      return "";
+    case "md":
+      return "";
+    case "img":
+      return "";
+    case "pdf":
+      return "";
+    case "json":
+      return "";
+    case "yaml":
+      return "";
+    case "csv":
+      return "";
+    case "config":
+      return "";
+    case "git":
+      return "";
+    case "info":
+      return "󰂺";
+    case "bib":
+      return "󱉟";
+    case "code":
+      return "";
+    case "txt":
+      return "󰈙";
+    case "archive":
+      return "";
+    case "bin":
+      return "";
+    default:
+      return "";
   }
+}
+
+function getWorkspaceIconTone(badge: WorkspaceFileBadge): string {
+  switch (badge) {
+    case "dir":
+    case "empty":
+      return "folder";
+    case "typ":
+      return "typ";
+    case "tex":
+    case "bib":
+      return "tex";
+    case "md":
+    case "info":
+      return "md";
+    case "img":
+      return "img";
+    case "pdf":
+      return "pdf";
+    case "json":
+    case "yaml":
+    case "csv":
+    case "config":
+      return "data";
+    case "git":
+      return "git";
+    case "archive":
+      return "archive";
+    case "bin":
+      return "bin";
+    default:
+      return "default";
+  }
+}
+
+function getWorkspaceIconClassName(badge: WorkspaceFileBadge, colorful: boolean): string {
+  return colorful ? `file-tree__icon file-tree__icon--${getWorkspaceIconTone(badge)}` : "file-tree__icon";
 }
 
 function getWorkspaceGitBadgeLabel(
@@ -124,6 +163,7 @@ function getWorkspaceNodeGitStatus(
 
 interface WorkspaceTreeProps {
   collapsedPaths: Record<string, boolean>;
+  colorfulIcons?: boolean;
   gitStatusByPath?: Record<string, WorkspaceGitBadgeKind>;
   nodes: WorkspaceTreeNode[];
   rootLabel: string;
@@ -155,6 +195,7 @@ interface WorkspaceTreeProps {
 
 export function WorkspaceTree({
   collapsedPaths,
+  colorfulIcons = false,
   gitStatusByPath = {},
   nodes,
   rootLabel,
@@ -215,6 +256,8 @@ export function WorkspaceTree({
           <WorkspaceTreeBranch
             key={node.path}
             collapsedPaths={collapsedPaths}
+            colorfulIcons={colorfulIcons}
+            depth={0}
             gitStatusByPath={gitStatusByPath}
             node={node}
             renamingPath={renamingPath}
@@ -246,6 +289,8 @@ export function WorkspaceTree({
 
 interface WorkspaceTreeBranchProps {
   collapsedPaths: Record<string, boolean>;
+  colorfulIcons: boolean;
+  depth: number;
   gitStatusByPath: Record<string, WorkspaceGitBadgeKind>;
   node: WorkspaceTreeNode;
   renamingPath: string | null;
@@ -273,6 +318,8 @@ interface WorkspaceTreeBranchProps {
 
 function WorkspaceTreeBranch({
   collapsedPaths,
+  colorfulIcons,
+  depth,
   gitStatusByPath,
   node,
   renamingPath,
@@ -297,6 +344,7 @@ function WorkspaceTreeBranch({
   const isRenaming = renamingPath === node.path;
   const isSelected = selectedPaths.includes(node.path);
   const gitStatus = getWorkspaceNodeGitStatus(node, gitStatusByPath);
+  const indent = " ".repeat(depth * 2);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
   const suppressNextClickRef = useRef(false);
@@ -363,10 +411,6 @@ function WorkspaceTreeBranch({
       return false;
     }
 
-    if ((event.target as HTMLElement).closest(".file-tree__toggle-button")) {
-      return false;
-    }
-
     onActivateNode(node, {
       additive: event.metaKey || event.ctrlKey,
       range: event.shiftKey
@@ -381,6 +425,9 @@ function WorkspaceTreeBranch({
     const canRename = canRenameWorkspaceNode(node);
     const canMove = canMoveWorkspaceNode(node);
     const canOpenContextMenu = canRename || canDeleteWorkspaceNode(node) || canMove;
+    const folderBadge: WorkspaceFileBadge = isEmpty ? "empty" : "dir";
+    const folderIcon = getWorkspaceIconGlyph(folderBadge, { open: !isCollapsed && !isEmpty });
+    const folderIconClassName = getWorkspaceIconClassName(folderBadge, colorfulIcons);
     const handleFolderClick = (event: ReactMouseEvent) => {
       const didActivate = handleNodeClick(event);
 
@@ -429,62 +476,38 @@ function WorkspaceTreeBranch({
           role="treeitem"
           aria-expanded={isEmpty ? undefined : !isCollapsed}
         >
-          {isEmpty ? (
-            <span
-              aria-hidden="true"
-              className="file-tree__chevron-text file-tree__chevron-text--empty"
-              title="Empty folder"
-            >
-              •
-            </span>
-          ) : (
-            <button
-              className="file-tree__toggle-button"
-              onClick={() => onToggleFolder(node.path)}
-              type="button"
-              aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
-              title={`${isCollapsed ? "Expand" : "Collapse"} ${node.name}`}
-            >
-              <span
-                aria-hidden="true"
-                className={`tree-disclosure-icon ${isCollapsed ? "tree-disclosure-icon--collapsed" : ""}`}
-              />
-            </button>
-          )}
-          <span
-            className={`file-tree__folder-icon ${
-              isEmpty
-                ? "file-tree__folder-icon--empty"
-                : isCollapsed
-                  ? "file-tree__folder-icon--closed"
-                  : "file-tree__folder-icon--open"
-            }`}
-            aria-hidden="true"
-            title={getWorkspaceIconTitle(isEmpty ? "empty" : "dir")}
-          />
           {isRenaming ? (
-            <input
-              autoFocus
-              className="file-tree__rename-input"
-              onBlur={onRenameCommit}
-              onChange={(event) => onRenameDraftChange(event.target.value)}
-              onClick={(event) => event.stopPropagation()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  onRenameCommit();
-                }
+            <>
+              <span aria-hidden="true">{indent}</span>
+              <span aria-hidden="true" className={folderIconClassName}>{folderIcon}</span>
+              <span aria-hidden="true"> </span>
+              <input
+                autoFocus
+                className="file-tree__rename-input"
+                onBlur={onRenameCommit}
+                onChange={(event) => onRenameDraftChange(event.target.value)}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onRenameCommit();
+                  }
 
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  onRenameCancel();
-                }
-              }}
-              type="text"
-              value={renameDraft}
-            />
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    onRenameCancel();
+                  }
+                }}
+                type="text"
+                value={renameDraft}
+              />
+            </>
           ) : (
-            <span className="file-tree__branch-label" title={node.name}>{node.name}</span>
+            <span className="file-tree__text" title={node.name}>
+              <span aria-hidden="true">{indent}</span>
+              <span aria-hidden="true" className={folderIconClassName}>{folderIcon}</span>
+              <span>{` ${node.name}`}</span>
+            </span>
           )}
           {gitStatus ? (
             <span
@@ -502,6 +525,8 @@ function WorkspaceTreeBranch({
               <WorkspaceTreeBranch
                 key={child.path}
                 collapsedPaths={collapsedPaths}
+                colorfulIcons={colorfulIcons}
+                depth={depth + 1}
                 gitStatusByPath={gitStatusByPath}
                 node={child}
                 renamingPath={renamingPath}
@@ -531,6 +556,8 @@ function WorkspaceTreeBranch({
   }
 
   const badge = getWorkspaceNodeBadge(node);
+  const fileIcon = getWorkspaceIconGlyph(badge);
+  const fileIconClassName = getWorkspaceIconClassName(badge, colorfulIcons);
   const canMove = canMoveWorkspaceNode(node);
 
   if (isRenaming) {
@@ -550,11 +577,9 @@ function WorkspaceTreeBranch({
         }}
         role="treeitem"
       >
-        <span
-          aria-hidden="true"
-          className={`file-tree__file-icon file-tree__file-icon--${badge}`}
-          title={getWorkspaceIconTitle(badge)}
-        />
+        <span aria-hidden="true">{indent}</span>
+        <span aria-hidden="true" className={fileIconClassName}>{fileIcon}</span>
+        <span aria-hidden="true"> </span>
         <input
           autoFocus
           className="file-tree__rename-input"
@@ -607,12 +632,11 @@ function WorkspaceTreeBranch({
       role="treeitem"
       type="button"
     >
-      <span
-        aria-hidden="true"
-        className={`file-tree__file-icon file-tree__file-icon--${badge}`}
-        title={getWorkspaceIconTitle(badge)}
-      />
-      <span className="file-row__name" title={node.name}>{node.name}</span>
+      <span className="file-tree__text" title={node.name}>
+        <span aria-hidden="true">{indent}</span>
+        <span aria-hidden="true" className={fileIconClassName}>{fileIcon}</span>
+        <span>{` ${node.name}`}</span>
+      </span>
       {gitStatus ? (
         <span
           aria-label={getWorkspaceGitBadgeLabel(gitStatus, node.kind)}
