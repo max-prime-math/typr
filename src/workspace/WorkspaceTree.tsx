@@ -55,45 +55,46 @@ function getWorkspaceIconTitle(badge: WorkspaceFileBadge): string {
   }
 }
 
-function getWorkspaceIconGlyph(badge: WorkspaceFileBadge): string {
+function getWorkspaceIconGlyph(badge: WorkspaceFileBadge, options: { open?: boolean } = {}): string {
   switch (badge) {
     case "dir":
+      return options.open ? "" : "";
     case "empty":
-      return "dir";
+      return "";
     case "typ":
-      return "typ";
+      return "󰗀";
     case "tex":
-      return "tex";
+      return "";
     case "md":
-      return "md";
+      return "";
     case "img":
-      return "img";
+      return "";
     case "pdf":
-      return "pdf";
+      return "";
     case "json":
-      return "jsn";
+      return "";
     case "yaml":
-      return "yml";
+      return "";
     case "csv":
-      return "csv";
+      return "";
     case "config":
-      return "cfg";
+      return "";
     case "git":
-      return "git";
+      return "";
     case "info":
-      return "md";
+      return "󰂺";
     case "bib":
-      return "bib";
+      return "󱉟";
     case "code":
-      return "src";
+      return "";
     case "txt":
-      return "txt";
+      return "󰈙";
     case "archive":
-      return "zip";
+      return "";
     case "bin":
-      return "bin";
+      return "";
     default:
-      return "file";
+      return "";
   }
 }
 
@@ -533,7 +534,7 @@ function WorkspaceTreeBranch({
             aria-hidden="true"
             title={getWorkspaceIconTitle(isEmpty ? "empty" : "dir")}
           >
-            {getWorkspaceIconGlyph(isEmpty ? "empty" : "dir")}
+            {getWorkspaceIconGlyph(isEmpty ? "empty" : "dir", { open: !isCollapsed && !isEmpty })}
           </span>
           {isRenaming ? (
             <input

@@ -1,6 +1,6 @@
 @font-face {
-  font-family: "Symbols Nerd Font Mono";
-  src: url("../fonts/SymbolsNerdFontMono-Regular.ttf") format("truetype");
+  font-family: "Typr File Tree Nerd Font";
+  src: url("../fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
   font-weight: 400;
   font-style: normal;
   font-display: block;
@@ -2100,7 +2100,6 @@ button {
   background: transparent;
   color: var(--text);
   text-align: center;
-  text-transform: lowercase;
 }
 
 .source-heading-menu__item:hover,
@@ -2897,12 +2896,7 @@ button {
   cursor: default;
   -webkit-touch-callout: none;
   color: var(--editor-foreground);
-  font-family:
-    var(--editor-font-family),
-    "Iosevka Term",
-    "JetBrains Mono",
-    "SFMono-Regular",
-    monospace;
+  font-family: "Iosevka Term", "JetBrains Mono", "SFMono-Regular", monospace;
   font-size: 0.86rem;
   line-height: 1.35;
 }
@@ -3081,13 +3075,13 @@ button {
 
 .file-tree__node-icon {
   display: inline-flex;
-  width: 3.2ch;
+  width: 2ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 3.2ch;
+  flex: 0 0 2ch;
   align-items: center;
   justify-content: center;
-  font-family: var(--editor-font-family), "Iosevka Term", "JetBrains Mono", monospace;
-  font-size: 0.72em;
+  font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "Symbols Nerd Font Mono", monospace;
+  font-size: 1em;
   font-weight: 400;
   line-height: 1;
   text-align: center;
