@@ -3081,7 +3081,7 @@ button {
   align-items: center;
   justify-content: center;
   font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "Symbols Nerd Font Mono", monospace;
-  font-size: 1em;
+  font-size: 1.1em;
   font-weight: 400;
   line-height: 1;
   text-align: center;
@@ -3093,6 +3093,7 @@ button {
 
 .file-tree__node-icon--typ {
   color: #2aa198;
+  font-size: 1em;
 }
 
 .file-tree__node-icon--tex {
