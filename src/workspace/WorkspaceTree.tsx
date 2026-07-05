@@ -62,7 +62,7 @@ function getWorkspaceIconGlyph(badge: WorkspaceFileBadge, options: { open?: bool
     case "empty":
       return "";
     case "typ":
-      return "󰗀";
+      return "";
     case "tex":
       return "";
     case "md":
