@@ -137,6 +137,7 @@ import {
 } from "../compiler/sourceFileTypes";
 import type { CompileAssetFile, CompileDiagnostic, CompileMetadata } from "../compiler/types";
 import { exportTypstPdf } from "../compiler/typstRuntime";
+import { normalizeTypstCompilerPath } from "../compiler/typstAssets";
 import {
   clearTypstPackageCache,
   ensureTypstPackageReferences,
@@ -2791,6 +2792,36 @@ function buildGraphShadowFiles(graphs: GraphAsset[]): CompileAssetFile[] {
       content: graph.content
     });
   }
+
+  return [...assets.values()];
+}
+
+function buildTypstProjectShadowFiles(
+  project: TyprProjectRepository | null,
+  mainFilePath: string,
+  mainSource: string
+): CompileAssetFile[] {
+  const assets = new Map<string, CompileAssetFile>();
+  const normalizedMainFilePath = normalizeTypstCompilerPath(mainFilePath);
+
+  if (project) {
+    for (const entry of listProjectEntries(project)) {
+      if (entry.kind !== "file") {
+        continue;
+      }
+
+      const path = normalizeTypstCompilerPath(entry.path);
+      assets.set(path, {
+        path,
+        content: typeof entry.content === "string" ? TEXT_ENCODER.encode(entry.content) : entry.content
+      });
+    }
+  }
+
+  assets.set(normalizedMainFilePath, {
+    path: normalizedMainFilePath,
+    content: TEXT_ENCODER.encode(mainSource)
+  });
 
   return [...assets.values()];
 }
@@ -6186,7 +6217,17 @@ ${nextLine}` : nextLine;
       typeof performance === "undefined" ? 0 : performance.now();
 
     try {
-      const compileAssets = [...diagramAssets, ...graphAssets];
+      const compileAssets = sourceLanguage === "typst"
+        ? [
+            ...buildTypstProjectShadowFiles(
+              selectedProjectRepositoryRef.current,
+              sourcePath,
+              source
+            ),
+            ...diagramAssets,
+            ...graphAssets
+          ]
+        : [...diagramAssets, ...graphAssets];
       let result: CompileResult;
       let compileUsedCachedOutput = false;
       let generatedLatexPdf: {
@@ -6243,7 +6284,9 @@ ${nextLine}` : nextLine;
           } satisfies CompileResult;
         }
       } else if (sourceLanguage === "typst") {
-        result = await compiler.compileDocument(source, compileAssets);
+        result = await compiler.compileDocument(source, compileAssets, {
+          mainFilePath: sourcePath
+        });
       } else {
         result = {
           ok: false,
@@ -10302,10 +10345,19 @@ ${nextLine}` : nextLine;
 
         pdfBytes = result.output.artifactData;
       } else if (isTypstSourceFile(activeSourcePath)) {
-        pdfBytes = await exportTypstPdf(sourceEditorValue, [
-          ...diagramShadowAssets,
-          ...graphShadowAssets
-        ]);
+        pdfBytes = await exportTypstPdf(
+          sourceEditorValue,
+          [
+            ...buildTypstProjectShadowFiles(
+              selectedProjectRepository,
+              activeSourcePath,
+              sourceEditorValue
+            ),
+            ...diagramShadowAssets,
+            ...graphShadowAssets
+          ],
+          { mainFilePath: activeSourcePath }
+        );
       } else {
         throw new Error("The active file cannot be exported as PDF.");
       }
@@ -10383,7 +10435,14 @@ ${nextLine}` : nextLine;
       sourcePath === activePath
         ? sourceEditorValue
         : decodeProjectTextFile(project, sourcePath);
-    const compileAssets = [...diagramShadowAssets, ...graphShadowAssets];
+    const typstCompileSource = createThemedPreviewSource(source, themeRef.current ?? theme, isPaperView);
+    const compileAssets = sourceLanguage === "typst"
+      ? [
+          ...buildTypstProjectShadowFiles(project, sourcePath, typstCompileSource),
+          ...diagramShadowAssets,
+          ...graphShadowAssets
+        ]
+      : [...diagramShadowAssets, ...graphShadowAssets];
     setIsCompiling(true);
 
     try {
@@ -10398,8 +10457,9 @@ ${nextLine}` : nextLine;
               onStatusChange: handleCompilerStatusChange
             })
           : await compiler.compileDocument(
-              createThemedPreviewSource(source, themeRef.current ?? theme, isPaperView),
-              compileAssets
+              typstCompileSource,
+              compileAssets,
+              { mainFilePath: sourcePath }
             );
 
       setCompileResult(result);

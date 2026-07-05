@@ -1,12 +1,11 @@
-import type { CompileResult } from "./types";
-import type { CompilerStatus } from "./types";
-import type { CompileAssetFile } from "./types";
+import type { CompileAssetFile, CompileDocumentOptions, CompileResult, CompilerStatus } from "./types";
 
 export interface CompilerCompileRequest {
   id: number;
   type: "compile";
   source: string;
   assets?: CompileAssetFile[];
+  options?: CompileDocumentOptions;
 }
 
 export type CompilerWorkerRequest = CompilerCompileRequest;

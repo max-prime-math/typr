@@ -86,6 +86,10 @@ export interface CompileAssetFile {
   content: Uint8Array;
 }
 
+export interface CompileDocumentOptions {
+  mainFilePath?: string;
+}
+
 export interface CompileSuccess {
   ok: true;
   engine: CompilerEngine;
@@ -109,6 +113,10 @@ export interface TypstCompilerOptions {
 }
 
 export interface TypstCompiler {
-  compileDocument(source: string, assets?: CompileAssetFile[]): Promise<CompileResult>;
+  compileDocument(
+    source: string,
+    assets?: CompileAssetFile[],
+    options?: CompileDocumentOptions
+  ): Promise<CompileResult>;
   dispose(): void;
 }

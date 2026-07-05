@@ -1,9 +1,8 @@
 import { ensureTypstQueueMicrotask } from "./typstPolyfills";
 import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
 import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
-import { loadCoreFontData, MAIN_FILE_PATH } from "./typstAssets";
-import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
-import type { CompileAssetFile } from "./types";
+import { loadCoreFontData, normalizeTypstCompilerPath, TYPST_PROJECT_ROOT } from "./typstAssets";
+import type { CompileAssetFile, CompileDocumentOptions } from "./types";
 import type { TypstCompiler, TypstRenderer } from "@myriaddreamin/typst.ts";
 
 ensureTypstQueueMicrotask();
@@ -41,20 +40,22 @@ export async function getTypstRenderer(): Promise<TypstRenderer> {
 
 export async function exportTypstPdf(
   source: string,
-  assets: CompileAssetFile[] = []
+  assets: CompileAssetFile[] = [],
+  options: CompileDocumentOptions = {}
 ): Promise<Uint8Array> {
   const { CompileFormatEnum } = await import("@myriaddreamin/typst.ts/compiler");
   const compiler = await getTypstCompiler();
   await compiler.reset();
   compiler.resetShadow();
-  compiler.addSource(MAIN_FILE_PATH, source);
   for (const asset of assets) {
-    compiler.mapShadow(asset.path, asset.content);
+    compiler.mapShadow(normalizeTypstCompilerPath(asset.path), asset.content);
   }
+  const mainFilePath = normalizeTypstCompilerPath(options.mainFilePath);
+  compiler.addSource(mainFilePath, source);
 
   const result = await compiler.compile({
-    mainFilePath: MAIN_FILE_PATH,
-    root: DIAGRAM_COMPILER_ROOT,
+    mainFilePath,
+    root: TYPST_PROJECT_ROOT,
     format: CompileFormatEnum.pdf,
     diagnostics: "full"
   });

@@ -5,10 +5,10 @@ import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { loadFonts } from "@myriaddreamin/typst.ts/options.init";
 import {
   loadCoreFontData,
-  MAIN_FILE_PATH,
+  normalizeTypstCompilerPath,
+  TYPST_PROJECT_ROOT,
   type TypstFontLoadProgress
 } from "./typstAssets";
-import { DIAGRAM_COMPILER_ROOT } from "../diagram/diagramFiles";
 import { extractTypstPackageReferencesFromCompileInputs } from "./typstPackages";
 import { normalizeTypstDiagnostic } from "./diagnostics";
 import { createTypstPackageStatusReporter } from "./typstPackageStatus";
@@ -25,6 +25,7 @@ import {
 } from "./typstTimeouts";
 import type {
   CompileAssetFile,
+  CompileDocumentOptions,
   CompilerStatus,
   CompileDiagnostic,
   CompileFailure,
@@ -185,7 +186,8 @@ export function createMainThreadTypstCompiler(
   return {
     async compileDocument(
       source: string,
-      assets: CompileAssetFile[] = []
+      assets: CompileAssetFile[] = [],
+      options: CompileDocumentOptions = {}
     ): Promise<CompileResult> {
       await withTimeout(
         warmCompiler(),
@@ -215,17 +217,18 @@ export function createMainThreadTypstCompiler(
             const module = await loadTypstModule();
             const compiler = await getCompilerDriver();
             compiler.resetShadow();
-            compiler.addSource(MAIN_FILE_PATH, source);
             for (const asset of assets) {
-              compiler.mapShadow(asset.path, asset.content);
+              compiler.mapShadow(normalizeTypstCompilerPath(asset.path), asset.content);
             }
+            const mainFilePath = normalizeTypstCompilerPath(options.mainFilePath);
+            compiler.addSource(mainFilePath, source);
 
             emitStatus({
               phase: "compiling",
               mode: "main-thread",
               label: "Compiling Typst document"
             });
-            const compileOutput = await compileTypstVectorWithSourceMap(compiler);
+            const compileOutput = await compileTypstVectorWithSourceMap(compiler, mainFilePath);
             fontsPrimed = true;
 
             const diagnostics = normalizeTypstDiagnostics(
@@ -310,7 +313,8 @@ export function createMainThreadTypstCompiler(
 }
 
 function compileTypstVectorWithSourceMap(
-  compiler: TypstCompilerDriver
+  compiler: TypstCompilerDriver,
+  mainFilePath: string
 ): Promise<{
   hasError?: boolean;
   diagnostics?: TypstStructuredDiagnostic[];
@@ -319,8 +323,8 @@ function compileTypstVectorWithSourceMap(
   return compiler.withIncrementalServer(async (server) => {
     server.setAttachDebugInfo(true);
     return compiler.compile({
-      mainFilePath: MAIN_FILE_PATH,
-      root: DIAGRAM_COMPILER_ROOT,
+      mainFilePath,
+      root: TYPST_PROJECT_ROOT,
       diagnostics: "full",
       format: "vector",
       incrementalServer: server

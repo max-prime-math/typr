@@ -16,6 +16,8 @@ import newCmMathBookUrl from "./fonts/NewCMMath-Book.otf?url";
 import newCmMathRegularUrl from "./fonts/NewCMMath-Regular.otf?url";
 
 export const MAIN_FILE_PATH = "/main.typ";
+export const TYPST_PROJECT_ROOT = "/";
+export const TYPST_DEFAULT_MAIN_FILE_PATH = MAIN_FILE_PATH;
 export const TYPST_FONT_CACHE_NAME = "typst-font-assets";
 const CORE_FONT_LOAD_CONCURRENCY = 4;
 
@@ -39,6 +41,17 @@ const CORE_FONT_ASSETS = [
 ];
 
 export const CORE_FONT_URLS = CORE_FONT_ASSETS.map((font) => font.url);
+
+export function normalizeTypstCompilerPath(path: string | null | undefined): string {
+  const normalizedPath = (path ?? "")
+    .replace(/^\/?project\/?/, "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part.length > 0 && part !== ".")
+    .join("/");
+
+  return normalizedPath ? `/${normalizedPath}` : TYPST_DEFAULT_MAIN_FILE_PATH;
+}
 
 export interface TypstFontLoadProgress {
   name: string;

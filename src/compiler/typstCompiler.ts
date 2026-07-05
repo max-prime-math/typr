@@ -6,6 +6,7 @@ import { createMainThreadTypstCompiler } from "./typstCompilerMainThread";
 import { TYPST_WORKER_REQUEST_TIMEOUT_MS } from "./typstTimeouts";
 import type {
   CompileAssetFile,
+  CompileDocumentOptions,
   CompilerStatus,
   CompileResult,
   TypstCompiler,
@@ -31,8 +32,12 @@ export function createTypstCompiler(options: TypstCompilerOptions = {}): TypstCo
   const compiler = getSharedCompilerInstance();
 
   return {
-    compileDocument(source: string, assets?: CompileAssetFile[]): Promise<CompileResult> {
-      return compiler.compileDocument(source, assets);
+    compileDocument(
+      source: string,
+      assets?: CompileAssetFile[],
+      options?: CompileDocumentOptions
+    ): Promise<CompileResult> {
+      return compiler.compileDocument(source, assets, options);
     },
     dispose(): void {
       if (options.onStatusChange) {
@@ -86,16 +91,21 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     this.worker.addEventListener("error", this.handleWorkerError);
   }
 
-  compileDocument(source: string, assets: CompileAssetFile[] = []): Promise<CompileResult> {
+  compileDocument(
+    source: string,
+    assets: CompileAssetFile[] = [],
+    options: CompileDocumentOptions = {}
+  ): Promise<CompileResult> {
     if (!this.workerAvailable) {
-      return this.fallbackCompiler.compileDocument(source, assets);
+      return this.fallbackCompiler.compileDocument(source, assets, options);
     }
 
     return this.sendRequest({
       id: this.createRequestId(),
       type: "compile",
       source,
-      assets
+      assets,
+      options
     })
       .then((result) => result as CompileResult)
       .catch(() => {
@@ -106,7 +116,7 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
           label: "Using main-thread fallback",
           detail: "Worker timed out or failed"
         });
-        return this.fallbackCompiler.compileDocument(source, assets);
+        return this.fallbackCompiler.compileDocument(source, assets, options);
       });
   }
 
