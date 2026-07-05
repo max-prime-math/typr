@@ -3075,9 +3075,9 @@ button {
 
 .file-tree__node-icon {
   display: inline-flex;
-  width: 2ch;
+  width: 4ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 2ch;
+  flex: 0 0 4ch;
   align-items: center;
   justify-content: center;
   font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "Symbols Nerd Font Mono", monospace;
