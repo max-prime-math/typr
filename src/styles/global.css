@@ -2919,7 +2919,6 @@ button {
 
 .file-tree__branch-header {
   display: flex;
-  position: relative;
   align-items: center;
   gap: 0;
   min-height: var(--file-tree-row-height);
@@ -2927,7 +2926,7 @@ button {
   color: var(--editor-foreground);
   touch-action: manipulation;
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
   border-radius: 0;
 }
 
@@ -2962,13 +2961,11 @@ button {
 
 .file-tree__toggle-button {
   display: inline-flex;
-  position: absolute;
-  left: calc(0.2rem - 1.15ch);
   align-items: center;
   justify-content: center;
   width: 1.1ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 auto;
+  flex: 0 0 1.1ch;
   padding: 0;
   border: 0;
   background: transparent;
@@ -3022,11 +3019,6 @@ button {
   line-height: 1;
 }
 
-.file-tree__branch-header > .file-tree__chevron-text {
-  position: absolute;
-  left: calc(0.2rem - 1.15ch);
-}
-
 .file-tree__chevron-text--empty {
   color: transparent;
 }
@@ -3067,6 +3059,13 @@ button {
   width: 100%;
   align-items: center;
   gap: 0;
+}
+
+.file-tree__entry-row::before {
+  content: "";
+  display: inline-flex;
+  width: 1.1ch;
+  flex: 0 0 1.1ch;
 }
 
 .file-tree__entry-row .file-row__name {
