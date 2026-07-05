@@ -2100,6 +2100,7 @@ button {
   background: transparent;
   color: var(--text);
   text-align: center;
+  text-transform: lowercase;
 }
 
 .source-heading-menu__item:hover,
@@ -2898,9 +2899,6 @@ button {
   color: var(--editor-foreground);
   font-family:
     var(--editor-font-family),
-    "Symbols Nerd Font Mono",
-    "Symbols Nerd Font",
-    "Nerd Font Symbols",
     "Iosevka Term",
     "JetBrains Mono",
     "SFMono-Regular",
@@ -3083,18 +3081,13 @@ button {
 
 .file-tree__node-icon {
   display: inline-flex;
-  width: 2ch;
+  width: 3.2ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 2ch;
+  flex: 0 0 3.2ch;
   align-items: center;
   justify-content: center;
-  font-family:
-    "Symbols Nerd Font Mono",
-    "Symbols Nerd Font",
-    "Nerd Font Symbols",
-    var(--editor-font-family),
-    monospace;
-  font-size: 1em;
+  font-family: var(--editor-font-family), "Iosevka Term", "JetBrains Mono", monospace;
+  font-size: 0.72em;
   font-weight: 400;
   line-height: 1;
   text-align: center;
