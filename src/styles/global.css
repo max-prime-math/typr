@@ -2880,15 +2880,29 @@ button {
 }
 
 .file-tree {
+  --file-tree-row-height: 1.5rem;
+  --file-tree-indent: 1.15rem;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  cursor: pointer;
+  gap: 0;
+  cursor: default;
   -webkit-touch-callout: none;
+  color: var(--editor-foreground);
+  font-family:
+    var(--editor-font-family),
+    "Symbols Nerd Font Mono",
+    "Symbols Nerd Font",
+    "Nerd Font Symbols",
+    "Iosevka Term",
+    "JetBrains Mono",
+    "SFMono-Regular",
+    monospace;
+  font-size: 0.86rem;
+  line-height: 1.35;
 }
 
 .file-tree * {
-  cursor: pointer;
+  cursor: default;
 }
 
 .file-tree__toolbar {
@@ -2899,20 +2913,21 @@ button {
 .file-tree__branch {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0;
   min-width: 0;
 }
 
 .file-tree__branch-header {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  min-height: 1.9rem;
-  padding: 0.22rem 0.35rem;
-  color: var(--text);
+  gap: 0.2rem;
+  min-height: var(--file-tree-row-height);
+  padding: 0 0.35rem 0 0.2rem;
+  color: var(--editor-foreground);
   touch-action: manipulation;
   min-width: 0;
   overflow: hidden;
+  border-radius: 0;
 }
 
 .file-tree__branch-header--button {
@@ -2923,46 +2938,53 @@ button {
 }
 
 .file-tree__branch-header--button:hover,
-.file-tree__branch-header--button:focus-visible {
-  outline: none;
-  color: var(--accent-strong);
-}
-
+.file-tree__branch-header--button:focus-visible,
 .file-tree__branch-header:hover,
 .file-tree__branch-header:focus-within {
-  background: color-mix(in srgb, var(--surface-strong) 78%, var(--accent-soft));
+  outline: none;
+  background: color-mix(in srgb, var(--editor-active-line) 72%, transparent);
+  color: var(--editor-foreground);
 }
 
-.file-tree__branch-header--selected {
-  background: color-mix(in srgb, var(--surface-strong) 82%, var(--accent-soft));
+.file-tree__branch-header--selected,
+.file-tree .file-row--selected {
+  background: color-mix(in srgb, var(--editor-selection) 74%, transparent);
 }
 
 .file-tree__branch-header--drop-target {
-  background: color-mix(in srgb, var(--accent-soft) 82%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 86%, transparent);
 }
 
 .file-tree__branch-header--static {
-  color: var(--text-muted);
+  color: color-mix(in srgb, var(--editor-foreground) 72%, var(--editor-background));
 }
 
 .file-tree__toggle-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 1rem;
+  width: 1.1ch;
+  height: var(--file-tree-row-height);
+  flex: 0 0 1.1ch;
   padding: 0;
   border: 0;
   background: transparent;
+  color: color-mix(in srgb, var(--editor-foreground) 70%, var(--editor-background));
+  font: inherit;
+}
+
+.file-tree__toggle-button:hover,
+.file-tree__toggle-button:focus-visible {
+  outline: none;
+  color: var(--editor-foreground);
 }
 
 .file-tree__branch-label {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-weight: 400;
+  letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2970,11 +2992,12 @@ button {
 .file-tree__rename-input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 0.15rem 0.35rem;
+  height: calc(var(--file-tree-row-height) - 0.1rem);
+  padding: 0 0.25rem;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-strong) 90%, var(--editor-background));
-  color: var(--text);
+  border-radius: 0;
+  background: var(--editor-background);
+  color: var(--editor-foreground);
   cursor: text;
   font: inherit;
 }
@@ -2984,78 +3007,33 @@ button {
   border-color: var(--accent);
 }
 
-.file-tree__chevron-text {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 0.9rem;
-  flex: 0 0 auto;
-  font-family:
-    "Noto Sans Symbols 2",
-    "Segoe UI Symbol",
-    "Apple Symbols",
-    sans-serif;
-  font-size: 0.84rem;
-  line-height: 1;
-  color: var(--text-muted);
-}
-
+.file-tree__chevron-text,
 .tree-disclosure-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 1rem;
-  background-color: currentColor;
-  mask-image: url("../icons/files/disclosure.svg");
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-image: url("../icons/files/disclosure.svg");
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  transition: transform 120ms ease;
+  width: 1.1ch;
+  flex: 0 0 1.1ch;
+  color: color-mix(in srgb, var(--editor-foreground) 68%, var(--editor-background));
+  font: inherit;
+  line-height: 1;
 }
 
-.tree-disclosure-icon--collapsed {
-  transform: rotate(-90deg);
-}
-
-.file-tree__folder-icon {
-  display: inline-block;
-  width: 1rem;
-  height: 1rem;
-  flex: 0 0 auto;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: contain;
-}
-
-.file-tree__folder-icon--closed {
-  background-image: url("../icons/files/folder.svg");
-}
-
-.file-tree__folder-icon--open {
-  background-image: url("../icons/files/folder-open.svg");
-}
-
-.file-tree__folder-icon--empty {
-  background-image: url("../icons/files/folder-empty.svg");
+.file-tree__chevron-text--empty {
+  color: transparent;
 }
 
 .file-tree__items {
-  margin-left: 0.45rem;
-  padding-left: 0.85rem;
-  border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
-  gap: 0.05rem;
+  margin-left: var(--file-tree-indent);
+  padding-left: 0;
+  border-left: 0;
+  gap: 0;
   min-width: 0;
 }
 
 .file-tree .file-row {
-  min-height: 1.9rem;
-  padding: 0.22rem 0.35rem;
+  min-height: var(--file-tree-row-height);
+  padding: 0 0.35rem 0 0.2rem;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -3063,25 +3041,24 @@ button {
   touch-action: manipulation;
   min-width: 0;
   overflow: hidden;
+  color: var(--editor-foreground);
+  font: inherit;
 }
 
 .file-tree .file-row:hover,
 .file-tree .file-row:focus-visible {
-  background: color-mix(in srgb, var(--surface-strong) 78%, var(--accent-soft));
+  outline: none;
+  background: color-mix(in srgb, var(--editor-active-line) 72%, transparent);
 }
 
 .file-tree .file-row--active {
-  background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
-}
-
-.file-tree .file-row--selected {
-  background: color-mix(in srgb, var(--surface-strong) 80%, var(--accent-soft));
+  background: color-mix(in srgb, var(--editor-selection) 88%, transparent);
 }
 
 .file-tree__entry-row {
   width: 100%;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.2rem;
 }
 
 .file-tree__entry-row .file-row__name {
@@ -3096,53 +3073,71 @@ button {
   flex: 0 0 auto;
 }
 
-.file-tree__git-status {
+.file-tree__node-icon {
   display: inline-flex;
-  width: 1.15rem;
-  height: 1.15rem;
-  flex: 0 0 auto;
+  width: 2ch;
+  height: var(--file-tree-row-height);
+  flex: 0 0 2ch;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  font-size: 0.66rem;
-  font-weight: 800;
+  font-family:
+    "Symbols Nerd Font Mono",
+    "Symbols Nerd Font",
+    "Nerd Font Symbols",
+    var(--editor-font-family),
+    monospace;
+  font-size: 1em;
+  font-weight: 400;
   line-height: 1;
-  transition:
-    background 120ms ease,
-    border-color 120ms ease,
-    color 120ms ease,
-    transform 120ms ease;
+  text-align: center;
 }
 
-.file-tree__branch-header:hover .file-tree__git-status,
-.file-tree .file-row:hover .file-tree__git-status,
-.file-tree .file-row:focus-visible .file-tree__git-status {
-  transform: scale(1.04);
+.file-tree__node-icon--folder {
+  color: #d79921;
 }
 
-.file-tree__git-status--modified {
-  border-color: color-mix(in srgb, var(--warning, #b7791f) 40%, transparent);
-  background: color-mix(in srgb, var(--warning, #b7791f) 18%, transparent);
-  color: color-mix(in srgb, var(--warning, #b7791f) 72%, var(--text));
+.file-tree__node-icon--typ {
+  color: #2aa198;
 }
 
-.file-tree__git-status--added {
-  border-color: color-mix(in srgb, var(--success, #2f855a) 40%, transparent);
-  background: color-mix(in srgb, var(--success, #2f855a) 18%, transparent);
-  color: color-mix(in srgb, var(--success, #2f855a) 76%, var(--text));
+.file-tree__node-icon--tex {
+  color: #3c8dbc;
 }
 
-.file-tree__git-status--deleted {
-  border-color: color-mix(in srgb, var(--danger, #c53030) 40%, transparent);
-  background: color-mix(in srgb, var(--danger, #c53030) 16%, transparent);
-  color: color-mix(in srgb, var(--danger, #c53030) 78%, var(--text));
+.file-tree__node-icon--md {
+  color: #8ec07c;
 }
 
-.file-tree__git-status--conflict {
-  border-color: color-mix(in srgb, var(--danger, #c53030) 55%, transparent);
-  background: color-mix(in srgb, var(--danger, #c53030) 26%, transparent);
-  color: color-mix(in srgb, var(--danger, #c53030) 88%, var(--text));
+.file-tree__node-icon--img {
+  color: #b8bb26;
+}
+
+.file-tree__node-icon--pdf {
+  color: #fb4934;
+}
+
+.file-tree__node-icon--data {
+  color: #fabd2f;
+}
+
+.file-tree__node-icon--git {
+  color: #fe8019;
+}
+
+.file-tree__node-icon--archive {
+  color: #d3869b;
+}
+
+.file-tree__node-icon--bin {
+  color: #928374;
+}
+
+.file-tree__node-icon--default {
+  color: color-mix(in srgb, var(--editor-foreground) 76%, var(--editor-background));
+}
+
+.file-tree__git-status {
+  display: none;
 }
 
 .file-tree__rename-target {
@@ -3151,83 +3146,9 @@ button {
 }
 
 .file-tree__empty {
-  padding: 0.25rem 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.88rem;
-}
-
-.file-tree__file-icon {
-  display: inline-block;
-  width: 1.15rem;
-  height: 1.15rem;
-  flex: 0 0 auto;
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: contain;
-}
-
-.file-tree__file-icon--typ {
-  background-image: url("../icons/files/typst.svg");
-}
-
-.file-tree__file-icon--tex {
-  background-image: url("../icons/files/tex.svg");
-}
-
-.file-tree__file-icon--md {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--img {
-  background-image: url("../icons/files/image.svg");
-}
-
-.file-tree__file-icon--pdf {
-  background-image: url("../icons/files/pdf.svg");
-}
-
-.file-tree__file-icon--json {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--yaml {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--csv {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--config {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--git {
-  background-image: url("../icons/files/git.svg");
-}
-
-.file-tree__file-icon--info {
-  background-image: url("../icons/files/readme.svg");
-}
-
-.file-tree__file-icon--bib {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--code {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--txt {
-  background-image: url("../icons/files/default.svg");
-}
-
-.file-tree__file-icon--archive {
-  background-image: url("../icons/files/archive.svg");
-}
-
-.file-tree__file-icon--bin {
-  background-image: url("../icons/files/default.svg");
+  padding: 0.15rem 0.35rem 0.15rem 1.35rem;
+  color: color-mix(in srgb, var(--editor-foreground) 62%, var(--editor-background));
+  font: inherit;
 }
 
 .workspace-context-menu {

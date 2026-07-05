@@ -55,6 +55,82 @@ function getWorkspaceIconTitle(badge: WorkspaceFileBadge): string {
   }
 }
 
+function getWorkspaceIconGlyph(badge: WorkspaceFileBadge, options: { open?: boolean } = {}): string {
+  switch (badge) {
+    case "dir":
+      return options.open ? "" : "";
+    case "empty":
+      return "";
+    case "typ":
+      return "󰗀";
+    case "tex":
+      return "";
+    case "md":
+      return "";
+    case "img":
+      return "";
+    case "pdf":
+      return "";
+    case "json":
+      return "";
+    case "yaml":
+      return "";
+    case "csv":
+      return "";
+    case "config":
+      return "";
+    case "git":
+      return "";
+    case "info":
+      return "󰂺";
+    case "bib":
+      return "󱉟";
+    case "code":
+      return "";
+    case "txt":
+      return "󰈙";
+    case "archive":
+      return "";
+    case "bin":
+      return "";
+    default:
+      return "";
+  }
+}
+
+function getWorkspaceIconTone(badge: WorkspaceFileBadge): string {
+  switch (badge) {
+    case "dir":
+    case "empty":
+      return "folder";
+    case "typ":
+      return "typ";
+    case "tex":
+    case "bib":
+      return "tex";
+    case "md":
+    case "info":
+      return "md";
+    case "img":
+      return "img";
+    case "pdf":
+      return "pdf";
+    case "json":
+    case "yaml":
+    case "csv":
+    case "config":
+      return "data";
+    case "git":
+      return "git";
+    case "archive":
+      return "archive";
+    case "bin":
+      return "bin";
+    default:
+      return "default";
+  }
+}
+
 function getWorkspaceGitBadgeLabel(
   status: WorkspaceGitBadgeKind,
   nodeKind: WorkspaceTreeNode["kind"]
@@ -447,21 +523,19 @@ function WorkspaceTreeBranch({
             >
               <span
                 aria-hidden="true"
-                className={`tree-disclosure-icon ${isCollapsed ? "tree-disclosure-icon--collapsed" : ""}`}
-              />
+                className="tree-disclosure-icon"
+              >
+                {isCollapsed ? "▸" : "▾"}
+              </span>
             </button>
           )}
           <span
-            className={`file-tree__folder-icon ${
-              isEmpty
-                ? "file-tree__folder-icon--empty"
-                : isCollapsed
-                  ? "file-tree__folder-icon--closed"
-                  : "file-tree__folder-icon--open"
-            }`}
+            className={`file-tree__node-icon file-tree__node-icon--${getWorkspaceIconTone(isEmpty ? "empty" : "dir")}`}
             aria-hidden="true"
             title={getWorkspaceIconTitle(isEmpty ? "empty" : "dir")}
-          />
+          >
+            {getWorkspaceIconGlyph(isEmpty ? "empty" : "dir", { open: !isCollapsed && !isEmpty })}
+          </span>
           {isRenaming ? (
             <input
               autoFocus
@@ -552,9 +626,11 @@ function WorkspaceTreeBranch({
       >
         <span
           aria-hidden="true"
-          className={`file-tree__file-icon file-tree__file-icon--${badge}`}
+          className={`file-tree__node-icon file-tree__node-icon--${getWorkspaceIconTone(badge)}`}
           title={getWorkspaceIconTitle(badge)}
-        />
+        >
+          {getWorkspaceIconGlyph(badge)}
+        </span>
         <input
           autoFocus
           className="file-tree__rename-input"
@@ -609,9 +685,11 @@ function WorkspaceTreeBranch({
     >
       <span
         aria-hidden="true"
-        className={`file-tree__file-icon file-tree__file-icon--${badge}`}
+        className={`file-tree__node-icon file-tree__node-icon--${getWorkspaceIconTone(badge)}`}
         title={getWorkspaceIconTitle(badge)}
-      />
+      >
+        {getWorkspaceIconGlyph(badge)}
+      </span>
       <span className="file-row__name" title={node.name}>{node.name}</span>
       {gitStatus ? (
         <span
