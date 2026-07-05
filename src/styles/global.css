@@ -2919,14 +2919,15 @@ button {
 
 .file-tree__branch-header {
   display: flex;
+  position: relative;
   align-items: center;
-  gap: 0.2rem;
+  gap: 0;
   min-height: var(--file-tree-row-height);
   padding: 0 0.35rem 0 0.2rem;
   color: var(--editor-foreground);
   touch-action: manipulation;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 0;
 }
 
@@ -2961,11 +2962,13 @@ button {
 
 .file-tree__toggle-button {
   display: inline-flex;
+  position: absolute;
+  left: calc(0.2rem - 1.15ch);
   align-items: center;
   justify-content: center;
   width: 1.1ch;
   height: var(--file-tree-row-height);
-  flex: 0 0 1.1ch;
+  flex: 0 0 auto;
   padding: 0;
   border: 0;
   background: transparent;
@@ -3017,6 +3020,11 @@ button {
   color: color-mix(in srgb, var(--editor-foreground) 68%, var(--editor-background));
   font: inherit;
   line-height: 1;
+}
+
+.file-tree__branch-header > .file-tree__chevron-text {
+  position: absolute;
+  left: calc(0.2rem - 1.15ch);
 }
 
 .file-tree__chevron-text--empty {
