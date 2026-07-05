@@ -63,6 +63,7 @@ import {
   updateGraph,
   updateDiagram,
   updateActiveDocument,
+  updateColorfulFileTreeIconsPreference,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
   updateEditorFontSizePreference,
@@ -3546,6 +3547,14 @@ ${nextLine}` : nextLine;
       updateRelativeLineNumbersPreference(
         currentSnapshot,
         !currentSnapshot.preferences.relativeLineNumbers
+      )
+    );
+  }, []);
+  const handleColorfulFileTreeIconsToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateColorfulFileTreeIconsPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.colorfulFileTreeIcons
       )
     );
   }, []);
@@ -14606,6 +14615,20 @@ ${nextLine}` : nextLine;
                 </label>
               </div>
 
+              <div className="settings-toggle-stack">
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Colorful file icons</strong>
+                    <small>Use file-type colors in the Files tree.</small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.colorfulFileTreeIcons}
+                    onChange={handleColorfulFileTreeIconsToggle}
+                    type="checkbox"
+                  />
+                </label>
+              </div>
+
               <div className="theme-columns">
                 <section className="theme-column">
                   <div className="theme-column__header">
@@ -16069,6 +16092,7 @@ ${nextLine}` : nextLine;
                   ) : null}
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
+                    colorfulIcons={snapshot.preferences.colorfulFileTreeIcons}
                     dropTargetPath={workspaceDropTargetPath}
                     nodes={visibleWorkspaceTree}
                     gitStatusByPath={workspaceGitBadgeByPath}

@@ -2887,21 +2887,17 @@ button {
 }
 
 .file-tree {
-  --file-tree-row-height: 1.5rem;
-  --file-tree-indent: 1.15rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
   cursor: default;
   -webkit-touch-callout: none;
   color: var(--editor-foreground);
-  font-family: "Iosevka Term", "JetBrains Mono", "SFMono-Regular", monospace;
+  font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrains Mono", "SFMono-Regular", monospace;
   font-size: 0.86rem;
   line-height: 1.35;
 }
 
 .file-tree * {
   cursor: default;
+  font: inherit;
 }
 
 .file-tree__toolbar {
@@ -2910,28 +2906,30 @@ button {
 }
 
 .file-tree__branch {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
   min-width: 0;
 }
 
-.file-tree__branch-header {
-  display: grid;
-  grid-template-columns: 1ch 1ch minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0;
-  min-height: var(--file-tree-row-height);
-  padding: 0 0.35rem 0 0.2rem;
-  color: var(--editor-foreground);
-  touch-action: manipulation;
+.file-tree__branch-header,
+.file-tree .file-row {
+  display: block;
+  width: 100%;
   min-width: 0;
-  overflow: visible;
+  padding: 0 0.35rem 0 0.2rem;
+  border: 0;
   border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--editor-foreground);
+  line-height: 1.35;
+  text-align: left;
+  touch-action: manipulation;
+  white-space: pre;
 }
 
 .file-tree__branch-header:hover,
-.file-tree__branch-header:focus-within {
+.file-tree__branch-header:focus-within,
+.file-tree .file-row:hover,
+.file-tree .file-row:focus-visible {
   outline: none;
   background: color-mix(in srgb, var(--editor-active-line) 72%, transparent);
   color: var(--editor-foreground);
@@ -2942,6 +2940,10 @@ button {
   background: color-mix(in srgb, var(--editor-selection) 74%, transparent);
 }
 
+.file-tree .file-row--active {
+  background: color-mix(in srgb, var(--editor-selection) 88%, transparent);
+}
+
 .file-tree__branch-header--drop-target {
   background: color-mix(in srgb, var(--accent-soft) 86%, transparent);
 }
@@ -2950,27 +2952,66 @@ button {
   color: color-mix(in srgb, var(--editor-foreground) 72%, var(--editor-background));
 }
 
-.file-tree__branch-label {
-  grid-column: 3;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.file-tree__text {
+  white-space: pre;
+}
+
+.file-tree__icon {
+  color: inherit;
+}
+
+.file-tree__icon--folder {
+  color: #d79921;
+}
+
+.file-tree__icon--typ {
+  color: #2aa198;
+}
+
+.file-tree__icon--tex {
+  color: #3c8dbc;
+}
+
+.file-tree__icon--md {
+  color: #8ec07c;
+}
+
+.file-tree__icon--img {
+  color: #b8bb26;
+}
+
+.file-tree__icon--pdf {
+  color: #fb4934;
+}
+
+.file-tree__icon--data {
+  color: #fabd2f;
+}
+
+.file-tree__icon--git {
+  color: #fe8019;
+}
+
+.file-tree__icon--archive {
+  color: #d3869b;
+}
+
+.file-tree__icon--bin {
+  color: #928374;
+}
+
+.file-tree__icon--default {
+  color: color-mix(in srgb, var(--editor-foreground) 76%, var(--editor-background));
 }
 
 .file-tree__rename-input {
-  grid-column: 3;
   min-width: 0;
-  height: calc(var(--file-tree-row-height) - 0.1rem);
   padding: 0 0.25rem;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
   border-radius: 0;
   background: var(--editor-background);
   color: var(--editor-foreground);
   cursor: text;
-  font: inherit;
 }
 
 .file-tree__rename-input:focus {
@@ -2979,131 +3020,17 @@ button {
 }
 
 .file-tree__items {
-  margin-left: var(--file-tree-indent);
+  margin-left: 0;
   padding-left: 0;
   border-left: 0;
-  gap: 0;
-  min-width: 0;
-}
-
-.file-tree .file-row {
-  min-height: var(--file-tree-row-height);
-  padding: 0 0.35rem 0 0.2rem;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  touch-action: manipulation;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--editor-foreground);
-  font: inherit;
-}
-
-.file-tree .file-row:hover,
-.file-tree .file-row:focus-visible {
-  outline: none;
-  background: color-mix(in srgb, var(--editor-active-line) 72%, transparent);
-}
-
-.file-tree .file-row--active {
-  background: color-mix(in srgb, var(--editor-selection) 88%, transparent);
-}
-
-.file-tree__entry-row {
-  display: grid;
-  grid-template-columns: 1ch 1ch minmax(0, 1fr) auto;
-  width: 100%;
-  align-items: center;
-  gap: 0;
-}
-
-.file-tree__entry-row .file-row__name {
-  grid-column: 3;
-  min-width: 0;
-  overflow: hidden;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-tree__entry-row .file-row__meta {
-  grid-column: 4;
-}
-
-.file-tree__node-icon {
-  display: inline-flex;
-  grid-column: 1;
-  width: 1ch;
-  height: var(--file-tree-row-height);
-  overflow: visible;
-  align-items: center;
-  justify-content: flex-start;
-  font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "Symbols Nerd Font Mono", monospace;
-  font-size: 1em;
-  font-weight: 400;
-  font-variant-east-asian: normal;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  text-align: center;
-}
-
-.file-tree__node-icon--folder {
-  color: #d79921;
-}
-
-.file-tree__node-icon--typ {
-  color: #2aa198;
-}
-
-.file-tree__node-icon--tex {
-  color: #3c8dbc;
-}
-
-.file-tree__node-icon--md {
-  color: #8ec07c;
-}
-
-.file-tree__node-icon--img {
-  color: #b8bb26;
-}
-
-.file-tree__node-icon--pdf {
-  color: #fb4934;
-}
-
-.file-tree__node-icon--data {
-  color: #fabd2f;
-}
-
-.file-tree__node-icon--git {
-  color: #fe8019;
-}
-
-.file-tree__node-icon--archive {
-  color: #d3869b;
-}
-
-.file-tree__node-icon--bin {
-  color: #928374;
-}
-
-.file-tree__node-icon--default {
-  color: color-mix(in srgb, var(--editor-foreground) 76%, var(--editor-background));
 }
 
 .file-tree__git-status {
   display: none;
 }
 
-.file-tree__rename-target {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 .file-tree__empty {
-  padding: 0.15rem 0.35rem 0.15rem 1.35rem;
+  padding: 0.15rem 0.35rem 0.15rem 0.2rem;
   color: color-mix(in srgb, var(--editor-foreground) 62%, var(--editor-background));
   font: inherit;
 }
