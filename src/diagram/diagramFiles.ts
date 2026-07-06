@@ -7,6 +7,14 @@ export function getDiagramFilePath(fileName: string = DEFAULT_DIAGRAM_FILE_NAME)
   return `${DIAGRAM_DIRECTORY}/${fileName}`;
 }
 
+export function getDiagramPdfFileName(fileName: string = DEFAULT_DIAGRAM_FILE_NAME): string {
+  return `${normalizeDiagramFileName(fileName).replace(/\.svg$/i, "")}.pdf`;
+}
+
+export function getDiagramPdfFilePath(fileName: string = DEFAULT_DIAGRAM_FILE_NAME): string {
+  return `${DIAGRAM_DIRECTORY}/${getDiagramPdfFileName(fileName)}`;
+}
+
 export function getDiagramCompilerPath(fileName: string = DEFAULT_DIAGRAM_FILE_NAME): string {
   return `${DIAGRAM_COMPILER_ROOT}${getDiagramFilePath(fileName)}`;
 }

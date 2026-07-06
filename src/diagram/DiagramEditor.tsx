@@ -5662,6 +5662,10 @@ function formatStrokeWidthInput(width: number): string {
 }
 
 export function serializeDiagramSvg(diagram: DiagramAsset): string {
+  if (typeof diagram.content === "string" && /<svg[\s>]/i.test(diagram.content.trim())) {
+    return diagram.content;
+  }
+
   const frame = getDiagramFrame(diagram);
   const markerDefs = getDiagramMarkerDefsSvg();
   const entityNodes = getOrderedDiagramEntities(diagram)

@@ -204,6 +204,7 @@ export interface DiagramAsset {
   name: string;
   updatedAt: string;
   frame: DiagramCanvasFrame | null;
+  content?: string;
   strokes: DiagramStroke[];
   shapes: DiagramShape[];
 }
@@ -410,6 +411,7 @@ export function createDefaultDiagram(): DiagramAsset {
     name: DEFAULT_DIAGRAM_FILE_NAME,
     updatedAt: now,
     frame: null,
+    content: undefined,
     strokes: [],
     shapes: []
   };
@@ -517,6 +519,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     name: normalizedDiagramName,
     updatedAt: diagram.updatedAt ?? now,
     frame: normalizeDiagramCanvasFrame(diagram.frame),
+    content: normalizeDiagramSvgContent((diagram as Partial<DiagramAsset>).content),
     strokes: Array.isArray(diagram.strokes)
       ? diagram.strokes.map(normalizeDiagramStroke)
       : [],
@@ -663,6 +666,7 @@ function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
     name: normalizedName,
     updatedAt: diagram.updatedAt ?? new Date().toISOString(),
     frame: normalizeDiagramCanvasFrame(diagram.frame),
+    content: normalizeDiagramSvgContent((diagram as Partial<DiagramAsset>).content),
     strokes: Array.isArray(diagram.strokes)
       ? diagram.strokes.map(normalizeDiagramStroke)
       : [],
@@ -670,6 +674,15 @@ function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
       ? (diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes.map(normalizeDiagramShape)
       : []
   };
+}
+
+function normalizeDiagramSvgContent(content: string | undefined): string | undefined {
+  if (typeof content !== "string") {
+    return undefined;
+  }
+
+  const trimmed = content.trim();
+  return /<svg[\s>]/i.test(trimmed) ? content : undefined;
 }
 
 function normalizeFolderAsset(folder: FileFolder): FileFolder {
