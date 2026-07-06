@@ -72,10 +72,13 @@ import {
   updateLatexMathPreviewPreference,
   updateLiveCompilationPreference,
   updateMobileKeyboardPreference,
+  updatePastedImagePreference,
   updateRelativeLineNumbersPreference,
   updateShowGitignoreInFileTreePreference,
   updateSidebarFontSizePreference,
   updateThemePreference,
+  updateTypstMathPreviewPreference,
+  updateVimClipboardSharingPreference,
   updateVimPreference,
   type AppSnapshot,
   type MobileKeyboardLanguage,
@@ -235,6 +238,7 @@ import {
   projectRepositoryToLegacyProject,
   readProjectFileBytes,
   removeProjectRepository,
+  renameProjectPath,
   syncProjectStorageFromSnapshot,
   updateSelectedProjectRepository,
   writeProjectFile,
@@ -650,8 +654,6 @@ type SidebarTool =
   | "graph"
   | "docs"
   | "settings";
-type DiagramPaneMode = "sidebar" | "source" | "preview";
-type GraphPaneMode = "sidebar" | "source" | "preview";
 type GitMergePaneMode = "sidebar" | "source" | "preview";
 type MergeVersionRole = "base" | "local" | "remote";
 type SettingsTab = "git" | "themes" | "editor" | "keybindings" | "snippets" | "packages";
@@ -2841,6 +2843,226 @@ function buildTypstProjectShadowFiles(
   return [...assets.values()];
 }
 
+
+type PastedSourceImage = {
+  bytes: Uint8Array;
+  extension: "png" | "jpg";
+  mimeType: "image/png" | "image/jpeg";
+};
+
+type PastedImageRenameBinding = {
+  sourcePath: string;
+  originalImagePath: string;
+  imagePath: string;
+  folderPath: string;
+  nameFrom: number;
+  nameTo: number;
+  extension: "png" | "jpg";
+};
+
+async function preparePastedSourceImage(
+  file: File,
+  format: "png" | "jpeg"
+): Promise<PastedSourceImage> {
+  const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+  const extension = format === "jpeg" ? "jpg" : "png";
+
+  if (file.type === mimeType) {
+    return {
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      extension,
+      mimeType
+    };
+  }
+
+  const convertedBlob = await convertImageBlob(file, mimeType);
+
+  return {
+    bytes: new Uint8Array(await convertedBlob.arrayBuffer()),
+    extension,
+    mimeType
+  };
+}
+
+async function convertImageBlob(blob: Blob, mimeType: "image/png" | "image/jpeg"): Promise<Blob> {
+  const image = await loadClipboardImage(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, image.naturalWidth || image.width);
+  canvas.height = Math.max(1, image.naturalHeight || image.height);
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("Unable to prepare pasted image.");
+  }
+
+  if (mimeType === "image/jpeg") {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  context.drawImage(image, 0, 0);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (convertedBlob) => {
+        if (convertedBlob) {
+          resolve(convertedBlob);
+        } else {
+          reject(new Error("Unable to convert pasted image."));
+        }
+      },
+      mimeType,
+      0.92
+    );
+  });
+}
+
+function loadClipboardImage(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(blob);
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Unable to load pasted image."));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function getWorkspaceDirectory(path: string): string {
+  const normalizedPath = normalizeWorkspacePath(path);
+  const slashIndex = normalizedPath.lastIndexOf("/");
+  return slashIndex >= 0 ? normalizedPath.slice(0, slashIndex) : "";
+}
+
+function normalizePastedImageDirectory(directory: string): string {
+  const normalized = normalizeWorkspacePath(directory)
+    .split("/")
+    .filter((segment) => segment && segment !== "." && segment !== "..")
+    .join("/");
+
+  return normalized || "figures";
+}
+
+function getWorkspaceRelativeReference(fromFilePath: string, toPath: string): string {
+  const fromDirectory = getWorkspaceDirectory(fromFilePath);
+  const fromSegments = fromDirectory ? fromDirectory.split("/").filter(Boolean) : [];
+  const toSegments = normalizeWorkspacePath(toPath).split("/").filter(Boolean);
+  let sharedSegmentCount = 0;
+
+  while (
+    sharedSegmentCount < fromSegments.length &&
+    sharedSegmentCount < toSegments.length &&
+    fromSegments[sharedSegmentCount] === toSegments[sharedSegmentCount]
+  ) {
+    sharedSegmentCount += 1;
+  }
+
+  const parentSegments = fromSegments.slice(sharedSegmentCount).map(() => "..");
+  const targetSegments = toSegments.slice(sharedSegmentCount);
+  return [...parentSegments, ...targetSegments].join("/") || getPastedImageBaseName(toPath);
+}
+
+function buildPastedImagePath(
+  project: TyprProjectRepository,
+  activePath: string,
+  preferences: AppSnapshot["preferences"]["pastedImages"],
+  extension: "png" | "jpg"
+): { folderPath: string; imagePath: string; referencePath: string } {
+  const documentDirectory = getWorkspaceDirectory(activePath);
+  const configuredDirectory = normalizePastedImageDirectory(preferences.figuresDirectory);
+  const folderPath = preferences.figuresDirectoryRelativeToFile
+    ? joinWorkspacePath(documentDirectory || null, configuredDirectory)
+    : configuredDirectory;
+  const safePrefix = sanitizePastedImageFilePrefix(preferences.fileNamePrefix);
+  const existingPaths = new Set(listProjectEntries(project).map((entry) => normalizeWorkspacePath(entry.path)));
+  const baseStamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let imagePath = joinWorkspacePath(folderPath, `${safePrefix}-${baseStamp}.${extension}`);
+  let suffix = 2;
+
+  while (existingPaths.has(imagePath)) {
+    imagePath = joinWorkspacePath(folderPath, `${safePrefix}-${baseStamp}-${suffix}.${extension}`);
+    suffix += 1;
+  }
+
+  return {
+    folderPath,
+    imagePath,
+    referencePath: getWorkspaceRelativeReference(activePath, imagePath)
+  };
+}
+
+function sanitizePastedImageFilePrefix(prefix: string): string {
+  const normalized = prefix
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "pasted-image";
+}
+
+function getPastedImageBaseName(path: string): string {
+  return normalizeWorkspacePath(path).split("/").at(-1) ?? path;
+}
+
+function getPastedImageNameStem(name: string, extension: "png" | "jpg"): string {
+  const extensionSuffix = `.${extension}`;
+  return name.endsWith(extensionSuffix) ? name.slice(0, -extensionSuffix.length) : name;
+}
+
+function normalizePastedImageRename(rawName: string): string | null {
+  const normalized = rawName.trim();
+
+  if (
+    !normalized ||
+    normalized.includes("/") ||
+    normalized.includes("\\") ||
+    normalized.includes("\0") ||
+    normalized === "." ||
+    normalized === ".."
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function readPastedImageNameAt(content: string, from: number): { name: string; to: number } | null {
+  if (from < 0 || from >= content.length) {
+    return null;
+  }
+
+  let to = from;
+  while (to < content.length && !/["}\])>]/.test(content[to] ?? "")) {
+    to += 1;
+  }
+
+  const name = content.slice(from, to);
+  return name ? { name, to } : null;
+}
+
+function buildPastedImageInsertion(
+  language: SourceLanguage,
+  referencePath: string,
+  preferences: AppSnapshot["preferences"]["pastedImages"]
+): string {
+  if (language === "latex") {
+    return `${preferences.latexPrefix}${referencePath}${preferences.latexSuffix}`;
+  }
+
+  if (language === "markdown") {
+    return `${preferences.markdownPrefix}${referencePath}${preferences.markdownSuffix}`;
+  }
+
+  return `${preferences.typstPrefix}${referencePath}${preferences.typstSuffix}`;
+}
+
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
   const [storedSettingsMenu] = useState(readStoredSettingsMenuState);
@@ -2854,6 +3076,7 @@ export function App() {
   const leftPaneScrollByPaneRef = useRef<Record<string, number>>(storedLeftPane.scrollByPane);
   const leftPaneScrollRestoreFrameRef = useRef<number | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
+  const pastedImageRenameBindingRef = useRef<PastedImageRenameBinding | null>(null);
   const previewPaneRef = useRef<HTMLElement | null>(null);
   const sidebarPaneRef = useRef<HTMLElement | null>(null);
   const shouldFocusEditorAfterVimToggleRef = useRef(false);
@@ -2964,8 +3187,6 @@ export function App() {
     text: ""
   });
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
-  const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("sidebar");
-  const [graphPaneMode, setGraphPaneMode] = useState<GraphPaneMode>("sidebar");
   const [gitMergePaneMode, setGitMergePaneMode] = useState<GitMergePaneMode>("sidebar");
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -3558,6 +3779,70 @@ ${nextLine}` : nextLine;
       )
     );
   }, []);
+  const handleTypstMathPreviewToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateTypstMathPreviewPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.typstMathPreview
+      )
+    );
+  }, []);
+  const handlePastedImagesEnabledToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updatePastedImagePreference(currentSnapshot, {
+        enabled: !currentSnapshot.preferences.pastedImages.enabled
+      })
+    );
+  }, []);
+  const handlePastedImageFormatChange = useCallback((format: "png" | "jpeg") => {
+    setSnapshot((currentSnapshot) =>
+      updatePastedImagePreference(currentSnapshot, { format })
+    );
+  }, []);
+  const handleVimClipboardSharingToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateVimClipboardSharingPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.vimClipboardSharing
+      )
+    );
+  }, []);
+  const handlePastedImagePrefixChange = useCallback((fileNamePrefix: string) => {
+    setSnapshot((currentSnapshot) =>
+      updatePastedImagePreference(currentSnapshot, { fileNamePrefix })
+    );
+  }, []);
+  const handlePastedImageDirectoryChange = useCallback((figuresDirectory: string) => {
+    setSnapshot((currentSnapshot) =>
+      updatePastedImagePreference(currentSnapshot, { figuresDirectory })
+    );
+  }, []);
+  const handlePastedImageDirectoryAnchorToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updatePastedImagePreference(currentSnapshot, {
+        figuresDirectoryRelativeToFile:
+          !currentSnapshot.preferences.pastedImages.figuresDirectoryRelativeToFile
+      })
+    );
+  }, []);
+  const handlePastedImageWrapperChange = useCallback(
+    (
+      field:
+        | "typstPrefix"
+        | "typstSuffix"
+        | "latexPrefix"
+        | "latexSuffix"
+        | "markdownPrefix"
+        | "markdownSuffix",
+      value: string
+    ) => {
+      setSnapshot((currentSnapshot) =>
+        updatePastedImagePreference(currentSnapshot, { [field]: value })
+      );
+    },
+    []
+  );
+
   const handleRelativeLineNumbersToggle = useCallback(() => {
     setSnapshot((currentSnapshot) =>
       updateRelativeLineNumbersPreference(
@@ -6005,8 +6290,6 @@ ${nextLine}` : nextLine;
         setActiveMenu(null);
         setIsPreviewDownloadMenuOpen(false);
         setIsSettingsOpen(false);
-        setDiagramPaneMode("sidebar");
-        setGraphPaneMode("sidebar");
         if (workspaceMode === "zen") {
           exitZenMode();
         } else {
@@ -6955,6 +7238,25 @@ ${nextLine}` : nextLine;
   }, [compileResult]);
 
   const handleDocumentChange = useCallback((content: string) => {
+    const pastedImageBinding = pastedImageRenameBindingRef.current;
+
+    if (pastedImageBinding && pastedImageBinding.sourcePath === activeSourcePath) {
+      const editedName = readPastedImageNameAt(content, pastedImageBinding.nameFrom);
+      const nextName = editedName ? normalizePastedImageRename(editedName.name) : null;
+
+      if (editedName) {
+        pastedImageRenameBindingRef.current = {
+          ...pastedImageBinding,
+          imagePath: nextName
+            ? joinWorkspacePath(pastedImageBinding.folderPath, nextName)
+            : pastedImageBinding.imagePath,
+          nameTo: editedName.to
+        };
+      } else {
+        pastedImageRenameBindingRef.current = null;
+      }
+    }
+
     if (isInspectingGraphSource && inspectedGraph) {
       const encodedContent = new TextEncoder().encode(content);
       setSnapshot((currentSnapshot) => {
@@ -6984,7 +7286,78 @@ ${nextLine}` : nextLine;
     }
 
     setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
-  }, [inspectedGraph, isInspectingGraphSource]);
+  }, [activeSourcePath, inspectedGraph, isInspectingGraphSource]);
+
+  const commitPastedImageRename = useCallback(() => {
+    const pastedImageBinding = pastedImageRenameBindingRef.current;
+
+    if (!pastedImageBinding || pastedImageBinding.sourcePath !== activeSourcePath) {
+      pastedImageRenameBindingRef.current = null;
+      return null;
+    }
+
+    const nextName = normalizePastedImageRename(getPastedImageBaseName(pastedImageBinding.imagePath));
+
+    if (!nextName) {
+      pastedImageRenameBindingRef.current = null;
+      return null;
+    }
+
+    const nextImagePath = joinWorkspacePath(pastedImageBinding.folderPath, nextName);
+
+    if (nextImagePath !== pastedImageBinding.originalImagePath) {
+      const currentProject = selectedProjectRepositoryRef.current;
+      const pathExists = currentProject
+        ? listProjectEntries(currentProject).some(
+            (entry) => entry.path === nextImagePath && entry.path !== pastedImageBinding.originalImagePath
+          )
+        : true;
+
+      if (!pathExists) {
+        setProjectRepository((project) =>
+          renameProjectPath(project, pastedImageBinding.originalImagePath, nextImagePath)
+        );
+      }
+    }
+
+    pastedImageRenameBindingRef.current = null;
+    return {
+      ...pastedImageBinding,
+      originalImagePath: nextImagePath,
+      imagePath: nextImagePath
+    };
+  }, [activeSourcePath, setProjectRepository]);
+
+  const handlePastedImageRenameKey = useCallback((event: KeyboardEvent, selection: { from: number; to: number }) => {
+    const pastedImageBinding = pastedImageRenameBindingRef.current;
+
+    if (!pastedImageBinding || pastedImageBinding.sourcePath !== activeSourcePath) {
+      return null;
+    }
+
+    if (
+      (event.key === "Tab" || event.key === "Enter") &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey
+    ) {
+      const committedBinding = commitPastedImageRename();
+      return committedBinding ? { move: "lineEnd" as const } : null;
+    }
+
+    if (event.key === "ArrowLeft" && selection.from <= pastedImageBinding.nameFrom) {
+      commitPastedImageRename();
+      return { position: Math.max(0, pastedImageBinding.nameFrom - 1) };
+    }
+
+    if (event.key === "ArrowRight" && selection.to >= pastedImageBinding.nameTo) {
+      commitPastedImageRename();
+      return { position: pastedImageBinding.nameTo };
+    }
+
+    return null;
+  }, [activeSourcePath, commitPastedImageRename]);
 
   const handleInsertEditorText = useCallback((text: string) => {
     editorRef.current?.insertText(text);
@@ -10333,6 +10706,109 @@ ${nextLine}` : nextLine;
     );
   }, [diagram]);
 
+
+  const handleSourceImagePaste = useCallback(async (file: File): Promise<boolean> => {
+    if (!snapshot.preferences.pastedImages.enabled) {
+      return false;
+    }
+
+    if (!selectedProjectRepositoryRef.current) {
+      setSyncFeedback({ tone: "error", text: "Open a project before pasting images." });
+      return false;
+    }
+
+    if (!isSourceFileEditable) {
+      return false;
+    }
+
+    try {
+      const preparedImage = await preparePastedSourceImage(
+        file,
+        snapshot.preferences.pastedImages.format
+      );
+      const project = selectedProjectRepositoryRef.current;
+      const { folderPath, imagePath, referencePath } = buildPastedImagePath(
+        project,
+        activeSourcePath,
+        snapshot.preferences.pastedImages,
+        preparedImage.extension
+      );
+      const insertion = buildPastedImageInsertion(
+        activeSourceLanguage,
+        referencePath,
+        snapshot.preferences.pastedImages
+      );
+
+      setProjectRepository((currentProject) => {
+        const withFolder = ensureProjectFolder(currentProject, folderPath, {
+          kind: "folder",
+          id: `pasted-image-folder:${folderPath}`
+        });
+
+        return writeProjectFile(withFolder, imagePath, preparedImage.bytes, {
+          kind: "virtual",
+          id: `pasted-image:${imagePath}`
+        });
+      });
+
+      updateWorkspaceOpenFolders((currentPaths) => {
+        const nextPaths = new Set(currentPaths);
+        nextPaths.add(WORKSPACE_ROOT_PATH);
+        nextPaths.add(folderPath);
+        return nextPaths;
+      });
+      const insertedText = `\n${insertion}\n`;
+      const pastedImageBaseName = getPastedImageBaseName(imagePath);
+      const pastedImageNameStem = getPastedImageNameStem(
+        pastedImageBaseName,
+        preparedImage.extension
+      );
+      const selectionStart = insertedText.indexOf(pastedImageNameStem);
+      const selectedRange =
+        selectionStart >= 0
+          ? editorRef.current?.insertTextAndSelectRange(
+              insertedText,
+              selectionStart,
+              selectionStart + pastedImageNameStem.length
+            )
+          : null;
+
+      if (selectedRange) {
+        pastedImageRenameBindingRef.current = {
+          sourcePath: activeSourcePath,
+          originalImagePath: imagePath,
+          imagePath,
+          folderPath,
+          nameFrom: selectedRange.from,
+          nameTo: selectedRange.from + pastedImageBaseName.length,
+          extension: preparedImage.extension
+        };
+      } else {
+        editorRef.current?.insertText(insertedText);
+        pastedImageRenameBindingRef.current = null;
+      }
+
+      setSyncFeedback({ tone: "success", text: `Pasted image to ${imagePath}.` });
+      window.setTimeout(() => {
+        handleCompileRef.current();
+      }, 0);
+      return true;
+    } catch (error) {
+      setSyncFeedback({
+        tone: "error",
+        text: error instanceof Error ? error.message : "Unable to paste clipboard image."
+      });
+      return false;
+    }
+  }, [
+    activeSourceLanguage,
+    activeSourcePath,
+    isSourceFileEditable,
+    setProjectRepository,
+    snapshot.preferences.pastedImages,
+    updateWorkspaceOpenFolders
+  ]);
+
   const handleInsertDiagramIntoDocument = useCallback(() => {
     editorRef.current?.insertTextAndSelect(
       `\n#figure(image("${getDiagramFilePath(diagram.name)}"))\n`
@@ -11691,66 +12167,6 @@ ${nextLine}` : nextLine;
     setWorkspaceMode(mode);
   }
 
-  function expandDiagramPaneForward() {
-    setWorkspaceMode("split");
-    setIsSidebarCollapsed(false);
-    setDiagramPaneMode((currentMode) => {
-      if (currentMode === "sidebar") {
-        return "source";
-      }
-
-      if (currentMode === "source") {
-        return "preview";
-      }
-
-      return currentMode;
-    });
-  }
-
-  function expandDiagramPaneBackward() {
-    setDiagramPaneMode((currentMode) => {
-      if (currentMode === "preview") {
-        return "source";
-      }
-
-      if (currentMode === "source") {
-        return "sidebar";
-      }
-
-      return currentMode;
-    });
-  }
-
-  function expandGraphPaneForward() {
-    setWorkspaceMode("split");
-    setIsSidebarCollapsed(false);
-    setGraphPaneMode((currentMode) => {
-      if (currentMode === "sidebar") {
-        return "source";
-      }
-
-      if (currentMode === "source") {
-        return "preview";
-      }
-
-      return currentMode;
-    });
-  }
-
-  function expandGraphPaneBackward() {
-    setGraphPaneMode((currentMode) => {
-      if (currentMode === "preview") {
-        return "source";
-      }
-
-      if (currentMode === "source") {
-        return "sidebar";
-      }
-
-      return currentMode;
-    });
-  }
-
   function expandGitMergePaneForward() {
     setWorkspaceMode("split");
     setIsSidebarCollapsed(false);
@@ -11851,15 +12267,11 @@ ${nextLine}` : nextLine;
         !isSidebarCollapsed &&
         workspaceMode === "split" &&
         (
-          (activeSidebarTool === "diagram" && diagramPaneMode !== "sidebar") ||
-          (activeSidebarTool === "graph" && graphPaneMode !== "sidebar") ||
           (activeSidebarTool === "sync" && Boolean(activeMergeState) && gitMergePaneMode !== "sidebar")
         );
       const previewExpandedDuringResize =
         sidebarInlineExpandedDuringResize &&
         (
-          (activeSidebarTool === "diagram" && diagramPaneMode === "preview") ||
-          (activeSidebarTool === "graph" && graphPaneMode === "preview") ||
           (activeSidebarTool === "sync" && gitMergePaneMode === "preview")
         );
       const sourcePaneVisibleDuringResize =
@@ -11899,11 +12311,15 @@ ${nextLine}` : nextLine;
           return;
         }
 
+        const effectivePreviewWidth =
+          previewPaneVisibleDuringResize && !sourcePaneVisibleDuringResize
+            ? Math.max(0, workspaceWidth - nextSidebarWidth - sidebarHandleWidthDuringResize)
+            : nextPreviewWidth;
         const nextSourceWidth =
           sourcePaneVisibleDuringResize && workspaceMode === "split"
             ? Math.max(
                 0,
-                workspaceWidth - nextSidebarWidth - nextPreviewWidth - handleWidthTotal
+                workspaceWidth - nextSidebarWidth - effectivePreviewWidth - handleWidthTotal
               )
             : 0;
         workspace.style.gridTemplateColumns =
@@ -11916,7 +12332,7 @@ ${nextLine}` : nextLine;
             sourcePaneVisibleDuringResize && previewPaneVisibleDuringResize
               ? `${previewHandleWidthDuringResize}px`
               : null,
-            previewPaneVisibleDuringResize ? `${nextPreviewWidth}px` : null
+            previewPaneVisibleDuringResize ? `${effectivePreviewWidth}px` : null
           ].filter(Boolean).join(" ") || "minmax(0, 1fr)";
       };
 
@@ -12001,9 +12417,7 @@ ${nextLine}` : nextLine;
     [
       activeMergeState,
       activeSidebarTool,
-      diagramPaneMode,
       gitMergePaneMode,
-      graphPaneMode,
       isPreviewCollapsed,
       isSidebarCollapsed,
       isSourceFileEditable,
@@ -12506,36 +12920,30 @@ ${nextLine}` : nextLine;
     ? clampZenHeight(zenHeight, viewportHeight)
     : 0;
   const showDesktopSidebar = !isMobileWorkspace && !isZenMode && !isSidebarCollapsed;
-  const isDiagramInlineExpanded =
-    showDesktopSidebar &&
-    workspaceMode === "split" &&
-    activeSidebarTool === "diagram" &&
-    diagramPaneMode !== "sidebar";
-  const isGraphInlineExpanded =
-    showDesktopSidebar &&
-    workspaceMode === "split" &&
-    activeSidebarTool === "graph" &&
-    graphPaneMode !== "sidebar";
+  const isDiagramInlineExpanded = false;
+  const isGraphInlineExpanded = false;
   const isGitMergeInlineExpanded =
     showDesktopSidebar &&
     workspaceMode === "split" &&
     activeSidebarTool === "sync" &&
     Boolean(activeMergeState) &&
     gitMergePaneMode !== "sidebar";
-  const isDiagramPreviewExpanded = isDiagramInlineExpanded && diagramPaneMode === "preview";
-  const isGraphPreviewExpanded = isGraphInlineExpanded && graphPaneMode === "preview";
   const isGitMergePreviewExpanded = isGitMergeInlineExpanded && gitMergePaneMode === "preview";
-  const isSidebarInlineExpanded = isDiagramInlineExpanded || isGraphInlineExpanded || isGitMergeInlineExpanded;
+  const isSidebarInlineExpanded = isGitMergeInlineExpanded;
   const showSourcePane =
     !isSidebarInlineExpanded &&
     (isZenMode || (isSourceFileEditable && (isMobileWorkspace || !isSourcePaneHidden)));
   const showPreviewPane =
     !isZenMode &&
-    !isDiagramPreviewExpanded &&
-    !isGraphPreviewExpanded &&
     !isGitMergePreviewExpanded &&
     (isMobileWorkspace || !isPreviewCollapsed);
-  const sidebarPaneWidth = showDesktopSidebar ? sidebarWidth : 0;
+  const isSidebarOnlyWorkspace =
+    !isMobileWorkspace && showDesktopSidebar && !showSourcePane && !showPreviewPane;
+  const sidebarPaneWidth = showDesktopSidebar
+    ? isSidebarOnlyWorkspace
+      ? effectiveWorkspaceWidth
+      : sidebarWidth
+    : 0;
   const sidebarHandleWidth =
     !isMobileWorkspace && showDesktopSidebar && (showSourcePane || showPreviewPane)
       ? PANEL_HANDLE_WIDTH
@@ -12569,7 +12977,7 @@ ${nextLine}` : nextLine;
           display: "flex",
           flexDirection: "column"
         }
-      : workspaceMode === "split" && (isDiagramPreviewExpanded || isGraphPreviewExpanded || isGitMergePreviewExpanded)
+      : workspaceMode === "split" && isGitMergePreviewExpanded
       ? {
           gridTemplateColumns: "minmax(0, 1fr)"
         }
@@ -12695,32 +13103,6 @@ ${nextLine}` : nextLine;
     if (
       !isMobileWorkspace &&
       workspaceMode === "split" &&
-      activeSidebarTool === "diagram" &&
-      !isSidebarCollapsed
-    ) {
-      return;
-    }
-
-    setDiagramPaneMode("sidebar");
-  }, [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
-
-  useEffect(() => {
-    if (
-      !isMobileWorkspace &&
-      workspaceMode === "split" &&
-      activeSidebarTool === "graph" &&
-      !isSidebarCollapsed
-    ) {
-      return;
-    }
-
-    setGraphPaneMode("sidebar");
-  }, [activeSidebarTool, isMobileWorkspace, isSidebarCollapsed, workspaceMode]);
-
-  useEffect(() => {
-    if (
-      !isMobileWorkspace &&
-      workspaceMode === "split" &&
       activeSidebarTool === "sync" &&
       !isSidebarCollapsed &&
       activeMergeState
@@ -12767,14 +13149,6 @@ ${nextLine}` : nextLine;
         setMobileWorkspaceTab("files");
       } else if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
         setWorkspaceMode("split");
-      }
-
-      if (tool !== "diagram") {
-        setDiagramPaneMode("sidebar");
-      }
-
-      if (tool !== "graph") {
-        setGraphPaneMode("sidebar");
       }
 
       if (tool !== "sync") {
@@ -12857,7 +13231,6 @@ ${nextLine}` : nextLine;
 
       if (sourceDocument) {
         setWorkspaceMode("split");
-        setDiagramPaneMode("sidebar");
         if (isMobileWorkspace) {
           setMobileWorkspaceTab("editor");
         }
@@ -12866,7 +13239,6 @@ ${nextLine}` : nextLine;
       setActiveSidebarTool("diagram");
       setIsSidebarCollapsed(false);
       setWorkspaceMode("split");
-      setDiagramPaneMode("sidebar");
       if (isMobileWorkspace) {
         setMobileWorkspaceTab("files");
       }
@@ -12921,7 +13293,6 @@ ${nextLine}` : nextLine;
 
       if (sourceDocument) {
         setWorkspaceMode("split");
-        setGraphPaneMode("sidebar");
         if (isMobileWorkspace) {
           setMobileWorkspaceTab("editor");
         }
@@ -12930,7 +13301,6 @@ ${nextLine}` : nextLine;
       setActiveSidebarTool("graph");
       setIsSidebarCollapsed(false);
       setWorkspaceMode("split");
-      setGraphPaneMode("sidebar");
       if (isMobileWorkspace) {
         setMobileWorkspaceTab("files");
       }
@@ -14886,6 +15256,33 @@ ${nextLine}` : nextLine;
                   />
                 </label>
 
+                <div className="settings-toggle settings-toggle--stacked">
+                  <label className="settings-toggle__row">
+                    <span>
+                      <strong>Vim mode</strong>
+                      <small>Use Vim motions, operators, and normal-mode editing in the source editor.</small>
+                    </span>
+                    <input
+                      checked={snapshot.preferences.vimMode}
+                      onChange={handleVimToggle}
+                      type="checkbox"
+                    />
+                  </label>
+
+                  {snapshot.preferences.vimMode ? (
+                    <div className="settings-embedded-grid">
+                      <label className="sync-field sync-field--checkbox">
+                        <span>Clipboard sharing</span>
+                        <input
+                          checked={snapshot.preferences.vimClipboardSharing}
+                          onChange={handleVimClipboardSharingToggle}
+                          type="checkbox"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+
                 <label className="settings-toggle">
                   <span>
                     <strong>Relative line numbers</strong>
@@ -14913,6 +15310,122 @@ ${nextLine}` : nextLine;
                     type="checkbox"
                   />
                 </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Typst math preview</strong>
+                    <small>
+                      Show an inline Typst preview while typing valid math in Typst files.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.typstMathPreview}
+                    onChange={handleTypstMathPreviewToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <div className="settings-toggle settings-toggle--stacked">
+                  <label className="settings-toggle__row">
+                    <span>
+                      <strong>Paste clipboard images</strong>
+                      <small>Save pasted images to a figures directory and insert a source reference.</small>
+                    </span>
+                    <input
+                      checked={snapshot.preferences.pastedImages.enabled}
+                      onChange={handlePastedImagesEnabledToggle}
+                      type="checkbox"
+                    />
+                  </label>
+
+                  {snapshot.preferences.pastedImages.enabled ? (
+                    <div className="settings-embedded-grid">
+                      <label className="sync-field">
+                        <span>Format</span>
+                        <select
+                          onChange={(event) => handlePastedImageFormatChange(event.target.value as "png" | "jpeg")}
+                          value={snapshot.preferences.pastedImages.format}
+                        >
+                          <option value="png">PNG</option>
+                          <option value="jpeg">JPEG</option>
+                        </select>
+                      </label>
+                      <label className="sync-field">
+                        <span>Filename prefix</span>
+                        <input
+                          onChange={(event) => handlePastedImagePrefixChange(event.target.value)}
+                          value={snapshot.preferences.pastedImages.fileNamePrefix}
+                        />
+                      </label>
+                      <label className="sync-field">
+                        <span>Figures directory</span>
+                        <input
+                          onChange={(event) => handlePastedImageDirectoryChange(event.target.value)}
+                          value={snapshot.preferences.pastedImages.figuresDirectory}
+                        />
+                      </label>
+                      <label className="sync-field sync-field--checkbox">
+                        <span>Relative to current file</span>
+                        <input
+                          checked={snapshot.preferences.pastedImages.figuresDirectoryRelativeToFile}
+                          onChange={handlePastedImageDirectoryAnchorToggle}
+                          type="checkbox"
+                        />
+                      </label>
+                      <div className="pasted-image-template-grid">
+                        <span />
+                        <span>Prefix</span>
+                        <span />
+                        <span>Suffix</span>
+
+                        <span className="pasted-image-template-grid__language">Typst</span>
+                        <input
+                          aria-label="Typst image prefix"
+                          onChange={(event) => handlePastedImageWrapperChange("typstPrefix", event.target.value)}
+                          size={Math.max(12, snapshot.preferences.pastedImages.typstPrefix.length)}
+                          value={snapshot.preferences.pastedImages.typstPrefix}
+                        />
+                        <span className="pasted-image-template-grid__filename">image filename</span>
+                        <input
+                          aria-label="Typst image suffix"
+                          onChange={(event) => handlePastedImageWrapperChange("typstSuffix", event.target.value)}
+                          size={Math.max(12, snapshot.preferences.pastedImages.typstSuffix.length)}
+                          value={snapshot.preferences.pastedImages.typstSuffix}
+                        />
+
+                        <span className="pasted-image-template-grid__language">TeX</span>
+                        <input
+                          aria-label="TeX image prefix"
+                          onChange={(event) => handlePastedImageWrapperChange("latexPrefix", event.target.value)}
+                          size={Math.max(12, snapshot.preferences.pastedImages.latexPrefix.length)}
+                          value={snapshot.preferences.pastedImages.latexPrefix}
+                        />
+                        <span className="pasted-image-template-grid__filename">image filename</span>
+                        <input
+                          aria-label="TeX image suffix"
+                          onChange={(event) => handlePastedImageWrapperChange("latexSuffix", event.target.value)}
+                          size={Math.max(12, snapshot.preferences.pastedImages.latexSuffix.length)}
+                          value={snapshot.preferences.pastedImages.latexSuffix}
+                        />
+
+                        <span className="pasted-image-template-grid__language">Markdown</span>
+                        <input
+                          aria-label="Markdown image prefix"
+                          onChange={(event) => handlePastedImageWrapperChange("markdownPrefix", event.target.value)}
+                          size={Math.max(12, snapshot.preferences.pastedImages.markdownPrefix.length)}
+                          value={snapshot.preferences.pastedImages.markdownPrefix}
+                        />
+                        <span className="pasted-image-template-grid__filename">image filename</span>
+                        <input
+                          aria-label="Markdown image suffix"
+                          onChange={(event) => handlePastedImageWrapperChange("markdownSuffix", event.target.value)}
+                          size={Math.max(12, snapshot.preferences.pastedImages.markdownSuffix.length)}
+                          value={snapshot.preferences.pastedImages.markdownSuffix}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
 
                 <div className="settings-toggle settings-toggle--stacked">
                   <label className="settings-toggle__row">
@@ -16556,7 +17069,7 @@ ${nextLine}` : nextLine;
                   ref={filesSectionRef}
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
                     isDiagramInlineExpanded ? "sidebar-section--pane-expanded" : ""
-                  }`}
+                  } ${isSidebarOnlyWorkspace ? "sidebar-section--pane-full" : ""}`}
                   onScroll={handleLeftPaneScroll}
                 >
                   <DiagramEditorErrorBoundary>
@@ -16589,14 +17102,8 @@ ${nextLine}` : nextLine;
                       onStrokeWidthChange={setDiagramStrokeWidth}
                       onStartMarkerChange={setDiagramStartMarker}
                       onEndMarkerChange={setDiagramEndMarker}
-                      onExpandLeft={
-                        isDiagramInlineExpanded ? expandDiagramPaneBackward : undefined
-                      }
-                      onExpandRight={
-                        !isMobileWorkspace && diagramPaneMode !== "preview"
-                          ? expandDiagramPaneForward
-                          : undefined
-                      }
+                      onExpandLeft={undefined}
+                      onExpandRight={undefined}
                       paperView={isPaperView}
                     />
                   </DiagramEditorErrorBoundary>
@@ -16608,22 +17115,16 @@ ${nextLine}` : nextLine;
                   ref={filesSectionRef}
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
                     isGraphInlineExpanded ? "sidebar-section--pane-expanded" : ""
-                  }`}
+                  } ${isSidebarOnlyWorkspace ? "sidebar-section--pane-full" : ""}`}
                   onScroll={handleLeftPaneScroll}
                 >
                   <GraphEditorErrorBoundary>
                     <GraphEditor
                       graph={graph}
                       isExpanded={isGraphInlineExpanded}
-                      previewLayoutKey={graphPaneMode}
-                      onExpandLeft={
-                        isGraphInlineExpanded ? expandGraphPaneBackward : undefined
-                      }
-                      onExpandRight={
-                        !isMobileWorkspace && graphPaneMode !== "preview"
-                          ? expandGraphPaneForward
-                          : undefined
-                      }
+                      previewLayoutKey="sidebar"
+                      onExpandLeft={undefined}
+                      onExpandRight={undefined}
                       onInsertIntoDocument={handleInsertGraphIntoDocument}
                       onInsertSourceIntoDocument={handleInsertGraphSourceIntoDocument}
                       onNew={handleNewGraph}
@@ -17678,6 +18179,10 @@ ${nextLine}` : nextLine;
                 onSelectionChange={setCurrentEditorLineNumber}
                 onSourceDoubleClick={handleEditorSourceDoubleClick}
                 onFocusChange={setIsEditorFocused}
+                imagePasteInVim={snapshot.preferences.pastedImages.enabled}
+                vimClipboardSharing={snapshot.preferences.vimClipboardSharing}
+                onImagePaste={snapshot.preferences.pastedImages.enabled ? handleSourceImagePaste : undefined}
+                onImageRenameKey={handlePastedImageRenameKey}
                 value={sourceEditorValue}
                 vimMode={snapshot.preferences.vimMode}
                 editorFontSize={snapshot.preferences.editorFontSize}
@@ -17686,6 +18191,7 @@ ${nextLine}` : nextLine;
                 cursorSmooth={!isMobileWorkspace && snapshot.preferences.cursorSmooth}
                 cursorSmear={isMobileWorkspace ? 0 : snapshot.preferences.cursorSmear}
                 latexMathPreview={snapshot.preferences.latexMathPreview}
+                typstMathPreview={snapshot.preferences.typstMathPreview}
                 constrainMobileScroll={isMobileWorkspace}
                 theme={theme}
                 onChange={handleDocumentChange}

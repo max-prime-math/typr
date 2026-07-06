@@ -128,7 +128,8 @@ export function latexMathPreview(): Extension {
       ".cm-tooltip:has(.cm-latex-math-preview), .cm-latex-math-preview": {
         border: "1px solid var(--border)",
         borderRadius: "8px",
-        backgroundColor: "color-mix(in srgb, var(--surface-strong) 96%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--editor-background) 94%, transparent)",
+        color: "var(--editor-foreground)",
         boxShadow: "0 14px 40px rgba(0, 0, 0, 0.16)",
         padding: "0",
         overflow: "hidden"
@@ -329,8 +330,22 @@ function toRatexColor(color: string): string | undefined {
 }
 
 function getRatexReady(): Promise<void> {
-  ratexReady ??= initRatex();
+  ratexReady ??= initRatex().then(waitForRatexFonts);
   return ratexReady;
+}
+
+async function waitForRatexFonts(): Promise<void> {
+  if (!document.fonts) {
+    return;
+  }
+
+  await Promise.allSettled([
+    document.fonts.load('400 16px "KaTeX_Main"'),
+    document.fonts.load('400 italic 16px "KaTeX_Math"'),
+    document.fonts.load('400 16px "KaTeX_Size1"'),
+    document.fonts.load('400 16px "KaTeX_Size2"'),
+    document.fonts.ready
+  ]);
 }
 
 function createMathTooltip(range: MathPreviewRange, displayList: DisplayList): Tooltip {

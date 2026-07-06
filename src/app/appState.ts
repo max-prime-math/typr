@@ -269,14 +269,32 @@ export interface TypstProject {
   graphs: GraphAsset[];
 }
 
+export type PastedImageFormat = "png" | "jpeg";
+
+export interface PastedImagePreferences {
+  enabled: boolean;
+  format: PastedImageFormat;
+  fileNamePrefix: string;
+  figuresDirectory: string;
+  figuresDirectoryRelativeToFile: boolean;
+  typstPrefix: string;
+  typstSuffix: string;
+  latexPrefix: string;
+  latexSuffix: string;
+  markdownPrefix: string;
+  markdownSuffix: string;
+}
+
 export interface AppPreferences {
   theme: ThemePreference;
   vimMode: boolean;
+  vimClipboardSharing: boolean;
   relativeLineNumbers: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
   latexMathPreview: boolean;
+  typstMathPreview: boolean;
   autoSyncGitProjects: boolean;
   editorTooling: EditorToolingPreferences;
   graphProvider: GraphProvider;
@@ -286,6 +304,7 @@ export interface AppPreferences {
   sidebarFontSize: number;
   colorfulFileTreeIcons: boolean;
   showGitignoreInFileTree: boolean;
+  pastedImages: PastedImagePreferences;
 }
 
 export interface AppSnapshot {
@@ -457,11 +476,13 @@ export function createDefaultSnapshot(): AppSnapshot {
     preferences: {
       theme: AUTO_THEME_ID,
       vimMode: false,
+      vimClipboardSharing: false,
       relativeLineNumbers: false,
       cursorSmooth: true,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
       latexMathPreview: true,
+      typstMathPreview: false,
       autoSyncGitProjects: true,
       editorTooling: DEFAULT_EDITOR_TOOLING_PREFERENCES,
       graphProvider: "simple-plot",
@@ -470,7 +491,8 @@ export function createDefaultSnapshot(): AppSnapshot {
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
       sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
       colorfulFileTreeIcons: false,
-      showGitignoreInFileTree: false
+      showGitignoreInFileTree: false,
+      pastedImages: DEFAULT_PASTED_IMAGE_PREFERENCES
     }
   };
 }
@@ -513,6 +535,12 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     preferences: {
       theme: normalizeThemeId(snapshot.preferences.theme ?? AUTO_THEME_ID),
       vimMode: snapshot.preferences.vimMode ?? false,
+      vimClipboardSharing:
+        (snapshot.preferences as Partial<AppPreferences>).vimClipboardSharing ??
+        ((snapshot.preferences as Partial<AppPreferences>).pastedImages as
+          | (Partial<PastedImagePreferences> & { clipboardSharing?: boolean })
+          | undefined)?.clipboardSharing ??
+        false,
       relativeLineNumbers: snapshot.preferences.relativeLineNumbers ?? false,
       cursorSmooth: snapshot.preferences.cursorSmooth ?? true,
       cursorSmear:
@@ -524,6 +552,8 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
       latexMathPreview:
         (snapshot.preferences as Partial<AppPreferences>).latexMathPreview ?? true,
+      typstMathPreview:
+        (snapshot.preferences as Partial<AppPreferences>).typstMathPreview ?? false,
       autoSyncGitProjects:
         (snapshot.preferences as Partial<AppPreferences>).autoSyncGitProjects ?? true,
       editorTooling: normalizeEditorToolingPreferences(
@@ -545,7 +575,10 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       colorfulFileTreeIcons:
         (snapshot.preferences as Partial<AppPreferences>).colorfulFileTreeIcons ?? false,
       showGitignoreInFileTree:
-        (snapshot.preferences as Partial<AppPreferences>).showGitignoreInFileTree ?? false
+        (snapshot.preferences as Partial<AppPreferences>).showGitignoreInFileTree ?? false,
+      pastedImages: normalizePastedImagePreferences(
+        (snapshot.preferences as Partial<AppPreferences>).pastedImages
+      )
     },
     project: {
       ...snapshot.project,
@@ -559,6 +592,66 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       graphs: graphs.map(normalizeGraphAsset)
     }
   };
+}
+
+
+export const DEFAULT_PASTED_IMAGE_PREFERENCES: PastedImagePreferences = {
+  enabled: true,
+  format: "png",
+  fileNamePrefix: "pasted-image",
+  figuresDirectory: "figures",
+  figuresDirectoryRelativeToFile: true,
+  typstPrefix: '#figure(image("',
+  typstSuffix: '", width: 80%))',
+  latexPrefix: "\\includegraphics[width=0.8\\linewidth]{",
+  latexSuffix: "}",
+  markdownPrefix: '<img src="',
+  markdownSuffix: '" alt="" width="80%">'
+};
+
+function normalizePastedImagePreferences(
+  preferences: Partial<PastedImagePreferences> | undefined
+): PastedImagePreferences {
+  const fileNamePrefix = sanitizePastedImagePrefix(preferences?.fileNamePrefix);
+  const figuresDirectory = sanitizePastedImageDirectory(preferences?.figuresDirectory);
+
+  return {
+    enabled: preferences?.enabled ?? true,
+    format: preferences?.format === "jpeg" ? "jpeg" : "png",
+    fileNamePrefix,
+    figuresDirectory,
+    figuresDirectoryRelativeToFile: preferences?.figuresDirectoryRelativeToFile ?? true,
+    typstPrefix: normalizePastedImageWrapperSetting(preferences?.typstPrefix, DEFAULT_PASTED_IMAGE_PREFERENCES.typstPrefix),
+    typstSuffix: normalizePastedImageWrapperSetting(preferences?.typstSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.typstSuffix),
+    latexPrefix: normalizePastedImageWrapperSetting(preferences?.latexPrefix, DEFAULT_PASTED_IMAGE_PREFERENCES.latexPrefix),
+    latexSuffix: normalizePastedImageWrapperSetting(preferences?.latexSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.latexSuffix),
+    markdownPrefix: normalizePastedImageWrapperSetting(preferences?.markdownPrefix, DEFAULT_PASTED_IMAGE_PREFERENCES.markdownPrefix),
+    markdownSuffix: normalizePastedImageWrapperSetting(preferences?.markdownSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.markdownSuffix)
+  };
+}
+
+function sanitizePastedImagePrefix(value: string | undefined): string {
+  const normalized = (value ?? DEFAULT_PASTED_IMAGE_PREFERENCES.fileNamePrefix)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || DEFAULT_PASTED_IMAGE_PREFERENCES.fileNamePrefix;
+}
+
+function sanitizePastedImageDirectory(value: string | undefined): string {
+  const normalized = (value ?? DEFAULT_PASTED_IMAGE_PREFERENCES.figuresDirectory)
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment && segment !== "." && segment !== "..")
+    .join("/");
+
+  return normalized || DEFAULT_PASTED_IMAGE_PREFERENCES.figuresDirectory;
+}
+
+function normalizePastedImageWrapperSetting(value: string | undefined, fallback: string): string {
+  return value ?? fallback;
 }
 
 function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
@@ -2250,6 +2343,19 @@ export function updateVimPreference(
   };
 }
 
+export function updateVimClipboardSharingPreference(
+  snapshot: AppSnapshot,
+  vimClipboardSharing: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      vimClipboardSharing
+    }
+  };
+}
+
 export function updateRelativeLineNumbersPreference(
   snapshot: AppSnapshot,
   relativeLineNumbers: boolean
@@ -2380,6 +2486,19 @@ export function updateLatexMathPreviewPreference(
   };
 }
 
+export function updateTypstMathPreviewPreference(
+  snapshot: AppSnapshot,
+  typstMathPreview: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      typstMathPreview
+    }
+  };
+}
+
 export function updateAutoSyncGitProjectsPreference(
   snapshot: AppSnapshot,
   autoSyncGitProjects: boolean
@@ -2402,6 +2521,22 @@ export function updateEditorToolingPreference(
     preferences: {
       ...snapshot.preferences,
       editorTooling: normalizeEditorToolingPreferences(editorTooling)
+    }
+  };
+}
+
+export function updatePastedImagePreference(
+  snapshot: AppSnapshot,
+  pastedImages: Partial<PastedImagePreferences>
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      pastedImages: normalizePastedImagePreferences({
+        ...snapshot.preferences.pastedImages,
+        ...pastedImages
+      })
     }
   };
 }

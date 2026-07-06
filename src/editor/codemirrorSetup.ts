@@ -48,6 +48,7 @@ import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
 import { toggleMathDelimiterCommand } from "./mathActions";
 import { toggleTextFormatCommand } from "./textFormatting";
 import { latexMathPreview } from "./latexMathPreview";
+import { typstMathPreview } from "./typstMathPreview";
 import { smoothCursor } from "./smoothCursor";
 import { EDITOR_INDENT, getSmartNewlineInsertion } from "./editorWhitespace";
 import { typstLanguage } from "./typstLanguage";
@@ -64,6 +65,7 @@ interface EditorSetupOptions {
   cursorSmear: number;
   constrainMobileScroll: boolean;
   latexMathPreviewEnabled: boolean;
+  typstMathPreviewEnabled: boolean;
   editorFontSize: number;
   keybindings: KeybindingMap;
   theme: ThemeDefinition;
@@ -294,6 +296,7 @@ export function createEditorExtensions({
   cursorSmear,
   constrainMobileScroll,
   latexMathPreviewEnabled,
+  typstMathPreviewEnabled,
   editorFontSize,
   keybindings,
   theme,
@@ -419,6 +422,7 @@ export function createEditorExtensions({
     syntaxHighlighting(editorHighlightStyle, { fallback: true }),
     createLanguageExtension(language),
     ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
+    ...(language === "typst" && typstMathPreviewEnabled ? [typstMathPreview()] : []),
     keymap.of([
       { key: "$", run: mathDelimiterCommand },
       { key: "Enter", run: smartNewlineCommand },

@@ -23,6 +23,7 @@ import {
 } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
+import { getCM, Vim } from "@replit/codemirror-vim";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
 import { toggleTextFormatInView, type TextFormatKind } from "./textFormatting";
@@ -48,6 +49,7 @@ interface TypstEditorProps {
   cursorSmear: number;
   constrainMobileScroll?: boolean;
   latexMathPreview: boolean;
+  typstMathPreview: boolean;
   editorFontSize: number;
   keybindings: KeybindingMap;
   theme: ThemeDefinition;
@@ -62,7 +64,50 @@ interface TypstEditorProps {
   onSelectionChange: (lineNumber: number) => void;
   onSourceDoubleClick?: (position: { line: number; column: number }) => void;
   onFocusChange?: (focused: boolean) => void;
+  imagePasteInVim?: boolean;
+  vimClipboardSharing?: boolean;
+  onImagePaste?: (file: File) => Promise<boolean> | boolean;
+  onImageRenameKey?: (
+    event: KeyboardEvent,
+    selection: { from: number; to: number }
+  ) => { position: number } | { move: "lineEnd" } | null;
   onChange: (value: string) => void;
+}
+
+let vimClipboardSharingEnabled = false;
+let vimClipboardRegisterSyncInstalled = false;
+
+function setVimClipboardSharingEnabled(enabled: boolean): void {
+  vimClipboardSharingEnabled = enabled;
+  installVimClipboardRegisterSync();
+}
+
+function installVimClipboardRegisterSync(): void {
+  if (vimClipboardRegisterSyncInstalled || typeof navigator === "undefined") {
+    return;
+  }
+
+  const registerController = Vim.getRegisterController();
+  const originalPushText = registerController.pushText.bind(registerController);
+
+  registerController.pushText = (registerName, operator, pushedText, linewise, blockwise) => {
+    originalPushText(registerName, operator, pushedText, linewise, blockwise);
+
+    if (
+      !vimClipboardSharingEnabled ||
+      operator !== "yank" ||
+      registerName === "_" ||
+      typeof navigator.clipboard?.writeText !== "function"
+    ) {
+      return;
+    }
+
+    void navigator.clipboard.writeText(registerController.unnamedRegister.toString()).catch((error) => {
+      console.warn("Unable to write Vim yank to system clipboard.", error);
+    });
+  };
+
+  vimClipboardRegisterSyncInstalled = true;
 }
 
 interface PreservedEditorViewState {
@@ -94,6 +139,7 @@ export interface TypstEditorHandle {
   }): void;
   insertText(text: string): void;
   insertTextAndSelect(text: string): void;
+  insertTextAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
   insertTemplate(template: string): void;
   insertMathTemplate(template: string): void;
   insertSymbol(snippet: string): void;
@@ -125,6 +171,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   cursorSmear,
   constrainMobileScroll = false,
   latexMathPreview,
+  typstMathPreview,
   editorFontSize,
   keybindings,
   theme,
@@ -139,6 +186,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   onSelectionChange,
   onSourceDoubleClick,
   onFocusChange,
+  imagePasteInVim = false,
+  vimClipboardSharing = false,
+  onImagePaste,
+  onImageRenameKey,
   onChange
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -149,6 +200,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
   const latestOnSourceDoubleClickRef = useRef(onSourceDoubleClick);
   const latestOnFocusChangeRef = useRef(onFocusChange);
+  const latestImagePasteInVimRef = useRef(imagePasteInVim);
+  const latestVimClipboardSharingRef = useRef(vimClipboardSharing);
+  const latestOnImagePasteRef = useRef(onImagePaste);
+  const latestOnImageRenameKeyRef = useRef(onImageRenameKey);
   const latestOnSearchRequestedRef = useRef(onSearchRequested);
   const latestOnCompileRequestedRef = useRef(onCompileRequested);
   const latestOnFormatRequestedRef = useRef(onFormatRequested);
@@ -179,6 +234,23 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   useEffect(() => {
     latestOnFocusChangeRef.current = onFocusChange;
   }, [onFocusChange]);
+
+  useEffect(() => {
+    latestImagePasteInVimRef.current = imagePasteInVim;
+  }, [imagePasteInVim]);
+
+  useEffect(() => {
+    latestVimClipboardSharingRef.current = vimClipboardSharing;
+    setVimClipboardSharingEnabled(vimClipboardSharing);
+  }, [vimClipboardSharing]);
+
+  useEffect(() => {
+    latestOnImagePasteRef.current = onImagePaste;
+  }, [onImagePaste]);
+
+  useEffect(() => {
+    latestOnImageRenameKeyRef.current = onImageRenameKey;
+  }, [onImageRenameKey]);
 
   useEffect(() => {
     latestOnSearchRequestedRef.current = onSearchRequested;
@@ -255,6 +327,17 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
 
         insertTextIntoView(view, text, true);
         view.focus();
+      },
+      insertTextAndSelectRange(text, selectionStart, selectionEnd) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return null;
+        }
+
+        const range = insertTextIntoView(view, text, { selectionStart, selectionEnd });
+        view.focus();
+        return range;
       },
       insertTemplate(template) {
         const view = viewRef.current;
@@ -483,6 +566,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         cursorSmear,
         constrainMobileScroll,
         latexMathPreviewEnabled: latexMathPreview,
+        typstMathPreviewEnabled: typstMathPreview,
         editorFontSize,
         keybindings,
         theme,
@@ -523,6 +607,61 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       }
     }
 
+    const handlePaste = (event: ClipboardEvent) => {
+      const imageFile = getClipboardImageFile(event.clipboardData);
+
+      if (!imageFile || !latestOnImagePasteRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void Promise.resolve(latestOnImagePasteRef.current(imageFile)).catch((error) => {
+        console.error("Unable to paste clipboard image.", error);
+      });
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const selection = view.state.selection.main;
+      const renameHandler = latestOnImageRenameKeyRef.current;
+
+      if (renameHandler) {
+        const result = renameHandler(event, {
+          from: Math.min(selection.anchor, selection.head),
+          to: Math.max(selection.anchor, selection.head)
+        });
+
+        if (result) {
+          event.preventDefault();
+          event.stopPropagation();
+          const position = "move" in result
+            ? view.state.doc.lineAt(selection.to).to
+            : result.position;
+          view.dispatch({
+            selection: EditorSelection.cursor(clampDocumentOffset(position, view.state.doc.length)),
+            scrollIntoView: true
+          });
+          return;
+        }
+      }
+
+      const shouldReadClipboardForVimPaste =
+        latestImagePasteInVimRef.current || latestVimClipboardSharingRef.current;
+
+      if (shouldReadClipboardForVimPaste && shouldHandleVimPasteKey(event, view)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void handleVimPaste(view, {
+          imagePasteInVim: latestImagePasteInVimRef.current,
+          onImagePaste: latestOnImagePasteRef.current,
+          vimClipboardSharing: latestVimClipboardSharingRef.current
+        });
+      }
+    };
+
+    view.dom.addEventListener("paste", handlePaste);
+    view.dom.addEventListener("keydown", handleKeyDown, true);
+
     latestOnFocusChangeRef.current?.(view.hasFocus);
     viewRef.current = view;
     preservedViewStateRef.current = null;
@@ -539,6 +678,8 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         scrollLeft: view.scrollDOM.scrollLeft,
         hadFocus: view.hasFocus
       };
+      view.dom.removeEventListener("paste", handlePaste);
+      view.dom.removeEventListener("keydown", handleKeyDown, true);
       latestOnFocusChangeRef.current?.(false);
       view.destroy();
       viewRef.current = null;
@@ -549,6 +690,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     cursorSmooth,
     editorFontSize,
     latexMathPreview,
+    typstMathPreview,
     keybindings,
     language,
     readOnly,
@@ -570,13 +712,27 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     }
 
     const currentLength = view.state.doc.length;
+    const selection = view.state.selection;
+    const nextDocumentLength = value.length;
+    const selectionRanges = selection.ranges.map((range) =>
+      EditorSelection.range(
+        clampDocumentOffset(range.anchor, nextDocumentLength),
+        clampDocumentOffset(range.head, nextDocumentLength)
+      )
+    );
+    const mainSelectionIndex = Math.min(
+      selection.mainIndex,
+      Math.max(0, selectionRanges.length - 1)
+    );
+
     isApplyingExternalValueRef.current = true;
     view.dispatch({
       changes: {
         from: 0,
         to: currentLength,
         insert: value
-      }
+      },
+      selection: EditorSelection.create(selectionRanges, mainSelectionIndex)
     });
     currentValueRef.current = value;
   }, [value]);
@@ -672,24 +828,36 @@ function clampDocumentOffset(offset: number, documentLength: number): number {
 function insertTextIntoView(
   view: EditorView,
   text: string,
-  selectInsertedText = false
-): void {
+  selection: boolean | { selectionStart: number; selectionEnd: number } = false
+): { from: number; to: number } {
   const insertionRange = resolveInsertionRange(view);
+  const selectionRange =
+    typeof selection === "object"
+      ? EditorSelection.range(
+          insertionRange.from + clampDocumentOffset(selection.selectionStart, text.length),
+          insertionRange.from + clampDocumentOffset(selection.selectionEnd, text.length)
+        )
+      : selection
+        ? EditorSelection.range(insertionRange.from, insertionRange.from + text.length)
+        : EditorSelection.cursor(insertionRange.from + text.length);
   const transaction = {
     changes: {
       from: insertionRange.from,
       to: insertionRange.to,
       insert: text
     },
-    selection: selectInsertedText
-      ? EditorSelection.range(insertionRange.from, insertionRange.from + text.length)
-      : EditorSelection.cursor(insertionRange.from + text.length)
+    selection: selectionRange
   };
 
   view.dispatch({
     ...transaction,
     scrollIntoView: true
   });
+
+  return {
+    from: selectionRange.from,
+    to: selectionRange.to
+  };
 }
 
 function resolveInsertionRange(view: EditorView): { from: number; to: number } {
@@ -768,6 +936,7 @@ function replaceSelection(view: EditorView, before: string, after: string): void
     ...transaction,
     scrollIntoView: true
   });
+
 }
 
 function wrapSelection(view: EditorView, before: string, after: string): void {
@@ -892,4 +1061,106 @@ function clampLineNumber(view: EditorView, lineNumber: number): number {
 
 function clampColumn(column: number, lineLength: number): number {
   return Math.max(0, Math.min(Math.max(column, 1) - 1, lineLength));
+}
+
+function getClipboardImageFile(clipboardData: DataTransfer | null): File | null {
+  if (!clipboardData) {
+    return null;
+  }
+
+  for (const item of Array.from(clipboardData.items)) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) {
+      continue;
+    }
+
+    const file = item.getAsFile();
+
+    if (file) {
+      return file;
+    }
+  }
+
+  for (const file of Array.from(clipboardData.files)) {
+    if (file.type.startsWith("image/")) {
+      return file;
+    }
+  }
+
+  return null;
+}
+
+
+function shouldHandleVimPasteKey(event: KeyboardEvent, view: EditorView): boolean {
+  if (
+    event.key !== "p" ||
+    event.shiftKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey
+  ) {
+    return false;
+  }
+
+  const vimState = getCM(view)?.state.vim;
+  return Boolean(vimState && vimState.insertMode !== true);
+}
+
+async function handleVimPaste(
+  view: EditorView,
+  options: {
+    imagePasteInVim: boolean;
+    onImagePaste: ((file: File) => Promise<boolean> | boolean) | undefined;
+    vimClipboardSharing: boolean;
+  }
+): Promise<void> {
+  if (options.imagePasteInVim && typeof navigator.clipboard?.read === "function") {
+    const imageFile = await readClipboardImageFile();
+
+    if (imageFile && options.onImagePaste) {
+      await options.onImagePaste(imageFile);
+      return;
+    }
+  }
+
+  const cm = getCM(view);
+
+  if (!cm) {
+    return;
+  }
+
+  if (options.vimClipboardSharing && typeof navigator.clipboard?.readText === "function") {
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+
+      if (clipboardText) {
+        Vim.getRegisterController().unnamedRegister.setText(clipboardText);
+      }
+    } catch (error) {
+      console.warn("Unable to read system clipboard for Vim paste.", error);
+    }
+  }
+
+  Vim.handleKey(cm, "p", "mapping");
+}
+
+async function readClipboardImageFile(): Promise<File | null> {
+  try {
+    const items = await navigator.clipboard.read();
+
+    for (const item of items) {
+      const imageType = item.types.find((type) => type.startsWith("image/"));
+
+      if (!imageType) {
+        continue;
+      }
+
+      const blob = await item.getType(imageType);
+      const extension = imageType === "image/jpeg" ? "jpg" : imageType.split("/").at(-1) || "png";
+      return new File([blob], `clipboard-image.${extension}`, { type: imageType });
+    }
+  } catch (error) {
+    console.warn("Unable to read clipboard image for Vim paste.", error);
+  }
+
+  return null;
 }
