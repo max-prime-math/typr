@@ -87,6 +87,9 @@ export default defineConfig(({ command }) => {
     },
     server: {
       host: true
+    },
+    preview: {
+      host: true
     }
   };
 });

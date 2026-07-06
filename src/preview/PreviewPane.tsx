@@ -2619,12 +2619,19 @@ function buildWorkspacePreviewBlob(
   theme: ThemeDefinition
 ): Blob {
   if (file.mimeType !== "image/svg+xml") {
-    return new Blob([file.content as BlobPart], { type: file.mimeType });
+    return new Blob([encodeWorkspacePreviewBlobPart(file.content)], { type: file.mimeType });
   }
 
   const markup = decodeWorkspaceTextContent(file.content);
   const normalizedMarkup = normalizePreviewSvg(markup, paperView, theme);
-  return new Blob([normalizedMarkup], { type: file.mimeType });
+  return new Blob([normalizedMarkup || markup], { type: file.mimeType });
+}
+
+function encodeWorkspacePreviewBlobPart(content: string | Uint8Array): BlobPart {
+  const bytes = encodeWorkspacePreviewBytes(content);
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
 }
 
 function encodeWorkspacePreviewBytes(content: string | Uint8Array): Uint8Array {

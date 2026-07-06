@@ -447,6 +447,12 @@ function getWorkspacePreviewMimeType(path: string): string | null {
   }
 }
 
+function isWorkspacePreviewFile(path: string): boolean {
+  const mimeType = getWorkspacePreviewMimeType(path);
+
+  return mimeType !== null && mimeType !== "text/markdown";
+}
+
 function getWorkspacePreviewFileCacheKey(
   project: TyprProjectRepository,
   path: string
@@ -2998,6 +3004,52 @@ function buildPastedImagePath(
   };
 }
 
+function findDuplicatePastedImagePath(
+  project: TyprProjectRepository,
+  folderPath: string,
+  extension: "png" | "jpg",
+  bytes: Uint8Array
+): string | null {
+  const normalizedFolderPath = normalizeWorkspacePath(folderPath);
+  const folderPrefix = normalizedFolderPath ? `${normalizedFolderPath}/` : "";
+  const extensionSuffix = `.${extension}`;
+
+  for (const entry of listProjectEntries(project)) {
+    const normalizedPath = normalizeWorkspacePath(entry.path);
+
+    if (
+      entry.kind !== "file" ||
+      !normalizedPath.startsWith(folderPrefix) ||
+      normalizedPath.slice(folderPrefix.length).includes("/") ||
+      !normalizedPath.toLowerCase().endsWith(extensionSuffix)
+    ) {
+      continue;
+    }
+
+    const existingBytes = readProjectFileBytes(project, normalizedPath);
+
+    if (existingBytes && bytesEqual(existingBytes, bytes)) {
+      return normalizedPath;
+    }
+  }
+
+  return null;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function sanitizePastedImageFilePrefix(prefix: string): string {
   const normalized = prefix
     .trim()
@@ -4584,9 +4636,15 @@ ${nextLine}` : nextLine;
         return;
       }
 
-      const bytes = selectedProjectRepository
-        ? await readWorkspaceFileFromOpfs(selectedProjectRepository.id, activePreviewWorkspaceNode.path)
+      const projectBytes = selectedProjectRepository
+        ? readProjectFileBytes(selectedProjectRepository, activePreviewWorkspaceNode.path)
         : null;
+      const opfsBytes = projectBytes
+        ? null
+        : selectedProjectRepository
+          ? await readWorkspaceFileFromOpfs(selectedProjectRepository.id, activePreviewWorkspaceNode.path)
+          : null;
+      const bytes = projectBytes ?? opfsBytes;
 
       if (cancelled) {
         return;
@@ -10832,29 +10890,43 @@ ${nextLine}` : nextLine;
         snapshot.preferences.pastedImages.format
       );
       const project = selectedProjectRepositoryRef.current;
-      const { folderPath, imagePath, referencePath } = buildPastedImagePath(
+      const nextImagePath = buildPastedImagePath(
         project,
         activeSourcePath,
         snapshot.preferences.pastedImages,
         preparedImage.extension
       );
+      const duplicateImagePath = findDuplicatePastedImagePath(
+        project,
+        nextImagePath.folderPath,
+        preparedImage.extension,
+        preparedImage.bytes
+      );
+      const folderPath = nextImagePath.folderPath;
+      const imagePath = duplicateImagePath ?? nextImagePath.imagePath;
+      const referencePath = duplicateImagePath
+        ? getWorkspaceRelativeReference(activeSourcePath, duplicateImagePath)
+        : nextImagePath.referencePath;
+      const reusedExistingImage = duplicateImagePath !== null;
       const insertion = buildPastedImageInsertion(
         activeSourceLanguage,
         referencePath,
         snapshot.preferences.pastedImages
       );
 
-      setProjectRepository((currentProject) => {
-        const withFolder = ensureProjectFolder(currentProject, folderPath, {
-          kind: "folder",
-          id: `pasted-image-folder:${folderPath}`
-        });
+      if (!reusedExistingImage) {
+        setProjectRepository((currentProject) => {
+          const withFolder = ensureProjectFolder(currentProject, folderPath, {
+            kind: "folder",
+            id: `pasted-image-folder:${folderPath}`
+          });
 
-        return writeProjectFile(withFolder, imagePath, preparedImage.bytes, {
-          kind: "virtual",
-          id: `pasted-image:${imagePath}`
+          return writeProjectFile(withFolder, imagePath, preparedImage.bytes, {
+            kind: "virtual",
+            id: `pasted-image:${imagePath}`
+          });
         });
-      });
+      }
 
       updateWorkspaceOpenFolders((currentPaths) => {
         const nextPaths = new Set(currentPaths);
@@ -10870,12 +10942,18 @@ ${nextLine}` : nextLine;
       );
       const selectionStart = insertedText.indexOf(pastedImageNameStem);
       const selectedRange =
-        selectionStart >= 0
-          ? editorRef.current?.insertTextAndSelectRange(
-              insertedText,
-              selectionStart,
-              selectionStart + pastedImageNameStem.length
-            )
+        !reusedExistingImage && selectionStart >= 0
+          ? activeSourceLanguage === "latex"
+            ? editorRef.current?.insertLatexGraphicAndSelectRange(
+                insertedText,
+                selectionStart,
+                selectionStart + pastedImageNameStem.length
+              )
+            : editorRef.current?.insertTextAndSelectRange(
+                insertedText,
+                selectionStart,
+                selectionStart + pastedImageNameStem.length
+              )
           : null;
 
       if (selectedRange) {
@@ -10889,11 +10967,18 @@ ${nextLine}` : nextLine;
           extension: preparedImage.extension
         };
       } else {
-        editorRef.current?.insertText(insertedText);
+        if (activeSourceLanguage === "latex") {
+          editorRef.current?.insertLatexGraphic(insertedText);
+        } else {
+          editorRef.current?.insertText(insertedText);
+        }
         pastedImageRenameBindingRef.current = null;
       }
 
-      setSyncFeedback({ tone: "success", text: `Pasted image to ${imagePath}.` });
+      setSyncFeedback({
+        tone: "success",
+        text: reusedExistingImage ? `Reused image at ${imagePath}.` : `Pasted image to ${imagePath}.`
+      });
       window.setTimeout(() => {
         handleCompileRef.current();
       }, 0);
@@ -13482,14 +13567,26 @@ ${nextLine}` : nextLine;
   const handleOpenWorkspaceFile = useCallback(
     (path: string, options: { pinSourceTab?: boolean } = {}) => {
       const normalizedPath = normalizeWorkspacePath(path);
-      setSelectedWorkspacePath(normalizedPath);
-      setSelectedWorkspacePaths([normalizedPath]);
-      setWorkspaceSelectionAnchorPath(normalizedPath);
       setWorkspaceContextMenu(null);
 
       if (isTrashViewOpen) {
         return;
       }
+
+      if (isWorkspacePreviewFile(normalizedPath)) {
+        setInspectedWorkspacePath(null);
+        openPreviewTab(normalizedPath);
+        setWorkspaceMode("split");
+        setIsPreviewCollapsed(false);
+        if (isMobileWorkspace) {
+          setMobileWorkspaceTab("preview");
+        }
+        return;
+      }
+
+      setSelectedWorkspacePath(normalizedPath);
+      setSelectedWorkspacePaths([normalizedPath]);
+      setWorkspaceSelectionAnchorPath(normalizedPath);
 
       const matchingDocument = snapshot.project.documents.find(
         (document) =>
@@ -13544,6 +13641,7 @@ ${nextLine}` : nextLine;
       handleOpenWorkspaceGraph,
       handleSelectDocument,
       getExistingLatexPdfPreviewPath,
+      isMobileWorkspace,
       isTrashViewOpen,
       openPreviewTab,
       previewTabPaths.length,

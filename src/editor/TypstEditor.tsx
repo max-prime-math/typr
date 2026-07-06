@@ -141,6 +141,7 @@ export interface TypstEditorHandle {
   insertTextAndSelect(text: string): void;
   insertTextAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
   insertLatexGraphic(text: string): void;
+  insertLatexGraphicAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
   insertTemplate(template: string): void;
   insertMathTemplate(template: string): void;
   insertSymbol(snippet: string): void;
@@ -347,8 +348,19 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           return;
         }
 
-        insertLatexGraphicIntoView(view, text);
+        insertLatexGraphicIntoView(view, text, true);
         view.focus();
+      },
+      insertLatexGraphicAndSelectRange(text, selectionStart, selectionEnd) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return null;
+        }
+
+        const range = insertLatexGraphicIntoView(view, text, { selectionStart, selectionEnd });
+        view.focus();
+        return range;
       },
       insertTemplate(template) {
         const view = viewRef.current;
@@ -836,13 +848,17 @@ function clampDocumentOffset(offset: number, documentLength: number): number {
   return Math.min(documentLength, Math.max(0, offset));
 }
 
-function insertLatexGraphicIntoView(view: EditorView, text: string): void {
+function insertLatexGraphicIntoView(
+  view: EditorView,
+  text: string,
+  selection: boolean | { selectionStart: number; selectionEnd: number } = true
+): { from: number; to: number } {
   const source = view.state.doc.toString();
   const insertionRange = resolveInsertionRange(view);
   const packageInsertion = getLatexGraphicsPackageInsertion(source);
   const packageOffset =
     packageInsertion && packageInsertion.from <= insertionRange.from
-      ? packageInsertion.insert.length
+      ? packageInsertion.insert.length - ((packageInsertion.to ?? packageInsertion.from) - packageInsertion.from)
       : 0;
   const textFrom = insertionRange.from + packageOffset;
   const textChange = {
@@ -855,17 +871,37 @@ function insertLatexGraphicIntoView(view: EditorView, text: string): void {
       ? [packageInsertion, textChange]
       : [textChange, packageInsertion]
     : textChange;
+  const selectionRange =
+    typeof selection === "object"
+      ? EditorSelection.range(
+          textFrom + clampDocumentOffset(selection.selectionStart, text.length),
+          textFrom + clampDocumentOffset(selection.selectionEnd, text.length)
+        )
+      : selection
+        ? EditorSelection.range(textFrom, textFrom + text.length)
+        : EditorSelection.cursor(textFrom + text.length);
 
   view.dispatch({
     changes,
-    selection: EditorSelection.range(textFrom, textFrom + text.length),
+    selection: selectionRange,
     scrollIntoView: true
   });
+
+  return {
+    from: selectionRange.from,
+    to: selectionRange.to
+  };
 }
 
-function getLatexGraphicsPackageInsertion(source: string): { from: number; insert: string } | null {
+function getLatexGraphicsPackageInsertion(source: string): { from: number; to?: number; insert: string } | null {
   if (latexSourceHasGraphicxPackage(source)) {
     return null;
+  }
+
+  const existingGraphicsPackage = getLatexGraphicsPackageReplacement(source);
+
+  if (existingGraphicsPackage) {
+    return existingGraphicsPackage;
   }
 
   const documentClassMatch = source.match(/\\documentclass(?:\s*\[[^\]]*])?\s*\{[^}]+}/);
@@ -873,14 +909,50 @@ function getLatexGraphicsPackageInsertion(source: string): { from: number; inser
   if (!documentClassMatch || documentClassMatch.index == null) {
     return {
       from: 0,
-      insert: "\\usepackage{graphics}\n"
+      insert: "\\usepackage{graphicx}\n"
     };
   }
 
   return {
     from: documentClassMatch.index + documentClassMatch[0].length,
-    insert: "\n\\usepackage{graphics}"
+    insert: "\n\\usepackage{graphicx}"
   };
+}
+
+function getLatexGraphicsPackageReplacement(source: string): { from: number; to: number; insert: string } | null {
+  let lineStart = 0;
+
+  for (const line of source.split(/\r?\n/)) {
+    const commentStart = getLatexCommentStart(line);
+    const visibleLine = commentStart >= 0 ? line.slice(0, commentStart) : line;
+    const packagePattern = /\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*])?\s*\{([^}]*)}/gi;
+
+    for (const match of visibleLine.matchAll(packagePattern)) {
+      if (match.index == null) {
+        continue;
+      }
+
+      const packageList = match[1] ?? "";
+      const packageListStart = lineStart + match.index + match[0].indexOf("{") + 1;
+      const graphicsMatch = packageList.match(/(^|,)\s*graphics\s*(?=,|$)/i);
+
+      if (graphicsMatch?.index == null) {
+        continue;
+      }
+
+      const tokenStart = packageListStart + graphicsMatch.index + graphicsMatch[0].search(/graphics/i);
+
+      return {
+        from: tokenStart,
+        to: tokenStart + "graphics".length,
+        insert: "graphicx"
+      };
+    }
+
+    lineStart += line.length + 1;
+  }
+
+  return null;
 }
 
 function latexSourceHasGraphicxPackage(source: string): boolean {
@@ -893,26 +965,32 @@ function stripLatexComments(source: string): string {
   return source
     .split(/\r?\n/)
     .map((line) => {
-      let backslashCount = 0;
+      const commentStart = getLatexCommentStart(line);
 
-      for (let index = 0; index < line.length; index += 1) {
-        const char = line[index];
-
-        if (char === "\\") {
-          backslashCount += 1;
-          continue;
-        }
-
-        if (char === "%" && backslashCount % 2 === 0) {
-          return line.slice(0, index);
-        }
-
-        backslashCount = 0;
-      }
-
-      return line;
+      return commentStart >= 0 ? line.slice(0, commentStart) : line;
     })
     .join("\n");
+}
+
+function getLatexCommentStart(line: string): number {
+  let backslashCount = 0;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+
+    if (char === "\\") {
+      backslashCount += 1;
+      continue;
+    }
+
+    if (char === "%" && backslashCount % 2 === 0) {
+      return index;
+    }
+
+    backslashCount = 0;
+  }
+
+  return -1;
 }
 
 function insertTextIntoView(
