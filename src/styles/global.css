@@ -8932,3 +8932,258 @@ body,
   position: relative;
   max-height: var(--app-viewport-height, 100dvh);
 }
+
+.diagram-editor--svgedit {
+  min-height: 640px;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.diagram-editor__topbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-strong) 86%, var(--surface-muted));
+}
+
+.diagram-editor__filename {
+  min-width: min(18rem, 100%);
+  height: 32px;
+  flex: 999 1 18rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--editor-background);
+  font-family: "Iosevka Term", "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.88rem;
+}
+
+.diagram-editor__filename:focus {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.diagram-editor--svgedit .diagram-editor__actions {
+  position: static;
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+  background: transparent;
+}
+
+.diagram-editor--svgedit .diagram-editor__actions button {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-strong) 82%, var(--surface-muted));
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.diagram-editor--svgedit .diagram-editor__actions button:hover,
+.diagram-editor--svgedit .diagram-editor__actions button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-strong));
+  color: var(--accent-strong);
+  outline: none;
+}
+
+.diagram-editor--svgedit .diagram-editor__actions button:active {
+  transform: translateY(1px);
+}
+
+.diagram-editor__svgedit-host {
+  min-height: 560px;
+  height: min(72vh, 760px);
+  width: 100%;
+  overflow: hidden;
+  background: var(--surface-strong);
+}
+
+.diagram-editor__svgedit-host .svg_editor {
+  width: 100%;
+  height: 100%;
+}
+
+.diagram-editor__svgedit-host,
+.diagram-editor__svgedit-host .svg_editor {
+  --main-bg-color: var(--surface-strong);
+  --text-color: var(--text);
+  --border-color: var(--border);
+  --canvas-bg-color: var(--surface-muted);
+  --link-color: var(--accent);
+  --ruler-color: color-mix(in srgb, var(--surface-muted) 76%, var(--border));
+  --icon-bg-color: color-mix(in srgb, var(--surface-strong) 90%, var(--surface-muted));
+  --icon-bg-color-hover: color-mix(in srgb, var(--accent-soft) 64%, var(--surface-strong));
+  --input-color: var(--editor-background);
+  --orange-color: var(--accent);
+}
+
+.diagram-editor__svgedit-host .svg_editor {
+  color: var(--text);
+  background: var(--surface-strong);
+  font-family: inherit;
+}
+
+.diagram-editor__svgedit-host #title_panel {
+  display: none;
+}
+
+.diagram-editor__svgedit-host #main_button,
+.diagram-editor__svgedit-host #tools_top,
+.diagram-editor__svgedit-host #tools_top > *,
+.diagram-editor__svgedit-host #tools_left,
+.diagram-editor__svgedit-host #tools_bottom,
+.diagram-editor__svgedit-host #sidepanels {
+  background: var(--surface-strong);
+  color: var(--text);
+}
+
+.diagram-editor__svgedit-host #title_panel > p,
+.diagram-editor__svgedit-host #layersLabel,
+.diagram-editor__svgedit-host #sidepanel_handle {
+  color: var(--text);
+}
+
+.diagram-editor__svgedit-host #workarea {
+  border-color: var(--border);
+  background:
+    linear-gradient(45deg, color-mix(in srgb, var(--surface-muted) 78%, #ffffff) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--surface-muted) 78%, #ffffff) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--surface-muted) 78%, #ffffff) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--surface-muted) 78%, #ffffff) 75%),
+    var(--surface-muted);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.diagram-editor__svgedit-host #svgcanvas {
+  background: color-mix(in srgb, var(--editor-background) 86%, var(--surface-strong));
+}
+
+.diagram-editor__svgedit-host #cur_context_panel {
+  background: color-mix(in srgb, var(--surface-muted) 86%, var(--surface-strong));
+  color: var(--text-muted);
+  border-block: 1px solid var(--border);
+}
+
+.diagram-editor__svgedit-host #main_menu,
+.diagram-editor__svgedit-host .dropdown li,
+.diagram-editor__svgedit-host #layerlist,
+.diagram-editor__svgedit-host #layerlist tr.layer {
+  border-color: var(--border);
+  color: var(--text);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow);
+}
+
+.diagram-editor__svgedit-host #main_menu li:hover,
+.diagram-editor__svgedit-host .dropdown li:hover,
+.diagram-editor__svgedit-host .dropdown li.special:hover,
+.diagram-editor__svgedit-host ul li.current,
+.diagram-editor__svgedit-host #layerlist tr.layersel {
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--surface-strong));
+  color: var(--accent-strong);
+}
+
+.diagram-editor__svgedit-host se-menu,
+.diagram-editor__svgedit-host se-menu-item,
+.diagram-editor__svgedit-host se-list,
+.diagram-editor__svgedit-host se-list-item,
+.diagram-editor__svgedit-host se-select,
+.diagram-editor__svgedit-host option,
+.diagram-editor__svgedit-host .dropdown ul,
+.diagram-editor__svgedit-host .dropdown li,
+.diagram-editor__svgedit-host #main_menu,
+.diagram-editor__svgedit-host #main_menu li {
+  color: var(--text);
+}
+
+:root[data-theme="dark"] .diagram-editor__svgedit-host {
+  --icon-bg-color: color-mix(in srgb, var(--surface-strong) 74%, #000000);
+  --icon-bg-color-hover: color-mix(in srgb, var(--accent) 26%, var(--surface-strong));
+  --input-color: color-mix(in srgb, var(--editor-background) 80%, #000000);
+}
+
+:root[data-theme="dark"] .diagram-editor__svgedit-host #main_menu,
+:root[data-theme="dark"] .diagram-editor__svgedit-host .dropdown li,
+:root[data-theme="dark"] .diagram-editor__svgedit-host #layerlist,
+:root[data-theme="dark"] .diagram-editor__svgedit-host #layerlist tr.layer {
+  color: #edf4ef;
+  background: color-mix(in srgb, var(--surface-strong) 82%, #000000);
+}
+
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-menu,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-menu-item,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-list,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-list-item,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-select,
+:root[data-theme="dark"] .diagram-editor__svgedit-host option,
+:root[data-theme="dark"] .diagram-editor__svgedit-host .dropdown ul,
+:root[data-theme="dark"] .diagram-editor__svgedit-host .dropdown li,
+:root[data-theme="dark"] .diagram-editor__svgedit-host #main_menu,
+:root[data-theme="dark"] .diagram-editor__svgedit-host #main_menu li {
+  color: #edf4ef;
+}
+
+.diagram-editor__svgedit-host .dropdown button,
+.diagram-editor__svgedit-host input,
+.diagram-editor__svgedit-host select,
+.diagram-editor__svgedit-host textarea,
+.diagram-editor__svgedit-host #zoom {
+  border-color: var(--border);
+  color: var(--text);
+  background: var(--editor-background);
+}
+
+.diagram-editor__svgedit-host .dropdown button.down,
+.diagram-editor__svgedit-host .buttondown,
+.diagram-editor__svgedit-host #main_icon.buttondown,
+.diagram-editor__svgedit-host #main_icon:hover,
+.diagram-editor__svgedit-host #toggle_stroke_tools:hover {
+  background: color-mix(in srgb, var(--accent-soft) 64%, var(--surface-strong)) !important;
+  color: var(--accent-strong);
+  box-shadow: none !important;
+}
+
+.diagram-editor__svgedit-host .tool_sep {
+  border-left-color: var(--border);
+}
+
+.diagram-editor__svgedit-host #tools_left::-webkit-scrollbar-thumb,
+.diagram-editor__svgedit-host #tools_bottom::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+:root[data-theme="dark"] .diagram-editor__svgedit-host img,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-button,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-list-item,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-menu-item,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-flyingbutton,
+:root[data-theme="dark"] .diagram-editor__svgedit-host se-explorerbutton {
+  filter: invert(0.88) hue-rotate(180deg) saturate(0.85);
+}
+
+.diagram-editor__error {
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--border));
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface-strong));
+}

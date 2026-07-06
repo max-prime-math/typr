@@ -140,6 +140,7 @@ export interface TypstEditorHandle {
   insertText(text: string): void;
   insertTextAndSelect(text: string): void;
   insertTextAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
+  insertLatexGraphic(text: string): void;
   insertTemplate(template: string): void;
   insertMathTemplate(template: string): void;
   insertSymbol(snippet: string): void;
@@ -338,6 +339,16 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         const range = insertTextIntoView(view, text, { selectionStart, selectionEnd });
         view.focus();
         return range;
+      },
+      insertLatexGraphic(text) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        insertLatexGraphicIntoView(view, text);
+        view.focus();
       },
       insertTemplate(template) {
         const view = viewRef.current;
@@ -825,6 +836,85 @@ function clampDocumentOffset(offset: number, documentLength: number): number {
   return Math.min(documentLength, Math.max(0, offset));
 }
 
+function insertLatexGraphicIntoView(view: EditorView, text: string): void {
+  const source = view.state.doc.toString();
+  const insertionRange = resolveInsertionRange(view);
+  const packageInsertion = getLatexGraphicsPackageInsertion(source);
+  const packageOffset =
+    packageInsertion && packageInsertion.from <= insertionRange.from
+      ? packageInsertion.insert.length
+      : 0;
+  const textFrom = insertionRange.from + packageOffset;
+  const textChange = {
+    from: insertionRange.from,
+    to: insertionRange.to,
+    insert: text
+  };
+  const changes = packageInsertion
+    ? packageInsertion.from <= insertionRange.from
+      ? [packageInsertion, textChange]
+      : [textChange, packageInsertion]
+    : textChange;
+
+  view.dispatch({
+    changes,
+    selection: EditorSelection.range(textFrom, textFrom + text.length),
+    scrollIntoView: true
+  });
+}
+
+function getLatexGraphicsPackageInsertion(source: string): { from: number; insert: string } | null {
+  if (latexSourceHasGraphicxPackage(source)) {
+    return null;
+  }
+
+  const documentClassMatch = source.match(/\\documentclass(?:\s*\[[^\]]*])?\s*\{[^}]+}/);
+
+  if (!documentClassMatch || documentClassMatch.index == null) {
+    return {
+      from: 0,
+      insert: "\\usepackage{graphics}\n"
+    };
+  }
+
+  return {
+    from: documentClassMatch.index + documentClassMatch[0].length,
+    insert: "\n\\usepackage{graphics}"
+  };
+}
+
+function latexSourceHasGraphicxPackage(source: string): boolean {
+  return /\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*])?\s*\{[^}]*graphicx[^}]*}/i.test(
+    stripLatexComments(source)
+  );
+}
+
+function stripLatexComments(source: string): string {
+  return source
+    .split(/\r?\n/)
+    .map((line) => {
+      let backslashCount = 0;
+
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+
+        if (char === "\\") {
+          backslashCount += 1;
+          continue;
+        }
+
+        if (char === "%" && backslashCount % 2 === 0) {
+          return line.slice(0, index);
+        }
+
+        backslashCount = 0;
+      }
+
+      return line;
+    })
+    .join("\n");
+}
+
 function insertTextIntoView(
   view: EditorView,
   text: string,
@@ -875,7 +965,7 @@ function resolveInsertionRange(view: EditorView): { from: number; to: number } {
 }
 
 function isPrimaryCursorVisible(view: EditorView, from: number, to: number): boolean {
-  if (!view.hasFocus || view.state.selection.ranges.length !== 1) {
+  if (view.state.selection.ranges.length !== 1) {
     return false;
   }
 

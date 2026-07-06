@@ -38,14 +38,17 @@
     "gnuplot-wasm": "^0.1.0",
     "idb": "^8.0.3",
     "just-bash": "^2.14.5",
+    "jspdf": "^4.0.0",
+    "marked": "^18.0.0",
     "mitex-wasm": "^0.2.5",
     "pdfjs-dist": "^6.0.227",
     "plotly.js-dist-min": "^3.5.1",
     "ratex-wasm": "^0.1.12",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "texlyre-busytex": "^1.1.1",
-    "marked": "^18.0.0"
+    "svg2pdf.js": "^2.7.0",
+    "svgedit": "^7.4.1",
+    "texlyre-busytex": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

@@ -169,11 +169,9 @@ import {
   type WorkspacePreviewFile
 } from "../preview/PreviewPane";
 import { MitexPanel } from "../mitex/MitexPanel";
-import {
-  DiagramEditor,
-  DiagramEditorErrorBoundary,
-  serializeDiagramSvg
-} from "../diagram/DiagramEditor";
+import { DiagramEditorErrorBoundary, serializeDiagramSvg } from "../diagram/DiagramEditor";
+import { DiagramEditor } from "../diagram/SvgEditDiagramEditor";
+import { exportSvgToVectorPdfBytes } from "../diagram/diagramPdfExport";
 import {
   GraphEditor,
   GraphEditorErrorBoundary
@@ -184,8 +182,11 @@ import {
   buildGraphTypstFigure
 } from "../graph/graphExport";
 import {
+  DIAGRAM_DIRECTORY,
   getDiagramCompilerPath,
   getDiagramFilePath,
+  getDiagramPdfFileName,
+  getDiagramPdfFilePath,
   normalizeDiagramFileName
 } from "../diagram/diagramFiles";
 import {
@@ -3061,6 +3062,38 @@ function buildPastedImageInsertion(
   }
 
   return `${preferences.typstPrefix}${referencePath}${preferences.typstSuffix}`;
+}
+
+function writeDiagramSvgProjectFile(
+  project: TyprProjectRepository,
+  diagram: Pick<DiagramAsset, "id" | "name">,
+  svgMarkup: string
+): TyprProjectRepository {
+  return writeProjectFile(
+    ensureProjectFolder(project, DIAGRAM_DIRECTORY, {
+      kind: "virtual",
+      id: DIAGRAM_DIRECTORY
+    }),
+    getDiagramFilePath(diagram.name),
+    svgMarkup,
+    { kind: "diagram", id: diagram.id }
+  );
+}
+
+function writeDiagramPdfProjectFile(
+  project: TyprProjectRepository,
+  diagram: Pick<DiagramAsset, "id" | "name">,
+  pdfBytes: Uint8Array<ArrayBuffer>
+): TyprProjectRepository {
+  return writeProjectFile(
+    ensureProjectFolder(project, DIAGRAM_DIRECTORY, {
+      kind: "virtual",
+      id: DIAGRAM_DIRECTORY
+    }),
+    getDiagramPdfFilePath(diagram.name),
+    pdfBytes,
+    { kind: "virtual", id: `diagram-pdf:${diagram.id}` }
+  );
 }
 
 export function App() {
@@ -10533,10 +10566,22 @@ ${nextLine}` : nextLine;
     );
   }, []);
 
+  const handleUpdateDiagramSvg = useCallback((svgMarkup: string) => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagram(currentSnapshot, (diagramAsset) => ({
+        ...diagramAsset,
+        content: svgMarkup,
+        strokes: [],
+        shapes: []
+      }))
+    );
+  }, []);
+
   const handleClearDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) =>
       updateDiagram(currentSnapshot, (diagramAsset) => ({
         ...diagramAsset,
+        content: undefined,
         strokes: [],
         shapes: []
       }))
@@ -10613,6 +10658,51 @@ ${nextLine}` : nextLine;
     setSnapshot((currentSnapshot) => saveCurrentDiagram(currentSnapshot));
     handleCompileRef.current();
   }, []);
+
+  const handleNewDiagramSvg = useCallback((svgMarkup: string) => {
+    setSnapshot((currentSnapshot) =>
+      createNextDiagramSnapshot(
+        updateDiagram(currentSnapshot, (diagramAsset) => ({
+          ...diagramAsset,
+          content: svgMarkup,
+          strokes: [],
+          shapes: []
+        }))
+      )
+    );
+  }, []);
+
+  const handleSaveDiagramSvg = useCallback(async (svgMarkup: string) => {
+    setSnapshot((currentSnapshot) =>
+      saveCurrentDiagram(
+        updateDiagram(currentSnapshot, (diagramAsset) => ({
+          ...diagramAsset,
+          content: svgMarkup,
+          strokes: [],
+          shapes: []
+        }))
+      )
+    );
+
+    let pdfBytes: Uint8Array<ArrayBuffer> | null = null;
+
+    if (activeSourceLanguage === "latex") {
+      try {
+        pdfBytes = await exportSvgToVectorPdfBytes(svgMarkup);
+      } catch (error) {
+        setProjectRepository((project) => writeDiagramSvgProjectFile(project, diagram, svgMarkup));
+        window.alert(error instanceof Error ? error.message : "Unable to export diagram PDF.");
+        return;
+      }
+    }
+
+    setProjectRepository((project) => {
+      const withSvg = writeDiagramSvgProjectFile(project, diagram, svgMarkup);
+      return pdfBytes ? writeDiagramPdfProjectFile(withSvg, diagram, pdfBytes) : withSvg;
+    });
+
+    handleCompileRef.current();
+  }, [activeSourceLanguage, diagram.id, diagram.name, setProjectRepository]);
 
   const handleSaveGraph = useCallback((nextGraph: GraphAsset) => {
     setSnapshot((currentSnapshot) => saveCurrentGraph(updateGraph(currentSnapshot, () => nextGraph)));
@@ -10695,7 +10785,22 @@ ${nextLine}` : nextLine;
     }, 0);
   }, []);
 
-  const handleDownloadDiagramSvg = useCallback((svgMarkup: string) => {
+  const handleDownloadDiagramSvg = useCallback(async (svgMarkup: string) => {
+    if (activeSourceLanguage === "latex") {
+      try {
+        const pdfBytes = await exportSvgToVectorPdfBytes(svgMarkup);
+        downloadBlob(
+          getDiagramPdfFileName(diagram.name),
+          new Blob([pdfBytes], {
+            type: "application/pdf"
+          })
+        );
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Unable to export diagram PDF.");
+      }
+      return;
+    }
+
     const baseName = diagram.name.replace(/\.svg$/i, "");
     const svgName = `${baseName || diagram.name}.svg`;
     downloadBlob(
@@ -10704,7 +10809,7 @@ ${nextLine}` : nextLine;
         type: "image/svg+xml"
       })
     );
-  }, [diagram]);
+  }, [activeSourceLanguage, diagram.name]);
 
 
   const handleSourceImagePaste = useCallback(async (file: File): Promise<boolean> => {
@@ -10817,6 +10922,52 @@ ${nextLine}` : nextLine;
       handleCompileRef.current();
     }, 0);
   }, [diagram.name]);
+
+  const handleInsertDiagramSvgIntoDocument = useCallback(async (svgMarkup: string) => {
+    setSnapshot((currentSnapshot) =>
+      saveCurrentDiagram(
+        updateDiagram(currentSnapshot, (diagramAsset) => ({
+          ...diagramAsset,
+          content: svgMarkup,
+          strokes: [],
+          shapes: []
+        }))
+      )
+    );
+
+    if (activeSourceLanguage === "latex") {
+      try {
+        const pdfBytes = await exportSvgToVectorPdfBytes(svgMarkup);
+        const pdfPath = getDiagramPdfFilePath(diagram.name);
+
+        setProjectRepository((project) =>
+          writeDiagramPdfProjectFile(
+            writeDiagramSvgProjectFile(project, diagram, svgMarkup),
+            diagram,
+            pdfBytes
+          )
+        );
+        editorRef.current?.insertLatexGraphic(`\n\\includegraphics{${pdfPath}}\n`);
+        window.setTimeout(() => {
+          handleCompileRef.current();
+        }, 0);
+        return;
+      } catch (error) {
+        setProjectRepository((project) => writeDiagramSvgProjectFile(project, diagram, svgMarkup));
+        window.alert(error instanceof Error ? error.message : "Unable to export diagram PDF.");
+        return;
+      }
+    } else {
+      setProjectRepository((project) => writeDiagramSvgProjectFile(project, diagram, svgMarkup));
+      editorRef.current?.insertTextAndSelect(
+        `\n#figure(image("${getDiagramFilePath(diagram.name)}"))\n`
+      );
+    }
+
+    window.setTimeout(() => {
+      handleCompileRef.current();
+    }, 0);
+  }, [activeSourceLanguage, diagram.id, diagram.name, setProjectRepository]);
 
   const handleExportPdf = useCallback(async () => {
     if (isExportingPdf) {
@@ -17087,12 +17238,16 @@ ${nextLine}` : nextLine;
                       onUpdateStroke={handleUpdateDiagramStroke}
                       onUpdateShape={handleUpdateDiagramShape}
                       onUpdateFrame={handleUpdateDiagramFrame}
+                      onSvgChange={handleUpdateDiagramSvg}
                       onRemoveStroke={handleRemoveDiagramStroke}
                       onRemoveShape={handleRemoveDiagramShape}
                       onClear={handleClearDiagram}
                       onNew={handleNewDiagram}
+                      onNewSvg={handleNewDiagramSvg}
                       onSave={handleSaveDiagram}
+                      onSaveSvg={handleSaveDiagramSvg}
                       onInsertIntoDocument={handleInsertDiagramIntoDocument}
+                      onInsertSvg={handleInsertDiagramSvgIntoDocument}
                       onRename={handleRenameDiagram}
                       onDownloadSvg={handleDownloadDiagramSvg}
                       onUndo={handleUndoDiagramStroke}
