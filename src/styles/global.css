@@ -3206,6 +3206,14 @@ button {
   accent-color: var(--accent);
 }
 
+.sidebar-section--outline {
+  overflow-anchor: none;
+}
+
+.sidebar-section--outline .outline-list {
+  flex: 0 0 auto;
+}
+
 .outline-list,
 .sidebar-diagnostics {
   display: flex;
@@ -6755,11 +6763,12 @@ button {
 
 .preview-state--compiling .preview-status {
   position: absolute;
-  right: 1.5rem;
   bottom: 1.5rem;
-  left: 1.5rem;
-  width: auto;
-  margin: 0 auto;
+  left: 50%;
+  width: min(calc(100% - 3rem), 34rem);
+  max-width: 34rem;
+  margin: 0;
+  transform: translateX(-50%);
 }
 
 .preview-status p {
@@ -6775,6 +6784,10 @@ button {
 .preview-activity {
   width: min(100%, 34rem);
   margin: 0 auto;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
   color: var(--text);
 }
 
@@ -6784,13 +6797,6 @@ button {
 
 .preview-activity--docked {
   flex: 0 0 auto;
-  width: 100%;
-  max-width: none;
-  margin: 0;
-  padding: 0.7rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-strong);
 }
 
 .preview-activity__row {

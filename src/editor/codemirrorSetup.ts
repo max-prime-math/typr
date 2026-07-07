@@ -32,6 +32,7 @@ import {
   keymap,
   lineNumbers,
   rectangularSelection,
+  scrollPastEnd,
   type Command,
   type ViewUpdate
 } from "@codemirror/view";
@@ -432,6 +433,7 @@ export function createEditorExtensions({
       ...keymaps
     ]),
     EditorView.lineWrapping,
+    scrollPastEnd(),
     ...(constrainMobileScroll ? [createMobileScrollConstraint()] : []),
     createEditorTheme(theme, cursorSmooth, editorFontSize),
     ...(cursorSmooth ? [smoothCursor(vimMode, cursorSmear)] : []),

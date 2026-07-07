@@ -102,7 +102,11 @@ import {
   type KeybindingCommandId
 } from "./keybindings";
 import {
+  collectAvailableLatexPdfPreviewPaths,
   createCompletedPreviewCompilerStatus,
+  getCompilePreviewSourcePathsForResult,
+  getLatexPdfOutputPath,
+  getLatexPdfSourcePathForResult,
   shouldRunPendingCompileAfterCompletion
 } from "./compilePreviewState";
 import { InlinePaneExpandControls } from "./InlinePaneExpandControls";
@@ -3216,6 +3220,7 @@ export function App() {
   const isSyncingMergeScrollRef = useRef(false);
   const themeRef = useRef<ThemeDefinition | null>(null);
   const compileResultRef = useRef<CompileResult | null>(null);
+  const editedSourcePathRef = useRef<string | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
   const handleFormatDocumentRef = useRef<() => void>(() => {});
   const previewDownloadMenuRef = useRef<HTMLDivElement | null>(null);
@@ -4715,24 +4720,17 @@ ${nextLine}` : nextLine;
         ? createIdleCompilerStatusForSource(activePreviewCompileSourcePath)
         : compilerStatus
       : rawVisiblePreviewCompilerStatus;
-  const compiledLatexPdfPreviewPathSet = useMemo(() => {
-    const pdfPaths = new Set<string>();
-
-    for (const [sourcePath, preview] of Object.entries(compilePreviewsByPath)) {
-      const result = preview.result;
-      if (result?.ok && result.output.kind === "pdf" && result.output.artifactData) {
-        pdfPaths.add(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(sourcePath, result)));
-      }
-    }
-
-    const currentResult = compileResultRef.current;
-    const currentSourcePath = compileInFlightSourcePathRef.current || activeSourcePathRef.current;
-    if (currentResult?.ok && currentResult.output.kind === "pdf" && currentResult.output.artifactData) {
-      pdfPaths.add(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(currentSourcePath, currentResult)));
-    }
-
-    return pdfPaths;
-  }, [compilePreviewsByPath]);
+  const compiledLatexPdfPreviewPathSet = useMemo(
+    () =>
+      collectAvailableLatexPdfPreviewPaths(
+        Object.entries(compilePreviewsByPath).map(([sourcePath, preview]) => ({
+          sourcePath,
+          result: preview.result,
+          isCompiling: preview.isCompiling
+        }))
+      ),
+    [compilePreviewsByPath]
+  );
   const openSourceTab = useCallback((path: string) => {
     const normalizedPath = normalizeWorkspacePath(path);
 
@@ -6750,16 +6748,17 @@ ${nextLine}` : nextLine;
       }
 
       setCompilePreviewsByPath((currentPreviews) => {
-        const sourcePathKey = normalizeWorkspacePath(sourcePath);
-        const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
-        const nextCompilerStatus = createCompletedPreviewCompilerStatus(
-          result,
-          currentPreview.compilerStatus
-        );
+        const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, nextResult);
+        const nextPreviews = { ...currentPreviews };
 
-        return {
-          ...currentPreviews,
-          [sourcePathKey]: {
+        for (const sourcePathKey of sourcePathKeys) {
+          const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+          const nextCompilerStatus = createCompletedPreviewCompilerStatus(
+            result,
+            currentPreview.compilerStatus
+          );
+
+          nextPreviews[sourcePathKey] = {
             ...currentPreview,
             result: nextResult,
             lastSuccessfulResult: nextResult.ok
@@ -6767,8 +6766,10 @@ ${nextLine}` : nextLine;
               : currentPreview.lastSuccessfulResult,
             compilerStatus: nextCompilerStatus,
             isCompiling: false
-          }
-        };
+          };
+        }
+
+        return nextPreviews;
       });
 
       setCompilerStatus((currentStatus) =>
@@ -7162,7 +7163,7 @@ ${nextLine}` : nextLine;
           cancelLatexCompile("LaTeX compile was skipped because a matching PDF already exists.");
         }
 
-        const sourcePathKey = normalizeWorkspacePath(sourcePath);
+        const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, savedResult);
         const readyStatus: CompilerStatus = {
           phase: "ready",
           mode: "worker",
@@ -7173,15 +7174,20 @@ ${nextLine}` : nextLine;
         setCompileResult(savedResult);
         setLastSuccessfulResult(savedResult);
         setCompilerStatus(readyStatus);
-        setCompilePreviewsByPath((currentPreviews) => ({
-          ...currentPreviews,
-          [sourcePathKey]: createCompilePreviewState(sourcePathKey, {
-            result: savedResult,
-            lastSuccessfulResult: savedResult,
-            compilerStatus: readyStatus,
-            isCompiling: false
-          })
-        }));
+        setCompilePreviewsByPath((currentPreviews) => {
+          const nextPreviews = { ...currentPreviews };
+
+          for (const sourcePathKey of sourcePathKeys) {
+            nextPreviews[sourcePathKey] = createCompilePreviewState(sourcePathKey, {
+              result: savedResult,
+              lastSuccessfulResult: savedResult,
+              compilerStatus: readyStatus,
+              isCompiling: false
+            });
+          }
+
+          return nextPreviews;
+        });
         appendBuildLogEntry({
           sourcePath,
           language: "latex",
@@ -7203,7 +7209,9 @@ ${nextLine}` : nextLine;
       }
     }
 
-    if (sourceLanguage !== "latex") {
+    if (sourceLanguage === "latex") {
+      openCompilePreviewTab(getLatexPdfOutputPath(sourcePath), { forceActivate: true });
+    } else {
       openCompilePreviewTab(sourcePath);
     }
 
@@ -7251,6 +7259,10 @@ ${nextLine}` : nextLine;
     }
 
     if (activePreviewPath !== normalizedActiveSourcePath) {
+      return;
+    }
+
+    if (editedSourcePathRef.current !== normalizedActiveSourcePath) {
       return;
     }
 
@@ -7329,6 +7341,7 @@ ${nextLine}` : nextLine;
   }, [compileResult]);
 
   const handleDocumentChange = useCallback((content: string) => {
+    editedSourcePathRef.current = normalizeWorkspacePath(activeSourcePath);
     const pastedImageBinding = pastedImageRenameBindingRef.current;
 
     if (pastedImageBinding && pastedImageBinding.sourcePath === activeSourcePath) {
@@ -14089,7 +14102,13 @@ ${nextLine}` : nextLine;
     setWorkspaceDropTargetPath(null);
   }, []);
   const focusDocumentLocation = useCallback(
-    (documentId: string, line: number, column = 1) => {
+    (
+      documentId: string,
+      line: number,
+      column = 1,
+      options: { focusEditor?: boolean } = {}
+    ) => {
+      resetDocumentScrollPosition();
       setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
       setWorkspaceMode("split");
       if (isMobileWorkspace) {
@@ -14098,7 +14117,8 @@ ${nextLine}` : nextLine;
 
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
-          editorRef.current?.focusRange({ line, column });
+          editorRef.current?.focusRange({ line, column }, { focus: options.focusEditor !== false });
+          resetDocumentScrollPosition();
         });
       });
     },
@@ -17275,7 +17295,7 @@ ${nextLine}` : nextLine;
               {activeSidebarTool === "outline" ? (
                 <section
                   ref={filesSectionRef}
-                  className="sidebar-section sidebar-section--scrollable"
+                  className="sidebar-section sidebar-section--scrollable sidebar-section--outline"
                   onScroll={handleLeftPaneScroll}
                 >
                   {outlineEntries.length > 0 ? (
@@ -19150,31 +19170,6 @@ function isSavedLatexPdfFreshForSource({
   return sourceUpdatedAtMs <= pdfUpdatedAtMs;
 }
 
-function getLatexPdfSourcePathForResult(
-  sourcePath: string,
-  result: Extract<CompileResult, { ok: true }>
-): string {
-  const strategy = result.metadata?.strategy;
-
-  if (!strategy) {
-    return sourcePath;
-  }
-
-  return strategy.previewKind === "subfile-wrapper"
-    ? strategy.activeFilePath
-    : strategy.mainFilePath;
-}
-
-function getLatexPdfOutputPath(sourcePath: string): string {
-  const normalizedSourcePath = normalizeCompilerPath(sourcePath) || sourcePath;
-
-  if (/\.(tex|ltx|latex)$/i.test(normalizedSourcePath)) {
-    return normalizedSourcePath.replace(/\.(tex|ltx|latex)$/i, ".pdf");
-  }
-
-  return `${normalizedSourcePath}.pdf`;
-}
-
 function getLatexSynctexOutputPath(sourcePath: string): string {
   const normalizedSourcePath = normalizeCompilerPath(sourcePath) || sourcePath;
 
@@ -19856,8 +19851,7 @@ function renderOutlineEntries(
     documentId: string,
     line: number,
     column: number,
-    endLine?: number,
-    endColumn?: number
+    options?: { focusEditor?: boolean }
   ) => void,
   depth = 0
 ): ReactNode {
@@ -19906,7 +19900,7 @@ function renderOutlineEntries(
 
           <button
             className="outline-row__link"
-            onClick={() => focusDocumentLocation(documentId, entry.lineNumber, 1)}
+            onClick={() => focusDocumentLocation(documentId, entry.lineNumber, 1, { focusEditor: false })}
             type="button"
           >
             <span className="outline-row__title">{entry.title}</span>

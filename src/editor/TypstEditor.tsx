@@ -136,7 +136,7 @@ export interface TypstEditorHandle {
     column: number;
     endLine?: number;
     endColumn?: number;
-  }): void;
+  }, options?: { focus?: boolean }): void;
   insertText(text: string): void;
   insertTextAndSelect(text: string): void;
   insertTextAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
@@ -280,7 +280,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       focus() {
         focusEditorView(viewRef.current);
       },
-      focusRange(range) {
+      focusRange(range, options) {
         const view = viewRef.current;
 
         if (!view) {
@@ -298,7 +298,9 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           ? endLine.from + clampColumn(range.endColumn ?? range.column, endLine.length)
           : anchor;
 
-        focusEditorView(view);
+        if (options?.focus !== false) {
+          focusEditorView(view);
+        }
         view.dispatch({
           selection: EditorSelection.range(anchor, head),
           effects: [

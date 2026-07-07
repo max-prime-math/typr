@@ -117,6 +117,7 @@ export function PreviewPane({
         <div className="preview-status">
           <PreviewActivityStatus
             docked={showCompilerActivity}
+            onDebugRequested={onDebugRequested}
             status={showCompilerActivity ? compilerStatus : null}
           />
         </div>
