@@ -7211,6 +7211,8 @@ ${nextLine}` : nextLine;
 
     if (sourceLanguage === "latex") {
       openCompilePreviewTab(getLatexPdfOutputPath(sourcePath), { forceActivate: true });
+    } else if (sourceLanguage === "typst") {
+      openCompilePreviewTab(sourcePath, { forceActivate: true });
     } else {
       openCompilePreviewTab(sourcePath);
     }
