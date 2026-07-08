@@ -22,6 +22,11 @@ import {
   normalizeEditorToolingPreferences,
   type EditorToolingPreferences
 } from "../editor/editorTools";
+import {
+  DEFAULT_EXTERNAL_DIAGNOSTIC_PREFERENCES,
+  normalizeExternalDiagnosticProviderPreferences,
+  type ExternalDiagnosticProviderPreferences
+} from "../diagnostics/externalDiagnostics";
 import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from "./keybindings";
 
 export type ThemePreference = string;
@@ -298,6 +303,7 @@ export interface AppPreferences {
   typstMathPreview: boolean;
   autoSyncGitProjects: boolean;
   editorTooling: EditorToolingPreferences;
+  externalDiagnostics: ExternalDiagnosticProviderPreferences;
   graphProvider: GraphProvider;
   keybindings: KeybindingMap;
   mobileKeyboard: MobileKeyboardPreferences;
@@ -316,59 +322,193 @@ export interface AppSnapshot {
 
 export const DEFAULT_DOCUMENT_NAME = "main.typ";
 
-export const DEFAULT_DOCUMENT_CONTENT = `#set page(margin: 1.15in)
-#set text(font: "New Computer Modern", size: 11pt)
+export const DEFAULT_DOCUMENT_CONTENT = `#set document(title: "Complex Bibliography Test for Typst", author: "Typr Test Fixture")
+#set page(margin: 1in)
+#set text(size: 11pt)
 
-= Typr Starter
+= Complex Bibliography Test for Typst
 
-This is a Typst starter document. Edit this source and watch the preview update as you write.
+This document exercises the same BibTeX database as the LaTeX fixture. It mixes
+books, journal articles, conference-style entries, manuals, software, web
+references, theses, accents, notes, DOIs, URLs, editors, pages, and repeated
+citations.
 
-== Try it
+Classic systems papers should appear together in a citation cluster:
+@turing1936computable, @church1936unsolvable, and @mccarthy1960recursive.
+The TeX lineage is represented by @knuth1984texbook and @lamport1986document.
 
-- Use the files pane to switch between the Typst, LaTeX, and README files.
-- Open latex-starter.tex when you want to try a manual LaTeX compile.
-- Open README.md for a short workspace overview.
-- Keep writing here, or replace this page with your own notes.
+== Repeated and Mixed Citations
 
-== Next steps
+Repeated citations should not duplicate bibliography entries:
+@knuth1984texbook and @lamport1986document. Online and software references
+should preserve useful access fields when the style supports them:
+@typst2026docs, @latexproject2026, and @svgedit2026.
 
-Start writing your document here.
+The bibliography also includes a thesis @shannon1940symbolic and an accent-heavy
+fictional entry @garcia2024accents to check character handling.
+
+== Bibliography
+
+#bibliography("complex-bibliography.bib", title: "References")
 `;
 
 export const DEFAULT_LATEX_DOCUMENT_NAME = "latex-starter.tex";
 
-export const DEFAULT_LATEX_DOCUMENT_CONTENT = `\\documentclass{article}
-\\usepackage[margin=1in]{geometry}
+export const DEFAULT_LATEX_DOCUMENT_CONTENT = `\\documentclass[11pt]{article}
+\\usepackage[T1]{fontenc}
+\\usepackage{url}
 
-\\title{Typr LaTeX Starter}
-\\author{}
-\\date{}
+\\title{Complex Bibliography Test for LaTeX}
+\\author{Typr Test Fixture}
+\\date{\\today}
 
 \\begin{document}
 \\maketitle
 
-This is a LaTeX starter document. Edit the source, then compile it when you are ready to generate a PDF preview.
+\\section{Narrative citations}
+This document exercises a shared BibTeX file with books, articles, proceedings,
+manuals, software, web references, thesis entries, accented names, notes, DOIs,
+URLs, editors, pages, and repeated citations.
 
-\\section{Next steps}
+Classic systems papers should appear together when cited in one command:
+\\cite{turing1936computable,church1936unsolvable,mccarthy1960recursive}.
+The TeX lineage is represented by Knuth's book \\cite{knuth1984texbook} and
+Lamport's document preparation article \\cite{lamport1986document}.
 
-Write your document here.
+\\section{Repeated and mixed citations}
+Repeated citations should not duplicate bibliography entries:
+\\cite{knuth1984texbook,lamport1986document}. Online and software references
+should preserve useful access fields when the style supports them:
+\\cite{typst2026docs,latexproject2026,svgedit2026}.
+
+The bibliography also includes a thesis \\cite{shannon1940symbolic} and an
+accent-heavy fictional entry \\cite{garcia2024accents} to check character
+handling.
+
+\\section{Uncited entry visibility}
+The bibliography command below includes only cited works. Uncomment
+\\verb|\\nocite{*}| to force every entry in the BibTeX file to appear.
+
+% \\nocite{*}
+\\bibliographystyle{plain}
+\\bibliography{complex-bibliography}
 
 \\end{document}
+`;
+
+export const DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME = "complex-bibliography.bib";
+
+export const DEFAULT_BIBLIOGRAPHY_DOCUMENT_CONTENT = `@book{knuth1984texbook,
+  author    = {Knuth, Donald E.},
+  title     = {The TeXbook},
+  publisher = {Addison-Wesley},
+  address   = {Reading, Massachusetts},
+  year      = {1984},
+  isbn      = {978-0201134483}
+}
+
+@article{lamport1986document,
+  author  = {Lamport, Leslie},
+  title   = {Document Preparation Systems},
+  journal = {Software: Practice and Experience},
+  volume  = {16},
+  number  = {8},
+  pages   = {735--742},
+  year    = {1986},
+  doi     = {10.1002/spe.4380160804}
+}
+
+@article{turing1936computable,
+  author  = {Turing, Alan M.},
+  title   = {On Computable Numbers, with an Application to the Entscheidungsproblem},
+  journal = {Proceedings of the London Mathematical Society},
+  series  = {2},
+  volume  = {42},
+  number  = {1},
+  pages   = {230--265},
+  year    = {1936},
+  doi     = {10.1112/plms/s2-42.1.230}
+}
+
+@inproceedings{mccarthy1960recursive,
+  author    = {McCarthy, John},
+  title     = {Recursive Functions of Symbolic Expressions and Their Computation by Machine, Part I},
+  booktitle = {Communications of the ACM},
+  volume    = {3},
+  number    = {4},
+  pages     = {184--195},
+  year      = {1960},
+  doi       = {10.1145/367177.367199}
+}
+
+@incollection{church1936unsolvable,
+  author    = {Church, Alonzo},
+  title     = {An Unsolvable Problem of Elementary Number Theory},
+  booktitle = {The Undecidable},
+  editor    = {Davis, Martin},
+  publisher = {Raven Press},
+  address   = {Hewlett, New York},
+  pages     = {88--107},
+  year      = {1965},
+  note      = {Originally published in 1936}
+}
+
+@mastersthesis{shannon1940symbolic,
+  author = {Shannon, Claude E.},
+  title  = {A Symbolic Analysis of Relay and Switching Circuits},
+  school = {Massachusetts Institute of Technology},
+  year   = {1940}
+}
+
+@misc{typst2026docs,
+  author       = {{Typst Project}},
+  title        = {Typst Documentation},
+  year         = {2026},
+  howpublished = {https://typst.app/docs/},
+  note         = {Accessed 2026-07-06}
+}
+
+@manual{latexproject2026,
+  author       = {{LaTeX Project Team}},
+  title        = {LaTeX Documentation},
+  organization = {The LaTeX Project},
+  year         = {2026},
+  url          = {https://www.latex-project.org/help/documentation/}
+}
+
+@misc{svgedit2026,
+  author  = {{SVG-Edit Contributors}},
+  title   = {SVG-Edit},
+  year    = {2026},
+  howpublished = {https://github.com/SVG-Edit/svgedit},
+  note    = {Version 7.x}
+}
+
+@article{garcia2024accents,
+  author  = {Garc{\\i}a, Mar{\\i}a-Jos{\\'e} and M{\\o}ller, S{\\o}ren and Dvo{\\v{r}}{\\'a}k, Eli{\\v{s}}ka},
+  title   = {Testing Names with Accents in Bibliographies},
+  journal = {Journal of Typesetting Edge Cases},
+  volume  = {12},
+  number  = {3},
+  pages   = {101--119},
+  year    = {2024},
+  note    = {Fictional entry for rendering tests}
+}
 `;
 
 export const DEFAULT_MARKDOWN_DOCUMENT_NAME = "README.md";
 
 export const DEFAULT_MARKDOWN_DOCUMENT_CONTENT = `# Typr Project
 
-Typr is a local-first writing workspace for Typst, LaTeX, and Markdown. Projects live in your browser, can be edited offline, and can be synced with a GitHub repository when you are ready.
+This default project includes matching bibliography stress tests for Typst and LaTeX.
 
-## Getting started
+## Files
 
-- Edit main.typ to try Typst preview.
-- Edit latex-starter.tex and compile when you want a LaTeX PDF.
-- Check Settings before you settle in, especially editor, preview, and package options.
-- Explore the left pane tabs for files, sync, search, diagrams, graphs, and project tools.
-- Use the files pane to add your own source files, folders, figures, and notes.
+- main.typ uses Typst citations and #bibliography with complex-bibliography.bib.
+- latex-starter.tex uses BibTeX citations with the same complex-bibliography.bib file.
+- complex-bibliography.bib contains books, articles, proceedings, chapters, thesis entries, manuals, web/software references, DOIs, URLs, repeated citations, and escaped accented names.
+
+Use the files pane to switch between the Typst, LaTeX, README, and BibTeX files.
 `;
 
 const DEFAULT_CURSOR_SMEAR = 25;
@@ -452,6 +592,12 @@ export function createDefaultSnapshot(): AppSnapshot {
     content: DEFAULT_LATEX_DOCUMENT_CONTENT,
     updatedAt: now
   };
+  const bibliographyDocument: TypstDocumentFile = {
+    id: createId("doc"),
+    name: DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME,
+    content: DEFAULT_BIBLIOGRAPHY_DOCUMENT_CONTENT,
+    updatedAt: now
+  };
   const markdownDocument: TypstDocumentFile = {
     id: createId("doc"),
     name: DEFAULT_MARKDOWN_DOCUMENT_NAME,
@@ -464,7 +610,7 @@ export function createDefaultSnapshot(): AppSnapshot {
     project: {
       id: createId("project"),
       name: "Typr Project",
-      documents: [typstDocument, latexDocument, markdownDocument],
+      documents: [typstDocument, latexDocument, bibliographyDocument, markdownDocument],
       folders: [],
       trash: [],
       activeDocumentId: markdownDocument.id,
@@ -487,6 +633,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       typstMathPreview: false,
       autoSyncGitProjects: true,
       editorTooling: DEFAULT_EDITOR_TOOLING_PREFERENCES,
+      externalDiagnostics: DEFAULT_EXTERNAL_DIAGNOSTIC_PREFERENCES,
       graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
       mobileKeyboard: DEFAULT_MOBILE_KEYBOARD_PREFERENCES,
@@ -561,6 +708,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
         (snapshot.preferences as Partial<AppPreferences>).autoSyncGitProjects ?? true,
       editorTooling: normalizeEditorToolingPreferences(
         (snapshot.preferences as Partial<AppPreferences>).editorTooling
+      ),
+      externalDiagnostics: normalizeExternalDiagnosticProviderPreferences(
+        (snapshot.preferences as Partial<AppPreferences>).externalDiagnostics
       ),
       graphProvider: normalizeGraphProvider(storedGraphProvider),
       keybindings: normalizeKeybindings(
@@ -1170,18 +1320,19 @@ export function renameDocumentById(
     return snapshot;
   }
 
+  const parentPath = getWorkspaceParentPath(targetDocument.name);
+  const requestedName = nextName.includes("/") ? nextName : joinWorkspacePath(parentPath, nextName);
+
+  if (requestedName === targetDocument.name) {
+    return snapshot;
+  }
+
   const existingNames = new Set(
     snapshot.project.documents
       .filter((document) => document.id !== documentId)
       .map((document) => document.name)
   );
-  let finalName = nextName;
-  let suffix = 2;
-
-  while (existingNames.has(finalName)) {
-    finalName = `${nextName}-${suffix}`;
-    suffix += 1;
-  }
+  const finalName = createUniqueWorkspacePath(requestedName, existingNames);
 
   const now = new Date().toISOString();
 
@@ -1215,16 +1366,21 @@ export function renameFolderById(
     return snapshot;
   }
 
+  const parentPath = getWorkspaceParentPath(targetFolder.name);
+  const requestedName = nextName.includes("/") ? nextName : joinWorkspacePath(parentPath, nextName);
+
+  if (requestedName === targetFolder.name || requestedName.startsWith(`${targetFolder.name}/`)) {
+    return snapshot;
+  }
+
   const existingNames = new Set(
     snapshot.project.folders.filter((folder) => folder.id !== folderId).map((folder) => folder.name)
   );
-  let finalName = nextName;
-  let suffix = 2;
-
-  while (existingNames.has(finalName)) {
-    finalName = `${nextName}-${suffix}`;
-    suffix += 1;
-  }
+  const finalName = createUniqueWorkspacePath(requestedName, existingNames);
+  const renamePath = (path: string) =>
+    path === targetFolder.name || path.startsWith(`${targetFolder.name}/`)
+      ? `${finalName}${path.slice(targetFolder.name.length)}`
+      : path;
 
   const now = new Date().toISOString();
 
@@ -1233,7 +1389,14 @@ export function renameFolderById(
     project: {
       ...snapshot.project,
       folders: snapshot.project.folders.map((folder) =>
-        folder.id === folderId ? { ...folder, name: finalName, updatedAt: now } : folder
+        folder.name === targetFolder.name || folder.name.startsWith(`${targetFolder.name}/`)
+          ? { ...folder, name: renamePath(folder.name), updatedAt: now }
+          : folder
+      ),
+      documents: snapshot.project.documents.map((document) =>
+        document.name.startsWith(`${targetFolder.name}/`)
+          ? { ...document, name: renamePath(document.name), updatedAt: now }
+          : document
       ),
       updatedAt: now
     }
@@ -2534,6 +2697,19 @@ export function updateEditorToolingPreference(
     preferences: {
       ...snapshot.preferences,
       editorTooling: normalizeEditorToolingPreferences(editorTooling)
+    }
+  };
+}
+
+export function updateExternalDiagnosticsPreference(
+  snapshot: AppSnapshot,
+  externalDiagnostics: ExternalDiagnosticProviderPreferences
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      externalDiagnostics: normalizeExternalDiagnosticProviderPreferences(externalDiagnostics)
     }
   };
 }

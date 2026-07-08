@@ -40,6 +40,7 @@ let lastLatexFileSnapshot: Map<string, LatexFileSnapshotEntry> | null = null;
 
 type BusyTexPackageProfile = "standard" | "full";
 export type LatexCompileMode = "quick" | "full";
+export type LatexCompileDriver = "pdftex_bibtex8" | "luatex_bibtex8" | "luahbtex_bibtex8";
 type LatexPreviewKind = "document" | "subfile-wrapper";
 type LatexDirtyStatus = "initial" | "changed" | "unchanged";
 type LatexDirtyCategory =
@@ -81,6 +82,7 @@ interface LatexDirtyAnalysis {
 interface LatexCompileStrategy {
   requestedMode: LatexCompileMode;
   effectiveMode: LatexCompileMode;
+  driver: LatexCompileDriver;
   previewKind: LatexPreviewKind;
   activeFilePath: string;
   mainFilePath: string;
@@ -99,6 +101,7 @@ export interface LatexCompileOptions {
   project: TyprProjectRepository;
   assets?: CompileAssetFile[];
   compileMode?: LatexCompileMode;
+  compileDriver?: LatexCompileDriver;
   onStatusChange?: (status: CompilerStatus) => void;
 }
 
@@ -108,6 +111,7 @@ export async function compileLatexDocument({
   project,
   assets = [],
   compileMode = "quick",
+  compileDriver = "pdftex_bibtex8",
   onStatusChange
 }: LatexCompileOptions): Promise<CompileResult> {
   const normalizedMainFilePath = normalizeCompilerPath(mainFilePath);
@@ -125,6 +129,7 @@ export async function compileLatexDocument({
     const strategy = createLatexCompileStrategy(
       compileMode,
       effectiveCompileMode,
+      compileDriver,
       normalizedMainFilePath,
       compilePlan
     );
@@ -133,7 +138,7 @@ export async function compileLatexDocument({
       durationMs: getNow() - collectStartedAt
     };
     const metadata = createLatexMetadata(dirtyAnalysis, strategy, collectTiming);
-    const result = await compileLatexPlan(compilePlan, effectiveCompileMode, metadata, onStatusChange);
+    const result = await compileLatexPlan(compilePlan, effectiveCompileMode, compileDriver, metadata, onStatusChange);
     rememberLatexFileSnapshot(files);
 
     if (result.ok) {
@@ -157,6 +162,7 @@ export async function compileLatexDocument({
           reason: "Subfile preview failed; falling back to the root document"
         },
         effectiveCompileMode,
+        compileDriver,
         createLatexMetadata(
           dirtyAnalysis,
           {
@@ -321,12 +327,14 @@ function chooseLatexCompileMode(requestedMode: LatexCompileMode, dirtyAnalysis: 
 function createLatexCompileStrategy(
   requestedMode: LatexCompileMode,
   effectiveMode: LatexCompileMode,
+  driver: LatexCompileDriver,
   activeFilePath: string,
   compilePlan: LatexCompilePlan
 ): LatexCompileStrategy {
   return {
     requestedMode,
     effectiveMode,
+    driver,
     previewKind: compilePlan.previewKind,
     activeFilePath,
     mainFilePath: compilePlan.mainFilePath,
@@ -443,6 +451,7 @@ function extractReferenceSensitiveLatex(content: string): string {
 async function compileLatexPlan(
   compilePlan: LatexCompilePlan,
   compileMode: LatexCompileMode,
+  compileDriver: LatexCompileDriver,
   metadata: CompileMetadata,
   onStatusChange?: (status: CompilerStatus) => void
 ): Promise<CompileResult> {
@@ -453,6 +462,7 @@ async function compileLatexPlan(
     compilePlan.files,
     compilePlan.mainFilePath,
     compileMode,
+    compileDriver,
     onStatusChange,
     { previewKind: compilePlan.previewKind }
   );
@@ -469,6 +479,7 @@ async function compileLatexPlan(
         retryFiles,
         compilePlan.mainFilePath,
         compileMode,
+        compileDriver,
         onStatusChange,
         {
           isPackageRetry: true,
@@ -519,6 +530,7 @@ async function compileLatexPlan(
         createLatexFilesWithPdfTexFontMapOverrides(compilePlan.files, compilePlan.mainFilePath),
         compilePlan.mainFilePath,
         compileMode,
+        compileDriver,
         onStatusChange,
         {
           isFontMapRetry: true,
@@ -681,6 +693,7 @@ async function runBusyTexCompile(
   files: FileInput[],
   mainFilePath: string,
   compileMode: LatexCompileMode,
+  compileDriver: LatexCompileDriver,
   onStatusChange?: (status: CompilerStatus) => void,
   options: {
     isPackageRetry?: boolean;
@@ -719,10 +732,10 @@ async function runBusyTexCompile(
         : options.previewKind === "subfile-wrapper"
           ? "Combining the active file with the root preamble"
         : compileMode === "quick"
-        ? "Running TeX pass"
+        ? `Running ${formatLatexCompileDriver(compileDriver)} TeX pass`
         : options.isPackageRetry
           ? "Running with expanded package data"
-          : "Running TeX, bibliography, and rerun passes"
+          : `Running ${formatLatexCompileDriver(compileDriver)}, bibliography, and rerun passes`
   });
 
   const compilePasses = getLatexCompilePassOptions(compileMode);
@@ -734,10 +747,22 @@ async function runBusyTexCompile(
     compilePasses.makeindex,
     compilePasses.rerun,
     "silent",
-    "pdftex_bibtex8",
+    compileDriver,
     profile === "full" ? getBusyTexDataPackageUrls(getBusyTexBasePath()) : null,
     BUSYTEX_REMOTE_ENDPOINT
   );
+}
+
+function formatLatexCompileDriver(driver: LatexCompileDriver): string {
+  if (driver === "luatex_bibtex8") {
+    return "LuaTeX";
+  }
+
+  if (driver === "luahbtex_bibtex8") {
+    return "LuaHBTeX";
+  }
+
+  return "pdfTeX";
 }
 
 function getLatexCompilePassOptions(compileMode: LatexCompileMode): {

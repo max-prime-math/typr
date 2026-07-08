@@ -1,0 +1,40 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{url}
+
+\title{Complex Bibliography Test for LaTeX}
+\author{Typr Test Fixture}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Narrative citations}
+This document exercises a shared BibTeX file with books, articles, proceedings,
+manuals, software, web references, thesis entries, accented names, notes, DOIs,
+URLs, editors, pages, and repeated citations.
+
+Classic systems papers should appear together when cited in one command:
+\cite{turing1936computable,church1936unsolvable,mccarthy1960recursive}.
+The TeX lineage is represented by Knuth's book \cite{knuth1984texbook} and
+Lamport's document preparation article \cite{lamport1986document}.
+
+\section{Repeated and mixed citations}
+Repeated citations should not duplicate bibliography entries:
+\cite{knuth1984texbook,lamport1986document}. Online and software references
+should preserve useful access fields when the style supports them:
+\cite{typst2026docs,latexproject2026,svgedit2026}.
+
+The bibliography also includes a thesis \cite{shannon1940symbolic} and an
+accent-heavy fictional entry \cite{garcia2024accents} to check character
+handling.
+
+\section{Uncited entry visibility}
+The bibliography command below includes only cited works. Uncomment
+\verb|\nocite{*}| to force every entry in the BibTeX file to appear.
+
+% \nocite{*}
+\bibliographystyle{plain}
+\bibliography{complex-bibliography}
+
+\end{document}

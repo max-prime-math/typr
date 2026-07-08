@@ -1,5 +1,7 @@
 import { StateField } from "@codemirror/state";
 import type { EditorState, Extension } from "@codemirror/state";
+import { lintGutter, linter } from "@codemirror/lint";
+import type { Diagnostic as CodeMirrorDiagnostic } from "@codemirror/lint";
 import { Decoration, EditorView, GutterMarker, gutter } from "@codemirror/view";
 import type { CompileDiagnostic } from "../compiler/types";
 
@@ -33,8 +35,9 @@ export function createEditorDiagnosticExtensions(
 ): Extension[] {
   const lines = collectDiagnosticLines(diagnostics, highlightErrors);
   const decorationField = StateField.define({
-    create: (state) => createLineDecorations(state, lines),
-    update: (value, transaction) => value.map(transaction.changes),
+    create: (state) => createDiagnosticDecorations(state, lines, diagnostics, highlightErrors),
+    update: (_value, transaction) =>
+      createDiagnosticDecorations(transaction.state, lines, diagnostics, highlightErrors),
     provide: (field) => EditorView.decorations.from(field)
   });
 
@@ -45,6 +48,13 @@ export function createEditorDiagnosticExtensions(
   }
 
   return [
+    linter((view) => toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors), { delay: 120 }),
+    lintGutter({
+      markerFilter: (codeMirrorDiagnostics) =>
+        codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message)),
+      tooltipFilter: (codeMirrorDiagnostics) =>
+        codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message))
+    }),
     decorationField,
     gutter({
       class: "cm-diagnostic-gutter",
@@ -64,9 +74,53 @@ export function createEditorDiagnosticExtensions(
   ];
 }
 
-function createLineDecorations(
+export function toCodeMirrorDiagnostics(
   state: EditorState,
-  lines: EditorDiagnosticLine[]
+  diagnostics: CompileDiagnostic[],
+  highlightErrors: boolean
+): CodeMirrorDiagnostic[] {
+  return diagnostics
+    .map((diagnostic) => {
+      const range = getDiagnosticRange(state, diagnostic);
+
+      if (!range) {
+        return null;
+      }
+
+      const severity = diagnostic.severity === "error" && !highlightErrors
+        ? "warning"
+        : diagnostic.severity;
+      const isHarperDiagnostic = isHarperDiagnosticMessage(diagnostic.message);
+      const codeMirrorDiagnostic: CodeMirrorDiagnostic = {
+        from: range.from,
+        to: range.to,
+        severity,
+        source: getDiagnosticSource(diagnostic.message),
+        message: diagnostic.message,
+        markClass: isHarperDiagnostic
+          ? "cm-diagnostic-range cm-diagnostic-range--harper"
+          : `cm-diagnostic-range cm-diagnostic-range--${severity}`
+      };
+
+      return codeMirrorDiagnostic;
+    })
+    .filter((diagnostic): diagnostic is CodeMirrorDiagnostic => diagnostic !== null);
+}
+
+function getDiagnosticSource(message: string): string | undefined {
+  const separatorIndex = message.indexOf(":");
+  return separatorIndex > 0 ? message.slice(0, separatorIndex) : undefined;
+}
+
+function isHarperDiagnosticMessage(message: string): boolean {
+  return message.startsWith("Harper ");
+}
+
+function createDiagnosticDecorations(
+  state: EditorState,
+  lines: EditorDiagnosticLine[],
+  diagnostics: CompileDiagnostic[],
+  highlightErrors: boolean
 ) {
   const decorations = [];
 
@@ -86,7 +140,55 @@ function createLineDecorations(
     );
   }
 
+  for (const diagnostic of diagnostics) {
+    const range = getDiagnosticRange(state, diagnostic);
+
+    if (!range) {
+      continue;
+    }
+
+    const severity = diagnostic.severity === "error" && !highlightErrors ? "warning" : diagnostic.severity;
+    const isHarperDiagnostic = isHarperDiagnosticMessage(diagnostic.message);
+
+    decorations.push(
+      Decoration.mark({
+        attributes: {
+          class: isHarperDiagnostic
+            ? "cm-diagnostic-range cm-diagnostic-range--harper"
+            : `cm-diagnostic-range cm-diagnostic-range--${severity}`,
+          title: diagnostic.message
+        }
+      }).range(range.from, range.to)
+    );
+  }
+
   return Decoration.set(decorations, true);
+}
+
+function getDiagnosticRange(
+  state: EditorState,
+  diagnostic: CompileDiagnostic
+): { from: number; to: number } | null {
+  if (!diagnostic.line || !diagnostic.column || diagnostic.line < 1 || diagnostic.column < 1) {
+    return null;
+  }
+
+  const lineNumber = Math.min(Math.max(1, diagnostic.line), state.doc.lines);
+  const line = state.doc.line(lineNumber);
+  const from = Math.min(line.to, line.from + diagnostic.column - 1);
+  let to = from + 1;
+
+  if (diagnostic.endLine && diagnostic.endColumn) {
+    const endLineNumber = Math.min(Math.max(1, diagnostic.endLine), state.doc.lines);
+    const endLine = state.doc.line(endLineNumber);
+    to = Math.min(endLine.to, endLine.from + Math.max(0, diagnostic.endColumn - 1));
+  }
+
+  if (to <= from) {
+    to = Math.min(line.to, from + 1);
+  }
+
+  return to > from ? { from, to } : null;
 }
 
 function collectDiagnosticLines(
@@ -96,7 +198,7 @@ function collectDiagnosticLines(
   const lines = new Map<number, EditorDiagnosticLine>();
 
   for (const diagnostic of diagnostics) {
-    if (!diagnostic.line || diagnostic.line < 1) {
+    if (!diagnostic.line || diagnostic.line < 1 || isHarperDiagnosticMessage(diagnostic.message)) {
       continue;
     }
 

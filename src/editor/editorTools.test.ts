@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatLatexSource,
   formatMarkdownSource,
+  formatSourceWithEditorTooling,
   formatTypstSource,
   lintLatexSource,
   lintMarkdownSource,
@@ -19,6 +20,71 @@ describe("editor tooling preferences", () => {
     expect(preferences.languages.markdown.linter).toBe("built-in");
     expect(preferences.languages.typst.formatter).toBe("built-in");
     expect(preferences.languages.latex.formatter).toBe("built-in");
+  });
+
+  it("keeps tex-fmt and typstyle formatter preferences for their languages", () => {
+    const preferences = normalizeEditorToolingPreferences({
+      schemaVersion: 2,
+      lintOnEdit: true,
+      formatOnCompile: true,
+      languages: {
+        typst: {
+          formatter: "typstyle",
+          linter: "built-in"
+        },
+        latex: {
+          formatter: "tex-fmt",
+          linter: "built-in"
+        },
+        markdown: {
+          formatter: "tex-fmt",
+          linter: "built-in"
+        }
+      }
+    });
+
+    expect(preferences.languages.typst.formatter).toBe("typstyle");
+    expect(preferences.languages.latex.formatter).toBe("tex-fmt");
+    expect(preferences.languages.markdown.formatter).toBe("built-in");
+  });
+
+  it("runs the registered tex-fmt and typstyle formatters through browser tooling", () => {
+    const preferences = normalizeEditorToolingPreferences({
+      schemaVersion: 2,
+      lintOnEdit: true,
+      formatOnCompile: true,
+      languages: {
+        typst: {
+          formatter: "typstyle",
+          linter: "built-in"
+        },
+        latex: {
+          formatter: "tex-fmt",
+          linter: "built-in"
+        },
+        markdown: {
+          formatter: "built-in",
+          linter: "built-in"
+        }
+      }
+    });
+
+    expect(
+      formatSourceWithEditorTooling({
+        language: "typst",
+        path: "main.typ",
+        preferences,
+        source: "=Title  \n#let x = (\n1\n)\n"
+      }).source
+    ).toBe("= Title\n#let x = (\n  1\n)\n");
+    expect(
+      formatSourceWithEditorTooling({
+        language: "latex",
+        path: "main.tex",
+        preferences,
+        source: "\\begin{itemize}\n\\item   One\n\\end{itemize}\n"
+      }).source
+    ).toBe("\\begin{itemize}\n  \\item One\n\\end{itemize}\n");
   });
 
   it("migrates phase-one Typst and LaTeX disabled defaults to built-in tools", () => {

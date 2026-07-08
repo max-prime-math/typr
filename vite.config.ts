@@ -43,9 +43,13 @@ export default defineConfig(({ command }) => {
           ]
         },
         workbox: {
-          globPatterns: ["**/*.{js,css,html}", "assets/**/*.svg", "svgedit/images/**/*"],
-          globIgnores: ["core/busytex/**", "**/*.wasm", "**/*.otf", "**/*.ttf"],
-          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+          globPatterns: [
+            "**/*.{js,css,html}",
+            "assets/**/*.svg",
+            "svgedit/images/**/*"
+          ],
+          globIgnores: ["core/busytex/**", "**/*.otf", "**/*.ttf"],
+          maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
           runtimeCaching: [
             {
               urlPattern: /\/assets\/.*\.(?:wasm|otf|ttf)$/,

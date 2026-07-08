@@ -68,6 +68,7 @@ import {
   updateCursorSmoothPreference,
   updateEditorFontSizePreference,
   updateEditorToolingPreference,
+  updateExternalDiagnosticsPreference,
   updateKeybindingsPreference,
   updateLatexMathPreviewPreference,
   updateLiveCompilationPreference,
@@ -92,6 +93,12 @@ import {
   type EditorLinterId,
   type EditorToolLanguage
 } from "../editor/editorTools";
+import {
+  runExternalDiagnostics,
+  type DiagnosticProviderStatus,
+  type ExternalDiagnosticProviderPreferences
+} from "../diagnostics/externalDiagnostics";
+import { collectDocumentStats, type DocumentStats } from "./documentStats";
 import {
   DEFAULT_KEYBINDINGS,
   KEYBINDING_DEFINITIONS,
@@ -118,6 +125,7 @@ import {
 import {
   cancelLatexCompile,
   compileLatexDocument,
+  type LatexCompileDriver,
   type LatexCompileMode
 } from "../compiler/latexCompiler";
 import {
@@ -350,6 +358,8 @@ const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 const RECENT_WORKSPACE_STORAGE_KEY = "typr.recent-workspace.v1";
 const LEFT_PANE_STORAGE_KEY = "typr.left-pane.v1";
 const BUILD_LOG_STORAGE_KEY = "typr.build-log.v1";
+const TYPST_PREVIEW_CACHE_STORAGE_KEY = "typr.typst-preview-cache.v1";
+const TYPST_PREVIEW_CACHE_MAX_CONTENT_LENGTH = 2_000_000;
 const PROJECT_EXPORT_INPUT_ACCEPT = ".json,application/json";
 const WORKSPACE_UPLOAD_ACCEPT = [
   ".typ",
@@ -640,7 +650,7 @@ type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview" | "zen";
 type ZenResizeEdge = "zen-left" | "zen-right" | "zen-top" | "zen-bottom";
 type ZoomPaneTarget = "sidebar" | "source" | "preview";
-type VimPaneFocusTarget = "files" | "source" | "preview";
+type VimPaneFocusTarget = "sidebar" | "source" | "preview";
 type PreviewScrollAction =
   | "left"
   | "down"
@@ -678,6 +688,50 @@ type TableInset = "none" | "small" | "medium";
 type TableStroke = "default" | "none";
 type BuildLogTrigger = "manual" | "auto" | "preview" | "export" | "agent" | "rerun";
 type BuildLogFilter = "all" | "errors" | "warnings" | "current-file" | "latex";
+type LatexCompileProfileId = "pdftex-quick" | "pdftex-full" | "luatex-full" | "luahbtex-full";
+
+interface LatexCompileProfile {
+  id: LatexCompileProfileId;
+  label: string;
+  description: string;
+  mode: LatexCompileMode;
+  driver: LatexCompileDriver;
+}
+
+const LATEX_COMPILE_PROFILES: LatexCompileProfile[] = [
+  {
+    id: "pdftex-quick",
+    label: "pdfTeX quick",
+    description: "One pdfTeX pass; skips BibTeX, index, and reruns.",
+    mode: "quick",
+    driver: "pdftex_bibtex8"
+  },
+  {
+    id: "pdftex-full",
+    label: "pdfTeX full",
+    description: "pdfTeX, BibTeX8/makeindex as needed, then rerun passes.",
+    mode: "full",
+    driver: "pdftex_bibtex8"
+  },
+  {
+    id: "luatex-full",
+    label: "LuaTeX full",
+    description: "LuaTeX engine with BibTeX8/makeindex and rerun passes.",
+    mode: "full",
+    driver: "luatex_bibtex8"
+  },
+  {
+    id: "luahbtex-full",
+    label: "LuaHBTeX full",
+    description: "LuaTeX plus HarfBuzz shaping; best for modern OpenType text.",
+    mode: "full",
+    driver: "luahbtex_bibtex8"
+  }
+];
+
+function getLatexCompileProfile(id: LatexCompileProfileId): LatexCompileProfile {
+  return LATEX_COMPILE_PROFILES.find((profile) => profile.id === id) ?? LATEX_COMPILE_PROFILES[0];
+}
 
 interface WorkspaceClipboardState {
   mode: WorkspaceClipboardMode;
@@ -694,6 +748,36 @@ interface CompilePreviewState {
   lastSuccessfulResult: Extract<CompileResult, { ok: true }> | null;
   compilerStatus: CompilerStatus;
   isCompiling: boolean;
+}
+
+interface DiagnosticSourceSnapshot {
+  source: string;
+  path: string;
+  language: SourceLanguage;
+}
+
+interface ExternalDiagnosticsState {
+  source: DiagnosticSourceSnapshot;
+  preferencesSignature: string;
+  diagnostics: CompileDiagnostic[];
+}
+
+type CachedTypstPreviewOutputKind = "svg" | "html" | "placeholder";
+
+interface TypstPreviewCacheEntry {
+  version: 1;
+  signature: string;
+  updatedAt: string;
+  result: {
+    ok: true;
+    engine: Extract<CompileResult, { ok: true }>["engine"];
+    diagnostics: CompileDiagnostic[];
+    output: {
+      kind: CachedTypstPreviewOutputKind;
+      content: string;
+    };
+    metadata?: CompileMetadata;
+  };
 }
 
 interface BuildLogEntry {
@@ -809,6 +893,13 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
     "formatter",
     "lint",
     "linter",
+    "diagnostics",
+    "harper",
+    "lsp",
+    "language server",
+    "websocket",
+    "local lsp",
+    "remote lsp",
     "compile",
     "live"
   ],
@@ -3220,9 +3311,12 @@ export function App() {
   const isSyncingMergeScrollRef = useRef(false);
   const themeRef = useRef<ThemeDefinition | null>(null);
   const compileResultRef = useRef<CompileResult | null>(null);
+  const readyTypstPreviewSignatureRef = useRef<string | null>(null);
   const editedSourcePathRef = useRef<string | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
   const handleFormatDocumentRef = useRef<() => void>(() => {});
+  const pendingLatexCompileProfileRef = useRef<LatexCompileProfile>(getLatexCompileProfile("pdftex-quick"));
+  const compileOptionsMenuRef = useRef<HTMLDivElement | null>(null);
   const previewDownloadMenuRef = useRef<HTMLDivElement | null>(null);
   const activateWorkspaceTabRef = useRef<(direction: -1 | 1) => boolean>(() => false);
   const compileInFlightRef = useRef(false);
@@ -3243,6 +3337,8 @@ export function App() {
   const [isMobileSettingsNavOpen, setIsMobileSettingsNavOpen] = useState(false);
   const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
   const [previewDownloadMode, setPreviewDownloadMode] = useState<PreviewDownloadMode>("output");
+  const [selectedLatexCompileProfileId, setSelectedLatexCompileProfileId] = useState<LatexCompileProfileId>("pdftex-quick");
+  const [isCompileOptionsMenuOpen, setIsCompileOptionsMenuOpen] = useState(false);
   const [isPreviewDownloadMenuOpen, setIsPreviewDownloadMenuOpen] = useState(false);
   const [recentWorkspaceState, setRecentWorkspaceState] = useState(readRecentWorkspaceState);
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>(
@@ -3321,6 +3417,10 @@ export function App() {
     {}
   );
   const [currentEditorLineNumber, setCurrentEditorLineNumber] = useState(1);
+  const [externalDiagnosticsState, setExternalDiagnosticsState] = useState<ExternalDiagnosticsState | null>(null);
+  const [diagnosticProviderStatuses, setDiagnosticProviderStatuses] =
+    useState<DiagnosticProviderStatus[]>(createInitialExternalDiagnosticStatuses);
+  const [harperSelfTestResult, setHarperSelfTestResult] = useState("Not run yet.");
   const [outlineSourceContent, setOutlineSourceContent] = useState("");
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const [activeSnippetLanguage, setActiveSnippetLanguage] =
@@ -4023,6 +4123,41 @@ ${nextLine}` : nextLine;
         }
       })
     );
+  }, []);
+  const handleExternalDiagnosticsChange = useCallback((
+    update: (preferences: ExternalDiagnosticProviderPreferences) => ExternalDiagnosticProviderPreferences
+  ) => {
+    setSnapshot((currentSnapshot) =>
+      updateExternalDiagnosticsPreference(
+        currentSnapshot,
+        update(currentSnapshot.preferences.externalDiagnostics)
+      )
+    );
+  }, []);
+  const handleHarperSelfTest = useCallback(() => {
+    const testSource = "This sentense has a mispelled wurd.";
+    setHarperSelfTestResult("Running Harper self-test...");
+
+    void runExternalDiagnostics({
+      source: testSource,
+      path: "harper-self-test.txt",
+      language: "text",
+      preferences: {
+        harper: { enabled: true },
+        localLsp: { enabled: false, url: "" },
+        remoteLsp: { enabled: false, url: "", allowDocumentUpload: false }
+      }
+    }).then((result) => {
+      const harperStatus = result.statuses.find((status) => status.id === "harper");
+      const firstDiagnostic = result.diagnostics[0];
+      setHarperSelfTestResult(
+        firstDiagnostic
+          ? `${harperStatus?.phase ?? "ready"}: ${result.diagnostics.length} diagnostic${result.diagnostics.length === 1 ? "" : "s"}. ${firstDiagnostic.message}`
+          : `${harperStatus?.phase ?? "ready"}: 0 diagnostics. ${harperStatus?.detail ?? "No detail."}`
+      );
+    }).catch((error) => {
+      setHarperSelfTestResult(error instanceof Error ? `error: ${error.message}` : "error: Harper self-test failed.");
+    });
   }, []);
   const togglePreviewDebug = useCallback(() => {
     setIsPreviewDebugVisible((current) => !current);
@@ -4859,6 +4994,7 @@ ${nextLine}` : nextLine;
     activeProjectTabKey,
     isAvailablePreviewTabPath,
     isTrashViewOpen,
+    selectedLatexCompileProfileId,
     selectedProjectRepository
   ]);
   useEffect(() => {
@@ -5094,6 +5230,8 @@ ${nextLine}` : nextLine;
     }
 
     compileRequestRef.current += 1;
+    compileResultRef.current = null;
+    readyTypstPreviewSignatureRef.current = null;
     setIsCompiling(false);
     setCompileResult(null);
     setLastSuccessfulResult(null);
@@ -5176,6 +5314,28 @@ ${nextLine}` : nextLine;
     () => [graph, ...savedGraphs].map((asset) => `${asset.id}:${asset.updatedAt}`).join("|"),
     [graph, savedGraphs]
   );
+  const typstPreviewCacheSignature = useMemo(
+    () =>
+      createTypstPreviewCacheSignature({
+        diagramAssetsRevision,
+        graphAssetsRevision,
+        isPaperView,
+        projectUpdatedAt: selectedProjectRepository?.filesystem.updatedAt ?? snapshot.project.updatedAt,
+        source: sourceEditorValue,
+        sourcePath: activeSourcePath,
+        theme
+      }),
+    [
+      activeSourcePath,
+      diagramAssetsRevision,
+      graphAssetsRevision,
+      isPaperView,
+      selectedProjectRepository?.filesystem.updatedAt,
+      snapshot.project.updatedAt,
+      sourceEditorValue,
+      theme
+    ]
+  );
 
   useEffect(() => {
     themeRef.current = theme;
@@ -5184,6 +5344,37 @@ ${nextLine}` : nextLine;
   useEffect(() => {
     compileResultRef.current = compileResult;
   }, [compileResult]);
+
+  useEffect(() => {
+    if (
+      !isHydrated ||
+      activeSourceLanguage !== "typst" ||
+      !isActiveSourceCompilable ||
+      activePreviewPath !== normalizedActiveSourcePath ||
+      !compileResult?.ok ||
+      compileResultRef.current !== compileResult
+    ) {
+      return;
+    }
+
+    readyTypstPreviewSignatureRef.current = typstPreviewCacheSignature;
+    saveTypstPreviewCacheResult({
+      projectKey: activeProjectTabKey,
+      result: compileResult,
+      signature: typstPreviewCacheSignature,
+      sourcePath: activeSourcePath
+    });
+  }, [
+    activePreviewPath,
+    activeProjectTabKey,
+    activeSourceLanguage,
+    activeSourcePath,
+    compileResult,
+    isActiveSourceCompilable,
+    isHydrated,
+    normalizedActiveSourcePath,
+    typstPreviewCacheSignature
+  ]);
 
   const appendBuildLogEntry = useCallback((entry: Omit<BuildLogEntry, "id">) => {
     setBuildLogEntries((currentEntries) => [
@@ -5279,6 +5470,62 @@ ${nextLine}` : nextLine;
     normalizedActiveSourcePath,
     selectedProjectRepository,
     sourceEditorValue
+  ]);
+
+  useEffect(() => {
+    if (
+      !isHydrated ||
+      compileResult !== null ||
+      isCompiling ||
+      compileInFlightRef.current ||
+      activeSourceLanguage !== "typst" ||
+      !isActiveSourceCompilable ||
+      activePreviewPath !== normalizedActiveSourcePath
+    ) {
+      return;
+    }
+
+    const cachedResult = loadTypstPreviewCacheResult({
+      projectKey: activeProjectTabKey,
+      signature: typstPreviewCacheSignature,
+      sourcePath: activeSourcePath
+    });
+
+    if (!cachedResult) {
+      return;
+    }
+
+    const readyStatus: CompilerStatus = {
+      phase: "ready",
+      mode: "worker",
+      label: "Restored Typst preview"
+    };
+
+    compileResultRef.current = cachedResult;
+    readyTypstPreviewSignatureRef.current = typstPreviewCacheSignature;
+    setCompileResult(cachedResult);
+    setLastSuccessfulResult(cachedResult);
+    setCompilerStatus(readyStatus);
+    setCompilePreviewsByPath((currentPreviews) => ({
+      ...currentPreviews,
+      [normalizedActiveSourcePath]: createCompilePreviewState(normalizedActiveSourcePath, {
+        result: cachedResult,
+        lastSuccessfulResult: cachedResult,
+        compilerStatus: readyStatus,
+        isCompiling: false
+      })
+    }));
+  }, [
+    activePreviewPath,
+    activeProjectTabKey,
+    activeSourceLanguage,
+    activeSourcePath,
+    compileResult,
+    isActiveSourceCompilable,
+    isHydrated,
+    isCompiling,
+    normalizedActiveSourcePath,
+    typstPreviewCacheSignature
   ]);
 
   useEffect(() => {
@@ -6103,9 +6350,9 @@ ${nextLine}` : nextLine;
     });
   }, [viewportWidth, workspaceMode]);
 
-  const focusFilesPane = useCallback(() => {
+
+  const focusSidebarPane = useCallback(() => {
     lastZoomPaneTargetRef.current = "sidebar";
-    setActiveSidebarTool("files");
     setIsSidebarCollapsed(false);
 
     if (isMobileWorkspaceViewport(viewportWidth)) {
@@ -6284,6 +6531,10 @@ ${nextLine}` : nextLine;
         setActiveMenu(null);
       }
 
+      if (!compileOptionsMenuRef.current?.contains(event.target as Node)) {
+        setIsCompileOptionsMenuOpen(false);
+      }
+
       if (!previewDownloadMenuRef.current?.contains(event.target as Node)) {
         setIsPreviewDownloadMenuOpen(false);
       }
@@ -6306,49 +6557,60 @@ ${nextLine}` : nextLine;
         return;
       }
 
-      if (!snapshot.preferences.vimMode) {
-        return;
-      }
+      const activeElement = document.activeElement;
+      const activeZoomPaneTarget =
+        resolveZoomPaneTarget(event.target) ??
+        resolveZoomPaneTarget(activeElement) ??
+        lastZoomPaneTargetRef.current;
+      const activeVimPane: VimPaneFocusTarget = activeZoomPaneTarget === "sidebar"
+        ? "sidebar"
+        : activeZoomPaneTarget;
 
       const paneFocusDirection = getVimPaneFocusDirection(
         event,
         snapshot.preferences.keybindings,
         isAppleShortcutPlatform
       );
-      if (paneFocusDirection === null) {
+
+      if (paneFocusDirection !== null) {
+        event.preventDefault();
+
+        const panes: VimPaneFocusTarget[] = ["sidebar", "source", "preview"];
+        const activePaneIndex = Math.max(0, panes.indexOf(activeVimPane));
+        const nextPane =
+          panes[Math.min(panes.length - 1, Math.max(0, activePaneIndex + paneFocusDirection))];
+
+
+        if (nextPane === "sidebar") {
+          focusSidebarPane();
+          return;
+        }
+
+        if (nextPane === "source") {
+          focusSourcePane();
+          return;
+        }
+
+        focusPreviewPane();
         return;
       }
 
-      event.preventDefault();
-
-      const activeZoomPaneTarget =
-        resolveZoomPaneTarget(event.target) ??
-        resolveZoomPaneTarget(document.activeElement) ??
-        lastZoomPaneTargetRef.current;
-      const activeVimPane: VimPaneFocusTarget =
-        activeZoomPaneTarget === "sidebar" ? "files" : activeZoomPaneTarget;
-
-      if (activeVimPane === "files" && activeSidebarTool !== "files") {
-        focusFilesPane();
+      if (
+        activeVimPane === "sidebar" &&
+        event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        (event.key === "j" || event.key === "J" || event.key === "k" || event.key === "K")
+      ) {
+        event.preventDefault();
+        cycleSidebarTool(event.key.toLowerCase() === "j" ? 1 : -1, { focusSidebarPane: true });
         return;
       }
 
-      const panes: VimPaneFocusTarget[] = ["files", "source", "preview"];
-      const activePaneIndex = Math.max(0, panes.indexOf(activeVimPane));
-      const nextPane =
-        panes[Math.min(panes.length - 1, Math.max(0, activePaneIndex + paneFocusDirection))];
-
-      if (nextPane === "files") {
-        focusFilesPane();
+      if (!snapshot.preferences.vimMode) {
         return;
       }
-
-      if (nextPane === "source") {
-        focusSourcePane();
-        return;
-      }
-
-      focusPreviewPane();
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -6446,7 +6708,7 @@ ${nextLine}` : nextLine;
     cancelPendingMenuClose,
     cancelPendingMenuOpen,
     activeSidebarTool,
-    focusFilesPane,
+    focusSidebarPane,
     focusPreviewPane,
     focusSourcePane,
     handleVimToggle,
@@ -6624,10 +6886,19 @@ ${nextLine}` : nextLine;
     compileInFlightSourcePathRef.current = sourcePath;
     compileInFlightDiagramRevisionRef.current = diagramRevision;
     compileInFlightGraphRevisionRef.current = graphRevision;
+    const requestedLatexCompileProfile = pendingLatexCompileProfileRef.current;
+    const requestedLatexCompileMode = requestedLatexCompileProfile.mode;
     const compileStartedAtIso = new Date().toISOString();
     setLiveBuildOutput(`[${new Date(compileStartedAtIso).toLocaleTimeString()}] Starting ${formatSourceLanguageLabel(sourceLanguage)} compile for ${sourcePath}`);
     const compileStartedAt =
       typeof performance === "undefined" ? 0 : performance.now();
+    const handleScopedCompilerStatusChange = (status: CompilerStatus) => {
+      if (!isMountedRef.current || requestId !== compileRequestRef.current) {
+        return;
+      }
+
+      handleCompilerStatusChange(status);
+    };
 
     try {
       const compileAssets = sourceLanguage === "typst"
@@ -6661,7 +6932,7 @@ ${nextLine}` : nextLine;
             sourcePath
           });
 
-          if (savedResult) {
+          if (requestedLatexCompileMode === "quick" && savedResult) {
             result = savedResult;
             compileUsedCachedOutput = true;
           } else {
@@ -6670,8 +6941,9 @@ ${nextLine}` : nextLine;
               source,
               project,
               assets: compileAssets,
-              compileMode: "quick",
-              onStatusChange: handleCompilerStatusChange
+              compileMode: requestedLatexCompileMode,
+              compileDriver: requestedLatexCompileProfile.driver,
+              onStatusChange: handleScopedCompilerStatusChange
             });
 
             if (result.ok && result.output.kind === "pdf") {
@@ -6793,7 +7065,7 @@ ${nextLine}` : nextLine;
         diagnostics: result.ok ? result.diagnostics : result.errors,
         metadata: result.metadata,
         trigger: pendingCompileTriggerRef.current,
-        compileMode: sourceLanguage === "latex" ? "quick" : "none",
+        compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
         cached: compileUsedCachedOutput,
         outputChanged: changedPreview,
         rawLog: sourceLanguage === "latex" ? result.output?.content : undefined,
@@ -6852,7 +7124,7 @@ ${nextLine}` : nextLine;
         diagnostics: failedResult.errors,
         metadata: failedResult.metadata,
         trigger: pendingCompileTriggerRef.current,
-        compileMode: sourceLanguage === "latex" ? "quick" : "none",
+        compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
         cached: false,
         outputChanged: false,
         rawLog: sourceLanguage === "latex" ? failedResult.output?.content : undefined,
@@ -6866,6 +7138,7 @@ ${nextLine}` : nextLine;
       compileInFlightSourcePathRef.current = "";
       compileInFlightDiagramRevisionRef.current = "";
       compileInFlightGraphRevisionRef.current = "";
+      pendingLatexCompileProfileRef.current = getLatexCompileProfile("pdftex-quick");
 
       if (!isMountedRef.current) {
         return;
@@ -7056,6 +7329,7 @@ ${nextLine}` : nextLine;
       return sourceEditorValue;
     }
 
+    const formatterLabel = formatEditorFormatterLabel(formatter);
     const result = formatSourceWithEditorTooling({
       language,
       path: sourcePath,
@@ -7070,14 +7344,14 @@ ${nextLine}` : nextLine;
         phase: "ready",
         mode: "worker",
         label: "Source formatted",
-        detail: `${formatSourceLanguageLabel(language)} formatter updated ${sourcePath}`
+        detail: `${formatterLabel} updated ${sourcePath}`
       });
     } else if (reason === "manual") {
       setCompilerStatus({
         phase: "ready",
         mode: "worker",
         label: "Source already formatted",
-        detail: `${formatSourceLanguageLabel(language)} formatter made no changes to ${sourcePath}`
+        detail: `${formatterLabel} made no changes to ${sourcePath}`
       });
     }
 
@@ -7103,9 +7377,12 @@ ${nextLine}` : nextLine;
     handleFormatDocumentRef.current = handleFormatDocument;
   }, [handleFormatDocument]);
 
-  const handleCompile = useCallback(() => {
+  const handleCompile = useCallback((profileId: LatexCompileProfileId = selectedLatexCompileProfileId) => {
     const sourcePath = activeSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
+    const selectedProfile = getLatexCompileProfile(profileId);
+    const effectiveLatexMode = sourceLanguage === "latex" ? selectedProfile.mode : "quick";
+    pendingLatexCompileProfileRef.current = sourceLanguage === "latex" ? selectedProfile : getLatexCompileProfile("pdftex-quick");
     const normalizedSourcePath = normalizeWorkspacePath(sourcePath);
     const latexPdfOutputPath = sourceLanguage === "latex" ? getLatexPdfOutputPath(sourcePath) : null;
     const activePreviewCompileSourcePath = activePreviewPath
@@ -7142,6 +7419,7 @@ ${nextLine}` : nextLine;
         mode: "worker",
         label: "Markdown preview ready"
       });
+      setIsCompileOptionsMenuOpen(false);
       return;
     }
 
@@ -7153,7 +7431,7 @@ ${nextLine}` : nextLine;
         sourcePath
       });
 
-      if (savedResult?.ok) {
+      if (effectiveLatexMode === "quick" && savedResult?.ok) {
         openCompilePreviewTab(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(sourcePath, savedResult)), { forceActivate: true });
 
         clearScheduledCompile();
@@ -7188,6 +7466,7 @@ ${nextLine}` : nextLine;
 
           return nextPreviews;
         });
+        setIsCompileOptionsMenuOpen(false);
         appendBuildLogEntry({
           sourcePath,
           language: "latex",
@@ -7198,7 +7477,7 @@ ${nextLine}` : nextLine;
           diagnostics: savedResult.diagnostics,
           metadata: savedResult.metadata,
           trigger: "manual",
-          compileMode: "quick",
+          compileMode: effectiveLatexMode,
           cached: true,
           outputChanged: false,
           rawLog: savedResult.output.content,
@@ -7217,6 +7496,7 @@ ${nextLine}` : nextLine;
       openCompilePreviewTab(sourcePath);
     }
 
+    setIsCompileOptionsMenuOpen(false);
     pendingCompileTriggerRef.current = "manual";
     queueCompile(false);
   }, [
@@ -7226,6 +7506,7 @@ ${nextLine}` : nextLine;
     formatActiveSourceForCompile,
     openPreviewTab,
     queueCompile,
+    selectedLatexCompileProfileId,
     selectedProjectRepository
   ]);
 
@@ -7242,6 +7523,8 @@ ${nextLine}` : nextLine;
     if (!isActiveSourceCompilable) {
       clearScheduledCompile();
       compileRequestRef.current += 1;
+      compileResultRef.current = null;
+      readyTypstPreviewSignatureRef.current = null;
       setIsCompiling(false);
       setCompileResult(null);
       setCompilerStatus({
@@ -7264,6 +7547,48 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    if (compileResult === null) {
+      const cachedResult = loadTypstPreviewCacheResult({
+        projectKey: activeProjectTabKey,
+        signature: typstPreviewCacheSignature,
+        sourcePath: activeSourcePath
+      });
+
+      if (cachedResult) {
+        const readyStatus: CompilerStatus = {
+          phase: "ready",
+          mode: "worker",
+          label: "Restored Typst preview"
+        };
+
+        compileResultRef.current = cachedResult;
+        readyTypstPreviewSignatureRef.current = typstPreviewCacheSignature;
+        setIsCompiling(false);
+        setCompileResult(cachedResult);
+        setLastSuccessfulResult(cachedResult);
+        setCompilerStatus(readyStatus);
+        setCompilePreviewsByPath((currentPreviews) => ({
+          ...currentPreviews,
+          [normalizedActiveSourcePath]: createCompilePreviewState(normalizedActiveSourcePath, {
+            result: cachedResult,
+            lastSuccessfulResult: cachedResult,
+            compilerStatus: readyStatus,
+            isCompiling: false
+          })
+        }));
+        return;
+      }
+    }
+
+    const hasReadyTypstPreviewForCurrentSource = Boolean(
+      compileResultRef.current?.ok &&
+        readyTypstPreviewSignatureRef.current === typstPreviewCacheSignature
+    );
+
+    if (hasReadyTypstPreviewForCurrentSource) {
+      return;
+    }
+
     if (editedSourcePathRef.current !== normalizedActiveSourcePath) {
       return;
     }
@@ -7274,6 +7599,7 @@ ${nextLine}` : nextLine;
     }
   }, [
     activePreviewPath,
+    activeProjectTabKey,
     activeSourceLanguage,
     activeSourcePath,
     clearScheduledCompile,
@@ -7285,7 +7611,8 @@ ${nextLine}` : nextLine;
     isActiveSourceCompilable,
     normalizedActiveSourcePath,
     queueCompile,
-    snapshot.preferences.liveCompilation
+    snapshot.preferences.liveCompilation,
+    typstPreviewCacheSignature
   ]);
 
   useEffect(() => {
@@ -7301,6 +7628,13 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    if (
+      compileResultRef.current.ok &&
+      readyTypstPreviewSignatureRef.current === typstPreviewCacheSignature
+    ) {
+      return;
+    }
+
     pendingCompileTriggerRef.current = "preview";
     queueCompile(false);
   }, [
@@ -7310,7 +7644,8 @@ ${nextLine}` : nextLine;
     isPaperView,
     normalizedActiveSourcePath,
     queueCompile,
-    theme
+    theme,
+    typstPreviewCacheSignature
   ]);
 
   useEffect(() => {
@@ -12448,17 +12783,28 @@ ${nextLine}` : nextLine;
     });
   }
 
-  function cycleSidebarTool(direction: -1 | 1) {
+  function cycleSidebarTool(
+    direction: -1 | 1,
+    options: { focusSidebarPane?: boolean } = {}
+  ) {
+    const currentIndex = SIDEBAR_TOOLS.findIndex((tool) => tool.id === activeSidebarTool);
+    const nextIndex =
+      (currentIndex + direction + SIDEBAR_TOOLS.length) % SIDEBAR_TOOLS.length;
+    const nextTool = SIDEBAR_TOOLS[nextIndex].id;
+
     setIsSidebarCollapsed(false);
-    setActiveSidebarTool((currentTool) => {
-      const currentIndex = SIDEBAR_TOOLS.findIndex((tool) => tool.id === currentTool);
-      const nextIndex =
-        (currentIndex + direction + SIDEBAR_TOOLS.length) % SIDEBAR_TOOLS.length;
-      return SIDEBAR_TOOLS[nextIndex].id;
-    });
+    setActiveSidebarTool(nextTool);
 
     if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
       setWorkspaceMode("split");
+    }
+
+    if (options.focusSidebarPane) {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          sidebarPaneRef.current?.focus({ preventScroll: true });
+        });
+      });
     }
   }
 
@@ -12931,22 +13277,93 @@ ${nextLine}` : nextLine;
       </div>
     );
   };
-  const lintSourceEditorValue = useDebouncedValue(sourceEditorValue, 180);
+  const diagnosticSourceSnapshot = useMemo<DiagnosticSourceSnapshot>(
+    () => ({
+      source: sourceEditorValue,
+      path: activeSourcePath,
+      language: activeSourceLanguage
+    }),
+    [activeSourceLanguage, activeSourcePath, sourceEditorValue]
+  );
+  const debouncedDiagnosticSourceSnapshot = useDebouncedValue(diagnosticSourceSnapshot, 180);
+  const isDebouncedDiagnosticSourceCurrent = areDiagnosticSourceSnapshotsEqual(
+    debouncedDiagnosticSourceSnapshot,
+    diagnosticSourceSnapshot
+  );
+  const externalDiagnosticPreferencesSignature = useMemo(
+    () => createExternalDiagnosticPreferencesSignature(snapshot.preferences.externalDiagnostics),
+    [snapshot.preferences.externalDiagnostics]
+  );
   const lintDiagnostics = useMemo(
     () =>
       lintSourceWithEditorTooling({
-        language: activeSourceLanguage,
-        path: activeSourcePath,
+        language: debouncedDiagnosticSourceSnapshot.language,
+        path: debouncedDiagnosticSourceSnapshot.path,
         preferences: snapshot.preferences.editorTooling,
-        source: lintSourceEditorValue
+        source: debouncedDiagnosticSourceSnapshot.source
       }),
     [
-      activeSourceLanguage,
-      activeSourcePath,
-      snapshot.preferences.editorTooling,
-      lintSourceEditorValue
+      debouncedDiagnosticSourceSnapshot,
+      snapshot.preferences.editorTooling
     ]
   );
+  useEffect(() => {
+    const abortController = new AbortController();
+    const requestSource = debouncedDiagnosticSourceSnapshot;
+    const requestPreferencesSignature = externalDiagnosticPreferencesSignature;
+    setDiagnosticProviderStatuses(createCheckingExternalDiagnosticStatuses(snapshot.preferences.externalDiagnostics));
+
+    void runExternalDiagnostics({
+      source: requestSource.source,
+      path: requestSource.path,
+      language: requestSource.language,
+      preferences: snapshot.preferences.externalDiagnostics,
+      signal: abortController.signal,
+      onStatus: (status) => {
+        setDiagnosticProviderStatuses((currentStatuses) =>
+          mergeDiagnosticProviderStatus(currentStatuses, status)
+        );
+      }
+    }).then((result) => {
+      if (abortController.signal.aborted) {
+        return;
+      }
+
+      setExternalDiagnosticsState({
+        source: requestSource,
+        preferencesSignature: requestPreferencesSignature,
+        diagnostics: result.diagnostics
+      });
+      setDiagnosticProviderStatuses(result.statuses);
+    });
+
+    return () => {
+      abortController.abort();
+    };
+  }, [
+    debouncedDiagnosticSourceSnapshot,
+    externalDiagnosticPreferencesSignature,
+    snapshot.preferences.externalDiagnostics
+  ]);
+
+  const currentExternalDiagnostics = useMemo(() => {
+    if (
+      !isDebouncedDiagnosticSourceCurrent ||
+      externalDiagnosticsState === null ||
+      externalDiagnosticsState.preferencesSignature !== externalDiagnosticPreferencesSignature ||
+      !areDiagnosticSourceSnapshotsEqual(externalDiagnosticsState.source, debouncedDiagnosticSourceSnapshot)
+    ) {
+      return EMPTY_COMPILE_DIAGNOSTICS;
+    }
+
+    return externalDiagnosticsState.diagnostics;
+  }, [
+    debouncedDiagnosticSourceSnapshot,
+    externalDiagnosticPreferencesSignature,
+    externalDiagnosticsState,
+    isDebouncedDiagnosticSourceCurrent
+  ]);
+
   const compilerDiagnostics =
     compileResult === null
       ? EMPTY_COMPILE_DIAGNOSTICS
@@ -12954,8 +13371,17 @@ ${nextLine}` : nextLine;
         ? compileResult.diagnostics
         : compileResult.errors;
   const editorDiagnostics = useMemo(
-    () => [...lintDiagnostics, ...compilerDiagnostics],
-    [compilerDiagnostics, lintDiagnostics]
+    () => [
+      ...(isDebouncedDiagnosticSourceCurrent ? lintDiagnostics : EMPTY_COMPILE_DIAGNOSTICS),
+      ...currentExternalDiagnostics,
+      ...compilerDiagnostics
+    ],
+    [
+      compilerDiagnostics,
+      currentExternalDiagnostics,
+      isDebouncedDiagnosticSourceCurrent,
+      lintDiagnostics
+    ]
   );
   const debugOutputResult = compileResult?.ok ? compileResult : lastSuccessfulResult;
   const debugOutputContent = isCompiling && liveBuildOutput
@@ -13145,6 +13571,10 @@ ${nextLine}` : nextLine;
   }, [cachedLatexPackageNames, latexBundleCacheById, latexPackageCatalog]);
   const flatOutlineEntries = useMemo(
     () => collectOutlineEntries(outlineSourceContent, activeSourceLanguage),
+    [activeSourceLanguage, outlineSourceContent]
+  );
+  const documentStats = useMemo(
+    () => collectDocumentStats(outlineSourceContent, activeSourceLanguage),
     [activeSourceLanguage, outlineSourceContent]
   );
   const outlineEntries = useMemo(
@@ -15768,6 +16198,135 @@ ${nextLine}` : nextLine;
 
               <section className="settings-section settings-section--nested">
                 <div className="settings-section__header">
+                  <h3>External diagnostics</h3>
+                  <span className="pane__meta">Harper and LSP</span>
+                </div>
+
+                <div className="settings-toggle-stack">
+                  <label className="settings-toggle">
+                    <span>
+                      <strong>Offline Harper grammar check</strong>
+                      <small>Run private English writing diagnostics in the browser after the app is cached.</small>
+                    </span>
+                    <input
+                      checked={snapshot.preferences.externalDiagnostics.harper.enabled}
+                      onChange={() =>
+                        handleExternalDiagnosticsChange((preferences) => ({
+                          ...preferences,
+                          harper: {
+                            ...preferences.harper,
+                            enabled: !preferences.harper.enabled
+                          }
+                        }))
+                      }
+                      type="checkbox"
+                    />
+                  </label>
+
+                  <div className="settings-toggle settings-toggle--stacked">
+                    <label className="settings-toggle__row">
+                      <span>
+                        <strong>Local WebSocket LSP</strong>
+                        <small>Connect to a language server bridge running on this device.</small>
+                      </span>
+                      <input
+                        checked={snapshot.preferences.externalDiagnostics.localLsp.enabled}
+                        onChange={() =>
+                          handleExternalDiagnosticsChange((preferences) => ({
+                            ...preferences,
+                            localLsp: {
+                              ...preferences.localLsp,
+                              enabled: !preferences.localLsp.enabled
+                            }
+                          }))
+                        }
+                        type="checkbox"
+                      />
+                    </label>
+                    <div className="settings-embedded-grid">
+                      <label className="sync-field">
+                        <span>Local WebSocket URL</span>
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) =>
+                            handleExternalDiagnosticsChange((preferences) => ({
+                              ...preferences,
+                              localLsp: {
+                                ...preferences.localLsp,
+                                url: event.target.value
+                              }
+                            }))
+                          }
+                          spellCheck={false}
+                          value={snapshot.preferences.externalDiagnostics.localLsp.url}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="settings-toggle settings-toggle--stacked">
+                    <label className="settings-toggle__row">
+                      <span>
+                        <strong>Remote WebSocket LSP</strong>
+                        <small>Connect to a network LSP endpoint only after explicit document-upload consent.</small>
+                      </span>
+                      <input
+                        checked={snapshot.preferences.externalDiagnostics.remoteLsp.enabled}
+                        onChange={() =>
+                          handleExternalDiagnosticsChange((preferences) => ({
+                            ...preferences,
+                            remoteLsp: {
+                              ...preferences.remoteLsp,
+                              enabled: !preferences.remoteLsp.enabled
+                            }
+                          }))
+                        }
+                        type="checkbox"
+                      />
+                    </label>
+                    <div className="settings-embedded-grid">
+                      <label className="sync-field">
+                        <span>Remote WebSocket URL</span>
+                        <input
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          onChange={(event) =>
+                            handleExternalDiagnosticsChange((preferences) => ({
+                              ...preferences,
+                              remoteLsp: {
+                                ...preferences.remoteLsp,
+                                url: event.target.value
+                              }
+                            }))
+                          }
+                          spellCheck={false}
+                          value={snapshot.preferences.externalDiagnostics.remoteLsp.url}
+                        />
+                      </label>
+                      <label className="sync-field sync-field--checkbox">
+                        <span>Allow document upload</span>
+                        <input
+                          checked={snapshot.preferences.externalDiagnostics.remoteLsp.allowDocumentUpload}
+                          onChange={() =>
+                            handleExternalDiagnosticsChange((preferences) => ({
+                              ...preferences,
+                              remoteLsp: {
+                                ...preferences.remoteLsp,
+                                allowDocumentUpload: !preferences.remoteLsp.allowDocumentUpload
+                              }
+                            }))
+                          }
+                          type="checkbox"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="settings-section settings-section--nested">
+                <div className="settings-section__header">
                   <h3>Formatters and linters</h3>
                   <span className="pane__meta">Browser mode</span>
                 </div>
@@ -15796,10 +16355,11 @@ ${nextLine}` : nextLine;
                             }
                             value={languageTools.formatter}
                           >
-                            <option value="disabled">Disabled</option>
-                            <option value="built-in">
-                              Built in
-                            </option>
+                            {getEditorFormatterOptions(language).map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
                           </select>
                         </label>
                         <label className="sync-field">
@@ -16100,6 +16660,7 @@ ${nextLine}` : nextLine;
                       autocomplete.
                     </div>
                   )}
+                  <DocumentStatsPanel stats={documentStats} />
                 </section>
               </div>
 
@@ -17316,6 +17877,7 @@ ${nextLine}` : nextLine;
                       Add headings like <code>= Section</code>, <code># Section</code>, or <code>{"\\section{Title}"}</code> to build an outline.
                     </div>
                   )}
+                  <DocumentStatsPanel stats={documentStats} />
                 </section>
               ) : null}
 
@@ -18281,6 +18843,32 @@ ${nextLine}` : nextLine;
                       </details>
                     ) : null}
 
+                    <details className="sidebar-card debug-section" open>
+                      <summary className="debug-section__summary">
+                        <span>Diagnostic providers</span>
+                        <span className="pane__meta">{diagnosticProviderStatuses.filter((status) => status.enabled).length} active</span>
+                      </summary>
+                      <ul className="sidebar-card__list">
+                        {diagnosticProviderStatuses.map((status) => (
+                          <li key={status.id}>
+                            <span>{status.label}</span>
+                            <span>{status.enabled ? status.phase : "disabled"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      {diagnosticProviderStatuses.map((status) => (
+                        <p className="sidebar-card__copy" key={`${status.id}:detail`}>
+                          {status.label}: {status.detail}
+                        </p>
+                      ))}
+                      <div className="sidebar-card__actions">
+                        <button className="pane__button pane__button--compact" onClick={handleHarperSelfTest} type="button">
+                          Run Harper self-test
+                        </button>
+                      </div>
+                      <p className="sidebar-card__copy">Harper self-test: {harperSelfTestResult}</p>
+                    </details>
+
                     <details className="sidebar-card debug-section">
                       <summary className="debug-section__summary">
                         <span>Diagnostics</span>
@@ -18409,14 +18997,68 @@ ${nextLine}` : nextLine;
                     </button>
                   ) : null}
                   {showSourceCompileButton && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
-                    <button
-                      className="pane__button pane__button--compact"
-                      onClick={handleCompile}
-                      title={`Compile (${compileShortcutLabel})`}
-                      type="button"
-                    >
-                      Compile
-                    </button>
+                    activeSourceLanguage === "latex" ? (
+                      <div
+                        className={`compile-options-menu ${isCompileOptionsMenuOpen ? "compile-options-menu--open" : ""}`}
+                        ref={compileOptionsMenuRef}
+                      >
+                        <div className="compile-split-button" role="group" aria-label="Compile options">
+                          <button
+                            className="pane__button pane__button--compact compile-split-button__main"
+                            onClick={() => handleCompile()}
+                            title={`Compile ${getLatexCompileProfile(selectedLatexCompileProfileId).label} (${compileShortcutLabel})`}
+                            type="button"
+                          >
+                            Compile
+                          </button>
+                          <button
+                            aria-expanded={isCompileOptionsMenuOpen}
+                            aria-haspopup="menu"
+                            aria-label="Choose compile mode"
+                            className="pane__button pane__button--compact compile-split-button__toggle"
+                            onClick={() => setIsCompileOptionsMenuOpen((current) => !current)}
+                            title="Choose compile mode"
+                            type="button"
+                          >
+                            <span aria-hidden="true" className="compile-split-button__chevron" />
+                          </button>
+                        </div>
+                        {isCompileOptionsMenuOpen ? (
+                          <div className="compile-options-menu__panel" role="menu" aria-label="Compile mode">
+                            {LATEX_COMPILE_PROFILES.map((profile) => (
+                              <button
+                                aria-checked={selectedLatexCompileProfileId === profile.id}
+                                className="compile-options-menu__item"
+                                key={profile.id}
+                                onClick={() => {
+                                  setSelectedLatexCompileProfileId(profile.id);
+                                  setIsCompileOptionsMenuOpen(false);
+                                }}
+                                role="menuitemradio"
+                                type="button"
+                              >
+                                <span className="compile-options-menu__item-main">
+                                  <span>{profile.label}</span>
+                                  {selectedLatexCompileProfileId === profile.id ? (
+                                    <span aria-hidden="true" className="compile-options-menu__check">✓</span>
+                                  ) : null}
+                                </span>
+                                <small>{profile.description}</small>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <button
+                        className="pane__button pane__button--compact"
+                        onClick={() => handleCompile()}
+                        title={`Compile (${compileShortcutLabel})`}
+                        type="button"
+                      >
+                        Compile
+                      </button>
+                    )
                   ) : null}
                 </div>
               </div>
@@ -19438,8 +20080,25 @@ function formatCompileStrategySummary(metadata: CompileMetadata): string {
     strategy.requestedMode === strategy.effectiveMode
       ? strategy.effectiveMode
       : `${strategy.requestedMode} -> ${strategy.effectiveMode}`;
+  const driver = strategy.driver ? ` · ${formatLatexCompileDriverLabel(strategy.driver)}` : "";
   const fallback = strategy.fallbackUsed ? " · fallback used" : "";
-  return `${mode} · ${strategy.previewKind} · ${strategy.mainFilePath}${fallback}. ${strategy.reason}`;
+  return `${mode}${driver} · ${strategy.previewKind} · ${strategy.mainFilePath}${fallback}. ${strategy.reason}`;
+}
+
+function formatLatexCompileDriverLabel(driver: string): string {
+  if (driver === "luatex_bibtex8") {
+    return "LuaTeX";
+  }
+
+  if (driver === "luahbtex_bibtex8") {
+    return "LuaHBTeX";
+  }
+
+  if (driver === "xetex_bibtex8_dvipdfmx") {
+    return "XeTeX";
+  }
+
+  return "pdfTeX";
 }
 
 function formatDurationMs(durationMs: number): string {
@@ -19486,6 +20145,71 @@ function logCompileTiming({
     `[typr] compile ${ok ? "ok" : "error"} in ${durationMs.toFixed(1)}ms` +
       ` (${changed ? "updated preview" : "unchanged output"}, ${diagnosticsCount} diagnostics${fileSync}${strategy}${dirty}${stages})`
   );
+}
+
+function createInitialExternalDiagnosticStatuses(): DiagnosticProviderStatus[] {
+  return [
+    {
+      id: "harper",
+      label: "Harper",
+      enabled: true,
+      phase: "idle",
+      detail: "Offline Harper diagnostics are ready to run."
+    },
+    {
+      id: "local-lsp",
+      label: "Local WebSocket LSP",
+      enabled: false,
+      phase: "idle",
+      detail: "Local WebSocket LSP disabled."
+    },
+    {
+      id: "remote-lsp",
+      label: "Remote WebSocket LSP",
+      enabled: false,
+      phase: "idle",
+      detail: "Remote WebSocket LSP disabled."
+    }
+  ];
+}
+
+function createCheckingExternalDiagnosticStatuses(
+  preferences: ExternalDiagnosticProviderPreferences
+): DiagnosticProviderStatus[] {
+  return createInitialExternalDiagnosticStatuses().map((status) => {
+    if (status.id === "harper") {
+      return preferences.harper.enabled
+        ? { ...status, enabled: true, phase: "checking", detail: "Checking prose offline in the browser." }
+        : { ...status, enabled: false, detail: "Offline Harper diagnostics disabled." };
+    }
+
+    if (status.id === "local-lsp") {
+      return preferences.localLsp.enabled
+        ? { ...status, enabled: true, phase: "checking", detail: `Connecting to ${preferences.localLsp.url}.` }
+        : status;
+    }
+
+    if (!preferences.remoteLsp.enabled) {
+      return status;
+    }
+
+    return preferences.remoteLsp.allowDocumentUpload
+      ? { ...status, enabled: true, phase: "checking", detail: `Connecting to ${preferences.remoteLsp.url}.` }
+      : { ...status, enabled: true, phase: "warning", detail: "Remote LSP is enabled, but document upload is not allowed." };
+  });
+}
+
+function mergeDiagnosticProviderStatus(
+  statuses: DiagnosticProviderStatus[],
+  nextStatus: DiagnosticProviderStatus
+): DiagnosticProviderStatus[] {
+  const nextStatuses = statuses.map((status) =>
+    status.id === nextStatus.id ? nextStatus : status
+  );
+
+  return nextStatuses.some((status) => status.id === nextStatus.id)
+    ? nextStatuses
+    : [...nextStatuses, nextStatus];
 }
 
 function resolvePreviewSourcePath(
@@ -19843,6 +20567,52 @@ function findActiveOutlineEntry(
   return activeEntry;
 }
 
+function DocumentStatsPanel({ stats }: { stats: DocumentStats }): ReactNode {
+  return (
+    <section className="document-stats" aria-label="Document statistics">
+      <div className="document-stats__header">Document statistics</div>
+      <dl className="document-stats__grid">
+        <div>
+          <dt>Words</dt>
+          <dd>{formatInteger(stats.words)}</dd>
+        </div>
+        <div>
+          <dt>Headings</dt>
+          <dd>{formatInteger(stats.headings)}</dd>
+        </div>
+        <div>
+          <dt>Equations</dt>
+          <dd>{formatInteger(stats.equations)}</dd>
+        </div>
+        <div>
+          <dt>Code blocks</dt>
+          <dd>{formatInteger(stats.codeBlocks)}</dd>
+        </div>
+        <div>
+          <dt>Characters</dt>
+          <dd>{formatInteger(stats.characters)}</dd>
+        </div>
+        <div>
+          <dt>No spaces</dt>
+          <dd>{formatInteger(stats.charactersNoSpaces)}</dd>
+        </div>
+        <div>
+          <dt>Lines</dt>
+          <dd>{formatInteger(stats.lines)}</dd>
+        </div>
+        <div>
+          <dt>Comments</dt>
+          <dd>{formatInteger(stats.comments)}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
 function renderOutlineEntries(
   entries: OutlineTreeEntry[],
   documentId: string,
@@ -19940,6 +20710,187 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   }, [delayMs, value]);
 
   return debouncedValue;
+}
+
+function areDiagnosticSourceSnapshotsEqual(
+  left: DiagnosticSourceSnapshot,
+  right: DiagnosticSourceSnapshot
+): boolean {
+  return (
+    left.source === right.source &&
+    left.path === right.path &&
+    left.language === right.language
+  );
+}
+
+function createExternalDiagnosticPreferencesSignature(
+  preferences: ExternalDiagnosticProviderPreferences
+): string {
+  return [
+    preferences.harper.enabled ? "1" : "0",
+    preferences.localLsp.enabled ? "1" : "0",
+    preferences.localLsp.url,
+    preferences.remoteLsp.enabled ? "1" : "0",
+    preferences.remoteLsp.url,
+    preferences.remoteLsp.allowDocumentUpload ? "1" : "0"
+  ].join("\x1f");
+}
+
+function createTypstPreviewCacheSignature({
+  diagramAssetsRevision,
+  graphAssetsRevision,
+  isPaperView,
+  projectUpdatedAt,
+  source,
+  sourcePath,
+  theme
+}: {
+  diagramAssetsRevision: string;
+  graphAssetsRevision: string;
+  isPaperView: boolean;
+  projectUpdatedAt: string;
+  source: string;
+  sourcePath: string;
+  theme: ThemeDefinition;
+}): string {
+  return [
+    normalizeWorkspacePath(sourcePath) || sourcePath,
+    hashText(source),
+    theme.id,
+    hashText(JSON.stringify(theme.palette)),
+    isPaperView ? "paper" : "screen",
+    projectUpdatedAt,
+    diagramAssetsRevision,
+    graphAssetsRevision
+  ].join("\x1f");
+}
+
+function saveTypstPreviewCacheResult({
+  projectKey,
+  result,
+  signature,
+  sourcePath
+}: {
+  projectKey: string;
+  result: Extract<CompileResult, { ok: true }>;
+  signature: string;
+  sourcePath: string;
+}): void {
+  if (typeof window === "undefined" || !isCachedTypstPreviewOutputKind(result.output.kind)) {
+    return;
+  }
+
+  if (result.output.content.length > TYPST_PREVIEW_CACHE_MAX_CONTENT_LENGTH) {
+    return;
+  }
+
+  const entry: TypstPreviewCacheEntry = {
+    version: 1,
+    signature,
+    updatedAt: new Date().toISOString(),
+    result: {
+      ok: true,
+      engine: result.engine,
+      diagnostics: result.diagnostics,
+      output: {
+        kind: result.output.kind,
+        content: result.output.content
+      },
+      metadata: result.metadata
+    }
+  };
+
+  try {
+    window.localStorage.setItem(
+      getTypstPreviewCacheStorageKey(projectKey, sourcePath),
+      JSON.stringify(entry)
+    );
+  } catch {
+    // Preview restoration is best effort; failed cache writes should not affect editing.
+  }
+}
+
+function loadTypstPreviewCacheResult({
+  projectKey,
+  signature,
+  sourcePath
+}: {
+  projectKey: string;
+  signature: string;
+  sourcePath: string;
+}): Extract<CompileResult, { ok: true }> | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(
+      getTypstPreviewCacheStorageKey(projectKey, sourcePath)
+    );
+
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored);
+
+    if (!isTypstPreviewCacheEntry(parsed) || parsed.signature !== signature) {
+      return null;
+    }
+
+    return {
+      ok: true,
+      engine: parsed.result.engine,
+      diagnostics: parsed.result.diagnostics,
+      output: {
+        kind: parsed.result.output.kind,
+        content: parsed.result.output.content
+      },
+      metadata: parsed.result.metadata
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getTypstPreviewCacheStorageKey(projectKey: string, sourcePath: string): string {
+  return `${TYPST_PREVIEW_CACHE_STORAGE_KEY}:${encodeURIComponent(projectKey)}:${encodeURIComponent(
+    normalizeWorkspacePath(sourcePath) || sourcePath
+  )}`;
+}
+
+function isTypstPreviewCacheEntry(value: unknown): value is TypstPreviewCacheEntry {
+  const entry = value as Partial<TypstPreviewCacheEntry> | null;
+  const result = entry?.result as Partial<TypstPreviewCacheEntry["result"]> | undefined;
+  const output = result?.output as Partial<TypstPreviewCacheEntry["result"]["output"]> | undefined;
+
+  return Boolean(
+    entry &&
+      entry.version === 1 &&
+      typeof entry.signature === "string" &&
+      typeof entry.updatedAt === "string" &&
+      result?.ok === true &&
+      typeof result.engine === "string" &&
+      Array.isArray(result.diagnostics) &&
+      output &&
+      isCachedTypstPreviewOutputKind(output.kind) &&
+      typeof output.content === "string"
+  );
+}
+
+function isCachedTypstPreviewOutputKind(kind: unknown): kind is CachedTypstPreviewOutputKind {
+  return kind === "svg" || kind === "html" || kind === "placeholder";
+}
+
+function hashText(value: string): string {
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return `${value.length}:${(hash >>> 0).toString(16)}`;
 }
 
 function loadPersistedBuildLogEntries(storageKey: string): BuildLogEntry[] {
@@ -20185,4 +21136,33 @@ function formatEditorToolLanguageLabel(language: EditorToolLanguage): string {
     : language === "latex"
       ? "LaTeX"
       : "Markdown";
+}
+
+function getEditorFormatterOptions(
+  language: EditorToolLanguage
+): Array<{ id: EditorFormatterId; label: string }> {
+  const options: Array<{ id: EditorFormatterId; label: string }> = [
+    { id: "disabled", label: "Disabled" },
+    { id: "built-in", label: "Built in" }
+  ];
+
+  if (language === "latex") {
+    options.push({ id: "tex-fmt", label: "tex-fmt" });
+  }
+
+  if (language === "typst") {
+    options.push({ id: "typstyle", label: "typstyle" });
+  }
+
+  return options;
+}
+
+function formatEditorFormatterLabel(formatter: EditorFormatterId): string {
+  return formatter === "tex-fmt"
+    ? "tex-fmt"
+    : formatter === "typstyle"
+      ? "typstyle"
+      : formatter === "built-in"
+        ? "Built-in formatter"
+        : "Formatter";
 }

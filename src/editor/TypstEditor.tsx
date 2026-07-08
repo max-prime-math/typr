@@ -23,6 +23,7 @@ import {
 } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
+import { setDiagnostics } from "@codemirror/lint";
 import { getCM, Vim } from "@replit/codemirror-vim";
 import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
@@ -32,7 +33,7 @@ import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
 import type { KeybindingMap } from "../app/keybindings";
-import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
+import { createEditorDiagnosticExtensions, toCodeMirrorDiagnostics } from "./editorDiagnostics";
 import {
   createLanguageSnippetCompletionSource,
   isSnippetLanguage,
@@ -570,6 +571,8 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     }
 
     const preservedViewState = preservedViewStateRef.current;
+    currentValueRef.current = value;
+    diagnosticsSignatureRef.current = createDiagnosticsSignature(diagnostics, highlightErrors);
     const view = new EditorView({
       state: createEditorState(value, {
         onChange: (update) => {
@@ -688,6 +691,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     view.dom.addEventListener("keydown", handleKeyDown, true);
 
     latestOnFocusChangeRef.current?.(view.hasFocus);
+    view.dispatch(setDiagnostics(view.state, toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors)));
     viewRef.current = view;
     preservedViewStateRef.current = null;
     latestOnSelectionChangeRef.current(view.state.doc.lineAt(view.state.selection.main.head).number);
@@ -781,6 +785,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         createEditorDiagnosticExtensions(diagnostics, highlightErrors)
       )
     });
+    view.dispatch(setDiagnostics(view.state, toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors)));
   }, [diagnostics, highlightErrors]);
 
   return (

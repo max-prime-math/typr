@@ -73,6 +73,7 @@ export interface CompileMetadata {
   strategy?: {
     requestedMode: string;
     effectiveMode: string;
+    driver?: string;
     previewKind: string;
     activeFilePath: string;
     mainFilePath: string;

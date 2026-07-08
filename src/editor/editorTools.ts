@@ -2,7 +2,13 @@ import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
 
 export type EditorToolLanguage = "typst" | "latex" | "markdown";
-export type EditorFormatterId = "disabled" | "built-in" | "local-agent" | "cloud-container";
+export type EditorFormatterId =
+  | "disabled"
+  | "built-in"
+  | "tex-fmt"
+  | "typstyle"
+  | "local-agent"
+  | "cloud-container";
 export type EditorLinterId = "disabled" | "built-in" | "local-agent" | "cloud-container";
 
 export interface EditorLanguageToolPreference {
@@ -64,7 +70,9 @@ export function normalizeEditorToolingPreferences(
       storedLanguage?.linter === "disabled";
 
     normalizedLanguages[language] = {
-      formatter: migrateBuiltIn ? fallback.formatter : normalizeFormatterId(storedLanguage?.formatter, fallback.formatter),
+      formatter: migrateBuiltIn
+        ? fallback.formatter
+        : normalizeFormatterIdForLanguage(language, storedLanguage?.formatter, fallback.formatter),
       linter: migrateBuiltIn ? fallback.linter : normalizeLinterId(storedLanguage?.linter, fallback.linter)
     };
   }
@@ -95,7 +103,7 @@ export function formatSourceWithEditorTooling({
   const toolLanguage = getEditorToolLanguage(language);
   const formatter = toolLanguage ? preferences.languages[toolLanguage].formatter : "disabled";
 
-  if (formatter !== "built-in") {
+  if (!isBrowserFormatterAvailable(language, formatter)) {
     return {
       source,
       changed: false,
@@ -690,8 +698,39 @@ function getLatexEnvironmentDelta(line: string): number {
   return Math.min(1, Math.max(-1, delta));
 }
 
+function isBrowserFormatterAvailable(language: SourceLanguage, formatter: EditorFormatterId): boolean {
+  return (
+    formatter === "built-in" ||
+    (language === "latex" && formatter === "tex-fmt") ||
+    (language === "typst" && formatter === "typstyle")
+  );
+}
+
+function normalizeFormatterIdForLanguage(
+  language: EditorToolLanguage,
+  value: unknown,
+  fallback: EditorFormatterId
+): EditorFormatterId {
+  const formatter = normalizeFormatterId(value, fallback);
+
+  if (formatter === "tex-fmt" && language !== "latex") {
+    return fallback;
+  }
+
+  if (formatter === "typstyle" && language !== "typst") {
+    return fallback;
+  }
+
+  return formatter;
+}
+
 function normalizeFormatterId(value: unknown, fallback: EditorFormatterId): EditorFormatterId {
-  return value === "disabled" || value === "built-in" || value === "local-agent" || value === "cloud-container"
+  return value === "disabled" ||
+    value === "built-in" ||
+    value === "tex-fmt" ||
+    value === "typstyle" ||
+    value === "local-agent" ||
+    value === "cloud-container"
     ? value
     : fallback;
 }

@@ -101,7 +101,8 @@ describe("repoBackend", () => {
   });
 
   it("ignores untracked files matched by project .gitignore", async () => {
-    let { backend, project } = await initAndCommitDefault();
+    const projectWithIgnore = writeProjectFile(createProject(), ".gitignore", "*.pdf\n");
+    let { backend, project } = await initAndCommitDefault(projectWithIgnore);
 
     project = writeProjectFile(project, "main.pdf", new Uint8Array([1, 2, 3]));
 
@@ -134,10 +135,12 @@ describe("repoBackend", () => {
     const backend = createRepoBackend(gitStorage);
     let firstProject = createEmptyProjectRepository({
       displayName: "First",
+      defaultFileName: "main.typ",
       defaultContent: "first\n"
     });
     let secondProject = createEmptyProjectRepository({
       displayName: "Second",
+      defaultFileName: "main.typ",
       defaultContent: "second\n"
     });
 

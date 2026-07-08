@@ -51,6 +51,10 @@ export class BusyTexWorkerRunner {
   private initialized = false;
   private recentMessages: string[] = [];
   private fileSignatures = new Map<string, string>();
+  private activeInitialization: {
+    timeout: number;
+    reject: (error: Error) => void;
+  } | null = null;
   private activeCompile: {
     timeout: number;
     reject: (error: Error) => void;
@@ -63,52 +67,77 @@ export class BusyTexWorkerRunner {
       return;
     }
 
-    await assertBusyTexAssetsAvailable(this.config);
-
-    const workerPath = getTyprBusyTexWorkerPath();
-    const worker = new Worker(workerPath);
-    this.worker = worker;
-
     await new Promise<void>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
+        cleanup();
         this.terminate();
         reject(new Error("Timed out while initializing BusyTeX."));
       }, this.config.initializationTimeoutMs ?? DEFAULT_INITIALIZATION_TIMEOUT_MS);
-
-      worker.onmessage = ({ data }: MessageEvent<BusyTexWorkerMessage>) => {
-        if (data.print) {
-          this.rememberMessage(data.print);
-          return;
-        }
-
-        if (data.initialized) {
-          window.clearTimeout(timeout);
-          this.initialized = true;
-          resolve();
-          return;
-        }
-
-        if (data.exception) {
-          window.clearTimeout(timeout);
-          this.terminate();
-          reject(new Error(data.exception));
+      const activeInitialization = {
+        timeout,
+        reject: (error: Error) => {
+          cleanup();
+          reject(error);
         }
       };
-
-      worker.onerror = (error) => {
+      const cleanup = () => {
         window.clearTimeout(timeout);
-        this.terminate();
-        reject(new Error(`BusyTeX worker error: ${error.message}`));
-      };
 
-      worker.postMessage({
-        busytex_pipeline_js: `${this.config.busytexBasePath}/busytex_pipeline.js`,
-        busytex_js: `${this.config.busytexBasePath}/busytex.js`,
-        busytex_wasm: `${this.config.busytexBasePath}/busytex.wasm`,
-        preload_data_packages_js: this.config.preloadDataPackages,
-        data_packages_js: this.config.catalogDataPackages,
-        texmf_local: [],
-        preload: true
+        if (this.activeInitialization === activeInitialization) {
+          this.activeInitialization = null;
+        }
+      };
+      const rejectInitialization = (error: Error) => {
+        cleanup();
+        this.terminate();
+        reject(error);
+      };
+      this.activeInitialization = activeInitialization;
+
+      void (async () => {
+        await assertBusyTexAssetsAvailable(this.config);
+
+        if (this.activeInitialization !== activeInitialization) {
+          return;
+        }
+
+        const workerPath = getTyprBusyTexWorkerPath();
+        const worker = new Worker(workerPath);
+        this.worker = worker;
+
+        worker.onmessage = ({ data }: MessageEvent<BusyTexWorkerMessage>) => {
+          if (data.print) {
+            this.rememberMessage(data.print);
+            return;
+          }
+
+          if (data.initialized) {
+            cleanup();
+            this.initialized = true;
+            resolve();
+            return;
+          }
+
+          if (data.exception) {
+            rejectInitialization(new Error(data.exception));
+          }
+        };
+
+        worker.onerror = (error) => {
+          rejectInitialization(new Error(`BusyTeX worker error: ${error.message}`));
+        };
+
+        worker.postMessage({
+          busytex_pipeline_js: `${this.config.busytexBasePath}/busytex_pipeline.js`,
+          busytex_js: `${this.config.busytexBasePath}/busytex.js`,
+          busytex_wasm: `${this.config.busytexBasePath}/busytex.wasm`,
+          preload_data_packages_js: this.config.preloadDataPackages,
+          data_packages_js: this.config.catalogDataPackages,
+          texmf_local: [],
+          preload: true
+        });
+      })().catch((error) => {
+        rejectInitialization(error instanceof Error ? error : new Error(String(error)));
       });
     });
   }
@@ -210,8 +239,15 @@ export class BusyTexWorkerRunner {
   }
 
   terminate(reason = "BusyTeX worker was stopped."): void {
+    const activeInitialization = this.activeInitialization;
     const activeCompile = this.activeCompile;
+    this.activeInitialization = null;
     this.activeCompile = null;
+
+    if (activeInitialization) {
+      window.clearTimeout(activeInitialization.timeout);
+      activeInitialization.reject(new Error(reason));
+    }
 
     if (activeCompile) {
       window.clearTimeout(activeCompile.timeout);

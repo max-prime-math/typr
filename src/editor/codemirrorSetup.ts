@@ -152,7 +152,7 @@ const editorHighlightStyle = HighlightStyle.define([
   },
   {
     tag: [tags.labelName, tags.quote, tags.number],
-    color: "color-mix(in srgb, var(--warning) 84%, var(--editor-foreground))"
+    color: "color-mix(in srgb, var(--accent-strong) 72%, var(--editor-foreground))"
   },
   {
     tag: [tags.meta, tags.monospace],

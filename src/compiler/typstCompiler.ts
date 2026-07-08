@@ -65,7 +65,7 @@ function broadcastStatus(status: CompilerStatus): void {
 
 class WorkerBackedTypstCompiler implements TypstCompiler {
   private readonly fallbackCompiler: TypstCompiler;
-  private readonly worker: Worker;
+  private readonly worker: Worker | null = null;
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private nextRequestId = 1;
   private workerAvailable = true;
@@ -77,12 +77,23 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     this.fallbackCompiler = createMainThreadTypstCompiler({
       onStatusChange: this.notifyStatus
     });
-    this.worker = new Worker(
-      new URL("./typstCompiler.worker.ts", import.meta.url),
-      {
-        type: "module"
-      }
-    );
+    try {
+      this.worker = new Worker(
+        new URL("./typstCompiler.worker.ts", import.meta.url),
+        {
+          type: "module"
+        }
+      );
+    } catch (error) {
+      this.workerAvailable = false;
+      this.notifyStatus({
+        phase: "fallback-main-thread",
+        mode: "main-thread",
+        label: "Using main-thread fallback",
+        detail: error instanceof Error ? error.message : "Worker construction failed"
+      });
+      return;
+    }
 
     this.worker.addEventListener(
       "message",
@@ -121,12 +132,12 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
   }
 
   dispose(): void {
-    this.worker.removeEventListener(
+    this.worker?.removeEventListener(
       "message",
       this.handleWorkerMessage as EventListener
     );
-    this.worker.removeEventListener("error", this.handleWorkerError);
-    this.worker.terminate();
+    this.worker?.removeEventListener("error", this.handleWorkerError);
+    this.worker?.terminate();
     this.fallbackCompiler.dispose();
 
     for (const pendingRequest of this.pendingRequests.values()) {
@@ -144,6 +155,11 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
 
   private sendRequest(request: CompilerWorkerRequest): Promise<CompileResult | void> {
     return new Promise<CompileResult | void>((resolve, reject) => {
+      if (!this.worker) {
+        reject(new Error("Typst compiler worker is unavailable."));
+        return;
+      }
+
       this.pendingRequests.set(request.id, { resolve, reject });
       this.worker.postMessage(request);
 
@@ -208,6 +224,6 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     }
 
     this.workerAvailable = false;
-    this.worker.terminate();
+    this.worker?.terminate();
   }
 }

@@ -1,7 +1,6 @@
 function escapeRegex(value: string): string {
   return value.replace(/[|\\{}()[\]^$+?.*]/g, "\\$&");
 }
-
 export function normalizeRelativePath(path: string): string {
   return path
     .split("/")
@@ -37,22 +36,47 @@ export function matchesIgnorePattern(path: string, pattern: string): boolean {
   const normalizedPath = normalizeRelativePath(path);
   const normalizedPattern = pattern.trim();
 
-  if (!normalizedPattern) {
+  if (!normalizedPath || !normalizedPattern) {
     return false;
   }
 
   if (normalizedPattern.endsWith("/")) {
     const directoryPath = normalizeRelativePath(normalizedPattern.slice(0, -1));
-    return normalizedPath === directoryPath || normalizedPath.startsWith(`${directoryPath}/`);
+    return matchesDirectoryPattern(normalizedPath, directoryPath);
   }
 
+  const pathCandidates = normalizedPattern.includes("/")
+    ? [normalizedPath]
+    : getPathSuffixCandidates(normalizedPath);
+
+  return pathCandidates.some((candidate) => matchesGlob(candidate, normalizedPattern));
+}
+
+function matchesDirectoryPattern(path: string, directoryPath: string): boolean {
+  if (!directoryPath) {
+    return false;
+  }
+
+  const candidates = directoryPath.includes("/") ? [path] : getPathSuffixCandidates(path);
+
+  return candidates.some(
+    (candidate) => candidate === directoryPath || candidate.startsWith(`${directoryPath}/`)
+  );
+}
+
+function matchesGlob(path: string, pattern: string): boolean {
   const regex = new RegExp(
-    `^${escapeRegex(normalizedPattern)
+    `^${escapeRegex(pattern)
       .replace(/\\\*\\\*/g, ".*")
       .replace(/\\\*/g, "[^/]*")}$`
   );
 
-  return regex.test(normalizedPath);
+  return regex.test(path);
+}
+
+function getPathSuffixCandidates(path: string): string[] {
+  const segments = normalizeRelativePath(path).split("/").filter(Boolean);
+  return segments.map((_, index) => segments.slice(index).join("/"));
 }
 
 export function shouldIgnorePath(path: string, patterns: string[]): boolean {
