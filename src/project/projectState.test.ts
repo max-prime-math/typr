@@ -31,7 +31,7 @@ describe("projectState", () => {
     expect(project?.filesystem.entries[DEFAULT_LATEX_DOCUMENT_NAME]?.kind).toBe("file");
     expect(project?.filesystem.entries[DEFAULT_MARKDOWN_DOCUMENT_NAME]?.kind).toBe("file");
     expect(snapshot.project.activeDocumentId).toBe(
-      snapshot.project.documents.find((document) => document.name === DEFAULT_DOCUMENT_NAME)?.id
+      snapshot.project.documents.find((document) => document.name === DEFAULT_MARKDOWN_DOCUMENT_NAME)?.id
     );
     const gitignore = project?.filesystem.entries[DEFAULT_PROJECT_GITIGNORE_PATH];
     expect(gitignore?.kind).toBe("file");

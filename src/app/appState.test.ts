@@ -15,6 +15,7 @@ describe("appState", () => {
     );
 
     expect(DEFAULT_MARKDOWN_DOCUMENT_NAME).toBe("README.md");
+    expect(snapshot.project.activeDocumentId).toBe(readme?.id);
     expect(readme?.content).toBe(DEFAULT_MARKDOWN_DOCUMENT_CONTENT);
     expect(readme?.content).toContain("Typr is a local-first writing workspace");
     expect(readme?.content).toContain("Check Settings");

@@ -467,7 +467,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       documents: [typstDocument, latexDocument, markdownDocument],
       folders: [],
       trash: [],
-      activeDocumentId: typstDocument.id,
+      activeDocumentId: markdownDocument.id,
       createdAt: now,
       updatedAt: now,
       diagram: createDefaultDiagram(),
