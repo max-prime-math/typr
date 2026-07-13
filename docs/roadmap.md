@@ -17,5 +17,5 @@ Typr's current direction is to keep the app local-first while improving reliabil
 
 - Trusted local-agent transport for non-browser git workflows.
 - Additional import/export formats for project handoff.
-- More visual asset workflows for diagrams and graphs.
+- More visual asset workflows for diagrams.
 - More explicit migration and recovery tooling for browser storage changes.

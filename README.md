@@ -1,6 +1,6 @@
 # Typr
 
-Typr is a local-first, browser-based writing and preview workspace for Typst, LaTeX, and Markdown on iPad and desktop. It runs as a Progressive Web App, keeps projects on device, and supports live preview, offline reopen, Vim mode, themes, diagrams, graphs, package caching, a browser shell, and repo-backed GitHub sync.
+Typr is a local-first, browser-based writing and preview workspace for Typst, LaTeX, and Markdown on iPad and desktop. It runs as a Progressive Web App, keeps projects on device, and supports live preview, offline reopen, Vim mode, themes, diagrams, package caching, a browser shell, and repo-backed GitHub sync.
 
 Live app: <https://typr.ca/>
 

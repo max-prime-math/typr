@@ -6,7 +6,7 @@ sidebar_position: 1
 
 # Typr Documentation
 
-Typr is a local-first browser workspace for writing, previewing, and syncing Typst, LaTeX, and Markdown projects. It runs as a Progressive Web App, keeps project files on device, and supports live preview, diagrams, graphs, package caching, a browser shell, and GitHub-backed browser git.
+Typr is a local-first browser workspace for writing, previewing, and syncing Typst, LaTeX, and Markdown projects. It runs as a Progressive Web App, keeps project files on device, and supports live preview, diagrams, package caching, a browser shell, and GitHub-backed browser git.
 
 The README is the project front door. These docs hold workflow details, concepts, architecture notes, roadmap, and current limits.
 
@@ -18,7 +18,7 @@ Use the user guide pages for day-to-day workflows. Use concepts and architecture
 |---|---|
 | Create, import, export, and switch projects | [Workspace and Projects](./user-guide/workspace.md) |
 | Edit source and use live preview | [Editing and Preview](./user-guide/editing-preview.md) |
-| Draw diagrams and create graphs | [Diagrams and Graphs](./user-guide/diagrams-graphs.md) |
+| Draw diagrams | [Diagrams](./user-guide/diagrams.md) |
 | Connect a GitHub remote | [GitHub Sync](./user-guide/git-sync.md) |
 | Change app, editor, Git, snippet, and package settings | [Settings](./user-guide/settings.md) |
 | Cache packages or use the browser shell | [Packages and Browser Shell](./user-guide/packages-shell.md) |

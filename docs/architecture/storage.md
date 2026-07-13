@@ -8,7 +8,7 @@ Typr uses browser storage for projects, preferences, git data, credentials, cach
 
 ## Project Data
 
-Project snapshots contain visible workspace entries, app metadata, preferences, recent items, diagrams, graphs, and trash. Legacy snapshots are retained as recovery data during migration.
+Project snapshots contain visible workspace entries, app metadata, preferences, recent items, diagrams, and trash. Legacy snapshots are retained as recovery data during migration.
 
 ## Git Data
 

@@ -4,7 +4,7 @@ title: Workspace and Projects
 
 # Workspace and Projects
 
-Typr opens into the working app, not a landing page. The left sidebar contains project management, file navigation, source tools, Git, diagrams, and graph tools. The main area can show source, preview, split view, or focused layouts.
+Typr opens into the working app, not a landing page. The left sidebar contains project management, file navigation, source tools, Git, and diagrams. The main area can show source, preview, split view, or focused layouts.
 
 ## Projects
 
@@ -18,7 +18,7 @@ Project names are local Typr labels. Deleting a project removes local Typr data 
 
 Use the Files pane to create documents and folders, upload files, rename or move workspace entries, open recent files, and manage trash. Typr hides managed .git internals from the file tree and browser shell.
 
-Supported source files include Typst, LaTeX, Markdown, plain text, bibliography files, and common project assets. Diagrams and graphs are stored as Typr workspace items and can be edited from their own tool surfaces.
+Supported source files include Typst, LaTeX, Markdown, plain text, bibliography files, and common project assets. Diagrams are stored as Typr workspace items and can be edited from the Diagram tool.
 
 ## Downloads and Backups
 

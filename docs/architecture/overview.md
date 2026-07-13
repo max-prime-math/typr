@@ -16,7 +16,7 @@ Typr is a React, Vite, and TypeScript application with local-first project state
 | Compilers and packages | src/compiler/ |
 | Browser git | src/git/repoBackend.ts, src/git/remoteService.ts, src/git/gitState.ts, src/git/credentials.ts |
 | Projects and workspace files | src/project/projectState.ts, src/workspace/workspaceTree.ts, src/workspace/opfsWorkspace.ts |
-| Diagrams and graphs | src/diagram/DiagramEditor.tsx, src/graph/GraphEditor.tsx |
+| Diagrams | src/diagram/SvgEditDiagramEditor.tsx |
 | Browser shell | src/terminal/ |
 
 ## Application Shape
