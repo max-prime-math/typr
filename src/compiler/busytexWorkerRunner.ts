@@ -1,10 +1,12 @@
 import type { CompileResult, FileInput, LogEntry } from "texlyre-busytex";
+import { createFullContentSignature } from "../utils/contentHash";
 import type { CompileMetadata } from "./types";
 
 export interface BusyTexWorkerRunnerConfig {
   busytexBasePath: string;
   preloadDataPackages: string[];
   catalogDataPackages: string[];
+  skipSinglePassMemoryRestore?: boolean;
   compileTimeoutMs?: number;
   initializationTimeoutMs?: number;
 }
@@ -40,6 +42,7 @@ const DEFAULT_INITIALIZATION_TIMEOUT_MS = 120_000;
 const DEFAULT_COMPILE_TIMEOUT_MS = 10 * 60_000;
 const MAX_RECENT_MESSAGES = 30;
 const REQUIRED_BUSY_TEX_RUNTIME_FILES = ["busytex_pipeline.js", "busytex.js", "busytex.wasm"];
+const BUSYTEX_PIPELINE_REVISION = "2";
 
 export type BusyTexCompileResultWithMetadata = CompileResult & {
   metadata?: CompileMetadata;
@@ -128,7 +131,7 @@ export class BusyTexWorkerRunner {
         };
 
         worker.postMessage({
-          busytex_pipeline_js: `${this.config.busytexBasePath}/busytex_pipeline.js`,
+          busytex_pipeline_js: getBusyTexPipelineUrl(this.config.busytexBasePath),
           busytex_js: `${this.config.busytexBasePath}/busytex.js`,
           busytex_wasm: `${this.config.busytexBasePath}/busytex.wasm`,
           preload_data_packages_js: this.config.preloadDataPackages,
@@ -233,7 +236,13 @@ export class BusyTexWorkerRunner {
         verbose,
         driver,
         data_packages_js: dataPackagesJs,
-        remote_endpoint: remoteEndpoint
+        remote_endpoint: remoteEndpoint,
+        skip_memory_restore:
+          Boolean(this.config.skipSinglePassMemoryRestore) &&
+          bibtex === false &&
+          makeindex === false &&
+          rerun === false &&
+          driver !== "xetex_bibtex8_dvipdfmx"
       });
     });
   }
@@ -281,7 +290,7 @@ export class BusyTexWorkerRunner {
     const changedFiles: BusyTexWorkerFile[] = [];
 
     for (const file of files) {
-      const signature = getFileContentSignature(file.content);
+      const signature = createFullContentSignature(file.content);
       nextSignatures.set(file.path, signature);
 
       if (this.fileSignatures.get(file.path) !== signature) {
@@ -299,6 +308,10 @@ export class BusyTexWorkerRunner {
 function getTyprBusyTexWorkerPath(): string {
   const baseUrl = import.meta.env.BASE_URL || "/";
   return `${baseUrl.replace(/\/?$/, "/")}typr-busytex-worker.js`;
+}
+
+function getBusyTexPipelineUrl(busytexBasePath: string): string {
+  return `${busytexBasePath}/busytex_pipeline.js?v=${BUSYTEX_PIPELINE_REVISION}`;
 }
 
 async function assertBusyTexAssetsAvailable(config: BusyTexWorkerRunnerConfig): Promise<void> {
@@ -361,35 +374,6 @@ function createCompileMetadata(stats: BusyTexWorkerStats | undefined): CompileMe
   };
 }
 
-function getFileContentSignature(content: string | Uint8Array): string {
-  if (typeof content === "string") {
-    return `text:${content.length}:${hashString(content)}`;
-  }
-
-  return `bytes:${content.byteLength}:${hashBytes(content)}`;
-}
-
-function hashString(value: string): string {
-  let hash = 0x811c9dc5;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  return (hash >>> 0).toString(16);
-}
-
-function hashBytes(value: Uint8Array): string {
-  let hash = 0x811c9dc5;
-
-  for (let index = 0; index < value.byteLength; index += 1) {
-    hash ^= value[index];
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  return (hash >>> 0).toString(16);
-}
 
 function formatDuration(durationMs: number): string {
   const totalSeconds = Math.round(durationMs / 1000);

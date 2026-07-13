@@ -1,13 +1,12 @@
 import type {
   AppSnapshot,
   DiagramAsset,
-  GraphAsset,
   WorkspaceTrashEntry
 } from "../app/appState";
 import type { TyprProjectRepository } from "../project/projectState";
 import { getDiagramFilePath } from "../diagram/diagramFiles";
-import { serializeDiagramSvg } from "../diagram/DiagramEditor";
-import { getGraphFilePath } from "../graph/graphFiles";
+import { serializeDiagramSvg } from "../diagram/diagramSvgSerializer";
+import { normalizeRelativePath } from "../utils/relativePath";
 
 export type WorkspaceNodeKind = "file" | "folder";
 export type WorkspaceFileBadge =
@@ -50,7 +49,6 @@ export type WorkspaceSource =
   | { kind: "document"; id: string }
   | { kind: "folder"; id: string }
   | { kind: "diagram"; id: string }
-  | { kind: "graph"; id: string }
   | { kind: "trash-item"; id: string; entryKind: WorkspaceTrashEntry["kind"] }
   | { kind: "system-folder"; id: "figures" };
 
@@ -135,11 +133,7 @@ const CODE_FILE_EXTENSIONS = new Set([
 ]);
 
 export function normalizeWorkspacePath(path: string): string {
-  return path
-    .split("/")
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .join("/");
+  return normalizeRelativePath(path);
 }
 
 export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFlatEntry[] {
@@ -181,9 +175,8 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
   }
 
   const savedFigures = snapshot.project.figures ?? [];
-  const savedGraphs = snapshot.project.graphs ?? [];
 
-  if (savedFigures.length > 0 || savedGraphs.length > 0) {
+  if (savedFigures.length > 0) {
     addEntry({
       path: "figures",
       kind: "folder",
@@ -196,10 +189,6 @@ export function buildProjectWorkspaceEntries(snapshot: AppSnapshot): WorkspaceFl
 
   for (const figure of savedFigures) {
     addEntry(createDiagramWorkspaceEntry(figure));
-  }
-
-  for (const graph of savedGraphs) {
-    addEntry(createGraphWorkspaceEntry(graph));
   }
 
   return [...entries.values()];
@@ -315,8 +304,7 @@ export function canRenameWorkspaceNode(node: WorkspaceTreeNode): boolean {
   return (
     node.source.kind === "document" ||
     (node.source.kind === "folder" && !node.source.id.startsWith("virtual:")) ||
-    node.source.kind === "diagram" ||
-    node.source.kind === "graph"
+    node.source.kind === "diagram"
   );
 }
 
@@ -325,7 +313,6 @@ export function canDeleteWorkspaceNode(node: WorkspaceTreeNode): boolean {
     node.source.kind === "document" ||
     (node.source.kind === "folder" && !node.source.id.startsWith("virtual:")) ||
     node.source.kind === "diagram" ||
-    node.source.kind === "graph" ||
     node.source.kind === "trash-item"
   );
 }
@@ -334,8 +321,7 @@ export function canMoveWorkspaceNode(node: WorkspaceTreeNode): boolean {
   return (
     node.source.kind === "document" ||
     (node.source.kind === "folder" && !node.source.id.startsWith("virtual:")) ||
-    node.source.kind === "diagram" ||
-    node.source.kind === "graph"
+    node.source.kind === "diagram"
   );
 }
 
@@ -451,18 +437,6 @@ function createDiagramWorkspaceEntry(figure: DiagramAsset): WorkspaceFlatEntry {
   };
 }
 
-function createGraphWorkspaceEntry(graph: GraphAsset): WorkspaceFlatEntry {
-  return {
-    path: getGraphFilePath(graph.name),
-    kind: "file",
-    content: new Uint8Array(graph.content),
-    source: {
-      kind: "graph",
-      id: graph.id
-    }
-  };
-}
-
 function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEntry {
   const path = normalizeWorkspacePath(entry.originalPath);
 
@@ -491,23 +465,10 @@ function createTrashWorkspaceEntry(entry: WorkspaceTrashEntry): WorkspaceFlatEnt
     };
   }
 
-  if (entry.kind === "diagram") {
-    return {
-      path,
-      kind: "file",
-      content: serializeDiagramSvg(entry.diagram),
-      source: {
-        kind: "trash-item",
-        id: entry.id,
-        entryKind: entry.kind
-      }
-    };
-  }
-
   return {
     path,
     kind: "file",
-    content: new Uint8Array(entry.graph.content),
+    content: serializeDiagramSvg(entry.diagram),
     source: {
       kind: "trash-item",
       id: entry.id,

@@ -8,13 +8,23 @@ export interface CompilerCompileRequest {
   options?: CompileDocumentOptions;
 }
 
-export type CompilerWorkerRequest = CompilerCompileRequest;
+export interface CompilerWarmRequest {
+  id: number;
+  type: "warm";
+}
+
+export type CompilerWorkerRequest = CompilerCompileRequest | CompilerWarmRequest;
 
 export interface CompilerCompileResponse {
   id: number;
   type: "compile-result";
   result: CompileResult;
 }
+export interface CompilerWarmResponse {
+  id: number;
+  type: "warm-result";
+}
+
 
 export interface CompilerWorkerErrorResponse {
   id: number;
@@ -30,5 +40,6 @@ export interface CompilerWorkerStatusResponse {
 
 export type CompilerWorkerResponse =
   | CompilerCompileResponse
+  | CompilerWarmResponse
   | CompilerWorkerStatusResponse
   | CompilerWorkerErrorResponse;

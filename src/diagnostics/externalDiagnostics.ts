@@ -1,5 +1,10 @@
 import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
+import type {
+  HarperWorkerLanguage,
+  HarperWorkerLint
+} from "./harperDiagnostics.protocol";
+import { lintWithHarperWorker } from "./harperDiagnosticsWorkerClient";
 
 export type DiagnosticProviderId = "harper" | "local-lsp" | "remote-lsp";
 
@@ -43,7 +48,7 @@ export interface ExternalDiagnosticResult {
 const LSP_RESPONSE_TIMEOUT_MS = 1400;
 const LSP_OPEN_TIMEOUT_MS = 3500;
 
-let harperLinterPromise: Promise<HarperLinter> | null = null;
+let localHarperLinterPromise: Promise<HarperLinter> | null = null;
 
 type HarperLinter = {
   setup(): Promise<void>;
@@ -236,13 +241,12 @@ async function runHarperDiagnostics(
 
   try {
     throwIfAborted(signal);
-    const linter = await getHarperLinter();
-    throwIfAborted(signal);
     const harperSource = prepareHarperSource(source, language);
-    const lints = await linter.lint(harperSource.text, {
-      language: getHarperLanguage(language),
-      dedup: true
-    });
+    const lints = await lintWithHarper(
+      harperSource.text,
+      getHarperLanguage(language),
+      signal
+    );
     throwIfAborted(signal);
     const diagnostics = lints
       .map((lint) => mapHarperLint(lint, source, harperSource, path))
@@ -277,9 +281,9 @@ async function runHarperDiagnostics(
   }
 }
 
-async function getHarperLinter(): Promise<HarperLinter> {
-  if (!harperLinterPromise) {
-    harperLinterPromise = Promise.all([
+async function getLocalHarperLinter(): Promise<HarperLinter> {
+  if (!localHarperLinterPromise) {
+    localHarperLinterPromise = Promise.all([
       import("harper.js"),
       import("harper.js/binaryInlined")
     ]).then(async ([harper, binaryModule]) => {
@@ -292,10 +296,46 @@ async function getHarperLinter(): Promise<HarperLinter> {
     });
   }
 
-  return harperLinterPromise;
+  return localHarperLinterPromise;
 }
 
-function getHarperLanguage(language: SourceLanguage): "plaintext" | "markdown" | "typst" {
+async function lintWithHarper(
+  text: string,
+  language: HarperWorkerLanguage,
+  signal?: AbortSignal
+): Promise<HarperWorkerLint[]> {
+  if (typeof Worker !== "undefined") {
+    return lintWithHarperWorker(text, language, signal);
+  }
+
+  const linter = await getLocalHarperLinter();
+  throwIfAborted(signal);
+  const lints = await linter.lint(text, { language, dedup: true });
+  return lints.map(serializeLocalHarperLint);
+}
+
+function serializeLocalHarperLint(lint: HarperLint): HarperWorkerLint {
+  const span = lint.span();
+  const suggestions = lint.suggestions();
+
+  try {
+    return {
+      kind: lint.lint_kind_pretty(),
+      message: lint.message(),
+      start: span.start,
+      end: span.end,
+      suggestions: suggestions.map((suggestion) => suggestion.get_replacement_text())
+    };
+  } finally {
+    span.free?.();
+    for (const suggestion of suggestions) {
+      suggestion.free?.();
+    }
+    lint.free?.();
+  }
+}
+
+function getHarperLanguage(language: SourceLanguage): HarperWorkerLanguage {
   if (language === "typst") {
     return "typst";
   }
@@ -386,50 +426,33 @@ function preserveNewlinesAsSpaces(value: string): string {
   return value.replace(/[^\n\r]/g, " ");
 }
 function mapHarperLint(
-  lint: HarperLint,
+  lint: HarperWorkerLint,
   source: string,
   harperSource: PreparedHarperSource,
   path: string
 ): CompileDiagnostic | null {
-  const span = lint.span();
-
-  if (!harperSource.text.slice(span.start, span.end).trim()) {
-    span.free?.();
-    lint.free?.();
+  if (!harperSource.text.slice(lint.start, lint.end).trim()) {
     return null;
   }
 
-  const originalStartOffset = mapPreparedOffset(harperSource, span.start);
-  const originalEndOffset = mapPreparedOffset(harperSource, Math.max(span.start, span.end - 1)) + 1;
-  const kind = lint.lint_kind_pretty();
-  const lintMessage = lint.message();
+  const originalStartOffset = mapPreparedOffset(harperSource, lint.start);
+  const originalEndOffset =
+    mapPreparedOffset(harperSource, Math.max(lint.start, lint.end - 1)) + 1;
 
   if (
     isInsideLatexCommandName(source, originalStartOffset, originalEndOffset) ||
     isInsideTypstReference(source, originalStartOffset, originalEndOffset) ||
-    isNearTypstReferenceCluster(source, originalStartOffset, originalEndOffset, kind)
+    isNearTypstReferenceCluster(source, originalStartOffset, originalEndOffset, lint.kind)
   ) {
-    span.free?.();
-    lint.free?.();
     return null;
   }
 
   const start = offsetToLineColumn(source, originalStartOffset);
   const end = offsetToLineColumn(source, originalEndOffset);
-  const suggestions = lint.suggestions();
-  const suggestionText = suggestions
-    .map((suggestion) => suggestion.get_replacement_text())
-    .filter(Boolean)
-    .slice(0, 3);
+  const suggestionText = lint.suggestions.filter(Boolean).slice(0, 3);
   const message = suggestionText.length > 0
-    ? `Harper ${kind}: ${lintMessage} Suggestions: ${suggestionText.join(", ")}.`
-    : `Harper ${kind}: ${lintMessage}`;
-
-  span.free?.();
-  for (const suggestion of suggestions) {
-    suggestion.free?.();
-  }
-  lint.free?.();
+    ? `Harper ${lint.kind}: ${lint.message} Suggestions: ${suggestionText.join(", ")}.`
+    : `Harper ${lint.kind}: ${lint.message}`;
 
   return {
     severity: "warning",

@@ -4,19 +4,15 @@ import {
   getDiagramFilePath,
   normalizeDiagramFileName
 } from "../diagram/diagramFiles";
-import {
-  DEFAULT_GRAPH_FILE_NAME,
-  getGraphFilePath,
-  normalizeGraphFileName,
-  normalizeGraphFileNameForContentType
-} from "../graph/graphFiles";
-import {
-  createSimplePlotGraphAssetContent,
-  createDefaultSimplePlotSource,
-  parseSimplePlotGraphDocument,
-  serializeSimplePlotGraphDocument
-} from "../graph/simplePlotGraph";
 import { createPrefixedId } from "../utils/randomId";
+import {
+  getRelativePathBasename as getWorkspaceBaseName,
+  getRelativePathParent as getWorkspaceParentPath,
+  joinRelativePaths as joinWorkspacePath,
+  moveRelativePath,
+  normalizeRelativePath,
+  stripRelativePathPrefix
+} from "../utils/relativePath";
 import {
   DEFAULT_EDITOR_TOOLING_PREFERENCES,
   normalizeEditorToolingPreferences,
@@ -30,8 +26,6 @@ import {
 import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from "./keybindings";
 
 export type ThemePreference = string;
-export type GraphProvider = "simple-plot";
-export type GraphContentType = "typ";
 export type MobileKeyboardLanguage = "typst" | "latex" | "markdown";
 
 export interface MobileKeyboardPreferences {
@@ -47,20 +41,6 @@ export const DEFAULT_MOBILE_KEYBOARD_PREFERENCES: MobileKeyboardPreferences = {
     markdown: ["#", "-", "*", "_", "`", "[]", "()", ">", "|", "```", "link"]
   }
 };
-
-export interface GraphStyle {
-  width: number;
-  height: number;
-  lockAspectRatio: boolean;
-  strokeWidth: number;
-  xAxisLabel: string;
-  yAxisLabel: string;
-  axisArrows: boolean;
-  xTickStep: number;
-  yTickStep: number;
-  showGrid: boolean;
-  showOnlyGreatestTickLabel: boolean;
-}
 
 export interface TypstDocumentFile {
   id: string;
@@ -222,43 +202,10 @@ export interface TrashedDiagramEntry {
   diagram: DiagramAsset;
 }
 
-export interface GraphAsset {
-  id: string;
-  name: string;
-  provider: GraphProvider;
-  updatedAt: string;
-  source: string;
-  style: GraphStyle;
-  state: string;
-  expressions: string;
-  viewport: GraphViewport | null;
-  renderMode: GraphRenderMode;
-  contentType: GraphContentType;
-  content: Uint8Array;
-}
-
-export interface TrashedGraphEntry {
-  id: string;
-  kind: "graph";
-  deletedAt: string;
-  originalPath: string;
-  graph: GraphAsset;
-}
-
 export type WorkspaceTrashEntry =
   | TrashedDocumentEntry
   | TrashedFolderEntry
-  | TrashedDiagramEntry
-  | TrashedGraphEntry;
-
-export interface GraphViewport {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-}
-
-export type GraphRenderMode = "auto" | "png" | "typst";
+  | TrashedDiagramEntry;
 
 export interface TypstProject {
   id: string;
@@ -271,8 +218,6 @@ export interface TypstProject {
   updatedAt: string;
   diagram: DiagramAsset;
   figures: DiagramAsset[];
-  graph: GraphAsset;
-  graphs: GraphAsset[];
 }
 
 export type PastedImageFormat = "png" | "jpeg";
@@ -304,7 +249,6 @@ export interface AppPreferences {
   autoSyncGitProjects: boolean;
   editorTooling: EditorToolingPreferences;
   externalDiagnostics: ExternalDiagnosticProviderPreferences;
-  graphProvider: GraphProvider;
   keybindings: KeybindingMap;
   mobileKeyboard: MobileKeyboardPreferences;
   editorFontSize: number;
@@ -523,26 +467,6 @@ function createId(prefix: string): string {
   return createPrefixedId(prefix);
 }
 
-export function getDefaultGraphSource(provider: GraphProvider): string {
-  return createDefaultSimplePlotSource();
-}
-
-export function createDefaultGraphStyle(): GraphStyle {
-  return {
-    width: 6.8,
-    height: 4.8,
-    lockAspectRatio: false,
-    strokeWidth: 1.5,
-    xAxisLabel: "$x$",
-    yAxisLabel: "$y$",
-    axisArrows: true,
-    xTickStep: 1,
-    yTickStep: 1,
-    showGrid: true,
-    showOnlyGreatestTickLabel: false
-  };
-}
-
 export function createDefaultDiagram(): DiagramAsset {
   const now = new Date().toISOString();
 
@@ -554,27 +478,6 @@ export function createDefaultDiagram(): DiagramAsset {
     content: undefined,
     strokes: [],
     shapes: []
-  };
-}
-
-export function createDefaultGraph(provider: GraphProvider = "simple-plot"): GraphAsset {
-  const now = new Date().toISOString();
-  const source = getDefaultGraphSource(provider);
-  const style = createDefaultGraphStyle();
-
-  return {
-    id: createId("graph"),
-    name: DEFAULT_GRAPH_FILE_NAME,
-    provider,
-    updatedAt: now,
-    source,
-    style,
-    state: "",
-    expressions: "[]",
-    viewport: null,
-    renderMode: "typst",
-    contentType: "typ",
-    content: createSimplePlotGraphAssetContent(parseSimplePlotGraphDocument(source), style)
   };
 }
 
@@ -617,16 +520,14 @@ export function createDefaultSnapshot(): AppSnapshot {
       createdAt: now,
       updatedAt: now,
       diagram: createDefaultDiagram(),
-      figures: [],
-      graph: createDefaultGraph(),
-      graphs: []
+      figures: []
     },
     preferences: {
       theme: AUTO_THEME_ID,
       vimMode: false,
       vimClipboardSharing: false,
       relativeLineNumbers: false,
-      cursorSmooth: true,
+      cursorSmooth: false,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
       latexMathPreview: true,
@@ -634,7 +535,6 @@ export function createDefaultSnapshot(): AppSnapshot {
       autoSyncGitProjects: true,
       editorTooling: DEFAULT_EDITOR_TOOLING_PREFERENCES,
       externalDiagnostics: DEFAULT_EXTERNAL_DIAGNOSTIC_PREFERENCES,
-      graphProvider: "simple-plot",
       keybindings: DEFAULT_KEYBINDINGS,
       mobileKeyboard: DEFAULT_MOBILE_KEYBOARD_PREFERENCES,
       editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
@@ -646,20 +546,41 @@ export function createDefaultSnapshot(): AppSnapshot {
   };
 }
 
+interface LegacyGraphAssetSnapshot {
+  id?: string;
+  name?: string;
+  updatedAt?: string;
+  source?: string;
+  content?: string | Uint8Array;
+}
+
+interface LegacyGraphTrashSnapshot {
+  id?: string;
+  kind: "graph";
+  deletedAt?: string;
+  originalPath?: string;
+  graph?: LegacyGraphAssetSnapshot;
+}
+
+type LegacyGraphProjectSnapshot = Omit<TypstProject, "trash"> & {
+  trash?: Array<WorkspaceTrashEntry | LegacyGraphTrashSnapshot>;
+  graph?: LegacyGraphAssetSnapshot;
+  graphs?: LegacyGraphAssetSnapshot[];
+};
+
 export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
   const storedCursorSmear = snapshot.preferences.cursorSmear;
-  const storedGraphProvider = snapshot.preferences.graphProvider;
-  const diagram = snapshot.project.diagram ?? createDefaultDiagram();
-  const figures = Array.isArray(snapshot.project.figures) ? snapshot.project.figures : [];
-  const folders = Array.isArray(snapshot.project.folders) ? snapshot.project.folders : [];
-  const trash = Array.isArray(snapshot.project.trash) ? snapshot.project.trash : [];
-  const graph = snapshot.project.graph ?? createDefaultGraph();
-  const graphs = Array.isArray(snapshot.project.graphs) ? snapshot.project.graphs : [];
+  const legacyProject = snapshot.project as unknown as LegacyGraphProjectSnapshot;
+  const diagram = legacyProject.diagram ?? createDefaultDiagram();
+  const figures = Array.isArray(legacyProject.figures) ? legacyProject.figures : [];
+  const folders = Array.isArray(legacyProject.folders) ? legacyProject.folders : [];
+  const trash = Array.isArray(legacyProject.trash) ? legacyProject.trash : [];
+  const legacyGraphs = Array.isArray(legacyProject.graphs) ? legacyProject.graphs : [];
+  const { graph: _legacyGraph, graphs: _legacyGraphs, ...projectWithoutGraphState } = legacyProject;
   const now = new Date().toISOString();
   const normalizedDiagramName = normalizeDiagramFileName(
     diagram.name ?? DEFAULT_DIAGRAM_FILE_NAME
   );
-  const normalizedGraphName = normalizeGraphFileName(graph.name ?? DEFAULT_GRAPH_FILE_NAME);
   const currentDiagram = {
     ...diagram,
     id: diagram.id ?? createDefaultDiagram().id,
@@ -674,10 +595,6 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       ? (diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes.map(normalizeDiagramShape)
       : []
   };
-  const currentGraph = normalizeGraphAsset({
-    ...graph,
-    name: normalizedGraphName
-  });
 
   return {
     ...snapshot,
@@ -692,7 +609,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
           | undefined)?.clipboardSharing ??
         false,
       relativeLineNumbers: snapshot.preferences.relativeLineNumbers ?? false,
-      cursorSmooth: snapshot.preferences.cursorSmooth ?? true,
+      cursorSmooth: snapshot.preferences.cursorSmooth ?? false,
       cursorSmear:
         typeof storedCursorSmear === "number"
           ? clampCursorSmear(storedCursorSmear)
@@ -712,7 +629,6 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       externalDiagnostics: normalizeExternalDiagnosticProviderPreferences(
         (snapshot.preferences as Partial<AppPreferences>).externalDiagnostics
       ),
-      graphProvider: normalizeGraphProvider(storedGraphProvider),
       keybindings: normalizeKeybindings(
         (snapshot.preferences as Partial<AppPreferences>).keybindings
       ),
@@ -734,19 +650,56 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       )
     },
     project: {
-      ...snapshot.project,
-      documents: snapshot.project.documents,
-      updatedAt: snapshot.project.updatedAt,
+      ...projectWithoutGraphState,
+      documents: migrateLegacyGraphDocuments(legacyProject.documents, legacyGraphs),
+      updatedAt: legacyProject.updatedAt,
       diagram: currentDiagram,
       folders: folders.map(normalizeFolderAsset),
       trash: trash.map(normalizeTrashEntry),
-      figures: figures.map(normalizeDiagramAsset),
-      graph: currentGraph,
-      graphs: graphs.map(normalizeGraphAsset)
+      figures: figures.map(normalizeDiagramAsset)
     }
   };
 }
 
+function migrateLegacyGraphDocuments(
+  documents: TypstDocumentFile[],
+  legacyGraphs: LegacyGraphAssetSnapshot[]
+): TypstDocumentFile[] {
+  const nextDocuments = [...documents];
+  const existingPaths = new Set(documents.map((document) => normalizeWorkspaceFolderPath(document.name)));
+
+  for (const graph of legacyGraphs) {
+    const name = normalizeLegacyGraphDocumentPath(graph.name);
+
+    if (existingPaths.has(name)) {
+      continue;
+    }
+
+    nextDocuments.push({
+      id: graph.id ?? createId("doc"),
+      name,
+      content:
+        typeof graph.content === "string" || graph.content instanceof Uint8Array
+          ? graph.content
+          : graph.source ?? "",
+      updatedAt: graph.updatedAt ?? new Date().toISOString()
+    });
+    existingPaths.add(name);
+  }
+
+  return nextDocuments;
+}
+
+function normalizeLegacyGraphDocumentPath(name: string | undefined): string {
+  const normalizedName = normalizeWorkspaceFolderPath(name ?? "graph.typ") ?? "graph.typ";
+  const withExtension = /\.typ$/i.test(normalizedName)
+    ? normalizedName
+    : `${normalizedName.replace(/\.[^/.]+$/, "")}.typ`;
+
+  return withExtension === "figures" || withExtension.startsWith("figures/")
+    ? withExtension
+    : `figures/${withExtension}`;
+}
 
 export const DEFAULT_PASTED_IMAGE_PREFERENCES: PastedImagePreferences = {
   enabled: true,
@@ -844,8 +797,33 @@ function normalizeFolderAsset(folder: FileFolder): FileFolder {
   };
 }
 
-function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
+function normalizeTrashEntry(
+  entry: WorkspaceTrashEntry | LegacyGraphTrashSnapshot
+): WorkspaceTrashEntry {
   const deletedAt = entry.deletedAt ?? new Date().toISOString();
+
+  if (entry.kind === "graph") {
+    const graph = entry.graph ?? {};
+    const originalPath =
+      normalizeWorkspaceFolderPath(entry.originalPath ?? normalizeLegacyGraphDocumentPath(graph.name)) ??
+      normalizeLegacyGraphDocumentPath(graph.name);
+
+    return {
+      id: entry.id ?? createId("trash"),
+      kind: "document",
+      deletedAt,
+      originalPath,
+      document: {
+        id: graph.id ?? createId("doc"),
+        name: originalPath,
+        content:
+          typeof graph.content === "string" || graph.content instanceof Uint8Array
+            ? graph.content
+            : graph.source ?? "",
+        updatedAt: graph.updatedAt ?? deletedAt
+      }
+    };
+  }
 
   if (entry.kind === "document") {
     return {
@@ -887,142 +865,7 @@ function normalizeTrashEntry(entry: WorkspaceTrashEntry): WorkspaceTrashEntry {
     };
   }
 
-  return {
-    ...entry,
-    id: entry.id ?? createId("trash"),
-    deletedAt,
-    originalPath:
-      normalizeWorkspaceFolderPath(
-        entry.originalPath ?? getGraphFilePath(entry.graph?.name ?? DEFAULT_GRAPH_FILE_NAME)
-      ) ?? getGraphFilePath(DEFAULT_GRAPH_FILE_NAME),
-    graph: normalizeGraphAsset(entry.graph)
-  };
-}
-
-function normalizeGraphAsset(graph: GraphAsset): GraphAsset {
-  const rawContentType = (graph as GraphAsset & { contentType?: GraphContentType | "png" | "svg" }).contentType;
-  const normalizedProvider = normalizeGraphProvider(
-    (graph as GraphAsset & { provider?: GraphProvider }).provider
-  );
-  const normalizedViewport = normalizeGraphViewport(
-    (graph as GraphAsset & { viewport?: GraphViewport | null }).viewport ?? null
-  );
-  const normalizedRenderMode = normalizeGraphRenderMode(
-    (graph as GraphAsset & { renderMode?: GraphRenderMode }).renderMode
-  );
-  const normalizedContentType = normalizeGraphContentType(
-    (graph as GraphAsset & { contentType?: GraphContentType }).contentType,
-    normalizedProvider
-  );
-  const normalizedName = normalizeGraphFileNameForContentType(
-    graph.name ?? DEFAULT_GRAPH_FILE_NAME,
-    normalizedContentType
-  );
-  const normalizedSource = serializeSimplePlotGraphDocument(
-    parseSimplePlotGraphDocument(
-      typeof (graph as GraphAsset & { source?: string }).source === "string"
-        ? (graph as GraphAsset & { source?: string }).source
-        : createDefaultSimplePlotSource()
-    )
-  );
-
-  return {
-    ...graph,
-    id: graph.id ?? createId("graph"),
-    name: normalizedName,
-    provider: normalizedProvider,
-    updatedAt: graph.updatedAt ?? new Date().toISOString(),
-    source: normalizedSource,
-    style: normalizeGraphStyle((graph as GraphAsset & { style?: Partial<GraphStyle> }).style),
-    state: typeof graph.state === "string" ? graph.state : "",
-    expressions: typeof graph.expressions === "string" ? graph.expressions : "[]",
-    viewport: normalizedViewport,
-    renderMode: normalizedRenderMode,
-    contentType: normalizedContentType,
-    content:
-      rawContentType === "typ" && graph.content instanceof Uint8Array && graph.content.length > 0
-        ? graph.content
-        : createSimplePlotGraphAssetContent(
-            parseSimplePlotGraphDocument(normalizedSource),
-            normalizeGraphStyle((graph as GraphAsset & { style?: Partial<GraphStyle> }).style)
-          )
-  };
-}
-
-function normalizeGraphProvider(value: GraphProvider | undefined): GraphProvider {
-  return "simple-plot";
-}
-
-function normalizeGraphContentType(
-  value: GraphContentType | undefined,
-  provider: GraphProvider
-): GraphContentType {
-  if (value === "typ") {
-    return value;
-  }
-
-  return "typ";
-}
-
-function normalizeGraphStyle(style: Partial<GraphStyle> | undefined): GraphStyle {
-  const defaultStyle = createDefaultGraphStyle();
-  const legacyWidth = typeof style?.width === "number" && style.width > 50 ? style.width / 96 * 2.54 : style?.width;
-  const legacyHeight = typeof style?.height === "number" && style.height > 50 ? style.height / 96 * 2.54 : style?.height;
-  return {
-    width: typeof legacyWidth === "number" && legacyWidth > 0 ? legacyWidth : defaultStyle.width,
-    height:
-      typeof legacyHeight === "number" && legacyHeight > 0 ? legacyHeight : defaultStyle.height,
-    lockAspectRatio:
-      typeof style?.lockAspectRatio === "boolean"
-        ? style.lockAspectRatio
-        : defaultStyle.lockAspectRatio,
-    strokeWidth:
-      typeof style?.strokeWidth === "number" && style.strokeWidth > 0
-        ? style.strokeWidth
-        : defaultStyle.strokeWidth,
-    xAxisLabel: typeof style?.xAxisLabel === "string" ? style.xAxisLabel : defaultStyle.xAxisLabel,
-    yAxisLabel: typeof style?.yAxisLabel === "string" ? style.yAxisLabel : defaultStyle.yAxisLabel,
-    axisArrows: typeof style?.axisArrows === "boolean" ? style.axisArrows : defaultStyle.axisArrows,
-    xTickStep:
-      typeof style?.xTickStep === "number" && style.xTickStep > 0
-        ? style.xTickStep
-        : defaultStyle.xTickStep,
-    yTickStep:
-      typeof style?.yTickStep === "number" && style.yTickStep > 0
-        ? style.yTickStep
-        : defaultStyle.yTickStep,
-    showGrid: typeof style?.showGrid === "boolean" ? style.showGrid : defaultStyle.showGrid,
-    showOnlyGreatestTickLabel:
-      typeof style?.showOnlyGreatestTickLabel === "boolean"
-        ? style.showOnlyGreatestTickLabel
-        : defaultStyle.showOnlyGreatestTickLabel
-  };
-}
-
-function normalizeGraphViewport(viewport: GraphViewport | null | undefined): GraphViewport | null {
-  if (!viewport) {
-    return null;
-  }
-
-  if (
-    typeof viewport.left !== "number" ||
-    typeof viewport.right !== "number" ||
-    typeof viewport.top !== "number" ||
-    typeof viewport.bottom !== "number"
-  ) {
-    return null;
-  }
-
-  return {
-    left: viewport.left,
-    right: viewport.right,
-    top: viewport.top,
-    bottom: viewport.bottom
-  };
-}
-
-function normalizeGraphRenderMode(value: GraphRenderMode | undefined): GraphRenderMode {
-  return value === "png" || value === "typst" ? value : "auto";
+  return entry;
 }
 
 function normalizeDiagramStrokeStyle(value: DiagramStrokeStyle | undefined): DiagramStrokeStyle {
@@ -1377,10 +1220,7 @@ export function renameFolderById(
     snapshot.project.folders.filter((folder) => folder.id !== folderId).map((folder) => folder.name)
   );
   const finalName = createUniqueWorkspacePath(requestedName, existingNames);
-  const renamePath = (path: string) =>
-    path === targetFolder.name || path.startsWith(`${targetFolder.name}/`)
-      ? `${finalName}${path.slice(targetFolder.name.length)}`
-      : path;
+  const renamePath = (path: string) => moveRelativePath(path, targetFolder.name, finalName);
 
   const now = new Date().toISOString();
 
@@ -1551,9 +1391,7 @@ export function moveFolderToFolder(
 
   const now = new Date().toISOString();
   const renamePath = (path: string) =>
-    path === targetFolder.name || path.startsWith(`${targetFolder.name}/`)
-      ? `${finalFolderPath}${path.slice(targetFolder.name.length)}`
-      : path;
+    moveRelativePath(path, targetFolder.name, finalFolderPath);
 
   return {
     ...snapshot,
@@ -1619,51 +1457,6 @@ export function renameDiagramById(
       ...snapshot.project,
       diagram: nextDiagram,
       figures: nextFigures,
-      updatedAt: now
-    }
-  };
-}
-
-export function renameGraphById(snapshot: AppSnapshot, graphId: string, name: string): AppSnapshot {
-  const currentGraph = snapshot.project.graph ?? createDefaultGraph();
-  const nextName = normalizeGraphFileNameForContentType(name, currentGraph.contentType);
-  const graphs = snapshot.project.graphs ?? [];
-  const targetGraph = graphs.find((graph) => graph.id === graphId) ?? null;
-  const targetName = currentGraph.id === graphId ? currentGraph.name : targetGraph?.name ?? "";
-
-  if (!targetName || nextName === targetName) {
-    return snapshot;
-  }
-
-  const existingNames = new Set(graphs.filter((graph) => graph.id !== graphId).map((graph) => graph.name));
-  if (currentGraph.id !== graphId) {
-    existingNames.add(currentGraph.name);
-  }
-
-  let finalName = nextName;
-  let suffix = 2;
-  while (existingNames.has(finalName)) {
-    const baseName = nextName.replace(/\.(png|svg|typ)$/i, "");
-    finalName = `${baseName}-${suffix}.${currentGraph.contentType}`;
-    suffix += 1;
-  }
-
-  const now = new Date().toISOString();
-  const nextGraph = {
-    ...currentGraph,
-    name: currentGraph.id === graphId ? finalName : currentGraph.name,
-    updatedAt: currentGraph.id === graphId ? now : currentGraph.updatedAt
-  };
-  const nextGraphs = graphs.map((graph) =>
-    graph.id === graphId ? { ...graph, name: finalName, updatedAt: now } : graph
-  );
-
-  return {
-    ...snapshot,
-    project: {
-      ...snapshot.project,
-      graph: nextGraph,
-      graphs: nextGraphs,
       updatedAt: now
     }
   };
@@ -1744,88 +1537,6 @@ export function moveDiagramToFolder(
           : currentDiagram,
       figures: figures.map((figure) =>
         figure.id === diagramId ? { ...figure, name: nextName, updatedAt: now } : figure
-      ),
-      updatedAt: now
-    }
-  };
-}
-
-export function moveGraphToTrash(snapshot: AppSnapshot, graphId: string): AppSnapshot {
-  const graphs = snapshot.project.graphs ?? [];
-  const targetGraph = graphs.find((graph) => graph.id === graphId);
-
-  if (!targetGraph) {
-    return snapshot;
-  }
-
-  const now = new Date().toISOString();
-  const currentGraph = snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider);
-  const nextGraph =
-    currentGraph.id === graphId
-      ? {
-          ...createDefaultGraph(snapshot.preferences.graphProvider),
-          updatedAt: now
-        }
-      : currentGraph;
-
-  return {
-    ...snapshot,
-    project: {
-      ...snapshot.project,
-      graph: nextGraph,
-      graphs: graphs.filter((graph) => graph.id !== graphId),
-      trash: [
-        ...snapshot.project.trash,
-        {
-          id: createId("trash"),
-          kind: "graph",
-          deletedAt: now,
-          originalPath: getGraphFilePath(targetGraph.name),
-          graph: targetGraph
-        }
-      ],
-      updatedAt: now
-    }
-  };
-}
-
-export function moveGraphToFolder(
-  snapshot: AppSnapshot,
-  graphId: string,
-  destinationFolderPath: string | null
-): AppSnapshot {
-  const graphs = snapshot.project.graphs ?? [];
-  const targetGraph = graphs.find((graph) => graph.id === graphId);
-
-  if (!targetGraph) {
-    return snapshot;
-  }
-
-  const nextName = createMovedGraphName(
-    targetGraph.name,
-    destinationFolderPath,
-    graphs,
-    graphId,
-    targetGraph.contentType
-  );
-
-  if (nextName === targetGraph.name) {
-    return snapshot;
-  }
-
-  const now = new Date().toISOString();
-  const currentGraph = snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider);
-
-  return {
-    ...snapshot,
-    project: {
-      ...snapshot.project,
-      graph:
-        currentGraph.id === graphId
-          ? { ...currentGraph, name: nextName, updatedAt: now }
-          : currentGraph,
-      graphs: graphs.map((graph) =>
-        graph.id === graphId ? { ...graph, name: nextName, updatedAt: now } : graph
       ),
       updatedAt: now
     }
@@ -1927,28 +1638,7 @@ export function restoreTrashEntry(snapshot: AppSnapshot, trashEntryId: string): 
     };
   }
 
-  const requestedPath = stripFiguresWorkspacePath(targetEntry.originalPath);
-  const restoredGraph = {
-    ...targetEntry.graph,
-    id: createId("graph"),
-    name: createUniqueGraphName(
-      requestedPath,
-      snapshot.project.graphs,
-      snapshot.project.graph?.id === targetEntry.graph.id ? snapshot.project.graph.name : null,
-      targetEntry.graph.contentType
-    ),
-    updatedAt: now
-  };
-
-  return {
-    ...snapshot,
-    project: {
-      ...snapshot.project,
-      graphs: [...snapshot.project.graphs, restoredGraph],
-      trash: remainingTrash,
-      updatedAt: now
-    }
-  };
+  return snapshot;
 }
 
 export function permanentlyDeleteTrashEntry(snapshot: AppSnapshot, trashEntryId: string): AppSnapshot {
@@ -2035,26 +1725,6 @@ export function updateDiagram(
       ...snapshot.project,
       diagram: {
         ...nextDiagram,
-        updatedAt: now
-      },
-      updatedAt: now
-    }
-  };
-}
-
-export function updateGraph(
-  snapshot: AppSnapshot,
-  update: (graph: GraphAsset) => GraphAsset
-): AppSnapshot {
-  const now = new Date().toISOString();
-  const nextGraph = update(snapshot.project.graph ?? createDefaultGraph());
-
-  return {
-    ...snapshot,
-    project: {
-      ...snapshot.project,
-      graph: {
-        ...nextGraph,
         updatedAt: now
       },
       updatedAt: now
@@ -2165,30 +1835,6 @@ export function saveCurrentDiagram(snapshot: AppSnapshot): AppSnapshot {
   };
 }
 
-export function saveCurrentGraph(snapshot: AppSnapshot): AppSnapshot {
-  const now = new Date().toISOString();
-  const graph = normalizeGraphAsset(snapshot.project.graph ?? createDefaultGraph());
-  const graphs = snapshot.project.graphs ?? [];
-  const existingIndex = graphs.findIndex((figure) => figure.id === graph.id);
-  const nextGraphs =
-    existingIndex >= 0
-      ? graphs.map((figure, index) => (index === existingIndex ? graph : figure))
-      : [...graphs, graph];
-
-  return {
-    ...snapshot,
-    project: {
-      ...snapshot.project,
-      graph: {
-        ...graph,
-        updatedAt: now
-      },
-      graphs: nextGraphs,
-      updatedAt: now
-    }
-  };
-}
-
 export function createNextDiagramSnapshot(snapshot: AppSnapshot): AppSnapshot {
   const now = new Date().toISOString();
   const savedSnapshot = saveCurrentDiagram(snapshot);
@@ -2209,30 +1855,6 @@ export function createNextDiagramSnapshot(snapshot: AppSnapshot): AppSnapshot {
   };
 }
 
-export function createNextGraphSnapshot(
-  snapshot: AppSnapshot,
-  provider: GraphProvider = snapshot.preferences.graphProvider
-): AppSnapshot {
-  const now = new Date().toISOString();
-  const savedSnapshot = saveCurrentGraph(snapshot);
-  const currentGraph = savedSnapshot.project.graph;
-  const nextName = createNextGraphName(currentGraph.name, provider);
-
-  return {
-    ...savedSnapshot,
-    project: {
-      ...savedSnapshot.project,
-      graph: {
-        ...createDefaultGraph(provider),
-        name: nextName,
-        renderMode: currentGraph.renderMode,
-        updatedAt: now
-      },
-      updatedAt: now
-    }
-  };
-}
-
 function createNextDiagramName(currentName: string): string {
   const baseName = normalizeDiagramFileName(currentName).replace(/\.svg$/i, "");
   const match = /^diagram(?:\s+(\d+))?$/i.exec(baseName);
@@ -2240,46 +1862,18 @@ function createNextDiagramName(currentName: string): string {
   return `diagram ${nextIndex}.svg`;
 }
 
-function createNextGraphName(currentName: string, provider: GraphProvider): string {
-  const baseName = normalizeGraphFileName(currentName, provider).replace(/\.(png|svg|typ)$/i, "");
-  const match = /^graph(?:\s+(\d+))?$/i.exec(baseName);
-  const nextIndex = match ? Number(match[1] ?? "1") + 1 : 1;
-  return `graph ${nextIndex}.typ`;
-}
-
 function normalizeWorkspaceFolderPath(path: string | null): string | null {
-  const normalized = path?.split("/").map((segment) => segment.trim()).filter(Boolean).join("/") ?? "";
+  const normalized = normalizeRelativePath(path ?? "");
   return normalized || null;
 }
 
-function joinWorkspacePath(folderPath: string | null, name: string): string {
-  const normalizedFolderPath = normalizeWorkspaceFolderPath(folderPath);
-  return normalizedFolderPath ? `${normalizedFolderPath}/${name}` : name;
-}
 
 function stripFiguresWorkspacePath(path: string): string {
   const normalizedPath = normalizeWorkspaceFolderPath(path) ?? "";
-
-  if (normalizedPath === "figures") {
-    return "";
-  }
-
-  if (normalizedPath.startsWith("figures/")) {
-    return normalizedPath.slice("figures/".length);
-  }
-
-  return normalizedPath;
+  return stripRelativePathPrefix(normalizedPath, "figures") ?? normalizedPath;
 }
 
-function getWorkspaceBaseName(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) ?? path;
-}
 
-function getWorkspaceParentPath(path: string): string | null {
-  const segments = path.split("/").filter(Boolean);
-  segments.pop();
-  return segments.length > 0 ? segments.join("/") : null;
-}
 
 function createMovedDocumentName(
   currentName: string,
@@ -2323,19 +1917,6 @@ function createMovedFigureName(
   return createUniqueDiagramName(requestedName, existingFigures);
 }
 
-function createMovedGraphName(
-  currentName: string,
-  destinationFolderPath: string | null,
-  graphs: GraphAsset[],
-  graphId: string,
-  contentType: "typ"
-): string {
-  const baseName = getWorkspaceBaseName(currentName);
-  const requestedName = joinWorkspacePath(destinationFolderPath, baseName);
-  const existingGraphs = graphs.filter((graph) => graph.id !== graphId);
-  return createUniqueGraphName(requestedName, existingGraphs, null, contentType);
-}
-
 function createUniqueDiagramName(
   requestedName: string,
   figures: DiagramAsset[],
@@ -2353,31 +1934,6 @@ function createUniqueDiagramName(
 
   while (existingNames.has(finalName)) {
     finalName = `${nextName.replace(/\.svg$/i, "")}-${suffix}.svg`;
-    suffix += 1;
-  }
-
-  return finalName;
-}
-
-function createUniqueGraphName(
-  requestedName: string,
-  graphs: GraphAsset[],
-  currentGraphName: string | null = null,
-  contentType: "typ" = "typ"
-): string {
-  const nextName = normalizeGraphFileNameForContentType(requestedName, contentType);
-  const existingNames = new Set(graphs.map((graph) => graph.name));
-
-  if (currentGraphName) {
-    existingNames.add(currentGraphName);
-  }
-
-  let finalName = nextName;
-  let suffix = 2;
-
-  while (existingNames.has(finalName)) {
-    const baseName = nextName.replace(/\.(png|svg|typ)$/i, "");
-    finalName = `${baseName}-${suffix}.${contentType}`;
     suffix += 1;
   }
 
@@ -2739,19 +2295,6 @@ export function updateMobileKeyboardPreference(
     preferences: {
       ...snapshot.preferences,
       mobileKeyboard: normalizeMobileKeyboardPreferences(mobileKeyboard)
-    }
-  };
-}
-
-export function updateGraphProviderPreference(
-  snapshot: AppSnapshot,
-  graphProvider: GraphProvider
-): AppSnapshot {
-  return {
-    ...snapshot,
-    preferences: {
-      ...snapshot.preferences,
-      graphProvider: normalizeGraphProvider(graphProvider)
     }
   };
 }

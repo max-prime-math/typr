@@ -6,7 +6,6 @@ import { createProjectFsAdapter } from "./projectFilesystemAdapter";
 import type { TerminalBackend, TerminalProjectRuntime, TerminalCommandResult } from "./types";
 
 const PROJECT_ROOT = "/project";
-const BUILD_DIR = `${PROJECT_ROOT}/build`;
 
 export function createBrowserBackend(runtime: TerminalProjectRuntime): TerminalBackend {
   const bash = new Bash({

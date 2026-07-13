@@ -91,7 +91,6 @@ export function getEditorToolLanguage(language: SourceLanguage): EditorToolLangu
 
 export function formatSourceWithEditorTooling({
   language,
-  path,
   preferences,
   source
 }: {
@@ -739,14 +738,4 @@ function normalizeLinterId(value: unknown, fallback: EditorLinterId): EditorLint
   return value === "disabled" || value === "built-in" || value === "local-agent" || value === "cloud-container"
     ? value
     : fallback;
-}
-
-function formatEditorToolLanguage(language: SourceLanguage): string {
-  return language === "typst"
-    ? "Typst"
-    : language === "latex"
-      ? "LaTeX"
-      : language === "markdown"
-        ? "Markdown"
-        : "this file type";
 }

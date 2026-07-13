@@ -87,7 +87,8 @@ self.onmessage = async ({ data }) => {
         data.verbose,
         data.driver,
         data.data_packages_js,
-        data.remote_endpoint
+        data.remote_endpoint,
+        data.skip_memory_restore
       );
       const compileFinishedAt = performance.now();
 

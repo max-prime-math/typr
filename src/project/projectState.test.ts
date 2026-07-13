@@ -13,6 +13,7 @@ import {
   DEFAULT_PROJECT_GITIGNORE_PATH,
   GENERATED_LATEX_PDF_SOURCE_ID,
   getSelectedProjectRepository,
+  assertSafeProjectPath,
   isReservedGitPath,
   normalizeProjectStorageState,
   projectRepositoryToLegacyProject,
@@ -83,6 +84,46 @@ describe("projectState", () => {
 
     expect(normalizedProject?.filesystem.entries["../escape.typ"]).toBeUndefined();
     expect(normalizedProject?.legacyRecovery.project.id).toBe(snapshot.project.id);
+  });
+
+  it("normalizes persisted Graph files to ordinary project documents", () => {
+    const snapshot = createDefaultSnapshot();
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const project = getSelectedProjectRepository(storage);
+    expect(project).not.toBeNull();
+    if (!project) return;
+
+    const normalized = normalizeProjectStorageState(
+      {
+        ...storage,
+        projects: [
+          {
+            ...project,
+            filesystem: {
+              ...project.filesystem,
+              entries: {
+                ...project.filesystem.entries,
+                "figures/legacy.typ": {
+                  id: "graph:saved-graph",
+                  path: "figures/legacy.typ",
+                  kind: "file",
+                  content: "#let legacy-plot = true",
+                  source: { kind: "graph", id: "saved-graph" } as never,
+                  updatedAt: new Date().toISOString()
+                }
+              }
+            }
+          }
+        ]
+      },
+      snapshot
+    );
+    const normalizedProject = getSelectedProjectRepository(normalized);
+
+    expect(normalizedProject?.filesystem.entries["figures/legacy.typ"]?.source).toEqual({
+      kind: "document",
+      id: "saved-graph"
+    });
   });
 
   it("preserves virtual generated files when rebuilding from the legacy snapshot", () => {
@@ -167,7 +208,15 @@ describe("projectState", () => {
   it("recognizes reserved git paths as non-workspace content", () => {
     expect(isReservedGitPath(".git")).toBe(true);
     expect(isReservedGitPath(".git/config")).toBe(true);
+    expect(isReservedGitPath("/.git//objects/aa")).toBe(true);
     expect(isReservedGitPath("notes/.gitignore")).toBe(false);
+    expect(isReservedGitPath(".github/workflows/qa.yml")).toBe(false);
+    expect(() => assertSafeProjectPath("project/../.git/config")).toThrow(
+      "cannot escape the project root"
+    );
+    expect(() => assertSafeProjectPath("/.git/config")).toThrow(
+      "reserved for Typr git storage"
+    );
   });
 
   it("removes a selected project and selects a remaining project", () => {

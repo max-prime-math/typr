@@ -1,0 +1,45 @@
+export const SHARED_MARKDOWN_SOURCE = [
+  "# Blocks and inline",
+  "",
+  "Paragraph with **strong**, _emphasis_, ~~deleted~~, `inline code`,",
+  "[external](https://example.com), [relative](./guide.md), and \\*escaped markers\\*.",
+  "",
+  "> A quoted **line**.",
+  "",
+  "- unordered one",
+  "- unordered two",
+  "",
+  "1. ordered one",
+  "2. ordered two",
+  "",
+  "| Name | Value |",
+  "| --- | ---: |",
+  "| alpha | `1` |",
+  "",
+  "```ts",
+  "const html = \"<tag>\";",
+  "```",
+  "",
+  "[unsafe](javascript:alert(1))",
+  "",
+  "![unsafe image](javascript:alert(2))",
+  "",
+  "<span data-fixture=\"raw\">raw HTML</span>"
+].join("\n");
+
+export const COMMON_MARKDOWN_HTML_FRAGMENTS = [
+  "<h1>Blocks and inline</h1>",
+  "<strong>strong</strong>",
+  "<em>emphasis</em>",
+  "<del>deleted</del>",
+  "<code>inline code</code>",
+  'href="https://example.com"',
+  'href="./guide.md"',
+  "*escaped markers*",
+  "<blockquote>",
+  "<ul>",
+  "<ol>",
+  "<table>",
+  '<code class="language-ts">const html = &quot;&lt;tag&gt;&quot;;'
+] as const;
+

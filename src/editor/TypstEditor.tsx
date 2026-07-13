@@ -41,6 +41,13 @@ import {
   type SnippetDefinition
 } from "../snippets/snippets";
 
+export interface TypstEditorSelection {
+  lineNumber: number;
+  from: number;
+  to: number;
+  head: number;
+}
+
 interface TypstEditorProps {
   value: string;
   readOnly?: boolean;
@@ -62,7 +69,7 @@ interface TypstEditorProps {
   onCompileRequested: () => void;
   onFormatRequested: () => void;
   onCloseRequested: () => void;
-  onSelectionChange: (lineNumber: number) => void;
+  onSelectionChange: (selection: TypstEditorSelection) => void;
   onSourceDoubleClick?: (position: { line: number; column: number }) => void;
   onFocusChange?: (focused: boolean) => void;
   imagePasteInVim?: boolean;
@@ -143,6 +150,9 @@ export interface TypstEditorHandle {
   insertTextAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
   insertLatexGraphic(text: string): void;
   insertLatexGraphicAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
+  insertLatexTemplateWithPackages(template: string, packageNames: string[]): void;
+  replaceRangeWithLatexTemplateWithPackages(from: number, to: number, template: string, packageNames: string[]): void;
+  replaceRangeWithTemplate(from: number, to: number, template: string): void;
   insertTemplate(template: string): void;
   insertMathTemplate(template: string): void;
   insertSymbol(snippet: string): void;
@@ -365,6 +375,37 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         view.focus();
         return range;
       },
+      insertLatexTemplateWithPackages(template, packageNames) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        insertLatexTemplateWithPackagesIntoView(view, template, packageNames);
+        view.focus();
+      },
+      replaceRangeWithLatexTemplateWithPackages(from, to, template, packageNames) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        insertLatexTemplateWithPackagesIntoView(view, template, packageNames, { from, to });
+        view.focus();
+      },
+      replaceRangeWithTemplate(from, to, template) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        const range = clampEditorRange(view, { from, to });
+        insertSnippetIntoView(view, template, range.from, range.to);
+        view.focus();
+      },
       insertTemplate(template) {
         const view = viewRef.current;
 
@@ -584,7 +625,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
         },
         onSelectionChange: (update) => {
-          latestOnSelectionChangeRef.current(update.state.doc.lineAt(update.state.selection.main.head).number);
+          latestOnSelectionChangeRef.current(getEditorSelectionSnapshot(update.view));
         },
         onSourceDoubleClick: (position) => latestOnSourceDoubleClickRef.current?.(position),
         readOnly,
@@ -694,7 +735,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     view.dispatch(setDiagnostics(view.state, toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors)));
     viewRef.current = view;
     preservedViewStateRef.current = null;
-    latestOnSelectionChangeRef.current(view.state.doc.lineAt(view.state.selection.main.head).number);
+    latestOnSelectionChangeRef.current(getEditorSelectionSnapshot(view));
 
     return () => {
       preservedViewStateRef.current = {
@@ -847,6 +888,17 @@ function applyEditorChanges(
   return nextValue;
 }
 
+function getEditorSelectionSnapshot(view: EditorView): TypstEditorSelection {
+  const selection = view.state.selection.main;
+
+  return {
+    lineNumber: view.state.doc.lineAt(selection.head).number,
+    from: selection.from,
+    to: selection.to,
+    head: selection.head
+  };
+}
+
 function clampDocumentOffset(offset: number, documentLength: number): number {
   if (!Number.isFinite(offset)) {
     return 0;
@@ -862,7 +914,7 @@ function insertLatexGraphicIntoView(
 ): { from: number; to: number } {
   const source = view.state.doc.toString();
   const insertionRange = resolveInsertionRange(view);
-  const packageInsertion = getLatexGraphicsPackageInsertion(source);
+  const packageInsertion = getLatexPackageInsertion(source, "graphicx", getLatexGraphicsPackageReplacement);
   const packageOffset =
     packageInsertion && packageInsertion.from <= insertionRange.from
       ? packageInsertion.insert.length - ((packageInsertion.to ?? packageInsertion.from) - packageInsertion.from)
@@ -900,15 +952,105 @@ function insertLatexGraphicIntoView(
   };
 }
 
-function getLatexGraphicsPackageInsertion(source: string): { from: number; to?: number; insert: string } | null {
-  if (latexSourceHasGraphicxPackage(source)) {
+function insertLatexTemplateWithPackagesIntoView(
+  view: EditorView,
+  template: string,
+  packageNames: string[],
+  replacementRange?: { from: number; to: number }
+): void {
+  const source = view.state.doc.toString();
+  const insertionRange = replacementRange ? clampEditorRange(view, replacementRange) : resolveInsertionRange(view);
+  const packageInsertions = getLatexPackageInsertions(source, packageNames);
+
+  if (packageInsertions.length === 0) {
+    insertSnippetIntoView(view, template, insertionRange.from, insertionRange.to);
+    return;
+  }
+
+  const offset = packageInsertions.reduce((total, insertion) => {
+    if (insertion.from > insertionRange.from) {
+      return total;
+    }
+
+    return total + insertion.insert.length - ((insertion.to ?? insertion.from) - insertion.from);
+  }, 0);
+  const nextFrom = insertionRange.from + offset;
+  const nextTo = insertionRange.to + offset;
+
+  view.dispatch({
+    changes: packageInsertions,
+    selection: EditorSelection.range(nextFrom, nextTo),
+    scrollIntoView: true
+  });
+
+  insertSnippetIntoView(view, template, nextFrom, nextTo);
+}
+
+function getLatexPackageInsertions(
+  source: string,
+  packageNames: string[]
+): Array<{ from: number; to?: number; insert: string }> {
+  const queuedPackageNames = new Set<string>();
+  const insertions: Array<{ from: number; to?: number; insert: string }> = [];
+
+  for (const packageName of packageNames) {
+    const normalizedPackageName = normalizeLatexPackageName(packageName);
+
+    if (!normalizedPackageName || queuedPackageNames.has(normalizedPackageName)) {
+      continue;
+    }
+
+    queuedPackageNames.add(normalizedPackageName);
+
+    const insertion = getLatexPackageInsertion(source, normalizedPackageName);
+
+    if (insertion) {
+      insertions.push(insertion);
+    }
+  }
+
+  return combineLatexPackageInsertions(insertions);
+}
+
+function combineLatexPackageInsertions(
+  insertions: Array<{ from: number; to?: number; insert: string }>
+): Array<{ from: number; to?: number; insert: string }> {
+  const combinedInsertions: Array<{ from: number; to?: number; insert: string }> = [];
+
+  for (const insertion of insertions) {
+    const existingInsertion = combinedInsertions.find(
+      (currentInsertion) =>
+        currentInsertion.from === insertion.from &&
+        currentInsertion.to == null &&
+        insertion.to == null
+    );
+
+    if (existingInsertion) {
+      existingInsertion.insert += insertion.insert;
+      continue;
+    }
+
+    combinedInsertions.push({ ...insertion });
+  }
+
+  return combinedInsertions;
+}
+
+function getLatexPackageInsertion(
+  source: string,
+  packageName: string,
+  replacementProvider?: (source: string) => { from: number; to: number; insert: string } | null
+): { from: number; to?: number; insert: string } | null {
+  const normalizedPackageName = normalizeLatexPackageName(packageName);
+
+  if (!normalizedPackageName || latexSourceHasPackage(source, normalizedPackageName)) {
     return null;
   }
 
-  const existingGraphicsPackage = getLatexGraphicsPackageReplacement(source);
+  const existingPackageReplacement = replacementProvider?.(source);
 
-  if (existingGraphicsPackage) {
-    return existingGraphicsPackage;
+  if (existingPackageReplacement) {
+    return existingPackageReplacement;
   }
 
   const documentClassMatch = source.match(/\\documentclass(?:\s*\[[^\]]*])?\s*\{[^}]+}/);
@@ -916,13 +1058,13 @@ function getLatexGraphicsPackageInsertion(source: string): { from: number; to?: 
   if (!documentClassMatch || documentClassMatch.index == null) {
     return {
       from: 0,
-      insert: "\\usepackage{graphicx}\n"
+      insert: `\\usepackage{${normalizedPackageName}}\n`
     };
   }
 
   return {
     from: documentClassMatch.index + documentClassMatch[0].length,
-    insert: "\n\\usepackage{graphicx}"
+    insert: `\n\\usepackage{${normalizedPackageName}}`
   };
 }
 
@@ -962,10 +1104,42 @@ function getLatexGraphicsPackageReplacement(source: string): { from: number; to:
   return null;
 }
 
-function latexSourceHasGraphicxPackage(source: string): boolean {
-  return /\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*])?\s*\{[^}]*graphicx[^}]*}/i.test(
-    stripLatexComments(source)
-  );
+function latexSourceHasPackage(source: string, packageName: string): boolean {
+  const normalizedPackageName = normalizeLatexPackageName(packageName);
+
+  if (!normalizedPackageName) {
+    return false;
+  }
+
+  for (const line of stripLatexComments(source).split(/\r?\n/)) {
+    const packagePattern = /\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*])?\s*\{([^}]*)}/gi;
+
+    for (const match of line.matchAll(packagePattern)) {
+      const packageList = match[1] ?? "";
+      const packages = packageList
+        .split(",")
+        .map((name) => normalizeLatexPackageName(name));
+
+      if (packages.includes(normalizedPackageName)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function normalizeLatexPackageName(packageName: string): string {
+  const normalizedPackageName = packageName
+    .trim()
+    .replace(/\\/g, "/")
+    .split("/")
+    .at(-1)
+    ?.replace(/\.sty$/i, "")
+    .trim()
+    .toLowerCase() ?? "";
+
+  return /^[a-z0-9_.-]+$/.test(normalizedPackageName) ? normalizedPackageName : "";
 }
 
 function stripLatexComments(source: string): string {
@@ -1033,6 +1207,14 @@ function insertTextIntoView(
     from: selectionRange.from,
     to: selectionRange.to
   };
+}
+
+function clampEditorRange(view: EditorView, range: { from: number; to: number }): { from: number; to: number } {
+  const documentLength = view.state.doc.length;
+  const from = clampDocumentOffset(range.from, documentLength);
+  const to = clampDocumentOffset(range.to, documentLength);
+
+  return from <= to ? { from, to } : { from: to, to: from };
 }
 
 function resolveInsertionRange(view: EditorView): { from: number; to: number } {
@@ -1118,7 +1300,7 @@ function wrapSelection(view: EditorView, before: string, after: string): void {
   replaceSelection(view, before, after);
 }
 
-function insertSnippetIntoView(view: EditorView, template: string): void {
+function insertSnippetIntoView(view: EditorView, template: string, from?: number, to?: number): void {
   const selection = view.state.selection.main;
   snippet(template)(
     {
@@ -1128,8 +1310,8 @@ function insertSnippetIntoView(view: EditorView, template: string): void {
       }
     },
     null,
-    selection.from,
-    selection.to
+    from ?? selection.from,
+    to ?? selection.to
   );
 }
 

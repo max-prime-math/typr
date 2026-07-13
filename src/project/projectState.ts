@@ -2,14 +2,13 @@ import type {
   AppSnapshot,
   DiagramAsset,
   FileFolder,
-  GraphAsset,
   TypstDocumentFile,
   TypstProject
 } from "../app/appState";
-import { createDefaultDiagram, createDefaultGraph } from "../app/appState";
-import { getGraphFilePath } from "../graph/graphFiles";
+import { createDefaultDiagram } from "../app/appState";
 import { createPrefixedId } from "../utils/randomId";
-import { buildProjectWorkspaceEntries, normalizeWorkspacePath } from "../workspace/workspaceTree";
+import { normalizeRelativePath } from "../utils/relativePath";
+import { buildProjectWorkspaceEntries } from "../workspace/workspaceTree";
 
 export const PROJECT_STORAGE_VERSION = 1;
 export const PROJECT_FILESYSTEM_VERSION = 1;
@@ -376,7 +375,6 @@ export type ProjectFilesystemEntrySource =
   | { kind: "document"; id: string }
   | { kind: "folder"; id: string }
   | { kind: "diagram"; id: string }
-  | { kind: "graph"; id: string }
   | { kind: "virtual"; id: string };
 
 export interface ProjectFilesystemTree {
@@ -522,19 +520,6 @@ export function syncProjectStorageFromSnapshot(
         }
       };
     });
-  }
-
-  const targetedGraph = findTargetedGraphContentChange(snapshot, previousSnapshot);
-
-  if (targetedGraph) {
-    return updateSelectedProjectRepository(existingStorage, (project) =>
-      writeProjectFile(
-        project,
-        getGraphFilePath(targetedGraph.next.name),
-        new Uint8Array(targetedGraph.next.content),
-        { kind: "graph", id: targetedGraph.next.id }
-      )
-    );
   }
 
   const activeFilePath = findSelectionOnlyActiveFilePath(snapshot, previousSnapshot);
@@ -706,10 +691,8 @@ export function createEmptyProjectRepository(options: {
         folders: [],
         trash: [],
         figures: [],
-        graphs: [],
         activeDocumentId: documentId ?? "",
         diagram: createDefaultDiagram(),
-        graph: createDefaultGraph(),
         createdAt: now,
         updatedAt: now
       }
@@ -765,7 +748,6 @@ export function projectRepositoryToLegacyProject(
   const documents: TypstDocumentFile[] = [];
   const folders: FileFolder[] = [];
   const figuresById = new Map((previousProject.figures ?? []).map((figure) => [figure.id, figure]));
-  const graphsById = new Map((previousProject.graphs ?? []).map((graph) => [graph.id, graph]));
   const previousDocumentsById = new Map(previousProject.documents.map((document) => [document.id, document]));
   const previousDocumentsByPath = new Map(
     previousProject.documents.map((document) => [normalizeProjectPath(document.name), document])
@@ -778,7 +760,6 @@ export function projectRepositoryToLegacyProject(
   for (const entry of entries) {
     if (
       entry.source.kind === "diagram" ||
-      entry.source.kind === "graph" ||
       entry.source.kind === "virtual"
     ) {
       continue;
@@ -808,10 +789,6 @@ export function projectRepositoryToLegacyProject(
     .filter((entry) => entry.source.kind === "diagram")
     .map((entry) => figuresById.get(entry.source.id))
     .filter((figure): figure is DiagramAsset => Boolean(figure));
-  const graphs = entries
-    .filter((entry) => entry.source.kind === "graph")
-    .map((entry) => graphsById.get(entry.source.id))
-    .filter((graph): graph is GraphAsset => Boolean(graph));
   const activeDocument =
     documents.find((document) => normalizeProjectPath(document.name) === project.selection.activeFilePath) ??
     documents.find((document) => document.id === previousProject.activeDocumentId) ??
@@ -824,7 +801,6 @@ export function projectRepositoryToLegacyProject(
     documents: documents.sort((left, right) => left.name.localeCompare(right.name)),
     folders: folders.sort((left, right) => left.name.localeCompare(right.name)),
     figures,
-    graphs,
     activeDocumentId: activeDocument?.id ?? previousProject.activeDocumentId,
     updatedAt: project.updatedAt
   };
@@ -998,25 +974,18 @@ export function normalizeProjectPath(path: string): string {
   }
 
   const withoutRoot = trimmed.replace(/^\/+/, "");
-  const segments = withoutRoot.split("/");
-  const normalizedSegments: string[] = [];
-
-  for (const rawSegment of segments) {
+  for (const rawSegment of withoutRoot.split("/")) {
     const segment = rawSegment.trim();
-    if (!segment || segment === ".") {
-      continue;
-    }
     if (segment === "..") {
       throw new Error("Project paths cannot escape the project root.");
     }
-    normalizedSegments.push(segment);
   }
 
-  return normalizedSegments.join("/");
+  return normalizeRelativePath(withoutRoot);
 }
 
 export function isReservedGitPath(path: string): boolean {
-  const normalizedPath = normalizeWorkspacePath(path);
+  const normalizedPath = normalizeRelativePath(path);
   return normalizedPath === ".git" || normalizedPath.startsWith(".git/");
 }
 
@@ -1160,10 +1129,16 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
       if (!path) {
         continue;
       }
+      const persistedSource = entry.source as ProjectFilesystemEntrySource | {
+        kind: "graph";
+        id: string;
+      };
       const source =
         path === DEFAULT_PROJECT_GITIGNORE_PATH
           ? normalizeProjectGitignoreSource(entry)
-          : entry.source;
+          : persistedSource.kind === "graph"
+            ? { kind: "document" as const, id: persistedSource.id }
+            : persistedSource;
       entries[path] = {
         ...entry,
         path,
@@ -1296,7 +1271,6 @@ function findTargetedDocumentContentChange(
     snapshot.project.documents.length !== previousSnapshot.project.documents.length ||
     snapshot.project.folders !== previousSnapshot.project.folders ||
     snapshot.project.figures !== previousSnapshot.project.figures ||
-    snapshot.project.graphs !== previousSnapshot.project.graphs ||
     snapshot.project.trash !== previousSnapshot.project.trash ||
     snapshot.project.name !== previousSnapshot.project.name
   ) {
@@ -1328,42 +1302,6 @@ function findTargetedDocumentContentChange(
   return changedDocument ? { next: changedDocument } : null;
 }
 
-function findTargetedGraphContentChange(
-  snapshot: AppSnapshot,
-  previousSnapshot: AppSnapshot
-): { next: GraphAsset } | null {
-  if (
-    snapshot.project.id !== previousSnapshot.project.id ||
-    snapshot.project.documents !== previousSnapshot.project.documents ||
-    snapshot.project.folders !== previousSnapshot.project.folders ||
-    snapshot.project.figures !== previousSnapshot.project.figures ||
-    snapshot.project.trash !== previousSnapshot.project.trash ||
-    snapshot.project.name !== previousSnapshot.project.name ||
-    snapshot.project.graphs.length !== previousSnapshot.project.graphs.length
-  ) {
-    return null;
-  }
-
-  let changedGraph: GraphAsset | null = null;
-
-  for (const nextGraph of snapshot.project.graphs) {
-    const previousGraph = previousSnapshot.project.graphs.find((graph) => graph.id === nextGraph.id);
-
-    if (!previousGraph || previousGraph.name !== nextGraph.name) {
-      return null;
-    }
-
-    if (previousGraph.content !== nextGraph.content || previousGraph.updatedAt !== nextGraph.updatedAt) {
-      if (changedGraph) {
-        return null;
-      }
-      changedGraph = nextGraph;
-    }
-  }
-
-  return changedGraph ? { next: changedGraph } : null;
-}
-
 function findSelectionOnlyActiveFilePath(
   snapshot: AppSnapshot,
   previousSnapshot: AppSnapshot
@@ -1377,7 +1315,6 @@ function findSelectionOnlyActiveFilePath(
     snapshot.project.documents !== previousSnapshot.project.documents ||
     snapshot.project.folders !== previousSnapshot.project.folders ||
     snapshot.project.figures !== previousSnapshot.project.figures ||
-    snapshot.project.graphs !== previousSnapshot.project.graphs ||
     snapshot.project.trash !== previousSnapshot.project.trash
   ) {
     return null;
@@ -1406,10 +1343,6 @@ function getLegacyEntryUpdatedAt(
     return project.figures.find((figure) => figure.id === source.id)?.updatedAt ?? null;
   }
 
-  if (source.kind === "graph") {
-    return project.graphs.find((graph) => graph.id === source.id)?.updatedAt ?? null;
-  }
-
   return null;
 }
 
@@ -1420,8 +1353,7 @@ function toProjectEntrySource(source: {
   if (
     source.kind === "document" ||
     source.kind === "folder" ||
-    source.kind === "diagram" ||
-    source.kind === "graph"
+    source.kind === "diagram"
   ) {
     return {
       kind: source.kind,

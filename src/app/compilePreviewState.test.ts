@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   collectAvailableLatexPdfPreviewPaths,
   createCompletedPreviewCompilerStatus,
+  decideCompilePreviewTransition,
   getCompilePreviewSourcePathsForResult,
   getLatexPdfOutputPath,
-  shouldRunPendingCompileAfterCompletion
+  shouldRunPendingCompileAfterCompletion,
+  shouldShowCompileActivity
 } from "./compilePreviewState";
 import type { CompileResult, CompilerStatus } from "../compiler/types";
 
@@ -14,6 +16,151 @@ describe("compile preview state", () => {
     mode: "worker",
     label: "Compiling LaTeX"
   };
+
+  const typstResult: Extract<CompileResult, { ok: true }> = {
+    ok: true,
+    engine: "typst-ts",
+    diagnostics: [],
+    output: {
+      kind: "svg",
+      content: "<svg />"
+    }
+  };
+  const latexResult: Extract<CompileResult, { ok: true }> = {
+    ok: true,
+    engine: "busytex",
+    diagnostics: [],
+    output: {
+      kind: "pdf",
+      content: "",
+      artifactData: new Uint8Array([1, 2, 3])
+    }
+  };
+
+  it("restores a matching Typst cache hit", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "restore-requested",
+        language: "typst",
+        result: typstResult
+      })
+    ).toEqual({
+      type: "restore",
+      result: typstResult,
+      statusLabel: "Restored Typst preview"
+    });
+  });
+
+  it("schedules compilation after a stale Typst cache miss", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "restore-requested",
+        language: "typst",
+        result: null
+      })
+    ).toEqual({
+      type: "schedule",
+      debounced: false,
+      trigger: "auto"
+    });
+  });
+
+  it("restores a fresh saved LaTeX PDF", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "restore-requested",
+        language: "latex",
+        result: latexResult
+      })
+    ).toEqual({
+      type: "restore",
+      result: latexResult,
+      statusLabel: "Saved PDF preview ready"
+    });
+  });
+
+  it("schedules compilation after a stale saved PDF miss", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "manual-compile-requested",
+        language: "latex",
+        latexMode: "quick",
+        result: null
+      })
+    ).toEqual({
+      type: "schedule",
+      debounced: false,
+      trigger: "manual"
+    });
+  });
+
+  it("uses a saved PDF only for a quick manual compile", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "manual-compile-requested",
+        language: "latex",
+        latexMode: "quick",
+        result: latexResult
+      })
+    ).toEqual({
+      type: "restore",
+      result: latexResult,
+      statusLabel: "Saved PDF preview ready"
+    });
+    expect(
+      decideCompilePreviewTransition({
+        type: "manual-compile-requested",
+        language: "latex",
+        latexMode: "full",
+        result: latexResult
+      })
+    ).toEqual({
+      type: "schedule",
+      debounced: false,
+      trigger: "manual"
+    });
+  });
+
+  it("resets preview state when the source switches without matching scheduled work", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "source-switched",
+        hasScheduledCompileForSource: false,
+        isCompilable: true,
+        language: "latex"
+      })
+    ).toEqual({
+      type: "reset",
+      status: {
+        phase: "idle",
+        mode: "worker",
+        label: "LaTeX ready",
+        detail: "Press Compile or Ctrl+Enter to update the PDF preview."
+      }
+    });
+  });
+
+  it("schedules the queued source after the active compile completes", () => {
+    expect(
+      decideCompilePreviewTransition({
+        type: "compile-completed",
+        completed: {
+          diagramRevision: "diagram-a",
+          source: "= One",
+          sourcePath: "one.typ"
+        },
+        pending: {
+          diagramRevision: "diagram-a",
+          source: "= Two",
+          sourcePath: "two.typ"
+        }
+      })
+    ).toEqual({
+      type: "schedule",
+      debounced: false,
+      trigger: "queued"
+    });
+  });
 
   it("marks returned LaTeX compile failures as errors", () => {
     const result: CompileResult = {
@@ -53,6 +200,52 @@ describe("compile preview state", () => {
       mode: "worker",
       label: "PDF preview ready"
     });
+  });
+
+
+  it("does not show compile activity for stale preview state without real compiler work", () => {
+    expect(
+      shouldShowCompileActivity({
+        compilerStatus: compilingStatus,
+        hasActiveCompileWork: false,
+        isActiveCompileTarget: true,
+        isCompiling: true
+      })
+    ).toBe(false);
+  });
+
+  it("does not show compile activity for previews that are not the active compile target", () => {
+    expect(
+      shouldShowCompileActivity({
+        compilerStatus: compilingStatus,
+        hasActiveCompileWork: true,
+        isActiveCompileTarget: false,
+        isCompiling: true
+      })
+    ).toBe(false);
+  });
+
+  it("only shows compile activity while a compile-status phase is active", () => {
+    expect(
+      shouldShowCompileActivity({
+        compilerStatus: compilingStatus,
+        hasActiveCompileWork: true,
+        isActiveCompileTarget: true,
+        isCompiling: true
+      })
+    ).toBe(true);
+    expect(
+      shouldShowCompileActivity({
+        compilerStatus: {
+          phase: "ready",
+          mode: "worker",
+          label: "Saved PDF preview ready"
+        },
+        hasActiveCompileWork: true,
+        isActiveCompileTarget: true,
+        isCompiling: true
+      })
+    ).toBe(false);
   });
 
   it("keeps a pending LaTeX PDF preview path available before the artifact exists", () => {
@@ -113,11 +306,9 @@ describe("compile preview state", () => {
     expect(
       shouldRunPendingCompileAfterCompletion({
         completedDiagramRevision: "diagram-a",
-        completedGraphRevision: "graph-a",
         completedSource: "\\section{Same}",
         completedSourcePath: "chapter-one.tex",
         pendingDiagramRevision: "diagram-a",
-        pendingGraphRevision: "graph-a",
         pendingSource: "\\section{Same}",
         pendingSourcePath: "chapter-two.tex"
       })
@@ -128,11 +319,9 @@ describe("compile preview state", () => {
     expect(
       shouldRunPendingCompileAfterCompletion({
         completedDiagramRevision: "diagram-a",
-        completedGraphRevision: "graph-a",
         completedSource: "\\section{Same}",
         completedSourcePath: "chapter-one.tex",
         pendingDiagramRevision: "diagram-a",
-        pendingGraphRevision: "graph-a",
         pendingSource: "\\section{Same}",
         pendingSourcePath: "chapter-one.tex"
       })

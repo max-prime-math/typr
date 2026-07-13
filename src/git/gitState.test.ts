@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createEmptyGitManagedProject,
+  normalizeProjectPath,
   normalizeGitWorkspaceState,
   type GitWorkspaceState
 } from "./gitState";
@@ -52,5 +53,9 @@ describe("gitState", () => {
 
     expect(normalized.selectedProjectId).toBe(null);
     expect(normalized.selectedProjectIdsByTyprProjectId["project-geometry"]).toBe(null);
+  });
+
+  it("normalizes generic Git workspace paths through shared relative semantics", () => {
+    expect(normalizeProjectPath("/chapters\\drafts/../main.typ")).toBe("chapters/main.typ");
   });
 });

@@ -166,6 +166,19 @@ async function warmCompiler(requestId: number): Promise<void> {
   }
 }
 
+async function prepareCompilerForOffline(requestId: number): Promise<void> {
+  await withTimeout(
+    warmCompiler(requestId),
+    TYPST_INIT_TIMEOUT_MS,
+    TYPST_INIT_TIMEOUT_MESSAGE
+  );
+
+  if (bootstrapFailed) {
+    throw new Error(
+      fallbackWarning?.message ?? "Typst compiler failed to initialize for offline use."
+    );
+  }
+}
 async function compileWithTypst(
   requestId: number,
   source: string,
@@ -406,6 +419,24 @@ function postMessageToMain(message: CompilerWorkerResponse) {
 
 self.addEventListener("message", (event: MessageEvent<CompilerWorkerRequest>) => {
   const request = event.data;
+
+  if (request.type === "warm") {
+    void prepareCompilerForOffline(request.id)
+      .then(() => {
+        postMessageToMain({
+          id: request.id,
+          type: "warm-result"
+        });
+      })
+      .catch((error) => {
+        postMessageToMain({
+          id: request.id,
+          type: "error",
+          message: formatUnknownError(error)
+        });
+      });
+    return;
+  }
 
   void compileWithTypst(request.id, request.source, request.assets ?? [], request.options)
     .then((result) => {

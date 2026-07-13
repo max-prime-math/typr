@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { marked } from "marked";
+import { renderMarkdownHtml } from "../markdown/markdownParser";
 
 import indexSource from "../../docs/index.md?raw";
 import workspaceSource from "../../docs/user-guide/workspace.md?raw";
 import editingPreviewSource from "../../docs/user-guide/editing-preview.md?raw";
-import diagramsGraphsSource from "../../docs/user-guide/diagrams-graphs.md?raw";
+import diagramsSource from "../../docs/user-guide/diagrams.md?raw";
 import gitSyncSource from "../../docs/user-guide/git-sync.md?raw";
 import packagesShellSource from "../../docs/user-guide/packages-shell.md?raw";
 import settingsSource from "../../docs/user-guide/settings.md?raw";
@@ -56,7 +56,7 @@ const DOCS_SECTIONS: DocsSection[] = [
     pages: [
       { id: "user-guide/workspace", title: "Workspace and Projects", path: "user-guide/workspace.md", source: workspaceSource },
       { id: "user-guide/editing-preview", title: "Editing and Preview", path: "user-guide/editing-preview.md", source: editingPreviewSource },
-      { id: "user-guide/diagrams-graphs", title: "Diagrams and Graphs", path: "user-guide/diagrams-graphs.md", source: diagramsGraphsSource },
+      { id: "user-guide/diagrams", title: "Diagrams", path: "user-guide/diagrams.md", source: diagramsSource },
       { id: "user-guide/git-sync", title: "GitHub Sync", path: "user-guide/git-sync.md", source: gitSyncSource },
       { id: "user-guide/settings", title: "Settings", path: "user-guide/settings.md", source: settingsSource },
       { id: "user-guide/packages-shell", title: "Packages and Browser Shell", path: "user-guide/packages-shell.md", source: packagesShellSource }
@@ -169,7 +169,7 @@ export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
   const activePageIdRef = useRef(activePageId);
   const scrollByPageRef = useRef<StoredDocsModalState["scrollByPage"]>(storedDocsState.scrollByPage);
   const activePage = DOCS_PAGE_BY_ID.get(activePageId) ?? DOCS_PAGES[0];
-  const html = useMemo(() => marked.parse(stripFrontmatter(activePage.source)) as string, [activePage]);
+  const html = useMemo(() => renderMarkdownHtml(stripFrontmatter(activePage.source), "docs"), [activePage]);
   const normalizedSearchQuery = normalizeSearchText(searchQuery);
   const visibleDocsSections = useMemo(() => {
     if (!normalizedSearchQuery) return DOCS_SECTIONS.map((section) => ({
@@ -248,12 +248,12 @@ export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
         onClick={(event) => event.stopPropagation()}
         role={embedded ? undefined : "dialog"}
       >
-        <header className="docs-modal__header">
+        <header className="docs-modal__header modal-control-header">
           <div>
             <h2>Docs</h2>
             <p>Typr user guide and architecture notes.</p>
           </div>
-          {onClose ? <button className="pane__button" onClick={handleClose} type="button">Close</button> : null}
+          {onClose ? <button className="modal-close-button pane__button" onClick={handleClose} type="button">Close</button> : null}
         </header>
         <div className="docs-modal__body">
           <button
@@ -267,25 +267,27 @@ export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
           </button>
           <nav className="docs-modal__nav" aria-label="Documentation pages">
             <div className="docs-modal__search">
-              <input
-                aria-label="Search documentation"
-                autoCapitalize="none"
-                autoCorrect="off"
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search docs"
-                type="search"
-                value={searchQuery}
-              />
-              {searchQuery ? (
-                <button
-                  aria-label="Clear documentation search"
-                  className="docs-modal__search-clear"
-                  onClick={() => setSearchQuery("")}
-                  type="button"
-                >
-                  <span aria-hidden="true" className="package-search-clear__icon" />
-                </button>
-              ) : null}
+              <div className="modal-search-field">
+                <input
+                  aria-label="Search documentation"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search docs"
+                  type="search"
+                  value={searchQuery}
+                />
+                {searchQuery ? (
+                  <button
+                    aria-label="Clear documentation search"
+                    className="modal-search-field__clear"
+                    onClick={() => setSearchQuery("")}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className="package-search-clear__icon" />
+                  </button>
+                ) : null}
+              </div>
               {searchQuery.trim() ? (
                 <span className="docs-modal__search-count">{searchResultCount} result{searchResultCount === 1 ? "" : "s"}</span>
               ) : null}

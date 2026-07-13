@@ -29,15 +29,13 @@ export function createTypstCompiler(options: TypstCompilerOptions = {}): TypstCo
     statusListeners.add(options.onStatusChange);
   }
 
-  const compiler = getSharedCompilerInstance();
-
   return {
     compileDocument(
       source: string,
       assets?: CompileAssetFile[],
       options?: CompileDocumentOptions
     ): Promise<CompileResult> {
-      return compiler.compileDocument(source, assets, options);
+      return getSharedCompilerInstance().compileDocument(source, assets, options);
     },
     dispose(): void {
       if (options.onStatusChange) {
@@ -45,6 +43,15 @@ export function createTypstCompiler(options: TypstCompilerOptions = {}): TypstCo
       }
     }
   };
+}
+
+export function warmTypstCompilerForOffline(): Promise<void> {
+  return getSharedCompilerInstance().warmForOffline();
+}
+
+export function releaseTypstCompilerMemory(): void {
+  sharedCompilerInstance?.dispose();
+  sharedCompilerInstance = null;
 }
 
 function getSharedCompilerInstance(): WorkerBackedTypstCompiler {
@@ -100,6 +107,17 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
       this.handleWorkerMessage as EventListener
     );
     this.worker.addEventListener("error", this.handleWorkerError);
+  }
+
+  warmForOffline(): Promise<void> {
+    if (!this.workerAvailable || !this.worker) {
+      return Promise.reject(new Error("Typst compiler worker is unavailable."));
+    }
+
+    return this.sendRequest({
+      id: this.createRequestId(),
+      type: "warm"
+    }).then(() => undefined);
   }
 
   compileDocument(
@@ -195,6 +213,11 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
 
     if (response.type === "error") {
       pendingRequest.reject(new Error(response.message));
+      return;
+    }
+
+    if (response.type === "warm-result") {
+      pendingRequest.resolve();
       return;
     }
 

@@ -1,6 +1,7 @@
 import { openDB } from "idb";
 import type { AppSnapshot } from "../app/appState";
 import type { GitWorkspaceState } from "../git/gitState";
+import type { ProjectDeletionTombstone } from "../project/projectDeletion";
 import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
 import {
@@ -15,12 +16,12 @@ const GIT_FILE_STORE_NAME = "git-files";
 const SNAPSHOT_KEY = "snapshot";
 const PROJECT_STORAGE_KEY = "project-storage";
 const PROJECT_STORAGE_METADATA_KEY = "project-storage-metadata";
+const PROJECT_DELETION_TOMBSTONE_PREFIX = "project-deletion-tombstone:";
 const GITHUB_CONFIG_KEY = "github-config";
 const GIT_WORKSPACE_KEY = "git-workspace";
 const GIT_CREDENTIALS_KEY = "git-credentials";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
-const DESMOS_API_KEY_KEY = "desmos-api-key";
 
 export interface LegacyGitHubRemoteConfig {
   owner: string;
@@ -74,6 +75,41 @@ export async function saveProjectStorage(storage: TyprProjectStorageState): Prom
       PROJECT_STORAGE_METADATA_KEY
     )
   ]);
+}
+
+export async function saveProjectDeletionTombstone(
+  projectId: string
+): Promise<ProjectDeletionTombstone> {
+  const database = await getDatabase();
+  const tombstone = {
+    projectId,
+    createdAt: new Date().toISOString()
+  };
+  await database.put(
+    STORE_NAME,
+    tombstone,
+    getProjectDeletionTombstoneKey(projectId)
+  );
+  return tombstone;
+}
+
+export async function loadProjectDeletionTombstones(): Promise<ProjectDeletionTombstone[]> {
+  const database = await getDatabase();
+  const keys = (await database.getAllKeys(STORE_NAME))
+    .filter((key): key is string =>
+      typeof key === "string" && key.startsWith(PROJECT_DELETION_TOMBSTONE_PREFIX)
+    )
+    .sort((left, right) => left.localeCompare(right));
+  const storedTombstones = await Promise.all(
+    keys.map((key) => database.get(STORE_NAME, key))
+  );
+
+  return storedTombstones.filter(isProjectDeletionTombstone);
+}
+
+export async function deleteProjectDeletionTombstone(projectId: string): Promise<void> {
+  const database = await getDatabase();
+  await database.delete(STORE_NAME, getProjectDeletionTombstoneKey(projectId));
 }
 
 export async function loadGitHubConfig(): Promise<LegacyGitHubRemoteConfig | null> {
@@ -165,6 +201,23 @@ function normalizeGitFilePath(path: string): string {
     .join("/");
 }
 
+function getProjectDeletionTombstoneKey(projectId: string): string {
+  return `${PROJECT_DELETION_TOMBSTONE_PREFIX}${encodeURIComponent(projectId)}`;
+}
+
+function isProjectDeletionTombstone(value: unknown): value is ProjectDeletionTombstone {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const tombstone = value as Partial<ProjectDeletionTombstone>;
+  return (
+    typeof tombstone.projectId === "string" &&
+    tombstone.projectId.trim().length > 0 &&
+    typeof tombstone.createdAt === "string"
+  );
+}
+
 export async function loadCustomThemes(): Promise<ThemeDefinition[] | null> {
   const database = await getDatabase();
   return (await database.get(STORE_NAME, CUSTOM_THEMES_KEY)) ?? null;
@@ -184,14 +237,4 @@ export async function loadCustomSnippets(): Promise<SnippetCollections | null> {
 export async function saveCustomSnippets(snippets: SnippetCollections): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, snippets, CUSTOM_SNIPPETS_KEY);
-}
-
-export async function loadDesmosApiKey(): Promise<string | null> {
-  const database = await getDatabase();
-  return (await database.get(STORE_NAME, DESMOS_API_KEY_KEY)) ?? null;
-}
-
-export async function saveDesmosApiKey(apiKey: string): Promise<void> {
-  const database = await getDatabase();
-  await database.put(STORE_NAME, apiKey, DESMOS_API_KEY_KEY);
 }

@@ -1,5 +1,6 @@
 import type { TerminalBackendId } from "../terminal/types";
 import { createPrefixedId } from "../utils/randomId";
+import { normalizeRelativePath } from "../utils/relativePath";
 
 export const GIT_STATE_VERSION = 2;
 
@@ -142,11 +143,7 @@ export function normalizeManagedProject(
 }
 
 export function normalizeProjectPath(path: string | null | undefined): string {
-  return (path ?? "")
-    .split("/")
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .join("/");
+  return normalizeRelativePath(path ?? "");
 }
 
 export function normalizeIgnorePatterns(patterns: string[] | null | undefined): string[] {

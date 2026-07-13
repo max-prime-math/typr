@@ -1,39 +1,15 @@
-import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import { parseSourceLocation, sourcePositionIntersectsRange, type SourcePosition } from "./sourceLinks";
-
-interface TypstRendererModule {
-  createTypstRenderer(): TypstRendererDriver;
-}
-
-interface TypstRendererDriver {
-  init(options: { getModule: () => string }): Promise<void>;
-  createModule(artifactContent: Uint8Array): Promise<TypstRenderSession>;
-  renderToCanvas(options: {
-    container: HTMLElement;
-    renderSession: TypstRenderSession;
-    pixelPerPt?: number;
-    backgroundColor?: string;
-    dataSelection?: {
-      body?: boolean;
-      semantics?: boolean;
-    };
-  }): Promise<void>;
-}
-
-interface TypstRenderSession {
-  getSourceLoc(path: Uint32Array): string | undefined;
-  free?(): void;
-}
-
-let rendererPromise: Promise<TypstRendererDriver> | null = null;
+import {
+  createTypstRendererSession,
+  type TypstRenderSession
+} from "./typstRendererSession";
 
 export async function renderSourceMappingOverlay(
   container: HTMLElement,
-  artifactContent: Uint8Array,
-  paperView = false
+  artifactContent: Uint8Array
 ): Promise<SourceMappingOverlayHandle> {
-  const renderer = await getRenderer();
-  const session = await renderer.createModule(artifactContent);
+  const rendererSession = await createTypstRendererSession(artifactContent);
+  const { renderer, session } = rendererSession;
 
   try {
     container.innerHTML = "";
@@ -41,7 +17,7 @@ export async function renderSourceMappingOverlay(
       container,
       renderSession: session,
       pixelPerPt: getOverlayPixelPerPt(),
-      backgroundColor: paperView ? "#fffef9" : "#ffffff",
+      backgroundColor: "#ffffff",
       dataSelection: {
         body: true,
         semantics: true
@@ -49,14 +25,14 @@ export async function renderSourceMappingOverlay(
     });
     normalizeSourceMappingOverlay(container);
   } catch (error) {
-    session.free?.();
+    rendererSession.dispose();
     throw error;
   }
 
   return {
     dispose() {
       container.innerHTML = "";
-      session.free?.();
+      rendererSession.dispose();
     },
     resolveSourceLocation(target) {
       return resolveSourceLocationForTarget(target, container, session);
@@ -75,22 +51,6 @@ export interface SourceMappingOverlayHandle {
   resolveSourceLocation(target: EventTarget | null): string | null;
   resolveSourceLocationAt(point: { x: number; y: number }): string | null;
   resolveElementForSource(position: SourcePosition): HTMLElement | null;
-}
-
-async function getRenderer(): Promise<TypstRendererDriver> {
-  if (!rendererPromise) {
-    rendererPromise = import("@myriaddreamin/typst.ts/renderer")
-      .then((module) => module as unknown as TypstRendererModule)
-      .then(async (module) => {
-        const renderer = module.createTypstRenderer();
-        await renderer.init({
-          getModule: () => typstRendererWasmUrl
-        });
-        return renderer;
-      });
-  }
-
-  return rendererPromise;
 }
 
 function getOverlayPixelPerPt(): number {

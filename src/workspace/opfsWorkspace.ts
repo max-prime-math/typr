@@ -1,4 +1,5 @@
 import type { AppSnapshot } from "../app/appState";
+import { areBytesEqual } from "../utils/bytes";
 import {
   createProjectStorageFromSnapshot,
   getSelectedProjectRepository,
@@ -35,18 +36,44 @@ export async function syncProjectToOpfs(project: TyprProjectRepository): Promise
   }
 
   const workspaceRoot = await getWorkspaceRootHandle(project.id, true);
+  const entries = buildProjectWorkspaceEntriesFromProject(project);
+  const desiredFilePaths = new Set<string>();
+  const desiredDirectoryPaths = new Set<string>();
 
-  for (const entry of buildProjectWorkspaceEntriesFromProject(project)) {
-    if (entry.kind === "folder") {
-      await ensureDirectory(workspaceRoot, entry.path);
-      continue;
+  for (const entry of entries) {
+    const path = normalizeProjectPath(entry.path);
+    const segments = path.split("/");
+
+    for (let index = 1; index < segments.length; index += 1) {
+      desiredDirectoryPaths.add(segments.slice(0, index).join("/"));
     }
 
-    const didWriteFile = await writeWorkspaceFile(workspaceRoot, entry);
-    if (!didWriteFile) {
-      return;
+    if (entry.kind === "folder") {
+      desiredDirectoryPaths.add(path);
+    } else {
+      desiredFilePaths.add(path);
     }
   }
+
+  // Consistency is write-before-prune: each changed file is committed by close(),
+  // and any write failure aborts that file and skips the entire prune phase. A
+  // retry may observe earlier committed updates plus stale entries, but never a
+  // tree pruned before all current project content has been made durable.
+  for (const path of [...desiredDirectoryPaths].sort()) {
+    await ensureDirectory(workspaceRoot, path);
+  }
+
+  for (const entry of entries) {
+    if (entry.kind === "file") {
+      await writeWorkspaceFile(workspaceRoot, entry);
+    }
+  }
+
+  await pruneWorkspaceEntries(
+    workspaceRoot,
+    desiredFilePaths,
+    desiredDirectoryPaths
+  );
 }
 
 export async function loadWorkspaceTreeFromOpfs(projectId: string): Promise<WorkspaceTreeNode[]> {
@@ -86,10 +113,22 @@ export async function removeProjectFromOpfs(projectId: string): Promise<void> {
   try {
     const projectsRoot = await getProjectsRootHandle(false);
     await projectsRoot.removeEntry(projectId, { recursive: true });
-  } catch {
-    // OPFS mirrors are best-effort caches; missing browser handles or absent
-    // project directories should not block IndexedDB-backed project deletion.
+  } catch (error) {
+    if (isFileSystemNotFoundError(error)) {
+      return;
+    }
+
+    throw error;
   }
+}
+
+function isFileSystemNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "NotFoundError"
+  );
 }
 
 async function getWorkspaceRootHandle(
@@ -164,12 +203,12 @@ async function getFileHandleByPath(
 async function writeWorkspaceFile(
   root: FileSystemDirectoryHandle,
   entry: WorkspaceFlatEntry
-): Promise<boolean> {
+): Promise<void> {
   const segments = normalizeProjectPath(entry.path).split("/");
   const fileName = segments.pop();
 
   if (!fileName) {
-    return true;
+    return;
   }
 
   const parent = segments.length > 0 ? await ensureDirectory(root, segments.join("/")) : root;
@@ -179,25 +218,81 @@ async function writeWorkspaceFile(
   };
 
   if (typeof writableFileHandle.createWritable !== "function") {
-    return false;
+    throw new Error(`OPFS file is not writable: ${entry.path}`);
+  }
+
+  const desiredBytes = workspaceEntryContentToBytes(entry.content);
+  const currentFile = await fileHandle.getFile();
+  const currentBytes = new Uint8Array(await currentFile.arrayBuffer());
+
+  if (areBytesEqual(currentBytes, desiredBytes)) {
+    return;
   }
 
   const writer = await writableFileHandle.createWritable();
 
-  if (typeof entry.content === "string") {
-    await writer.write(entry.content);
-  } else if (entry.content instanceof Uint8Array) {
-    const buffer = entry.content.buffer.slice(
-      entry.content.byteOffset,
-      entry.content.byteOffset + entry.content.byteLength
+  try {
+    const buffer = desiredBytes.buffer.slice(
+      desiredBytes.byteOffset,
+      desiredBytes.byteOffset + desiredBytes.byteLength
     ) as ArrayBuffer;
     await writer.write(buffer);
-  } else {
-    await writer.write("");
+    await writer.close();
+  } catch (error) {
+    try {
+      await writer.abort(error);
+    } catch {
+      // Preserve the original write failure; abort is best-effort after close errors.
+    }
+    throw error;
+  }
+}
+
+function workspaceEntryContentToBytes(
+  content: WorkspaceFlatEntry["content"]
+): Uint8Array {
+  if (typeof content === "string") {
+    return new TextEncoder().encode(content);
   }
 
-  await writer.close();
-  return true;
+  return content instanceof Uint8Array ? content : new Uint8Array();
+}
+
+
+async function pruneWorkspaceEntries(
+  directory: FileSystemDirectoryHandle,
+  desiredFilePaths: ReadonlySet<string>,
+  desiredDirectoryPaths: ReadonlySet<string>,
+  pathPrefix = ""
+): Promise<void> {
+  const currentEntries: Array<[string, FileSystemHandle]> = [];
+
+  for await (const entry of iterateDirectoryEntries(directory)) {
+    currentEntries.push(entry);
+  }
+
+  for (const [name, handle] of currentEntries) {
+    const path = pathPrefix ? `${pathPrefix}/${name}` : name;
+
+    if (handle.kind === "directory") {
+      if (!desiredDirectoryPaths.has(path)) {
+        await directory.removeEntry(name, { recursive: true });
+        continue;
+      }
+
+      await pruneWorkspaceEntries(
+        handle as FileSystemDirectoryHandle,
+        desiredFilePaths,
+        desiredDirectoryPaths,
+        path
+      );
+      continue;
+    }
+
+    if (!desiredFilePaths.has(path)) {
+      await directory.removeEntry(name);
+    }
+  }
 }
 
 async function collectWorkspaceEntries(

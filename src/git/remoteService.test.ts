@@ -7,7 +7,7 @@ import {
   writeProjectFile
 } from "../project/projectState";
 import { createMemoryGitFileStorage, createRepoBackend } from "./repoBackend";
-import { sha1Hex } from "../utils/hash";
+import { sha1Hex } from "../utils/contentHash";
 import { createRemoteGitService, type RemoteGitProgress } from "./remoteService";
 
 function createProject() {

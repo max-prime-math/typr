@@ -1,10 +1,168 @@
 import type { CompileResult, CompilerStatus } from "../compiler/types";
-import { normalizeCompilerPath } from "../compiler/sourceFileTypes";
+import {
+  getSourceLanguage,
+  isCompilableSourceFile,
+  normalizeCompilerPath,
+  type SourceLanguage
+} from "../compiler/sourceFileTypes";
+import type { LatexCompileMode } from "../compiler/latexCompiler";
+
+interface CompileInputSnapshot {
+  diagramRevision: string;
+  source: string;
+  sourcePath: string;
+}
+
+export type CompilePreviewEvent =
+  | {
+      type: "restore-requested";
+      language: "typst" | "latex";
+      result: Extract<CompileResult, { ok: true }> | null;
+    }
+  | {
+      type: "manual-compile-requested";
+      language: SourceLanguage;
+      latexMode: LatexCompileMode;
+      result: Extract<CompileResult, { ok: true }> | null;
+    }
+  | {
+      type: "source-switched";
+      hasScheduledCompileForSource: boolean;
+      isCompilable: boolean;
+      language: SourceLanguage;
+    }
+  | {
+      type: "compile-completed";
+      completed: CompileInputSnapshot;
+      pending: CompileInputSnapshot;
+    };
+
+export type CompilePreviewTransition =
+  | {
+      type: "restore";
+      result: Extract<CompileResult, { ok: true }>;
+      statusLabel: "Restored Typst preview" | "Saved PDF preview ready";
+    }
+  | {
+      type: "schedule";
+      debounced: boolean;
+      trigger: "auto" | "manual" | "queued";
+    }
+  | { type: "reset"; status: CompilerStatus }
+  | { type: "preserve" }
+  | { type: "settle" };
+
+export function decideCompilePreviewTransition(
+  event: CompilePreviewEvent
+): CompilePreviewTransition {
+  switch (event.type) {
+    case "restore-requested":
+      if (event.result) {
+        return {
+          type: "restore",
+          result: event.result,
+          statusLabel:
+            event.language === "typst"
+              ? "Restored Typst preview"
+              : "Saved PDF preview ready"
+        };
+      }
+
+      return event.language === "typst"
+        ? { type: "schedule", debounced: false, trigger: "auto" }
+        : { type: "preserve" };
+    case "manual-compile-requested":
+      if (event.language === "latex" && event.latexMode === "quick" && event.result) {
+        return {
+          type: "restore",
+          result: event.result,
+          statusLabel: "Saved PDF preview ready"
+        };
+      }
+
+      return { type: "schedule", debounced: false, trigger: "manual" };
+    case "source-switched":
+      if (event.hasScheduledCompileForSource) {
+        return { type: "preserve" };
+      }
+
+      return {
+        type: "reset",
+        status: {
+          phase: "idle",
+          mode: "worker",
+          label: event.isCompilable
+            ? event.language === "latex"
+              ? "LaTeX ready"
+              : "Typst ready"
+            : "No compiler for active file",
+          detail:
+            event.language === "latex"
+              ? "Press Compile or Ctrl+Enter to update the PDF preview."
+              : undefined
+        }
+      };
+    case "compile-completed":
+      return compileInputsDiffer(event.completed, event.pending)
+        ? { type: "schedule", debounced: false, trigger: "queued" }
+        : { type: "settle" };
+  }
+}
+
+function compileInputsDiffer(
+  completed: CompileInputSnapshot,
+  pending: CompileInputSnapshot
+): boolean {
+  return (
+    pending.source !== completed.source ||
+    pending.sourcePath !== completed.sourcePath ||
+    pending.diagramRevision !== completed.diagramRevision
+  );
+}
 
 export interface LatexPdfPreviewPathState {
   sourcePath: string;
   result: CompileResult | null;
   isCompiling: boolean;
+}
+
+export interface CompilePreviewState {
+  result: CompileResult | null;
+  lastSuccessfulResult: Extract<CompileResult, { ok: true }> | null;
+  compilerStatus: CompilerStatus;
+  isCompiling: boolean;
+}
+
+export function createIdleCompilerStatusForSource(path: string): CompilerStatus {
+  const language = getSourceLanguage(path);
+  const isCompilable = isCompilableSourceFile(path);
+
+  return {
+    phase: "idle",
+    mode: "worker",
+    label: isCompilable
+      ? language === "latex"
+        ? "LaTeX ready"
+        : "Typst ready"
+      : "No compiler for active file",
+    detail:
+      language === "latex"
+        ? "Press Compile or Ctrl+Enter to update the PDF preview."
+        : undefined
+  };
+}
+
+export function createCompilePreviewState(
+  path: string,
+  overrides: Partial<CompilePreviewState> = {}
+): CompilePreviewState {
+  return {
+    result: null,
+    lastSuccessfulResult: null,
+    compilerStatus: createIdleCompilerStatusForSource(path),
+    isCompiling: false,
+    ...overrides
+  };
 }
 
 export function createCompletedPreviewCompilerStatus(
@@ -29,28 +187,52 @@ export function createCompletedPreviewCompilerStatus(
 
 export function shouldRunPendingCompileAfterCompletion({
   completedDiagramRevision,
-  completedGraphRevision,
   completedSource,
   completedSourcePath,
   pendingDiagramRevision,
-  pendingGraphRevision,
   pendingSource,
   pendingSourcePath
 }: {
   completedDiagramRevision: string;
-  completedGraphRevision: string;
   completedSource: string;
   completedSourcePath: string;
   pendingDiagramRevision: string;
-  pendingGraphRevision: string;
   pendingSource: string;
   pendingSourcePath: string;
 }): boolean {
+  return decideCompilePreviewTransition({
+    type: "compile-completed",
+    completed: {
+      diagramRevision: completedDiagramRevision,
+      source: completedSource,
+      sourcePath: completedSourcePath
+    },
+    pending: {
+      diagramRevision: pendingDiagramRevision,
+      source: pendingSource,
+      sourcePath: pendingSourcePath
+    }
+  }).type === "schedule";
+}
+
+export function shouldShowCompileActivity({
+  compilerStatus,
+  hasActiveCompileWork,
+  isActiveCompileTarget,
+  isCompiling
+}: {
+  compilerStatus: CompilerStatus;
+  hasActiveCompileWork: boolean;
+  isActiveCompileTarget: boolean;
+  isCompiling: boolean;
+}): boolean {
   return (
-    pendingSource !== completedSource ||
-    pendingSourcePath !== completedSourcePath ||
-    pendingDiagramRevision !== completedDiagramRevision ||
-    pendingGraphRevision !== completedGraphRevision
+    isCompiling &&
+    isActiveCompileTarget &&
+    hasActiveCompileWork &&
+    compilerStatus.phase !== "idle" &&
+    compilerStatus.phase !== "ready" &&
+    compilerStatus.phase !== "error"
   );
 }
 

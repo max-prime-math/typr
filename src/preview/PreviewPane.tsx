@@ -1,20 +1,27 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { CompilerStatus, CompileResult } from "../compiler/typstCompiler";
 import type { CompileDiagnostic } from "../compiler/types";
+import { findActiveMarkdownBlockKey, renderMarkdownPreviewBlocks } from "../markdown/MarkdownPreviewBlocks";
+import { shouldShowCompileActivity } from "../app/compilePreviewState";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
-import { applyPdfCanvasZoom, renderPdfArtifactToCanvas } from "./pdfCanvasRenderer";
-import { renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
+import { createPdfPreviewCacheKey } from "./pdfPreviewCacheKey";
+import {
+  applyPdfCanvasZoom,
+  prewarmPdfCanvasResolution,
+  refinePdfCanvasResolution,
+  renderPdfArtifactToCanvas
+} from "./pdfCanvasRenderer";
+import { applyTypstCanvasZoom, renderTypstArtifactToCanvas } from "./typstCanvasRenderer";
+export { zoomPreviewByWheel } from "./previewZoom";
 import { renderSourceMappingOverlay } from "./sourceMappingOverlay";
 import { resolveSynctexForwardSearch, resolveSynctexReverseSearch, type PdfPreviewPoint } from "./synctex";
 import {
   createSourceRange,
   parseSourceLocation,
-  sourcePositionIntersectsRange,
   type PreviewRect,
   type PreviewSourceLink,
-  type SourcePosition,
-  type SourceRange
+  type SourcePosition
 } from "./sourceLinks";
 
 interface PreviewPaneProps {
@@ -59,6 +66,9 @@ export const DEFAULT_ZOOM: PreviewZoomState = {
   percent: 100
 };
 
+const PAPER_PREVIEW_BACKGROUND = "#ffffff";
+const PAPER_PREVIEW_FOREGROUND = "#000000";
+
 export function PreviewPane({
   result,
   lastSuccessfulResult,
@@ -82,7 +92,12 @@ export function PreviewPane({
   const [internalZoom, setInternalZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
   const currentZoom = zoom ?? internalZoom;
   const setZoom = onZoomChange ?? setInternalZoom;
-  const showCompilerActivity = shouldShowCompilerActivity(isCompiling, compilerStatus);
+  const showCompilerActivity = shouldShowCompileActivity({
+    compilerStatus,
+    hasActiveCompileWork: true,
+    isActiveCompileTarget: true,
+    isCompiling
+  });
 
   if (workspacePreview) {
     const isPdfPreview = workspacePreview.mimeType === "application/pdf";
@@ -153,11 +168,12 @@ export function PreviewPane({
                 theme={theme}
                 zoom={currentZoom}
               />
-            ) : shouldUseChromiumCanvasPreview(fallbackResult) ? (
+            ) : shouldUseChromiumCanvasPreview() ? (
               <ChromiumCanvasPreview
                 artifactData={fallbackResult.output.artifactData!}
                 isFaulted={isErrorSettled}
                 paperView={paperView}
+                zoom={currentZoom}
               />
             ) : (
               <PreviewDocument
@@ -222,8 +238,12 @@ export function PreviewPane({
             theme={theme}
             zoom={currentZoom}
           />
-        ) : shouldUseChromiumCanvasPreview(result) ? (
-          <ChromiumCanvasPreview artifactData={result.output.artifactData!} paperView={paperView} />
+        ) : shouldUseChromiumCanvasPreview() ? (
+          <ChromiumCanvasPreview
+            artifactData={result.output.artifactData!}
+            paperView={paperView}
+            zoom={currentZoom}
+          />
         ) : (
             <PreviewDocument
               artifactData={result.output.artifactData}
@@ -288,6 +308,10 @@ export function PreviewZoomControls({
   zoom: PreviewZoomState;
   onZoomChange: (zoom: PreviewZoomState) => void;
 }) {
+  const customZoomPercent =
+    zoom.mode === "percent" && !ZOOM_PERCENT_STEPS.includes(zoom.percent)
+      ? zoom.percent
+      : null;
   const selectValue =
     zoom.mode === "percent"
       ? `${zoom.percent}`
@@ -296,7 +320,8 @@ export function PreviewZoomControls({
   return (
     <div className="preview-zoom-controls" aria-label="Preview zoom controls">
       <button
-        className="preview-zoom-button"
+        aria-label="Zoom out"
+        className="pane__button pane__icon-button preview-zoom-button"
         onClick={() => onZoomChange(nextZoomStep(zoom, -1))}
         title="Zoom out"
         type="button"
@@ -312,6 +337,9 @@ export function PreviewZoomControls({
         <option value="fit-width">Fit Width</option>
         <option value="fit-height">Fit Height</option>
         <option value="fit-page">Fit Page</option>
+        {customZoomPercent !== null ? (
+          <option value={`${customZoomPercent}`}>{customZoomPercent}%</option>
+        ) : null}
         {ZOOM_PERCENT_STEPS.map((percent) => (
           <option key={percent} value={`${percent}`}>
             {percent}%
@@ -319,7 +347,8 @@ export function PreviewZoomControls({
         ))}
       </select>
       <button
-        className="preview-zoom-button"
+        aria-label="Zoom in"
+        className="pane__button pane__icon-button preview-zoom-button"
         onClick={() => onZoomChange(nextZoomStep(zoom, 1))}
         title="Zoom in"
         type="button"
@@ -426,18 +455,6 @@ function PreviewActivityStatusBody({
         />
       </div>
     </div>
-  );
-}
-
-function shouldShowCompilerActivity(
-  isCompiling: boolean,
-  status: CompilerStatus
-): boolean {
-  return (
-    isCompiling &&
-    status.phase !== "idle" &&
-    status.phase !== "ready" &&
-    status.phase !== "error"
   );
 }
 
@@ -562,6 +579,106 @@ function getPreviewNow(): number {
   return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
+interface CursorZoomAnchor {
+  clientX: number;
+  clientY: number;
+  xRatio: number;
+  yRatio: number;
+}
+
+function useCursorAnchoredZoom(
+  viewportRef: { current: HTMLElement | null },
+  contentRef: { current: HTMLElement | null },
+  zoomScale: number
+): void {
+  const anchorRef = useRef<CursorZoomAnchor | null>(null);
+  const previousScaleRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+
+    if (!viewport) {
+      return;
+    }
+
+    const captureAt = (clientX: number, clientY: number) => {
+      const content = contentRef.current;
+
+      if (!content) {
+        return;
+      }
+
+      const rect = content.getBoundingClientRect();
+
+      if (rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+
+      anchorRef.current = {
+        clientX,
+        clientY,
+        xRatio: (clientX - rect.left) / rect.width,
+        yRatio: (clientY - rect.top) / rect.height
+      };
+    };
+    const handlePointerMove = (event: PointerEvent) => captureAt(event.clientX, event.clientY);
+    const handleWheel = (event: WheelEvent) => captureAt(event.clientX, event.clientY);
+    const handleTouch = (event: TouchEvent) => {
+      if (event.touches.length < 2) {
+        return;
+      }
+
+      const first = event.touches.item(0);
+      const second = event.touches.item(1);
+
+      if (first && second) {
+        captureAt(
+          (first.clientX + second.clientX) / 2,
+          (first.clientY + second.clientY) / 2
+        );
+      }
+    };
+
+    viewport.addEventListener("pointermove", handlePointerMove, { passive: true });
+    viewport.addEventListener("wheel", handleWheel, { capture: true, passive: true });
+    viewport.addEventListener("touchstart", handleTouch, { capture: true, passive: true });
+    viewport.addEventListener("touchmove", handleTouch, { capture: true, passive: true });
+
+    return () => {
+      viewport.removeEventListener("pointermove", handlePointerMove);
+      viewport.removeEventListener("wheel", handleWheel, true);
+      viewport.removeEventListener("touchstart", handleTouch, true);
+      viewport.removeEventListener("touchmove", handleTouch, true);
+    };
+  }, [contentRef, viewportRef]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const content = contentRef.current;
+    const previousScale = previousScaleRef.current;
+    previousScaleRef.current = zoomScale;
+
+    if (!viewport || !content || previousScale === null || previousScale === zoomScale) {
+      return;
+    }
+
+    const anchor = anchorRef.current;
+
+    if (anchor) {
+      const rect = content.getBoundingClientRect();
+      viewport.scrollLeft += rect.left + rect.width * anchor.xRatio - anchor.clientX;
+      viewport.scrollTop += rect.top + rect.height * anchor.yRatio - anchor.clientY;
+      return;
+    }
+
+    const scaleRatio = zoomScale / previousScale;
+    viewport.scrollLeft =
+      (viewport.scrollLeft + viewport.clientWidth / 2) * scaleRatio - viewport.clientWidth / 2;
+    viewport.scrollTop =
+      (viewport.scrollTop + viewport.clientHeight / 2) * scaleRatio - viewport.clientHeight / 2;
+  }, [contentRef, viewportRef, zoomScale]);
+}
+
 function PreviewDocument({
   artifactData,
   forwardSearchSource,
@@ -570,7 +687,6 @@ function PreviewDocument({
   markup,
   isFaulted = false,
   onSourceJump,
-  onDebugRequested,
   sourceLineCount,
   sourcePath,
   theme,
@@ -584,7 +700,6 @@ function PreviewDocument({
   markup: string;
   isFaulted?: boolean;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
-  onDebugRequested?: () => void;
   sourceLineCount?: number;
   sourcePath?: string;
   theme: ThemeDefinition;
@@ -613,6 +728,7 @@ function PreviewDocument({
     () => resolveZoomValue(zoom, viewportSize, dimensions),
     [dimensions, viewportSize, zoom]
   );
+  useCursorAnchoredZoom(viewportRef, canvasRef, resolvedZoom.scale);
 
   const { blobUrl, blobStartedAt } = useMemo(() => {
     const startedAt =
@@ -666,12 +782,29 @@ function PreviewDocument({
     };
   }, [viewportPadding]);
 
-  const contentWidth =
-    dimensions && viewportSize.width > 0
-      ? Math.max(240, Math.round(dimensions.width * resolvedZoom.scale))
-      : Math.max(240, viewportSize.width || 0);
   const hasMeasuredViewport = viewportSize.width > 0;
   const hasStablePreviewLayout = hasMeasuredViewport && dimensions !== null;
+  const baseScale =
+    dimensions && viewportSize.width > 0
+      ? viewportSize.width / dimensions.width
+      : 1;
+  const baseContentWidth =
+    dimensions && hasMeasuredViewport
+      ? Math.max(1, dimensions.width * baseScale)
+      : Math.max(1, viewportSize.width || 0);
+  const baseContentHeight =
+    dimensions && hasMeasuredViewport
+      ? Math.max(1, dimensions.height * baseScale)
+      : 1;
+  const contentWidth =
+    dimensions && hasMeasuredViewport
+      ? Math.max(1, dimensions.width * resolvedZoom.scale)
+      : baseContentWidth;
+  const contentHeight =
+    dimensions && hasMeasuredViewport
+      ? Math.max(1, dimensions.height * resolvedZoom.scale)
+      : baseContentHeight;
+  const liveZoomScale = baseScale > 0 ? resolvedZoom.scale / baseScale : 1;
   const currentImageStatus =
     imageState?.blobUrl === blobUrl ? imageState.status : "loading";
   const typstForwardSearchKey = forwardSearchSource
@@ -714,8 +847,15 @@ function PreviewDocument({
       ref={viewportRef}
     >
       <div
+        className="preview-document__canvas-sizer"
+        style={{
+          height: hasStablePreviewLayout ? `${contentHeight}px` : undefined,
+          width: hasStablePreviewLayout ? `${contentWidth}px` : "100%"
+        }}
+      >
+      <div
         className={`preview-document__canvas ${
-          hasStablePreviewLayout ? "" : "preview-document__canvas--pending"
+          hasStablePreviewLayout ? "preview-document__canvas--transformed" : "preview-document__canvas--pending"
         }`}
         ref={canvasRef}
         onDoubleClick={onSourceJump
@@ -733,7 +873,8 @@ function PreviewDocument({
             }
           : undefined}
         style={{
-          width: hasMeasuredViewport ? `${contentWidth}px` : "100%"
+          transform: hasStablePreviewLayout ? `scale(${liveZoomScale})` : undefined,
+          width: hasMeasuredViewport ? `${baseContentWidth}px` : "100%"
         }}
       >
         <img
@@ -772,10 +913,11 @@ function PreviewDocument({
             onSourceJump={onSourceJump}
             sourceLineCount={sourceLineCount}
             sourcePath={sourcePath}
-            overlayWidth={contentWidth}
+            overlayWidth={baseContentWidth}
             paperView={paperView}
           />
         ) : null}
+      </div>
       </div>
     </div>
   );
@@ -817,6 +959,7 @@ function WorkspaceFilePreview({
         forwardSearchSource={forwardSearchSource}
         onSourceJump={onSourceJump}
         paperView={paperView}
+        zoom={zoom}
       />
     );
   }
@@ -838,6 +981,7 @@ function WorkspaceFilePreview({
       file={file}
       paperView={paperView}
       theme={theme}
+      zoom={zoom}
     />
   );
 }
@@ -845,17 +989,34 @@ function WorkspaceFilePreview({
 function WorkspaceBinaryFilePreview({
   file,
   paperView,
-  theme
+  theme,
+  zoom
 }: {
   file: WorkspacePreviewFile;
   paperView: boolean;
   theme: ThemeDefinition;
+  zoom: PreviewZoomState;
 }) {
+  const documentRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [imageDimensions, setImageDimensions] = useState<{
+    blobUrl: string;
+    width: number;
+    height: number;
+  } | null>(null);
   const blobUrl = useMemo(() => {
     const blob = buildWorkspacePreviewBlob(file, paperView, theme);
 
     return URL.createObjectURL(blob);
   }, [file, paperView, theme]);
+  const dimensions = imageDimensions?.blobUrl === blobUrl ? imageDimensions : null;
+  const resolvedZoom = useMemo(
+    () => resolveZoomValue(zoom, viewportSize, dimensions),
+    [dimensions, viewportSize, zoom]
+  );
+
+  useCursorAnchoredZoom(documentRef, imageRef, resolvedZoom.scale);
 
   useEffect(() => {
     return () => {
@@ -863,16 +1024,58 @@ function WorkspaceBinaryFilePreview({
     };
   }, [blobUrl]);
 
-  const isPdf = file.mimeType === "application/pdf";
+  useEffect(() => {
+    const viewport = documentRef.current;
+
+    if (!viewport) {
+      return;
+    }
+
+    const updateViewportSize = () => {
+      setViewportSize({
+        width: Math.max(1, viewport.clientWidth - 32),
+        height: Math.max(1, viewport.clientHeight - 32)
+      });
+    };
+
+    updateViewportSize();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateViewportSize);
+      return () => window.removeEventListener("resize", updateViewportSize);
+    }
+
+    const observer = new ResizeObserver(updateViewportSize);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div
-      className={`preview-document ${
-        isPdf ? "preview-document--pdf" : "preview-document--asset"
-      } ${paperView ? "preview-document--paper" : ""}`}
+      className={`preview-document preview-document--asset ${
+        paperView ? "preview-document--paper" : ""
+      }`}
+      ref={documentRef}
     >
       <div className="preview-file-preview">
-        <img alt={file.name} className="preview-file-preview__image" src={blobUrl} />
+        <img
+          alt={file.name}
+          className="preview-file-preview__image"
+          draggable={false}
+          onLoad={(event) => {
+            setImageDimensions({
+              blobUrl,
+              width: Math.max(1, event.currentTarget.naturalWidth),
+              height: Math.max(1, event.currentTarget.naturalHeight)
+            });
+          }}
+          ref={imageRef}
+          src={blobUrl}
+          style={dimensions ? {
+            width: `${dimensions.width * resolvedZoom.scale}px`,
+            height: `${dimensions.height * resolvedZoom.scale}px`
+          } : undefined}
+        />
       </div>
     </div>
   );
@@ -883,13 +1086,15 @@ function MarkdownFilePreview({
   forwardSearchSource,
   file,
   onSourceJump,
-  paperView
+  paperView,
+  zoom
 }: {
   activeSource: SourcePosition | null;
   forwardSearchSource?: SourcePosition | null;
   file: WorkspacePreviewFile;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
   paperView: boolean;
+  zoom: PreviewZoomState;
 }) {
   const source = decodeWorkspaceTextContent(file.content);
   const sourcePath = file.path || file.name;
@@ -902,7 +1107,7 @@ function MarkdownFilePreview({
       ? forwardSearchSource
       : null;
   const blocks = useMemo(
-    () => renderMarkdownBlocks(source, {
+    () => renderMarkdownPreviewBlocks(source, {
       activeSource: activeMarkdownSource,
       onSourceJump,
       sourcePath
@@ -919,6 +1124,8 @@ function MarkdownFilePreview({
   );
   const articleRef = useRef<HTMLElement | null>(null);
   const documentRef = useRef<HTMLDivElement | null>(null);
+  const markdownZoomScale = zoom.mode === "percent" ? zoom.percent / 100 : 1;
+  useCursorAnchoredZoom(documentRef, articleRef, markdownZoomScale);
   const [markdownSyncMarker, setMarkdownSyncMarker] = useState<PreviewRect | null>(null);
 
   useEffect(() => {
@@ -974,325 +1181,13 @@ function MarkdownFilePreview({
       }`}
     >
       {markdownSyncMarker ? <PreviewSyncMarker rect={markdownSyncMarker} /> : null}
-      <article className="preview-markdown" aria-label={`${file.name} preview`} ref={articleRef}>
+      <article className="preview-markdown" aria-label={`${file.name} preview`} ref={articleRef} style={{ zoom: markdownZoomScale }}>
         {blocks.length > 0 ? blocks : (
           <p className="preview-markdown__empty">Empty Markdown file.</p>
         )}
       </article>
     </div>
   );
-}
-
-interface MarkdownRenderOptions {
-  activeSource: SourcePosition | null;
-  onSourceJump?: (sourceLink: PreviewSourceLink) => void;
-  sourcePath: string;
-}
-
-interface MarkdownBlockInfo {
-  key: string;
-  range: SourceRange;
-}
-
-function renderMarkdownBlocks(source: string, options: MarkdownRenderOptions): ReactNode[] {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: ReactNode[] = [];
-  let index = 0;
-  let blockIndex = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-
-    const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
-    if (fence) {
-      const startLine = index + 1;
-      const fenceMarker = fence[1];
-      const info = fence[2]?.trim();
-      const codeLines: string[] = [];
-      index += 1;
-
-      while (index < lines.length && !lines[index].trimStart().startsWith(fenceMarker)) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-
-      if (index < lines.length) {
-        index += 1;
-      }
-
-      const block = createMarkdownBlockInfo("code", blockIndex, options.sourcePath, startLine, index);
-      blocks.push(
-        <pre
-          {...createMarkdownBlockProps(block, options, "preview-markdown__code-block")}
-          key={block.key}
-        >
-          <code data-language={info || undefined}>{codeLines.join("\n")}</code>
-        </pre>
-      );
-      blockIndex += 1;
-      continue;
-    }
-
-    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-    if (heading) {
-      const block = createMarkdownBlockInfo("heading", blockIndex, options.sourcePath, index + 1, index + 1);
-      blocks.push(
-        renderMarkdownHeading(
-          heading[1].length,
-          parseMarkdownInline(heading[2], `heading-${blockIndex}`),
-          block,
-          options
-        )
-      );
-      index += 1;
-      blockIndex += 1;
-      continue;
-    }
-
-    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      const block = createMarkdownBlockInfo("hr", blockIndex, options.sourcePath, index + 1, index + 1);
-      blocks.push(<hr {...createMarkdownBlockProps(block, options)} key={block.key} />);
-      index += 1;
-      blockIndex += 1;
-      continue;
-    }
-
-    if (/^\s{0,3}>\s?/.test(line)) {
-      const startLine = index + 1;
-      const quoteLines: string[] = [];
-
-      while (index < lines.length) {
-        const quoteMatch = lines[index].match(/^\s{0,3}>\s?(.*)$/);
-        if (!quoteMatch) {
-          break;
-        }
-        quoteLines.push(quoteMatch[1]);
-        index += 1;
-      }
-
-      const block = createMarkdownBlockInfo("quote", blockIndex, options.sourcePath, startLine, index);
-      blocks.push(
-        <blockquote {...createMarkdownBlockProps(block, options)} key={block.key}>
-          <p>{parseMarkdownInline(quoteLines.join(" "), `quote-${blockIndex}`)}</p>
-        </blockquote>
-      );
-      blockIndex += 1;
-      continue;
-    }
-
-    const unorderedListMatch = line.match(/^\s{0,3}[-*+]\s+(.+)$/);
-    if (unorderedListMatch) {
-      const startLine = index + 1;
-      const items: string[] = [];
-
-      while (index < lines.length) {
-        const itemMatch = lines[index].match(/^\s{0,3}[-*+]\s+(.+)$/);
-        if (!itemMatch) {
-          break;
-        }
-        items.push(itemMatch[1]);
-        index += 1;
-      }
-
-      const block = createMarkdownBlockInfo("ul", blockIndex, options.sourcePath, startLine, index);
-      blocks.push(
-        <ul {...createMarkdownBlockProps(block, options)} key={block.key}>
-          {items.map((item, itemIndex) => (
-            <li key={`ul-${blockIndex}-${itemIndex}`}>
-              {parseMarkdownInline(item, `ul-${blockIndex}-${itemIndex}`)}
-            </li>
-          ))}
-        </ul>
-      );
-      blockIndex += 1;
-      continue;
-    }
-
-    const orderedListMatch = line.match(/^\s{0,3}\d+[.)]\s+(.+)$/);
-    if (orderedListMatch) {
-      const startLine = index + 1;
-      const items: string[] = [];
-
-      while (index < lines.length) {
-        const itemMatch = lines[index].match(/^\s{0,3}\d+[.)]\s+(.+)$/);
-        if (!itemMatch) {
-          break;
-        }
-        items.push(itemMatch[1]);
-        index += 1;
-      }
-
-      const block = createMarkdownBlockInfo("ol", blockIndex, options.sourcePath, startLine, index);
-      blocks.push(
-        <ol {...createMarkdownBlockProps(block, options)} key={block.key}>
-          {items.map((item, itemIndex) => (
-            <li key={`ol-${blockIndex}-${itemIndex}`}>
-              {parseMarkdownInline(item, `ol-${blockIndex}-${itemIndex}`)}
-            </li>
-          ))}
-        </ol>
-      );
-      blockIndex += 1;
-      continue;
-    }
-
-    const startLine = index + 1;
-    const paragraphLines: string[] = [];
-    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-
-    if (paragraphLines.length > 0) {
-      const block = createMarkdownBlockInfo("p", blockIndex, options.sourcePath, startLine, index);
-      blocks.push(
-        <p {...createMarkdownBlockProps(block, options)} key={block.key}>
-          {parseMarkdownInline(paragraphLines.join(" "), `p-${blockIndex}`)}
-        </p>
-      );
-      blockIndex += 1;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return blocks;
-}
-
-function createMarkdownBlockInfo(
-  kind: string,
-  index: number,
-  sourcePath: string,
-  startLine: number,
-  endLine: number
-): MarkdownBlockInfo {
-  return {
-    key: `${kind}-${index}`,
-    range: createSourceRange({
-      path: sourcePath,
-      line: startLine,
-      column: 0,
-      endLine: Math.max(startLine, endLine),
-      endColumn: 0
-    })
-  };
-}
-
-function createMarkdownBlockProps(
-  block: MarkdownBlockInfo,
-  options: MarkdownRenderOptions,
-  className?: string
-) {
-  const active = options.activeSource
-    ? sourcePositionIntersectsRange(options.activeSource, block.range)
-    : false;
-  const blockClassName = [
-    className,
-    "preview-markdown__source-block",
-    active ? "preview-markdown__source-block--active" : null
-  ].filter(Boolean).join(" ");
-
-  return {
-    className: blockClassName,
-    "data-source-block-key": block.key,
-    "data-source-line": `${block.range.line}`,
-    "data-source-end-line": `${block.range.endLine ?? block.range.line}`,
-    onDoubleClick: (event: ReactMouseEvent<HTMLElement>) => {
-      if (!options.onSourceJump) {
-        return;
-      }
-
-      options.onSourceJump({
-        previewRect: getPreviewRectFromElement(event.currentTarget),
-        source: block.range
-      });
-    }
-  };
-}
-
-function findActiveMarkdownBlockKey(source: string, activeSource: SourcePosition | null): string | null {
-  if (!activeSource) {
-    return null;
-  }
-
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  let index = 0;
-  let blockIndex = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-
-    const startLine = index + 1;
-    let kind = "p";
-    let endLine = startLine;
-
-    const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
-    if (fence) {
-      kind = "code";
-      const fenceMarker = fence[1];
-      index += 1;
-
-      while (index < lines.length && !lines[index].trimStart().startsWith(fenceMarker)) {
-        index += 1;
-      }
-
-      if (index < lines.length) {
-        index += 1;
-      }
-
-      endLine = index;
-    } else if (/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.test(line)) {
-      kind = "heading";
-      index += 1;
-      endLine = startLine;
-    } else if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      kind = "hr";
-      index += 1;
-      endLine = startLine;
-    } else if (/^\s{0,3}>\s?/.test(line)) {
-      kind = "quote";
-      while (index < lines.length && /^\s{0,3}>\s?/.test(lines[index])) {
-        index += 1;
-      }
-      endLine = index;
-    } else if (/^\s{0,3}[-*+]\s+(.+)$/.test(line)) {
-      kind = "ul";
-      while (index < lines.length && /^\s{0,3}[-*+]\s+(.+)$/.test(lines[index])) {
-        index += 1;
-      }
-      endLine = index;
-    } else if (/^\s{0,3}\d+[.)]\s+(.+)$/.test(line)) {
-      kind = "ol";
-      while (index < lines.length && /^\s{0,3}\d+[.)]\s+(.+)$/.test(lines[index])) {
-        index += 1;
-      }
-      endLine = index;
-    } else {
-      while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
-        index += 1;
-      }
-      endLine = index;
-    }
-
-    if (activeSource.line >= startLine && activeSource.line <= Math.max(startLine, endLine)) {
-      return `${kind}-${blockIndex}`;
-    }
-
-    blockIndex += 1;
-  }
-
-  return null;
 }
 
 function getPreviewRectFromElement(element: HTMLElement): PreviewRect {
@@ -1348,177 +1243,6 @@ function normalizeSourcePathForPreview(path: string | undefined): string {
     .join("/");
 }
 
-function isMarkdownBlockStart(line: string): boolean {
-  return (
-    /^\s*(```+|~~~+)/.test(line) ||
-    /^\s{0,3}#{1,6}\s+/.test(line) ||
-    /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
-    /^\s{0,3}>\s?/.test(line) ||
-    /^\s{0,3}[-*+]\s+/.test(line) ||
-    /^\s{0,3}\d+[.)]\s+/.test(line)
-  );
-}
-
-function renderMarkdownHeading(
-  level: number,
-  children: ReactNode[],
-  block: MarkdownBlockInfo,
-  options: MarkdownRenderOptions
-): ReactNode {
-  switch (level) {
-    case 1:
-      return <h1 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h1>;
-    case 2:
-      return <h2 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h2>;
-    case 3:
-      return <h3 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h3>;
-    case 4:
-      return <h4 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h4>;
-    case 5:
-      return <h5 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h5>;
-    default:
-      return <h6 {...createMarkdownBlockProps(block, options)} key={block.key}>{children}</h6>;
-  }
-}
-
-function parseMarkdownInline(text: string, keyPrefix: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let index = 0;
-  let nodeIndex = 0;
-
-  const pushText = (value: string) => {
-    if (!value) {
-      return;
-    }
-    nodes.push(value);
-  };
-
-  while (index < text.length) {
-    if (text[index] === "`") {
-      const end = text.indexOf("`", index + 1);
-      if (end > index + 1) {
-        nodes.push(
-          <code key={`${keyPrefix}-code-${nodeIndex}`}>
-            {text.slice(index + 1, end)}
-          </code>
-        );
-        nodeIndex += 1;
-        index = end + 1;
-        continue;
-      }
-    }
-
-    if (text[index] === "[") {
-      const linkMatch = text.slice(index).match(/^\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/);
-      const href = linkMatch ? sanitizeMarkdownHref(linkMatch[2]) : null;
-      if (linkMatch && href) {
-        nodes.push(
-          <a
-            href={href}
-            key={`${keyPrefix}-link-${nodeIndex}`}
-            rel="noreferrer"
-            target={isExternalMarkdownHref(href) ? "_blank" : undefined}
-          >
-            {parseMarkdownInline(linkMatch[1], `${keyPrefix}-link-${nodeIndex}`)}
-          </a>
-        );
-        nodeIndex += 1;
-        index += linkMatch[0].length;
-        continue;
-      }
-    }
-
-    const strongMarker = text.startsWith("**", index) ? "**" : text.startsWith("__", index) ? "__" : null;
-    if (strongMarker) {
-      const end = text.indexOf(strongMarker, index + strongMarker.length);
-      if (end > index + strongMarker.length) {
-        nodes.push(
-          <strong key={`${keyPrefix}-strong-${nodeIndex}`}>
-            {parseMarkdownInline(
-              text.slice(index + strongMarker.length, end),
-              `${keyPrefix}-strong-${nodeIndex}`
-            )}
-          </strong>
-        );
-        nodeIndex += 1;
-        index = end + strongMarker.length;
-        continue;
-      }
-    }
-
-    if (text.startsWith("++", index)) {
-      const end = text.indexOf("++", index + 2);
-      if (end > index + 2) {
-        nodes.push(
-          <u key={keyPrefix + "-underline-" + nodeIndex}>
-            {parseMarkdownInline(
-              text.slice(index + 2, end),
-              keyPrefix + "-underline-" + nodeIndex
-            )}
-          </u>
-        );
-        nodeIndex += 1;
-        index = end + 2;
-        continue;
-      }
-    }
-
-    const emphasisMarker =
-      text[index] === "*" || text[index] === "_" ? text[index] : null;
-    if (emphasisMarker) {
-      const end = text.indexOf(emphasisMarker, index + 1);
-      if (end > index + 1) {
-        nodes.push(
-          <em key={`${keyPrefix}-em-${nodeIndex}`}>
-            {parseMarkdownInline(
-              text.slice(index + 1, end),
-              `${keyPrefix}-em-${nodeIndex}`
-            )}
-          </em>
-        );
-        nodeIndex += 1;
-        index = end + 1;
-        continue;
-      }
-    }
-
-    const nextSpecial = findNextMarkdownInlineSpecial(text, index + 1);
-    pushText(text.slice(index, nextSpecial));
-    index = nextSpecial;
-  }
-
-  return nodes;
-}
-
-function findNextMarkdownInlineSpecial(text: string, start: number): number {
-  const positions = ["`", "[", "*", "_", "++"]
-    .map((marker) => text.indexOf(marker, start))
-    .filter((position) => position >= 0);
-
-  return positions.length > 0 ? Math.min(...positions) : text.length;
-}
-
-function sanitizeMarkdownHref(href: string): string | null {
-  const trimmed = href.trim();
-
-  if (/^(https?:|mailto:)/i.test(trimmed)) {
-    return trimmed;
-  }
-
-  if (
-    (trimmed.startsWith("#") || trimmed.startsWith("/") || trimmed.startsWith("./") || trimmed.startsWith("../")) &&
-    !trimmed.startsWith("//")
-  ) {
-    return trimmed;
-  }
-
-  return null;
-}
-
-function isExternalMarkdownHref(href: string): boolean {
-  return /^https?:/i.test(href);
-}
-
 function PreviewSourceMappingOverlay({
   artifactData,
   forwardSearchSource,
@@ -1554,7 +1278,7 @@ function PreviewSourceMappingOverlay({
     let disposeOverlay = () => {};
     let disposeDoubleClickListener = () => {};
     const handle = window.setTimeout(() => {
-      void renderSourceMappingOverlay(container, artifactData, paperView)
+      void renderSourceMappingOverlay(container, artifactData)
         .then((overlay) => {
           if (cancelled) {
             overlay.dispose();
@@ -1648,12 +1372,16 @@ function PreviewSourceMappingOverlay({
 function ChromiumCanvasPreview({
   artifactData,
   paperView = false,
-  isFaulted = false
+  isFaulted = false,
+  zoom
 }: {
   artifactData: Uint8Array;
   paperView?: boolean;
   isFaulted?: boolean;
+  zoom: PreviewZoomState;
 }) {
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
 
@@ -1669,9 +1397,10 @@ function ChromiumCanvasPreview({
       typeof performance === "undefined" ? 0 : performance.now();
     setRenderError(null);
 
-    void renderTypstArtifactToCanvas(container, artifactData, paperView)
+    void renderTypstArtifactToCanvas(container, artifactData)
       .then(() => {
         if (!cancelled) {
+          applyTypstCanvasZoom(container, zoomRef.current);
           logPreviewTiming("canvas", renderStartedAt);
         }
       })
@@ -1688,6 +1417,12 @@ function ChromiumCanvasPreview({
       container.innerHTML = "";
     };
   }, [artifactData, containerRef, paperView]);
+
+  useLayoutEffect(() => {
+    if (containerRef.current) {
+      applyTypstCanvasZoom(containerRef.current, zoom);
+    }
+  }, [zoom]);
 
 
   if (renderError) {
@@ -1735,11 +1470,26 @@ function PdfPreview({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const zoomRef = useRef(zoom);
+  const zoomFocusRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const renderedPdfArtifactRef = useRef<Uint8Array | null>(null);
+  const prewarmedPdfArtifactRef = useRef<Uint8Array | null>(null);
+  const pdfTouchActiveRef = useRef(false);
+  const pdfGestureActiveRef = useRef(false);
+  const pdfResolutionWorkRef = useRef<Promise<void>>(Promise.resolve());
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [pdfRenderRevision, setPdfRenderRevision] = useState(0);
   const [synctexMarker, setSynctexMarker] = useState<PreviewRect | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
 
   zoomRef.current = zoom;
+
+  const queuePdfResolutionWork = useCallback((work: () => Promise<void>): Promise<void> => {
+    const queuedWork = pdfResolutionWorkRef.current
+      .catch(() => undefined)
+      .then(work);
+    pdfResolutionWorkRef.current = queuedWork;
+    return queuedWork;
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1805,6 +1555,8 @@ function PdfPreview({
     const renderStartedAt =
       typeof performance === "undefined" ? 0 : performance.now();
     setRenderError(null);
+    renderedPdfArtifactRef.current = null;
+    prewarmedPdfArtifactRef.current = null;
 
     void renderPdfArtifactToCanvas(container, artifactData, {
       cacheKey,
@@ -1818,8 +1570,10 @@ function PdfPreview({
     })
       .then(() => {
         if (!cancelled) {
-          applyPdfCanvasZoom(container, zoomRef.current);
+          applyPdfCanvasZoom(container, zoomRef.current, zoomFocusRef.current);
           logPreviewTiming("pdf-canvas", renderStartedAt);
+          renderedPdfArtifactRef.current = artifactData;
+          setPdfRenderRevision((current) => current + 1);
         }
       })
       .catch((error) => {
@@ -1833,6 +1587,9 @@ function PdfPreview({
     return () => {
       cancelled = true;
       abortController.abort();
+      if (renderedPdfArtifactRef.current === artifactData) {
+        renderedPdfArtifactRef.current = null;
+      }
     };
   }, [
     artifactData,
@@ -1840,21 +1597,185 @@ function PdfPreview({
     paperView,
     theme.palette.editorBackground,
     theme.palette.editorForeground,
-    viewportSize.height,
-    viewportSize.width,
-    zoom.mode,
-    zoom.percent
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
 
     if (!container || viewportSize.width <= 0 || viewportSize.height <= 0) {
       return;
     }
 
-    applyPdfCanvasZoom(container, zoom);
+    applyPdfCanvasZoom(container, zoom, zoomFocusRef.current);
   }, [viewportSize.height, viewportSize.width, zoom]);
+
+
+  useEffect(() => {
+    const container = containerRef.current;
+
+    if (
+      !container ||
+      pdfRenderRevision === 0 ||
+      renderedPdfArtifactRef.current !== artifactData ||
+      prewarmedPdfArtifactRef.current === artifactData
+    ) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    const signal = abortController.signal;
+    const cancelIdleWork = schedulePdfIdleWork(() => {
+      void queuePdfResolutionWork(() =>
+        prewarmPdfCanvasResolution(container, artifactData, {
+          paperView,
+          signal,
+          themeColors: {
+            background: theme.palette.editorBackground,
+            foreground: theme.palette.editorForeground
+          }
+        })
+      )
+        .then(() => {
+          if (!signal.aborted) {
+            prewarmedPdfArtifactRef.current = artifactData;
+          }
+        })
+        .catch((error) => {
+          if (!signal.aborted) {
+            console.warn("[typr] PDF resolution prewarm failed.", error);
+          }
+        });
+    });
+
+    const cancelForInteraction = () => {
+      cancelIdleWork();
+      abortController.abort();
+    };
+    container.addEventListener("touchstart", cancelForInteraction, { passive: true });
+    container.addEventListener("gesturestart", cancelForInteraction, { passive: true });
+    container.addEventListener("wheel", cancelForInteraction, { passive: true });
+
+    return () => {
+      container.removeEventListener("touchstart", cancelForInteraction);
+      container.removeEventListener("gesturestart", cancelForInteraction);
+      container.removeEventListener("wheel", cancelForInteraction);
+      cancelIdleWork();
+      abortController.abort();
+    };
+  }, [
+    artifactData,
+    paperView,
+    pdfRenderRevision,
+    queuePdfResolutionWork,
+    theme.palette.editorBackground,
+    theme.palette.editorForeground
+  ]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+
+    if (
+      !container ||
+      pdfRenderRevision === 0 ||
+      renderedPdfArtifactRef.current !== artifactData
+    ) {
+      return;
+    }
+
+    let timeout = 0;
+    let refinementAbortController: AbortController | null = null;
+    const isInteractionActive = () =>
+      pdfTouchActiveRef.current || pdfGestureActiveRef.current;
+    const runRefinement = () => {
+      if (isInteractionActive()) {
+        timeout = window.setTimeout(runRefinement, 180);
+        return;
+      }
+
+      refinementAbortController?.abort();
+      refinementAbortController = new AbortController();
+      const signal = refinementAbortController.signal;
+
+      void queuePdfResolutionWork(() =>
+        refinePdfCanvasResolution(container, artifactData, {
+          maxPixelsPerTarget: container.clientWidth <= 720 ? 9_000_000 : undefined,
+          maxTargets: 1,
+          paperView,
+          signal,
+          themeColors: {
+            background: theme.palette.editorBackground,
+            foreground: theme.palette.editorForeground
+          }
+        })
+      ).catch((error) => {
+        if (!signal.aborted) {
+          console.warn("[typr] PDF resolution refinement failed.", error);
+        }
+      });
+    };
+    const scheduleRefinement = (delay: number) => {
+      window.clearTimeout(timeout);
+      refinementAbortController?.abort();
+      timeout = window.setTimeout(runRefinement, delay);
+    };
+    const pauseRefinement = () => {
+      window.clearTimeout(timeout);
+      refinementAbortController?.abort();
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      pdfTouchActiveRef.current = event.touches.length > 0;
+      pauseRefinement();
+    };
+    const handleTouchEnd = (event: TouchEvent) => {
+      pdfTouchActiveRef.current = event.touches.length > 0;
+      if (!isInteractionActive()) {
+        scheduleRefinement(420);
+      }
+    };
+    const handleGestureStart = () => {
+      pdfGestureActiveRef.current = true;
+      pauseRefinement();
+    };
+    const handleGestureEnd = () => {
+      pdfGestureActiveRef.current = false;
+      if (!isInteractionActive()) {
+        scheduleRefinement(420);
+      }
+    };
+    const handleWheel = () => scheduleRefinement(420);
+    const handleScroll = () => scheduleRefinement(360);
+
+    scheduleRefinement(600);
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    container.addEventListener("touchstart", handleTouchStart, { passive: true });
+    container.addEventListener("touchend", handleTouchEnd, { passive: true });
+    container.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+    container.addEventListener("gesturestart", handleGestureStart, { passive: true });
+    container.addEventListener("gestureend", handleGestureEnd, { passive: true });
+    container.addEventListener("wheel", handleWheel, { passive: true });
+
+    return () => {
+      window.clearTimeout(timeout);
+      refinementAbortController?.abort();
+      container.removeEventListener("scroll", handleScroll);
+      container.removeEventListener("touchstart", handleTouchStart);
+      container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("touchcancel", handleTouchEnd);
+      container.removeEventListener("gesturestart", handleGestureStart);
+      container.removeEventListener("gestureend", handleGestureEnd);
+      container.removeEventListener("wheel", handleWheel);
+    };
+  }, [
+    artifactData,
+    paperView,
+    pdfRenderRevision,
+    queuePdfResolutionWork,
+    theme.palette.editorBackground,
+    theme.palette.editorForeground,
+    viewportSize.height,
+    viewportSize.width,
+    zoom
+  ]);
 
 
   useEffect(() => {
@@ -1893,6 +1814,27 @@ function PdfPreview({
       className={`preview-document preview-document--canvas preview-document--pdf-canvas ${
         paperView ? "preview-document--pdf-paper" : ""
       } ${isFaulted ? "preview-document--faulted" : ""}`}
+      onPointerMove={(event) => {
+        zoomFocusRef.current = { clientX: event.clientX, clientY: event.clientY };
+      }}
+      onTouchMove={(event) => {
+        if (event.touches.length < 2) {
+          return;
+        }
+
+        const first = event.touches.item(0);
+        const second = event.touches.item(1);
+
+        if (first && second) {
+          zoomFocusRef.current = {
+            clientX: (first.clientX + second.clientX) / 2,
+            clientY: (first.clientY + second.clientY) / 2
+          };
+        }
+      }}
+      onWheelCapture={(event) => {
+        zoomFocusRef.current = { clientX: event.clientX, clientY: event.clientY };
+      }}
       onDoubleClick={onSourceJump
         ? (event) => {
             const point = getPdfPreviewPointFromEvent(event, containerRef.current);
@@ -2294,19 +2236,6 @@ export function PreviewDebugPanel({ markup }: { markup: string }) {
   );
 }
 
-function formatDiagnostic(diagnostic: {
-  message: string;
-  path?: string;
-  range?: string;
-  packageName?: string;
-}) {
-  const location = [diagnostic.packageName, diagnostic.path, diagnostic.range]
-    .filter(Boolean)
-    .join(" ");
-
-  return location ? `${location}: ${diagnostic.message}` : diagnostic.message;
-}
-
 function analyzePreviewMarkup(markup: string) {
   return {
     hasSvg: /<svg\b/i.test(markup),
@@ -2342,10 +2271,26 @@ function formatPreviewDebugExcerpt(markup: string): string {
   ].join("");
 }
 
-function shouldUseChromiumCanvasPreview(
-  result: CompileResult
-): boolean {
+function shouldUseChromiumCanvasPreview(): boolean {
   return false;
+}
+
+function schedulePdfIdleWork(callback: () => void): () => void {
+  const idleWindow = window as Window & {
+    cancelIdleCallback?: (handle: number) => void;
+    requestIdleCallback?: (
+      callback: () => void,
+      options?: { timeout: number }
+    ) => number;
+  };
+
+  if (idleWindow.requestIdleCallback) {
+    const handle = idleWindow.requestIdleCallback(callback, { timeout: 1200 });
+    return () => idleWindow.cancelIdleCallback?.(handle);
+  }
+
+  const timeout = window.setTimeout(callback, 350);
+  return () => window.clearTimeout(timeout);
 }
 
 function logPreviewTiming(mode: "svg" | "canvas" | "pdf-canvas", startedAt: number): void {
@@ -2372,13 +2317,31 @@ function normalizePreviewSvg(markup: string, paperView: boolean, theme: ThemeDef
       return markup;
     }
 
-    svg.setAttribute("color", paperView ? "#000000" : theme.palette.editorForeground);
+    svg.setAttribute(
+      "color",
+      paperView ? PAPER_PREVIEW_FOREGROUND : theme.palette.editorForeground
+    );
 
     if (paperView) {
+      const existingStyle = svg.getAttribute("style") ?? "";
+      const trimmedStyle = existingStyle.trim();
+      const stylePrefix = trimmedStyle.endsWith(";") ? trimmedStyle.slice(0, -1) : trimmedStyle;
+      svg.setAttribute(
+        "style",
+        [
+          stylePrefix,
+          `color:${PAPER_PREVIEW_FOREGROUND}`,
+          `--glyph_fill:${PAPER_PREVIEW_FOREGROUND}`,
+          "--glyph_stroke:transparent",
+          `background-color:${PAPER_PREVIEW_BACKGROUND}`
+        ]
+          .filter(Boolean)
+          .join(";")
+      );
       const existingBackground = svg.querySelector(":scope > rect[data-preview-background]");
 
       if (existingBackground) {
-        existingBackground.setAttribute("fill", "#fffef9");
+        existingBackground.setAttribute("fill", PAPER_PREVIEW_BACKGROUND);
       } else {
         const background = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         background.setAttribute("data-preview-background", "true");
@@ -2386,7 +2349,7 @@ function normalizePreviewSvg(markup: string, paperView: boolean, theme: ThemeDef
         background.setAttribute("y", "0");
         background.setAttribute("width", "100%");
         background.setAttribute("height", "100%");
-        background.setAttribute("fill", "#fffef9");
+        background.setAttribute("fill", PAPER_PREVIEW_BACKGROUND);
         svg.insertBefore(background, svg.firstChild);
       }
     } else {
@@ -2469,81 +2432,6 @@ function normalizePreviewSvg(markup: string, paperView: boolean, theme: ThemeDef
   } catch {
     return markup;
   }
-}
-
-function applyChromiumSupersampling(markup: string): string {
-  if (!isChromiumBrowser()) {
-    return markup;
-  }
-
-  if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
-    return markup;
-  }
-
-  try {
-    const parser = new DOMParser();
-    const document = parser.parseFromString(markup, "image/svg+xml");
-    const svg = document.documentElement;
-
-    if (!svg || svg.nodeName.toLowerCase() !== "svg") {
-      return markup;
-    }
-
-    const factor = 2;
-    scaleNumericAttribute(svg, "width", factor);
-    scaleNumericAttribute(svg, "height", factor);
-    scaleNumericAttribute(svg, "data-width", factor);
-    scaleNumericAttribute(svg, "data-height", factor);
-
-    const existingStyle = svg.getAttribute("style") ?? "";
-    const extraStyle = "shape-rendering:geometricPrecision;text-rendering:geometricPrecision;";
-    svg.setAttribute("style", `${existingStyle}${existingStyle ? ";" : ""}${extraStyle}`);
-
-    return new XMLSerializer().serializeToString(document);
-  } catch {
-    return markup;
-  }
-}
-
-function scaleNumericAttribute(
-  element: Element,
-  attributeName: string,
-  factor: number
-): void {
-  const rawValue = element.getAttribute(attributeName);
-
-  if (!rawValue) {
-    return;
-  }
-
-  const match = rawValue.match(/^([0-9]+(?:\.[0-9]+)?)(.*)$/);
-
-  if (!match) {
-    return;
-  }
-
-  const numericValue = Number.parseFloat(match[1]);
-  const suffix = match[2] ?? "";
-
-  if (Number.isNaN(numericValue)) {
-    return;
-  }
-
-  element.setAttribute(attributeName, `${(numericValue * factor).toFixed(3)}${suffix}`);
-}
-
-function isChromiumBrowser(): boolean {
-  if (typeof navigator === "undefined") {
-    return false;
-  }
-
-  const userAgent = navigator.userAgent;
-  const isEdgeOrChrome =
-    userAgent.includes("Edg/") || userAgent.includes("Chrome/");
-  const isFirefox = userAgent.includes("Firefox/");
-  const isSafari = userAgent.includes("Safari/") && !userAgent.includes("Chrome/");
-
-  return isEdgeOrChrome && !isFirefox && !isSafari;
 }
 
 function countMatches(value: string, pattern: RegExp): number {
@@ -2647,20 +2535,6 @@ function encodeWorkspacePreviewBytes(content: string | Uint8Array): Uint8Array {
   return new TextEncoder().encode(content);
 }
 
-function createPdfPreviewCacheKey(scope: string, content: Uint8Array): string {
-  let hash = 2166136261;
-  const sampleCount = Math.min(128, content.byteLength);
-  const maxIndex = Math.max(0, content.byteLength - 1);
-
-  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
-    const byteIndex =
-      sampleCount <= 1 ? 0 : Math.round((sampleIndex / (sampleCount - 1)) * maxIndex);
-    hash ^= content[byteIndex] ?? 0;
-    hash = Math.imul(hash, 16777619);
-  }
-
-  return `${scope}:${content.byteLength}:${(hash >>> 0).toString(36)}`;
-}
 
 function decodeWorkspaceTextContent(content: string | Uint8Array): string {
   if (typeof content === "string") {

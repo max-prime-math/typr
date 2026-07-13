@@ -12,3 +12,6 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.tsbuildinfo
+*.orig
+qa-ui-artifacts/
+test-results/

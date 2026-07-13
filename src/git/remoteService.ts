@@ -7,7 +7,7 @@ import {
   type RepoStatus,
   type RepoTreeEntry
 } from "./repoBackend";
-import { bytesToHex, sha1Hex } from "../utils/hash";
+import { sha1Hex } from "../utils/contentHash";
 import { redactGitSecrets } from "./credentials";
 
 export interface RemoteGitConfig {

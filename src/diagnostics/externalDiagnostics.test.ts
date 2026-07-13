@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_EXTERNAL_DIAGNOSTIC_PREFERENCES, createLatexHarperSource, maskLatexMarkupForHarper, runExternalDiagnostics } from "./externalDiagnostics";
+import { DEFAULT_EXTERNAL_DIAGNOSTIC_PREFERENCES, maskLatexMarkupForHarper, runExternalDiagnostics } from "./externalDiagnostics";
 
 describe("maskLatexMarkupForHarper", () => {
   it("masks LaTeX commands and package arguments while preserving prose", () => {

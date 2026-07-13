@@ -1,41 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-  DiagramAsset,
-  DiagramCanvasFrame,
-  DiagramEndpoint,
-  DiagramShape,
-  DiagramStroke,
-  DiagramStrokeStyle
-} from "../app/appState";
+import type { DiagramAsset } from "../app/appState";
 import "svgedit/dist/editor/svgedit.css";
 import { normalizeDiagramFileName } from "./diagramFiles";
-import { serializeDiagramSvg } from "./DiagramEditor";
+import { serializeDiagramSvg } from "./diagramSvgSerializer";
+import { svgEditLifecycle } from "./svgEditLifecycle";
 
 interface SvgEditDiagramEditorProps {
   diagram: DiagramAsset;
-  inkColor: string;
-  onInkColorChange: (color: string) => void;
-  fillColor: string;
-  onFillColorChange: (color: string) => void;
-  strokeStyle: DiagramStrokeStyle;
-  onStrokeStyleChange: (style: DiagramStrokeStyle) => void;
-  strokeWidth: number;
-  onStrokeWidthChange: (width: number) => void;
-  startMarker: DiagramEndpoint;
-  onStartMarkerChange: (marker: DiagramEndpoint) => void;
-  endMarker: DiagramEndpoint;
-  onEndMarkerChange: (marker: DiagramEndpoint) => void;
-  paperView?: boolean;
-  isExpanded?: boolean;
-  onExpandLeft?: () => void;
-  onExpandRight?: () => void;
-  onAddStroke: (stroke: DiagramStroke) => void;
-  onAddShape: (shape: DiagramShape) => void;
-  onUpdateStroke: (stroke: DiagramStroke) => void;
-  onUpdateShape: (shape: DiagramShape) => void;
-  onUpdateFrame: (frame: DiagramCanvasFrame | null) => void;
-  onRemoveStroke: (id: string) => void;
-  onRemoveShape: (id: string) => void;
   onClear: () => void;
   onNew: () => void;
   onNewSvg?: (svg: string) => void;
@@ -45,19 +16,8 @@ interface SvgEditDiagramEditorProps {
   onInsertSvg?: (svg: string) => void;
   onRename: (name: string) => void;
   onDownloadSvg: (svg: string) => void;
-  onUndo: () => void;
   onSvgChange: (svg: string) => void;
 }
-
-type SvgEditEditor = {
-  init: () => Promise<void> | void;
-  setConfig: (config: Record<string, unknown>) => void;
-  loadSvgString: (svg: string, options?: { noAlert?: boolean }) => void;
-  svgCanvas?: {
-    bind?: (eventName: string, callback: (...args: unknown[]) => void) => void;
-    getSvgString?: () => string;
-  };
-};
 
 const BLANK_SVG = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
@@ -78,132 +38,55 @@ export function DiagramEditor({
   onSvgChange
 }: SvgEditDiagramEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const editorRef = useRef<SvgEditEditor | null>(null);
-  const loadedDiagramIdRef = useRef<string | null>(null);
-  const loadingRef = useRef(false);
-  const syncTimerRef = useRef<number | null>(null);
+  const onSvgChangeRef = useRef(onSvgChange);
   const [fileNameDraft, setFileNameDraft] = useState(diagram.name);
   const [editorError, setEditorError] = useState<string | null>(null);
 
   const initialSvg = useMemo(() => diagram.content ?? serializeDiagramSvg(diagram), [diagram]);
+  onSvgChangeRef.current = onSvgChange;
 
   const getCurrentSvg = useCallback(() => {
-    const svg = editorRef.current?.svgCanvas?.getSvgString?.();
-    return typeof svg === "string" && svg.trim() ? svg : initialSvg;
+    return svgEditLifecycle.getCurrentSvg(initialSvg);
   }, [initialSvg]);
-
-  const syncCurrentSvg = useCallback(() => {
-    if (loadingRef.current) {
-      return;
-    }
-
-    onSvgChange(getCurrentSvg());
-  }, [getCurrentSvg, onSvgChange]);
-
-  const scheduleSync = useCallback(() => {
-    if (syncTimerRef.current !== null) {
-      window.clearTimeout(syncTimerRef.current);
-    }
-
-    syncTimerRef.current = window.setTimeout(() => {
-      syncTimerRef.current = null;
-      syncCurrentSvg();
-    }, 250);
-  }, [syncCurrentSvg]);
 
   useEffect(() => {
     setFileNameDraft(diagram.name);
   }, [diagram.name]);
 
   useEffect(() => {
-    let cancelled = false;
     const hostElement = hostRef.current;
-
     if (!hostElement) {
       return undefined;
     }
 
-    const mountHost = hostElement;
-
-    async function mountEditor() {
-      try {
-        const { default: Editor } = await import("svgedit");
-
-        if (cancelled || !hostRef.current) {
-          return;
+    let active = true;
+    svgEditLifecycle.load(diagram.id, initialSvg);
+    const attachmentId = svgEditLifecycle.attach(hostElement, {
+      onError(message) {
+        if (active) {
+          setEditorError(message);
         }
-
-        mountHost.innerHTML = "";
-        const svgEditor = new Editor(mountHost) as SvgEditEditor;
-        svgEditor.setConfig({
-          allowInitialUserOverride: false,
-          canvasName: `typr-${diagram.id}`,
-          dimensions: [640, 480],
-          imgPath: "/svgedit/images",
-          initTool: "select",
-          no_save_warning: true,
-          noDefaultExtensions: true,
-          noStorageOnLoad: true,
-          preventAllURLConfig: true,
-          preventURLContentLoading: true,
-          showRulers: false,
-          extensions: [],
-          userExtensions: []
-        });
-        await svgEditor.init();
-
-        if (cancelled) {
-          return;
+      },
+      onReady(runtimeHost) {
+        if (active) {
+          patchSvgEditShadowTheme(runtimeHost);
         }
-
-        editorRef.current = svgEditor;
-        loadingRef.current = true;
-        svgEditor.loadSvgString(initialSvg, { noAlert: true });
-        loadedDiagramIdRef.current = diagram.id;
-        loadingRef.current = false;
-        svgEditor.svgCanvas?.bind?.("changed", scheduleSync);
-        svgEditor.svgCanvas?.bind?.("afterClear", scheduleSync);
-        patchSvgEditShadowTheme(mountHost);
-        window.setTimeout(() => patchSvgEditShadowTheme(mountHost), 0);
-        window.setTimeout(() => patchSvgEditShadowTheme(mountHost), 500);
-        setEditorError(null);
-      } catch (error) {
-        setEditorError(error instanceof Error ? error.message : "SVG-Edit failed to load.");
+      },
+      onSvgChange(svg) {
+        if (active) {
+          onSvgChangeRef.current(svg);
+        }
       }
-    }
-
-    void mountEditor();
+    });
 
     return () => {
-      cancelled = true;
-      if (syncTimerRef.current !== null) {
-        window.clearTimeout(syncTimerRef.current);
-        syncTimerRef.current = null;
-      }
-      editorRef.current = null;
-      if ((window as typeof window & { svgEditor?: unknown }).svgEditor) {
-        delete (window as typeof window & { svgEditor?: unknown }).svgEditor;
-      }
-      mountHost.innerHTML = "";
+      active = false;
+      svgEditLifecycle.detach(attachmentId);
     };
   }, []);
 
   useEffect(() => {
-    const editor = editorRef.current;
-
-    if (!editor || loadedDiagramIdRef.current === diagram.id) {
-      return;
-    }
-
-    try {
-      loadingRef.current = true;
-      editor.loadSvgString(initialSvg, { noAlert: true });
-      loadedDiagramIdRef.current = diagram.id;
-      loadingRef.current = false;
-    } catch (error) {
-      loadingRef.current = false;
-      setEditorError(error instanceof Error ? error.message : "Unable to load diagram SVG.");
-    }
+    svgEditLifecycle.load(diagram.id, initialSvg);
   }, [diagram.id, initialSvg]);
 
   function handleRenameSubmit() {
@@ -213,16 +96,9 @@ export function DiagramEditor({
   }
 
   function handleClear() {
-    try {
-      loadingRef.current = true;
-      editorRef.current?.loadSvgString(BLANK_SVG, { noAlert: true });
-      loadingRef.current = false;
-      onSvgChange(BLANK_SVG);
-      onClear();
-    } catch (error) {
-      loadingRef.current = false;
-      setEditorError(error instanceof Error ? error.message : "Unable to clear diagram.");
-    }
+    svgEditLifecycle.load(diagram.id, BLANK_SVG, { force: true });
+    onSvgChange(BLANK_SVG);
+    onClear();
   }
 
   function handleNew() {

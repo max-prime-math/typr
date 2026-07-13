@@ -5,11 +5,19 @@ import {
   type PDFDocumentProxy
 } from "pdfjs-dist";
 import pdfWorkerUrl from "./pdfWorker.ts?worker&url";
+import {
+  resolvePdfCanvasResolution,
+  shouldUpgradePdfCanvasResolution,
+  type PdfCanvasResolution
+} from "./pdfCanvasResolution";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const INITIAL_PDF_RENDER_BATCH_SIZE = 2;
 const PDF_CANVAS_RENDER_CACHE_LIMIT = 6;
+const PDF_PREWARM_DISPLAY_SCALE = 2;
+const PDF_PREWARM_MAX_PIXELS = 9_000_000;
+const PDF_RASTER_ZOOM: PdfCanvasZoomState = { mode: "fit-width", percent: 100 };
 
 export interface PdfCanvasRenderOptions {
   cacheKey?: string;
@@ -27,6 +35,11 @@ export interface PdfCanvasZoomState {
   percent: number;
 }
 
+export interface PdfCanvasZoomFocus {
+  clientX: number;
+  clientY: number;
+}
+
 export async function renderPdfArtifactToCanvas(
   container: HTMLElement,
   artifactContent: Uint8Array,
@@ -37,7 +50,7 @@ export async function renderPdfArtifactToCanvas(
   const scrollAnchor = capturePdfScrollAnchor(container);
   const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
   const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
-  const renderCacheKey = createPdfCanvasRenderCacheKey(container, options, themeColors);
+  const renderCacheKey = createPdfCanvasRenderCacheKey(options, themeColors);
 
   container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
   container.style.setProperty("--pdf-page-foreground", themeColors?.foregroundCss ?? "#000000");
@@ -48,9 +61,10 @@ export async function renderPdfArtifactToCanvas(
     return;
   }
 
-  const pdfDocument = await getDocument({
+  const loadingTask = getDocument({
     data: copyBytes(artifactContent)
-  }).promise;
+  });
+  const pdfDocument = await loadingTask.promise;
 
   try {
     assertNotAborted(options.signal);
@@ -74,7 +88,7 @@ export async function renderPdfArtifactToCanvas(
         pdfDocument,
         pageNumber,
         container,
-        options.zoom,
+        PDF_RASTER_ZOOM,
         Boolean(themeColors)
       );
 
@@ -100,7 +114,194 @@ export async function renderPdfArtifactToCanvas(
     rememberPdfCanvasRender(renderCacheKey, container, true);
   } finally {
     await destroyPdfDocument(pdfDocument);
+    await destroyPdfLoadingTask(loadingTask);
   }
+}
+
+interface PdfResolutionUpgradeTarget {
+  canvas: HTMLCanvasElement;
+  displayWidth: number;
+  naturalWidth: number;
+  pageElement: HTMLElement;
+  pageNumber: number;
+  renderWidth: number;
+  resolution: PdfCanvasResolution;
+}
+
+interface PdfCanvasRefinementOptions extends PdfCanvasRenderOptions {
+  maxPixelsPerTarget?: number;
+  maxTargets?: number;
+  targetDisplayScale?: number;
+}
+
+export async function refinePdfCanvasResolution(
+  container: HTMLElement,
+  artifactContent: Uint8Array,
+  options: PdfCanvasRefinementOptions = {}
+): Promise<void> {
+  assertNotAborted(options.signal);
+  const targets = collectPdfResolutionUpgradeTargets(container, options);
+
+  if (targets.length === 0) {
+    return;
+  }
+
+  const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
+  const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
+  const loadingTask = getDocument({
+    data: copyBytes(artifactContent)
+  });
+  const pdfDocument = await loadingTask.promise;
+
+  try {
+    for (const target of targets) {
+      assertNotAborted(options.signal);
+
+      if (target.pageNumber > pdfDocument.numPages) {
+        continue;
+      }
+
+      const page = await pdfDocument.getPage(target.pageNumber);
+      const viewport = page.getViewport({
+        scale: target.renderWidth / target.naturalWidth
+      });
+      const stagingCanvas = document.createElement("canvas");
+      const stagingContext = stagingCanvas.getContext("2d", {
+        alpha: false,
+        willReadFrequently: Boolean(themeColors)
+      });
+
+      if (!stagingContext) {
+        throw new Error("Unable to create PDF refinement canvas context.");
+      }
+
+      stagingCanvas.width = target.resolution.width;
+      stagingCanvas.height = target.resolution.height;
+      stagingContext.imageSmoothingEnabled = true;
+      stagingContext.imageSmoothingQuality = "high";
+
+      await renderPdfPageTarget({
+        canvas: stagingCanvas,
+        context: stagingContext,
+        outputScale: target.resolution.outputScale,
+        page,
+        pageElement: target.pageElement,
+        viewport
+      }, {
+        signal: options.signal,
+        themeColors,
+        useDarkRetheme
+      });
+      assertNotAborted(options.signal);
+
+      const liveCanvas = target.pageElement.querySelector<HTMLCanvasElement>("canvas");
+
+      if (liveCanvas !== target.canvas || !liveCanvas.isConnected) {
+        continue;
+      }
+
+      const liveContext = liveCanvas.getContext("2d", { alpha: false });
+
+      if (!liveContext) {
+        continue;
+      }
+
+      liveCanvas.width = stagingCanvas.width;
+      liveCanvas.height = stagingCanvas.height;
+      liveCanvas.dataset.pdfRasterScale = String(
+        target.resolution.width / Math.max(1, target.displayWidth)
+      );
+      liveContext.imageSmoothingEnabled = true;
+      liveContext.imageSmoothingQuality = "high";
+      liveContext.drawImage(stagingCanvas, 0, 0);
+      await yieldPdfRenderFrame(options.signal);
+    }
+  } finally {
+    await destroyPdfDocument(pdfDocument);
+    await destroyPdfLoadingTask(loadingTask);
+  }
+}
+
+function collectPdfResolutionUpgradeTargets(
+  container: HTMLElement,
+  options: PdfCanvasRefinementOptions
+): PdfResolutionUpgradeTarget[] {
+  const containerRect = container.getBoundingClientRect();
+  const overscan = container.clientHeight;
+  const visibleTop = containerRect.top - overscan;
+  const visibleBottom = containerRect.bottom + overscan;
+  const outputScale = getPdfOutputScale();
+  const targetDisplayScale = Math.max(1, options.targetDisplayScale ?? 1);
+  const maxTargets = Math.max(1, options.maxTargets ?? Number.POSITIVE_INFINITY);
+
+  return Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas"))
+    .map((pageElement, index): PdfResolutionUpgradeTarget | null => {
+      const pageRect = pageElement.getBoundingClientRect();
+
+      if (pageRect.bottom < visibleTop || pageRect.top > visibleBottom) {
+        return null;
+      }
+
+      const canvas = pageElement.querySelector<HTMLCanvasElement>("canvas");
+      const naturalWidth = Number.parseFloat(pageElement.dataset.pdfNaturalWidth ?? "");
+      const displayWidth = pageRect.width;
+      const displayHeight = pageRect.height;
+      const renderWidth = displayWidth * targetDisplayScale;
+      const renderHeight = displayHeight * targetDisplayScale;
+
+      if (
+        !canvas ||
+        !(naturalWidth > 0) ||
+        !(displayWidth > 0) ||
+        !(displayHeight > 0)
+      ) {
+        return null;
+      }
+
+      const resolution = resolvePdfCanvasResolution(
+        renderWidth,
+        renderHeight,
+        outputScale,
+        { maxPixels: options.maxPixelsPerTarget }
+      );
+
+      if (!shouldUpgradePdfCanvasResolution(canvas.width, canvas.height, resolution)) {
+        return null;
+      }
+
+      return {
+        canvas,
+        displayWidth,
+        naturalWidth,
+        pageElement,
+        pageNumber: Number.parseInt(pageElement.dataset.pdfPageNumber ?? "", 10) || index + 1,
+        renderWidth,
+        resolution
+      };
+    })
+    .filter((target): target is PdfResolutionUpgradeTarget => target !== null)
+    .sort((left, right) => {
+      const viewportCenter = containerRect.top + container.clientHeight / 2;
+      const leftRect = left.pageElement.getBoundingClientRect();
+      const rightRect = right.pageElement.getBoundingClientRect();
+      const leftDistance = Math.abs(leftRect.top + leftRect.height / 2 - viewportCenter);
+      const rightDistance = Math.abs(rightRect.top + rightRect.height / 2 - viewportCenter);
+      return leftDistance - rightDistance;
+    })
+    .slice(0, maxTargets);
+}
+
+export function prewarmPdfCanvasResolution(
+  container: HTMLElement,
+  artifactContent: Uint8Array,
+  options: PdfCanvasRenderOptions = {}
+): Promise<void> {
+  return refinePdfCanvasResolution(container, artifactContent, {
+    ...options,
+    maxPixelsPerTarget: PDF_PREWARM_MAX_PIXELS,
+    maxTargets: 1,
+    targetDisplayScale: PDF_PREWARM_DISPLAY_SCALE
+  });
 }
 
 interface PdfCanvasRenderCacheEntry {
@@ -114,7 +315,6 @@ interface PdfCanvasRenderCacheEntry {
 const pdfCanvasRenderCache = new Map<string, PdfCanvasRenderCacheEntry>();
 
 function createPdfCanvasRenderCacheKey(
-  container: HTMLElement,
   options: PdfCanvasRenderOptions,
   themeColors: PdfThemeColors | null
 ): string | null {
@@ -122,7 +322,6 @@ function createPdfCanvasRenderCacheKey(
     return null;
   }
 
-  const zoom = options.zoom ?? { mode: "fit-width", percent: 100 };
   const themeKey = options.paperView
     ? "paper"
     : `${themeColors?.backgroundCss ?? "#ffffff"}:${themeColors?.foregroundCss ?? "#000000"}`;
@@ -130,8 +329,6 @@ function createPdfCanvasRenderCacheKey(
   return [
     options.cacheKey,
     themeKey,
-    zoom.mode,
-    zoom.percent,
     getPdfOutputScale()
   ].join("|");
 }
@@ -282,6 +479,7 @@ async function createPdfPageRenderTarget(
   pageElement.className = "pdf-page canvas";
   pageElement.dataset.pdfNaturalWidth = String(cssViewport.width);
   pageElement.dataset.pdfNaturalHeight = String(cssViewport.height);
+  pageElement.dataset.pdfPageNumber = String(pageNumber);
   pageElement.style.position = "relative";
   pageElement.style.width = `${geometry.displayWidth}px`;
   pageElement.style.height = `${geometry.displayHeight}px`;
@@ -330,11 +528,12 @@ async function renderPdfPageTarget(
   assertNotAborted(options.signal);
 
   if (options.themeColors) {
-    rethemePdfCanvas(
+    await rethemePdfCanvas(
       target.canvas,
       target.context,
       options.themeColors,
-      options.useDarkRetheme
+      options.useDarkRetheme,
+      options.signal
     );
   }
 }
@@ -362,7 +561,8 @@ function yieldPdfRenderFrame(signal: AbortSignal | undefined): Promise<void> {
 
 export function applyPdfCanvasZoom(
   container: HTMLElement,
-  zoom: PdfCanvasZoomState = { mode: "fit-width", percent: 100 }
+  zoom: PdfCanvasZoomState = { mode: "fit-width", percent: 100 },
+  focus?: PdfCanvasZoomFocus | null
 ): void {
   const pages = Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas"));
 
@@ -370,7 +570,7 @@ export function applyPdfCanvasZoom(
     return;
   }
 
-  const scrollAnchor = capturePdfScrollAnchor(container);
+  const scrollAnchor = capturePdfScrollAnchor(container, focus);
 
   for (const page of pages) {
     const naturalWidth = Number.parseFloat(page.dataset.pdfNaturalWidth ?? "");
@@ -418,8 +618,8 @@ function getPdfPageGeometry(
 ): PdfPageGeometry {
   const viewport = getPdfViewportSize(container, pageNaturalWidth, pageNaturalHeight);
   const displayScale = getPdfDisplayScale(viewport, pageNaturalWidth, pageNaturalHeight, zoom);
-  const displayWidth = Math.max(1, Math.round(pageNaturalWidth * displayScale));
-  const displayHeight = Math.max(1, Math.round(pageNaturalHeight * displayScale));
+  const displayWidth = Math.max(1, pageNaturalWidth * displayScale);
+  const displayHeight = Math.max(1, pageNaturalHeight * displayScale);
 
   return {
     displayWidth,
@@ -490,9 +690,22 @@ async function destroyPdfDocument(document: PDFDocumentProxy): Promise<void> {
   } catch {
     // Best-effort cleanup only.
   }
+
+}
+
+async function destroyPdfLoadingTask(
+  loadingTask: ReturnType<typeof getDocument>
+): Promise<void> {
+  try {
+    await loadingTask.destroy();
+  } catch {
+    // Best-effort worker shutdown only.
+  }
 }
 
 interface PdfScrollAnchor {
+  viewportX: number;
+  viewportY: number;
   pageIndex: number;
   pageYRatio: number;
   pageXRatio: number;
@@ -500,19 +713,29 @@ interface PdfScrollAnchor {
   fallbackXRatio: number;
 }
 
-function capturePdfScrollAnchor(container: HTMLElement): PdfScrollAnchor | null {
+function capturePdfScrollAnchor(
+  container: HTMLElement,
+  focus?: PdfCanvasZoomFocus | null
+): PdfScrollAnchor | null {
   const pages = Array.from(container.querySelectorAll<HTMLElement>(".pdf-page.canvas"));
   const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
   const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
   const fallbackYRatio = maxScrollTop > 0 ? container.scrollTop / maxScrollTop : 0;
   const fallbackXRatio = maxScrollLeft > 0 ? container.scrollLeft / maxScrollLeft : 0;
+  const containerRect = container.getBoundingClientRect();
+  const viewportX = focus
+    ? clamp(focus.clientX - containerRect.left, 0, container.clientWidth)
+    : container.clientWidth / 2;
+  const viewportY = focus
+    ? clamp(focus.clientY - containerRect.top, 0, container.clientHeight)
+    : container.clientHeight / 2;
 
   if (pages.length === 0) {
     return null;
   }
 
-  const centerY = container.scrollTop + container.clientHeight / 2;
-  const centerX = container.scrollLeft + container.clientWidth / 2;
+  const centerY = container.scrollTop + viewportY;
+  const centerX = container.scrollLeft + viewportX;
   let bestPageIndex = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
 
@@ -537,6 +760,8 @@ function capturePdfScrollAnchor(container: HTMLElement): PdfScrollAnchor | null 
   const pageWidth = Math.max(1, page.offsetWidth);
 
   return {
+    viewportX,
+    viewportY,
     pageIndex: bestPageIndex,
     pageYRatio: clamp((centerY - page.offsetTop) / pageHeight, 0, 1),
     pageXRatio: clamp((centerX - page.offsetLeft) / pageWidth, 0, 1),
@@ -566,8 +791,8 @@ function restorePdfScrollAnchor(
 
   const nextCenterY = page.offsetTop + page.offsetHeight * anchor.pageYRatio;
   const nextCenterX = page.offsetLeft + page.offsetWidth * anchor.pageXRatio;
-  container.scrollTop = nextCenterY - container.clientHeight / 2;
-  container.scrollLeft = nextCenterX - container.clientWidth / 2;
+  container.scrollTop = nextCenterY - anchor.viewportY;
+  container.scrollLeft = nextCenterX - anchor.viewportX;
 }
 
 interface RgbColor {
@@ -607,37 +832,73 @@ function parsePdfThemeColors(
   };
 }
 
-function rethemePdfCanvas(
+async function rethemePdfCanvas(
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
   colors: PdfThemeColors,
-  forceLuminance: boolean
-): void {
+  forceLuminance: boolean,
+  signal?: AbortSignal
+): Promise<void> {
+  assertNotAborted(signal);
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
   const data = image.data;
   const sourceData = forceLuminance ? new Uint8ClampedArray(data) : null;
+  const chunkLength = 131_072 * 4;
 
-  for (let index = 0; index < data.length; index += 4) {
-    const r = data[index]!;
-    const g = data[index + 1]!;
-    const b = data[index + 2]!;
+  for (let chunkStart = 0; chunkStart < data.length; chunkStart += chunkLength) {
+    const chunkEnd = Math.min(data.length, chunkStart + chunkLength);
 
-    if (!forceLuminance && !isNeutralPixel(r, g, b)) {
-      continue;
+    for (let index = chunkStart; index < chunkEnd; index += 4) {
+      const r = data[index]!;
+      const g = data[index + 1]!;
+      const b = data[index + 2]!;
+
+      if (!forceLuminance && !isNeutralPixel(r, g, b)) {
+        continue;
+      }
+
+      const brightness =
+        forceLuminance && sourceData
+          ? getLightlySmoothedBrightness(sourceData, canvas.width, canvas.height, index)
+          : getPerceivedBrightness({ r, g, b });
+      const ink = 1 - brightness;
+      const mapped = mixRgb(colors.background, colors.foreground, ink);
+      data[index] = mapped.r;
+      data[index + 1] = mapped.g;
+      data[index + 2] = mapped.b;
     }
 
-    const brightness =
-      forceLuminance && sourceData
-        ? getLightlySmoothedBrightness(sourceData, canvas.width, canvas.height, index)
-        : getPerceivedBrightness({ r, g, b });
-    const ink = 1 - brightness;
-    const mapped = mixRgb(colors.background, colors.foreground, ink);
-    data[index] = mapped.r;
-    data[index + 1] = mapped.g;
-    data[index + 2] = mapped.b;
+    assertNotAborted(signal);
+
+    if (chunkEnd < data.length) {
+      await yieldPdfRethemeTask(signal);
+    }
   }
 
+  assertNotAborted(signal);
   context.putImageData(image, 0, 0);
+}
+
+function yieldPdfRethemeTask(signal: AbortSignal | undefined): Promise<void> {
+  assertNotAborted(signal);
+
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, 0);
+    const abort = () => {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      reject(new DOMException("PDF recoloring was cancelled.", "AbortError"));
+    };
+
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function shouldUsePdfDarkRetheme(colors: PdfThemeColors): boolean {

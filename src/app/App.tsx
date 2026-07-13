@@ -1,8 +1,6 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -18,49 +16,35 @@ import {
   type SetStateAction
 } from "react";
 import { zipSync } from "fflate";
+import { areBytesEqual } from "../utils/bytes";
 import { DocsModal, DocsPanel } from "./DocsModal";
+import { SettingsSheet } from "../settings/SettingsSheet";
+import { SettingsPanelContent } from "../settings/SettingsPanelContent";
+import { useSettingsSheetController } from "../settings/useSettingsSheetController";
+import type { SettingsTab } from "../settings/settingsSheetState";
+import { BuildLogPanel } from "../buildLog/BuildLogPanel";
+import { useBuildLogController } from "../buildLog/useBuildLogController";
+import {
+  extractBuildLogPackageDetails,
+  groupDiagnosticsByFile,
+  hasShellEscapeConstraint,
+  type BuildLogEntry,
+  type BuildLogTrigger
+} from "../buildLog/buildLogState";
 import {
   createDefaultSnapshot,
   DEFAULT_EDITOR_FONT_SIZE,
   createDocument,
   createDocumentFromFile,
   createDefaultDiagram,
-  createDefaultGraph,
   createFolder,
-  createNextGraphSnapshot,
   type DiagramAsset,
-  type DiagramCanvasFrame,
-  type DiagramEndpoint,
-  type DiagramShape,
-  type DiagramStroke,
-  type DiagramStrokeStyle,
-  type GraphAsset,
   getActiveDocument,
   normalizeSnapshot,
-  renameActiveDocument,
   setActiveDocument,
   saveCurrentDiagram,
-  saveCurrentGraph,
   createNextDiagramSnapshot,
-  emptyTrash,
-  moveDiagramToTrash,
-  moveDiagramToFolder,
-  moveDocumentToTrash,
-  moveDocumentToFolder,
-  moveFolderToTrash,
-  moveFolderToFolder,
-  moveGraphToTrash,
-  moveGraphToFolder,
-  permanentlyDeleteTrashEntry,
-  removeLatestDiagramItem,
-  removeDiagramStroke,
-  removeDiagramShape,
-  renameDiagramById,
-  renameDocumentById,
-  renameFolderById,
-  renameGraphById,
   restoreTrashEntry,
-  updateGraph,
   updateDiagram,
   updateActiveDocument,
   updateColorfulFileTreeIconsPreference,
@@ -85,6 +69,32 @@ import {
   type MobileKeyboardLanguage,
   type ThemePreference
 } from "./appState";
+import { getWorkspaceRenameDraft, renameWorkspaceNode } from "./workspaceRename";
+import { selectWorkspaceRange } from "./workspaceSelection";
+import { useWorkspaceSelection } from "./useWorkspaceSelection";
+import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
+import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
+import { useWorkspacePersistence } from "./useWorkspacePersistence";
+import {
+  areWorkspacePathListsEqual,
+  insertWorkspacePathAfterActive,
+  openWorkspacePreviewTab,
+  normalizeUniqueWorkspacePaths,
+  reorderWorkspacePaths
+} from "./workspaceTabs";
+import {
+  copyWorkspaceNodesToSnapshot,
+  emptyWorkspaceTrash,
+  getWorkspaceClipboardDomain,
+  getWorkspaceMovePromptLabel,
+  isWorkspaceNodeCopyable,
+  moveWorkspaceNodeInSnapshot,
+  normalizeWorkspacePasteDestination,
+  remapWorkspaceSelectionAfterMove,
+  removeDescendantWorkspaceNodes,
+  removeWorkspaceSelectionSubtree,
+  trashWorkspaceNode
+} from "./workspaceTreeActions";
 import {
   formatSourceWithEditorTooling,
   getEditorToolLanguage,
@@ -98,6 +108,7 @@ import {
   type DiagnosticProviderStatus,
   type ExternalDiagnosticProviderPreferences
 } from "../diagnostics/externalDiagnostics";
+import { releaseHarperDiagnosticsMemory } from "../diagnostics/harperDiagnosticsWorkerClient";
 import { collectDocumentStats, type DocumentStats } from "./documentStats";
 import {
   DEFAULT_KEYBINDINGS,
@@ -110,21 +121,40 @@ import {
 } from "./keybindings";
 import {
   collectAvailableLatexPdfPreviewPaths,
+  createCompilePreviewState,
   createCompletedPreviewCompilerStatus,
+  createIdleCompilerStatusForSource,
+  decideCompilePreviewTransition,
   getCompilePreviewSourcePathsForResult,
   getLatexPdfOutputPath,
   getLatexPdfSourcePathForResult,
-  shouldRunPendingCompileAfterCompletion
+  shouldShowCompileActivity
 } from "./compilePreviewState";
-import { InlinePaneExpandControls } from "./InlinePaneExpandControls";
 import {
-  createTypstCompiler,
+  createTypstPreviewCacheSignature,
+  getExistingLatexPdfPath,
+  getLatexSynctexOutputPath,
+  loadSavedLatexPdfCompileResult,
+  loadTypstPreviewCacheResult,
+  saveTypstPreviewCacheResult
+} from "./compilePreviewCache";
+import { useCompilePreviewController } from "./useCompilePreviewController";
+import { resolveCompileResultCompletion } from "./compileResultReuse";
+import { prepareBrowserForLatexCompile } from "./latexCompilePreparation";
+import { resolvePreviewTextContent } from "./previewContent";
+import {
+  buildTypstProjectShadowFiles,
+  exportTypstPreviewPdf
+} from "./typstPreviewExport";
+import {
+  releaseTypstCompilerMemory,
   type CompilerStatus,
   type CompileResult
 } from "../compiler/typstCompiler";
 import {
   cancelLatexCompile,
   compileLatexDocument,
+  releaseLatexCompilerMemory,
   type LatexCompileDriver,
   type LatexCompileMode
 } from "../compiler/latexCompiler";
@@ -154,7 +184,6 @@ import {
 } from "../compiler/sourceFileTypes";
 import type { CompileAssetFile, CompileDiagnostic, CompileMetadata } from "../compiler/types";
 import { exportTypstPdf } from "../compiler/typstRuntime";
-import { normalizeTypstCompilerPath } from "../compiler/typstAssets";
 import {
   clearTypstPackageCache,
   ensureTypstPackageReferences,
@@ -170,9 +199,11 @@ import {
 import {
   TypstEditor,
   type TypstEditorHandle,
+  type TypstEditorSelection,
   type TypstSearchQueryState
 } from "../editor/TypstEditor";
 import { TerminalDrawer } from "../terminal/TerminalDrawer";
+import { renderMarkdownHtml } from "../markdown/markdownParser";
 import { isTerminalToggleShortcut } from "../terminal/terminalHotkey";
 import {
   PreviewPane,
@@ -181,18 +212,10 @@ import {
   type WorkspacePreviewFile
 } from "../preview/PreviewPane";
 import { MitexPanel } from "../mitex/MitexPanel";
-import { DiagramEditorErrorBoundary, serializeDiagramSvg } from "../diagram/DiagramEditor";
+import { DiagramEditorErrorBoundary } from "../diagram/DiagramEditorErrorBoundary";
+import { serializeDiagramSvg } from "../diagram/diagramSvgSerializer";
 import { DiagramEditor } from "../diagram/SvgEditDiagramEditor";
 import { exportSvgToVectorPdfBytes } from "../diagram/diagramPdfExport";
-import {
-  GraphEditor,
-  GraphEditorErrorBoundary
-} from "../graph/GraphEditor";
-import {
-  buildGraphInsertResult,
-  buildGraphSourceInsertResult,
-  buildGraphTypstFigure
-} from "../graph/graphExport";
 import {
   DIAGRAM_DIRECTORY,
   getDiagramCompilerPath,
@@ -202,11 +225,6 @@ import {
   normalizeDiagramFileName
 } from "../diagram/diagramFiles";
 import {
-  getGraphCompilerPath,
-  getGraphFilePath,
-  normalizeGraphFileNameForContentType
-} from "../graph/graphFiles";
-import {
   AUTO_THEME_ID,
   compareThemesByDisplayOrder,
   THEME_IMPORT_TEMPLATE
@@ -214,25 +232,28 @@ import {
 import {
   DEFAULT_ZOOM,
   nextZoomStep,
+  zoomPreviewByWheel,
   type PreviewZoomState
 } from "../preview/PreviewPane";
+import { shouldUseLowMemoryCompilerMode } from "../utils/browserDetection";
 import {
   createSourceRange,
   type PreviewSourceLink,
   type SourcePosition
 } from "../preview/sourceLinks";
-import packageJson from "../../package.json";
 import {
+  deleteProjectDeletionTombstone,
+  deleteProjectGitFiles,
   loadGitWorkspace,
   loadGitHubConfig,
+  loadProjectDeletionTombstones,
   loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
-  deleteProjectGitFiles,
   saveGitWorkspace,
   saveGitHubConfig,
+  saveProjectDeletionTombstone,
   saveProjectStorage,
-  saveSnapshot,
   saveCustomSnippets
 } from "../storage/indexedDbStorage";
 import {
@@ -250,28 +271,26 @@ import {
   normalizeProjectStorageState,
   projectRepositoryToLegacyProject,
   readProjectFileBytes,
-  removeProjectRepository,
   renameProjectPath,
-  syncProjectStorageFromSnapshot,
   updateSelectedProjectRepository,
   writeProjectFile,
   type ProjectFilesystemEntry,
   type TyprProjectRepository,
-  type TyprProjectStorageState
 } from "../project/projectState";
+import {
+  applyProjectDeletionTombstones,
+  deleteProjectDurably,
+  retryProjectDeletions
+} from "../project/projectDeletion";
 import {
   createEmptyGitManagedProject,
   normalizeGitWorkspaceState,
   parseIgnorePatternsInput,
   stringifyIgnorePatterns,
-  type GitManagedProject,
-  type GitWorkspaceState
+  type GitManagedProject
 } from "../git/gitState";
 import {
-  createRepoBackend,
   formatRepoError,
-  type RepoBranch,
-  type RepoCommit,
   type RepoMergeResolution,
   type RepoStorageStats,
   type RepoStatus,
@@ -279,14 +298,14 @@ import {
 } from "../git/repoBackend";
 import { loadGitCredentialMap, redactGitSecrets, saveGitCredentialMap } from "../git/credentials";
 import {
-  createRemoteGitService,
-  type RemoteGitConfig,
-  type RemoteGitAccount,
-  type RemoteGitBranchSummary,
-  type RemoteGitProgress,
-  type RemoteGitRepositorySummary,
-  type UpstreamTracking
+  type RemoteGitConfig
 } from "../git/remoteService";
+import {
+  createInitialGitHubCloneState,
+  useGitPanelController,
+  type MergeVersionPreview,
+  type MergeVersionRole
+} from "./useGitPanelController";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
 import {
@@ -326,14 +345,15 @@ import {
   isTextWorkspaceFile,
   type WorkspaceTreeNode
 } from "../workspace/workspaceTree";
-import { shouldIgnorePath } from "../git/pathFilters";
-import { createPrefixedId } from "../utils/randomId";
+import {
+  getRelativePathBasename as getWorkspaceBaseName,
+  getRelativePathParent as getWorkspaceParentPath,
+  joinRelativePaths as joinWorkspacePath
+} from "../utils/relativePath";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
 const OUTLINE_DEBOUNCE_MS = 180;
-const SYNC_PROGRESS_UPDATE_INTERVAL_MS = 250;
-const MENU_CLOSE_DELAY_MS = 140;
 const MOVE_HOVER_EXPAND_DELAY_MS = 1000;
 const PANEL_LAYOUT_STORAGE_KEY = "typr.panel-layout";
 const PANEL_LAYOUT_VERSION = 6;
@@ -350,16 +370,11 @@ const ZEN_MIN_WIDTH = 420;
 const ZEN_MAX_WIDTH = 980;
 const ZEN_MIN_HEIGHT = 320;
 const THEME_TEMPLATE_FILENAME = "typr-theme-template.json";
-const APP_VERSION = packageJson.version;
 const PREVIEW_POPUP_STORAGE_KEY = "typr.preview-popup";
 const WORKSPACE_OPEN_FOLDERS_STORAGE_KEY = "typr.workspace-open-folders.v1";
 const LATEX_PACKAGE_SELECTIONS_STORAGE_KEY = "typr.latex-package-selections.v1";
-const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 const RECENT_WORKSPACE_STORAGE_KEY = "typr.recent-workspace.v1";
 const LEFT_PANE_STORAGE_KEY = "typr.left-pane.v1";
-const BUILD_LOG_STORAGE_KEY = "typr.build-log.v1";
-const TYPST_PREVIEW_CACHE_STORAGE_KEY = "typr.typst-preview-cache.v1";
-const TYPST_PREVIEW_CACHE_MAX_CONTENT_LENGTH = 2_000_000;
 const PROJECT_EXPORT_INPUT_ACCEPT = ".json,application/json";
 const WORKSPACE_UPLOAD_ACCEPT = [
   ".typ",
@@ -498,33 +513,6 @@ function rememberWorkspacePreviewFile(
   }
 }
 
-interface SourceSymbolItem {
-  label: string;
-  template: string;
-  glyph: string;
-}
-
-const SOURCE_SYMBOL_ITEMS: SourceSymbolItem[] = [
-  { label: "Limit", glyph: "lim", template: "lim_(${1:x} -> ${2:3})" },
-  { label: "Integral", glyph: "∫", template: "integral_(${1:a})^(${2:b}) ${3:f(x)} dif ${4:x}" },
-  { label: "Sum", glyph: "∑", template: "sum_(${1:n=1})^(${2:oo}) ${3:a_n}" },
-  { label: "Arrow right", glyph: "→", template: "#sym.arrow.r" },
-  { label: "Arrow left", glyph: "←", template: "#sym.arrow.l" },
-  { label: "Arrow both", glyph: "↔", template: "#sym.arrow.l.r" },
-  { label: "Double arrow", glyph: "⇒", template: "#sym.arrow.r.double" },
-  { label: "Check", glyph: "✓", template: "#sym.ballot.check" },
-  { label: "Cross", glyph: "✕", template: "#sym.ballot.cross" },
-  { label: "Alpha", glyph: "α", template: "#sym.alpha" },
-  { label: "Beta", glyph: "β", template: "#sym.beta" },
-  { label: "Gamma", glyph: "γ", template: "#sym.gamma" },
-  { label: "Pi", glyph: "π", template: "#sym.pi" },
-  { label: "Infinity", glyph: "∞", template: "#sym.infinity" },
-  { label: "Plus-minus", glyph: "±", template: "#sym.plus.minus" },
-  { label: "Star", glyph: "★", template: "#sym.star.filled" },
-  { label: "Subset", glyph: "⊂", template: "#sym.subset" },
-  { label: "Superset", glyph: "⊃", template: "#sym.supset" }
-];
-
 const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "projects", label: "Projects" },
   { id: "files", label: "Files" },
@@ -532,7 +520,6 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "search", label: "Search" },
   { id: "outline", label: "Outline" },
   { id: "diagram", label: "Diagram" },
-  { id: "graph", label: "Graph" },
   { id: "mitex", label: "MiTeX" },
   { id: "sync", label: "Git" },
   { id: "debug", label: "Debug" }
@@ -543,12 +530,6 @@ const MOBILE_SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "docs", label: "Docs" },
   { id: "settings", label: "Settings" }
 ];
-
-interface SourceSymbolTooltipState {
-  item: SourceSymbolItem;
-  x: number;
-  y: number;
-}
 
 type MobileKeyboardKeyAction =
   | { type: "text"; value: string }
@@ -646,11 +627,26 @@ type WorkspaceContextMenuState =
     };
 
 const MENU_ITEMS = ["Typr", "File", "Edit", "View", "Help"] as const;
+const PREVIEW_PINCH_MIN_PERCENT = 25;
+const PREVIEW_PINCH_MAX_PERCENT = 500;
+const EDITOR_PINCH_MIN_FONT_SIZE = 12;
+const EDITOR_PINCH_MAX_FONT_SIZE = 28;
 type MenuLabel = (typeof MENU_ITEMS)[number];
 type WorkspaceMode = "split" | "sidebar" | "editor" | "preview" | "zen";
 type ZenResizeEdge = "zen-left" | "zen-right" | "zen-top" | "zen-bottom";
 type ZoomPaneTarget = "sidebar" | "source" | "preview";
+type PinchZoomPaneTarget = "source" | "preview";
 type VimPaneFocusTarget = "sidebar" | "source" | "preview";
+
+interface PinchZoomState {
+  input: "gesture" | "touch";
+  pane: PinchZoomPaneTarget;
+  startDistance: number;
+  startPreviewPercent: number;
+  startEditorFontSize: number;
+  lastPreviewPercent: number;
+  lastEditorFontSize: number;
+}
 type PreviewScrollAction =
   | "left"
   | "down"
@@ -661,7 +657,6 @@ type PreviewScrollAction =
   | "top"
   | "bottom";
 type MobileWorkspaceTab = "files" | "editor" | "preview";
-type WorkspaceTabKind = "source" | "preview";
 type SidebarTool =
   | "projects"
   | "files"
@@ -672,22 +667,33 @@ type SidebarTool =
   | "sync"
   | "debug"
   | "diagram"
-  | "graph"
   | "docs"
   | "settings";
-type GitMergePaneMode = "sidebar" | "source" | "preview";
-type MergeVersionRole = "base" | "local" | "remote";
-type SettingsTab = "git" | "themes" | "editor" | "keybindings" | "snippets" | "packages";
 type PackageSettingsScope = "typst" | "latex";
-type SettingsScrollPositions = Partial<Record<SettingsTab, number>>;
 type WorkspaceClipboardMode = "copy" | "cut";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
-type TableAlignment = "left" | "center" | "right" | "horizon";
+type TableHorizontalAlignment = "left" | "center" | "right";
+type TableVerticalAlignment = "top" | "middle" | "bottom";
+type TableFormatScope = "table" | "column" | "row" | "cell";
+type TablePadding = "none" | "small" | "medium" | "large";
+type TableStrokeStyle = "none" | "solid" | "dashed" | "dotted" | "double";
+type TableStrokeWeight = "thin" | "medium" | "thick";
+type TableBorderEdge = "top" | "right" | "bottom" | "left";
+type TableBorderPreset =
+  | "clear"
+  | "all"
+  | "outer"
+  | "inner"
+  | "horizontal"
+  | "vertical"
+  | "top"
+  | "right"
+  | "bottom"
+  | "left";
+type TableAlignment = TableHorizontalAlignment | "horizon";
 type TableGutter = "none" | "small" | "medium";
 type TableInset = "none" | "small" | "medium";
 type TableStroke = "default" | "none";
-type BuildLogTrigger = "manual" | "auto" | "preview" | "export" | "agent" | "rerun";
-type BuildLogFilter = "all" | "errors" | "warnings" | "current-file" | "latex";
 type LatexCompileProfileId = "pdftex-quick" | "pdftex-full" | "luatex-full" | "luahbtex-full";
 
 interface LatexCompileProfile {
@@ -743,13 +749,6 @@ interface SyncFeedback {
   text: string;
 }
 
-interface CompilePreviewState {
-  result: CompileResult | null;
-  lastSuccessfulResult: Extract<CompileResult, { ok: true }> | null;
-  compilerStatus: CompilerStatus;
-  isCompiling: boolean;
-}
-
 interface DiagnosticSourceSnapshot {
   source: string;
   path: string;
@@ -762,42 +761,6 @@ interface ExternalDiagnosticsState {
   diagnostics: CompileDiagnostic[];
 }
 
-type CachedTypstPreviewOutputKind = "svg" | "html" | "placeholder";
-
-interface TypstPreviewCacheEntry {
-  version: 1;
-  signature: string;
-  updatedAt: string;
-  result: {
-    ok: true;
-    engine: Extract<CompileResult, { ok: true }>["engine"];
-    diagnostics: CompileDiagnostic[];
-    output: {
-      kind: CachedTypstPreviewOutputKind;
-      content: string;
-    };
-    metadata?: CompileMetadata;
-  };
-}
-
-interface BuildLogEntry {
-  id: string;
-  sourcePath: string;
-  language: SourceLanguage;
-  engine: CompileResult["engine"];
-  ok: boolean;
-  startedAt: string;
-  durationMs: number;
-  diagnostics: CompileDiagnostic[];
-  metadata?: CompileMetadata;
-  trigger: BuildLogTrigger;
-  compileMode: "quick" | "full" | "none";
-  cached: boolean;
-  outputChanged: boolean;
-  rawLog?: string;
-  packageDetails: string[];
-  shellEscapeUnavailable: boolean;
-}
 
 interface WorkspaceReference {
   path: string;
@@ -836,111 +799,12 @@ interface RecentFileEntry {
 type PreviewDownloadMode = "output" | "source";
 type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
 
-interface StoredSettingsMenuState {
-  tab: SettingsTab;
-  scrollByTab: SettingsScrollPositions;
-}
-
 interface StoredLeftPaneState {
   activeSidebarTool: SidebarTool;
   mobileWorkspaceTab: MobileWorkspaceTab;
   isTrashViewOpen: boolean;
   scrollByPane: Record<string, number>;
 }
-
-const SETTINGS_TABS: readonly SettingsTab[] = [
-  "git",
-  "themes",
-  "editor",
-  "keybindings",
-  "snippets",
-  "packages"
-];
-
-const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
-  git: [
-    "git",
-    "github",
-    "token",
-    "remote",
-    "owner",
-    "repo",
-    "repository",
-    "branch",
-    "gitignore",
-    "status",
-    "push",
-    "sync",
-    "commit"
-  ],
-  themes: [
-    "theme",
-    "themes",
-    "light",
-    "dark",
-    "system",
-    "import",
-    "palette",
-    "follow system default"
-  ],
-  editor: [
-    "editor",
-    "vim",
-    "cursor",
-    "smooth",
-    "smear",
-    "format",
-    "formatter",
-    "lint",
-    "linter",
-    "diagnostics",
-    "harper",
-    "lsp",
-    "language server",
-    "websocket",
-    "local lsp",
-    "remote lsp",
-    "compile",
-    "live"
-  ],
-  keybindings: [
-    "keybindings",
-    "keys",
-    "shortcuts",
-    "hotkeys",
-    "vim",
-    "layout",
-    "preview",
-    "multi cursor",
-    ...KEYBINDING_DEFINITIONS.flatMap((definition) => [
-      definition.label,
-      definition.group,
-      definition.defaultBinding
-    ])
-  ],
-  snippets: [
-    "snippets",
-    "typst",
-    "latex",
-    "markdown",
-    "autocomplete",
-    "import",
-    "json",
-    "template"
-  ],
-  packages: [
-    "packages",
-    "package",
-    "typst universe",
-    "latex",
-    "cache",
-    "offline",
-    "bundle",
-    "manual",
-    "recommended",
-    "basic"
-  ]
-};
 
 interface PendingKeybindingConflict {
   commandId: KeybindingCommandId;
@@ -988,62 +852,6 @@ function setSyncStatusSnapshot(nextStatus: SyncStatusSnapshot): void {
   }
 }
 
-interface GitFileStatus {
-  path: string;
-  state: "in-sync" | "local-only" | "remote-only" | "diverged";
-}
-
-type GitHubRepoMode = "select" | "create" | "manual";
-
-interface GitHubDiscoveryState {
-  status: "idle" | "loading" | "connected" | "error";
-  message: string;
-  accountLogin: string | null;
-  owners: RemoteGitAccount[];
-  repos: RemoteGitRepositorySummary[];
-  branches: RemoteGitBranchSummary[];
-  repoMode: GitHubRepoMode;
-  isLoadingRepos: boolean;
-  isLoadingBranches: boolean;
-}
-
-interface GitHubCloneState {
-  isOpen: boolean;
-  mode: "clone" | "create";
-  status: "idle" | "loading" | "connected" | "error";
-  token: string;
-  owner: string;
-  repo: string;
-  branch: string;
-  projectName: string;
-  repositoryUrl: string;
-  message: string;
-  accountLogin: string | null;
-  owners: RemoteGitAccount[];
-  repos: RemoteGitRepositorySummary[];
-  branches: RemoteGitBranchSummary[];
-  isLoadingRepos: boolean;
-  isLoadingBranches: boolean;
-  progress: { current: number; total: number } | null;
-}
-
-type MergeResolutionDraft =
-  | { kind: "oid"; oid: string | null; label: string }
-  | { kind: "content"; content: string };
-
-interface MergeVersionPreview {
-  oid: string | null;
-  label: string;
-  text: string;
-}
-
-interface MergeFilePreview {
-  path: string;
-  base: MergeVersionPreview;
-  local: MergeVersionPreview;
-  remote: MergeVersionPreview;
-}
-
 interface StoredPanelLayout {
   version?: number;
   isSidebarCollapsed?: boolean;
@@ -1066,15 +874,62 @@ interface OutlineTreeEntry extends OutlineEntry {
   children: OutlineTreeEntry[];
 }
 
-interface MatrixSettings {
+interface MatrixSize {
   rows: number;
   columns: number;
-  delimiter: MatrixDelimiter;
 }
 
-interface TableSettings {
-  rows: number;
-  columns: number;
+interface MatrixSettings extends MatrixSize {
+  delimiter: MatrixDelimiter;
+  cells: string[][];
+}
+
+interface TableCellBorder {
+  strokeStyle: TableStrokeStyle;
+  strokeWeight: TableStrokeWeight;
+}
+
+interface TableCellFormat {
+  align?: TableHorizontalAlignment;
+  verticalAlign?: TableVerticalAlignment;
+  padding?: TablePadding;
+  strokeStyle?: TableStrokeStyle;
+  strokeWeight?: TableStrokeWeight;
+  backgroundColor?: string;
+  borders?: Partial<Record<TableBorderEdge, TableCellBorder>>;
+}
+
+interface TableMerge {
+  row: number;
+  column: number;
+  rowSpan: number;
+  columnSpan: number;
+}
+
+interface TableSelection {
+  anchorRow: number;
+  anchorColumn: number;
+  focusRow: number;
+  focusColumn: number;
+}
+
+interface TableSelectionRange {
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
+}
+
+interface TableResolvedCellFormat {
+  align: TableHorizontalAlignment;
+  verticalAlign: TableVerticalAlignment;
+  padding: TablePadding;
+  strokeStyle: TableStrokeStyle;
+  strokeWeight: TableStrokeWeight;
+  backgroundColor: string;
+}
+
+interface TableSettings extends MatrixSize {
   header: boolean;
   footer: boolean;
   striped: boolean;
@@ -1082,41 +937,764 @@ interface TableSettings {
   gutter: TableGutter;
   inset: TableInset;
   stroke: TableStroke;
+  caption: string;
+  cells: string[][];
+  tableFormat: TableCellFormat;
+  columnFormats: TableCellFormat[];
+  rowFormats: TableCellFormat[];
+  cellFormats: TableCellFormat[][];
+  merges: TableMerge[];
 }
 
-const MATRIX_ROW_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
-const MATRIX_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
+interface EditableSourceTable {
+  from: number;
+  to: number;
+  language: SourceLanguage;
+  settings: TableSettings;
+}
+
+const MATRIX_MIN_ROWS = 1;
+const MATRIX_MIN_COLUMNS = 1;
+const MATRIX_SIZE_PICKER_INITIAL_ROWS = 4;
+const MATRIX_SIZE_PICKER_INITIAL_COLUMNS = 4;
+const MATRIX_MAX_ROWS = 24;
+const MATRIX_MAX_COLUMNS = 24;
 const MATRIX_DELIMITER_OPTIONS: Array<{
   id: MatrixDelimiter;
   label: string;
-  delim: string;
+  delim: string | null;
 }> = [
   { id: "paren", label: "()", delim: "(" },
   { id: "bracket", label: "[]", delim: "[" },
   { id: "brace", label: "{}", delim: "{" },
   { id: "bar", label: "||", delim: "|" },
   { id: "angle", label: "<>", delim: "<" },
-  { id: "none", label: "None", delim: "" }
+  { id: "none", label: "None", delim: null }
 ];
 
-const TABLE_ROW_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
-const TABLE_COLUMN_OPTIONS = [1, 2, 3, 4, 5, 6] as const;
-const TABLE_ALIGNMENT_OPTIONS: Array<{ id: TableAlignment; label: string }> = [
+function clampMatrixDimension(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function createMatrixCells(rows: number, columns: number, cells: string[][] = []): string[][] {
+  return Array.from({ length: rows }, (_unusedRow, rowIndex) =>
+    Array.from({ length: columns }, (_unusedColumn, columnIndex) => cells[rowIndex]?.[columnIndex] ?? "")
+  );
+}
+
+function createInitialMatrixSettings(): MatrixSettings {
+  const rows = 2;
+  const columns = 2;
+
+  return {
+    rows,
+    columns,
+    delimiter: "paren",
+    cells: createMatrixCells(rows, columns)
+  };
+}
+
+function resizeMatrixSettings(settings: MatrixSettings, rows: number, columns: number): MatrixSettings {
+  const nextRows = clampMatrixDimension(rows, MATRIX_MIN_ROWS, MATRIX_MAX_ROWS);
+  const nextColumns = clampMatrixDimension(columns, MATRIX_MIN_COLUMNS, MATRIX_MAX_COLUMNS);
+
+  return {
+    ...settings,
+    rows: nextRows,
+    columns: nextColumns,
+    cells: createMatrixCells(nextRows, nextColumns, settings.cells)
+  };
+}
+
+function updateMatrixCell(
+  settings: MatrixSettings,
+  rowIndex: number,
+  columnIndex: number,
+  value: string
+): MatrixSettings {
+  const cells = createMatrixCells(settings.rows, settings.columns, settings.cells);
+
+  cells[rowIndex][columnIndex] = value;
+
+  return {
+    ...settings,
+    cells
+  };
+}
+
+function escapeSnippetText(value: string): string {
+  return value.replace(/[\\$}]/g, "\\$&");
+}
+
+function escapeTypstContent(value: string): string {
+  const escapedTypst = value
+    .replace(/\\/g, "\\\\")
+    .replace(/\/\//g, "\\/\\/")
+    .replace(/([#$*_`\[\]@])/g, "\\$1");
+
+  return escapeSnippetText(escapedTypst);
+}
+
+function escapeLatexText(value: string): string {
+  const escapedLatex = value
+    .replace(/\\/g, "\\textbackslash{}")
+    .replace(/([#$%&_{}])/g, "\\$1")
+    .replace(/\^/g, "\\textasciicircum{}")
+    .replace(/~/g, "\\textasciitilde{}");
+
+  return escapeSnippetText(escapedLatex);
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  const escapedMarkdown = value
+    .replace(/\r?\n/g, " ")
+    .replace(/\|/g, "\\|");
+
+  return escapeSnippetText(escapedMarkdown);
+}
+
+function createTableCells(rows: number, columns: number, cells: string[][] = []): string[][] {
+  return createMatrixCells(rows, columns, cells);
+}
+
+function cloneTableCellBorder(border: TableCellBorder): TableCellBorder {
+  return { ...border };
+}
+
+function cloneTableCellFormat(format: TableCellFormat = {}): TableCellFormat {
+  return {
+    ...format,
+    borders: format.borders
+      ? Object.fromEntries(
+          TABLE_BORDER_EDGES.flatMap((edge) => {
+            const border = format.borders?.[edge];
+            return border ? [[edge, cloneTableCellBorder(border)]] : [];
+          })
+        ) as Partial<Record<TableBorderEdge, TableCellBorder>>
+      : undefined
+  };
+}
+
+function createTableFormatList(length: number, formats: TableCellFormat[] = []): TableCellFormat[] {
+  return Array.from({ length }, (_unused, index) => cloneTableCellFormat(formats[index]));
+}
+
+function createTableFormatGrid(rows: number, columns: number, formats: TableCellFormat[][] = []): TableCellFormat[][] {
+  return Array.from({ length: rows }, (_unusedRow, rowIndex) =>
+    Array.from({ length: columns }, (_unusedColumn, columnIndex) =>
+      cloneTableCellFormat(formats[rowIndex]?.[columnIndex])
+    )
+  );
+}
+
+function createInitialTableSettings(): TableSettings {
+  const rows = 3;
+  const columns = 3;
+
+  return {
+    rows,
+    columns,
+    header: true,
+    footer: false,
+    striped: true,
+    align: "left",
+    gutter: "none",
+    inset: "small",
+    stroke: "default",
+    caption: "",
+    cells: createTableCells(rows, columns),
+    tableFormat: { ...DEFAULT_TABLE_FORMAT },
+    columnFormats: createTableFormatList(columns),
+    rowFormats: createTableFormatList(rows),
+    cellFormats: createTableFormatGrid(rows, columns),
+    merges: []
+  };
+}
+
+function resizeTableSettings(settings: TableSettings, rows: number, columns: number): TableSettings {
+  const nextRows = clampMatrixDimension(rows, TABLE_MIN_ROWS, TABLE_MAX_ROWS);
+  const nextColumns = clampMatrixDimension(columns, TABLE_MIN_COLUMNS, TABLE_MAX_COLUMNS);
+
+  return {
+    ...settings,
+    rows: nextRows,
+    columns: nextColumns,
+    footer: nextRows < 2 ? false : settings.footer,
+    cells: createTableCells(nextRows, nextColumns, settings.cells),
+    columnFormats: createTableFormatList(nextColumns, settings.columnFormats),
+    rowFormats: createTableFormatList(nextRows, settings.rowFormats),
+    cellFormats: createTableFormatGrid(nextRows, nextColumns, settings.cellFormats),
+    merges: normalizeTableMergesForSize(settings.merges, nextRows, nextColumns)
+  };
+}
+
+function normalizeTableMergesForSize(merges: TableMerge[], rows: number, columns: number): TableMerge[] {
+  return merges
+    .map((merge) => ({
+      row: merge.row,
+      column: merge.column,
+      rowSpan: Math.min(merge.rowSpan, rows - merge.row),
+      columnSpan: Math.min(merge.columnSpan, columns - merge.column)
+    }))
+    .filter((merge) => merge.row >= 0 && merge.column >= 0 && merge.rowSpan > 0 && merge.columnSpan > 0);
+}
+
+function updateTableCell(
+  settings: TableSettings,
+  rowIndex: number,
+  columnIndex: number,
+  value: string
+): TableSettings {
+  const cells = createTableCells(settings.rows, settings.columns, settings.cells);
+
+  cells[rowIndex][columnIndex] = value;
+
+  return {
+    ...settings,
+    cells
+  };
+}
+
+function buildTableauColumnTemplate(cells: string[][], columns: number): string {
+  return Array.from({ length: columns }, (_unused, columnIndex) => {
+    const maxLength = Math.max(
+      2,
+      ...cells.map((row) => (row[columnIndex] ?? "").trim().length)
+    );
+    const width = Math.min(42, Math.max(4, maxLength + 2));
+
+    return `minmax(var(--tool-tableau-cell-size), max(var(--tool-tableau-cell-size), ${width}ch))`;
+  }).join(" ");
+}
+
+function isTableFooterRow(settings: TableSettings, rowIndex: number): boolean {
+  return settings.footer && settings.rows > 1 && rowIndex === settings.rows - 1;
+}
+
+function getTableCellPlaceholder(rowIndex: number, columnIndex: number, settings: TableSettings): string {
+  if (settings.header && rowIndex === 0) {
+    return `Header ${columnIndex + 1}`;
+  }
+
+  if (isTableFooterRow(settings, rowIndex)) {
+    return `Footer ${columnIndex + 1}`;
+  }
+
+  return "*";
+}
+
+function normalizeTableHorizontalAlignment(align: TableAlignment | undefined): TableHorizontalAlignment {
+  if (align === "center" || align === "right") {
+    return align;
+  }
+
+  return "left";
+}
+
+function normalizeTableSelection(selection: TableSelection): TableSelectionRange {
+  return {
+    startRow: Math.min(selection.anchorRow, selection.focusRow),
+    endRow: Math.max(selection.anchorRow, selection.focusRow),
+    startColumn: Math.min(selection.anchorColumn, selection.focusColumn),
+    endColumn: Math.max(selection.anchorColumn, selection.focusColumn)
+  };
+}
+
+function clampTableSelection(selection: TableSelection, settings: TableSettings): TableSelection {
+  const maxRow = Math.max(0, settings.rows - 1);
+  const maxColumn = Math.max(0, settings.columns - 1);
+  const clampRow = (row: number) => Math.min(maxRow, Math.max(0, row));
+  const clampColumn = (column: number) => Math.min(maxColumn, Math.max(0, column));
+
+  return {
+    anchorRow: clampRow(selection.anchorRow),
+    anchorColumn: clampColumn(selection.anchorColumn),
+    focusRow: clampRow(selection.focusRow),
+    focusColumn: clampColumn(selection.focusColumn)
+  };
+}
+
+function isCellInTableSelection(selection: TableSelection, rowIndex: number, columnIndex: number): boolean {
+  const range = normalizeTableSelection(selection);
+
+  return (
+    rowIndex >= range.startRow &&
+    rowIndex <= range.endRow &&
+    columnIndex >= range.startColumn &&
+    columnIndex <= range.endColumn
+  );
+}
+
+function isTableSelectionMergedRange(selection: TableSelection): boolean {
+  const range = normalizeTableSelection(selection);
+  return range.startRow !== range.endRow || range.startColumn !== range.endColumn;
+}
+
+function tableMergeContainsCell(merge: TableMerge, rowIndex: number, columnIndex: number): boolean {
+  return (
+    rowIndex >= merge.row &&
+    rowIndex < merge.row + merge.rowSpan &&
+    columnIndex >= merge.column &&
+    columnIndex < merge.column + merge.columnSpan
+  );
+}
+
+function tableMergeIsAnchor(merge: TableMerge, rowIndex: number, columnIndex: number): boolean {
+  return merge.row === rowIndex && merge.column === columnIndex;
+}
+
+function getTableMergeForCell(settings: TableSettings, rowIndex: number, columnIndex: number): TableMerge | null {
+  return settings.merges.find((merge) => tableMergeContainsCell(merge, rowIndex, columnIndex)) ?? null;
+}
+
+function isCoveredTableMergeCell(settings: TableSettings, rowIndex: number, columnIndex: number): boolean {
+  const merge = getTableMergeForCell(settings, rowIndex, columnIndex);
+  return Boolean(merge && !tableMergeIsAnchor(merge, rowIndex, columnIndex));
+}
+
+function findVisibleTableCell(
+  settings: TableSettings,
+  rowIndex: number,
+  columnIndex: number,
+  rowStep: number,
+  columnStep: number
+): { rowIndex: number; columnIndex: number } {
+  let nextRow = Math.min(settings.rows - 1, Math.max(0, rowIndex));
+  let nextColumn = Math.min(settings.columns - 1, Math.max(0, columnIndex));
+
+  while (isCoveredTableMergeCell(settings, nextRow, nextColumn)) {
+    const candidateRow = Math.min(settings.rows - 1, Math.max(0, nextRow + rowStep));
+    const candidateColumn = Math.min(settings.columns - 1, Math.max(0, nextColumn + columnStep));
+
+    if (candidateRow === nextRow && candidateColumn === nextColumn) {
+      break;
+    }
+
+    nextRow = candidateRow;
+    nextColumn = candidateColumn;
+  }
+
+  return { rowIndex: nextRow, columnIndex: nextColumn };
+}
+
+function findVisibleTableCellByOffset(
+  settings: TableSettings,
+  rowIndex: number,
+  columnIndex: number,
+  offset: number
+): { rowIndex: number; columnIndex: number } {
+  const currentIndex = rowIndex * settings.columns + columnIndex;
+  const totalCells = settings.rows * settings.columns;
+  let nextIndex = Math.max(0, Math.min(totalCells - 1, currentIndex + offset));
+
+  while (nextIndex > 0 && nextIndex < totalCells - 1) {
+    const nextRow = Math.floor(nextIndex / settings.columns);
+    const nextColumn = nextIndex % settings.columns;
+
+    if (!isCoveredTableMergeCell(settings, nextRow, nextColumn)) {
+      return { rowIndex: nextRow, columnIndex: nextColumn };
+    }
+
+    nextIndex += offset > 0 ? 1 : -1;
+  }
+
+  return {
+    rowIndex: Math.floor(nextIndex / settings.columns),
+    columnIndex: nextIndex % settings.columns
+  };
+}
+
+function tableMergeIntersectsRange(merge: TableMerge, range: TableSelectionRange): boolean {
+  return !(
+    merge.row + merge.rowSpan - 1 < range.startRow ||
+    merge.row > range.endRow ||
+    merge.column + merge.columnSpan - 1 < range.startColumn ||
+    merge.column > range.endColumn
+  );
+}
+
+function mergeSelectedTableCells(settings: TableSettings, selection: TableSelection): TableSettings {
+  const range = normalizeTableSelection(clampTableSelection(selection, settings));
+  const rowSpan = range.endRow - range.startRow + 1;
+  const columnSpan = range.endColumn - range.startColumn + 1;
+
+  if (rowSpan === 1 && columnSpan === 1) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    merges: [
+      ...settings.merges.filter((merge) => !tableMergeIntersectsRange(merge, range)),
+      {
+        row: range.startRow,
+        column: range.startColumn,
+        rowSpan,
+        columnSpan
+      }
+    ]
+  };
+}
+
+function unmergeSelectedTableCells(settings: TableSettings, selection: TableSelection): TableSettings {
+  const range = normalizeTableSelection(clampTableSelection(selection, settings));
+
+  return {
+    ...settings,
+    merges: settings.merges.filter((merge) => !tableMergeIntersectsRange(merge, range))
+  };
+}
+
+function getTableSelectionLabel(selection: TableSelection): string {
+  const range = normalizeTableSelection(selection);
+  const rows = range.endRow - range.startRow + 1;
+  const columns = range.endColumn - range.startColumn + 1;
+
+  if (rows === 1 && columns === 1) {
+    return `R${range.startRow + 1} C${range.startColumn + 1}`;
+  }
+
+  return `${rows} x ${columns}`;
+}
+
+function getTableBorderPresetEdges(
+  preset: TableBorderPreset,
+  range: TableSelectionRange,
+  rowIndex: number,
+  columnIndex: number
+): TableBorderEdge[] {
+  const edges: TableBorderEdge[] = [];
+
+  switch (preset) {
+    case "clear":
+    case "all":
+      return [...TABLE_BORDER_EDGES];
+    case "outer":
+      if (rowIndex === range.startRow) {
+        edges.push("top");
+      }
+      if (rowIndex === range.endRow) {
+        edges.push("bottom");
+      }
+      if (columnIndex === range.startColumn) {
+        edges.push("left");
+      }
+      if (columnIndex === range.endColumn) {
+        edges.push("right");
+      }
+      return edges;
+    case "inner":
+      if (rowIndex < range.endRow) {
+        edges.push("bottom");
+      }
+      if (columnIndex < range.endColumn) {
+        edges.push("right");
+      }
+      return edges;
+    case "horizontal":
+      if (rowIndex === range.startRow) {
+        edges.push("top");
+      }
+      edges.push("bottom");
+      return edges;
+    case "vertical":
+      if (columnIndex === range.startColumn) {
+        edges.push("left");
+      }
+      edges.push("right");
+      return edges;
+    case "top":
+      return rowIndex === range.startRow ? ["top"] : [];
+    case "right":
+      return columnIndex === range.endColumn ? ["right"] : [];
+    case "bottom":
+      return rowIndex === range.endRow ? ["bottom"] : [];
+    case "left":
+      return columnIndex === range.startColumn ? ["left"] : [];
+  }
+}
+
+function updateTableBordersForSelection(
+  settings: TableSettings,
+  selection: TableSelection,
+  preset: TableBorderPreset,
+  border: TableCellBorder
+): TableSettings {
+  const range = normalizeTableSelection(clampTableSelection(selection, settings));
+  const cellFormats = createTableFormatGrid(settings.rows, settings.columns, settings.cellFormats);
+  const nextBorder: TableCellBorder = preset === "clear"
+    ? { strokeStyle: "none", strokeWeight: border.strokeWeight }
+    : border;
+
+  for (let rowIndex = range.startRow; rowIndex <= range.endRow; rowIndex += 1) {
+    for (let columnIndex = range.startColumn; columnIndex <= range.endColumn; columnIndex += 1) {
+      const edges = getTableBorderPresetEdges(preset, range, rowIndex, columnIndex);
+
+      if (edges.length === 0) {
+        continue;
+      }
+
+      const cellFormat = cloneTableCellFormat(cellFormats[rowIndex][columnIndex]);
+      const borders = { ...(cellFormat.borders ?? {}) };
+
+      for (const edge of edges) {
+        borders[edge] = cloneTableCellBorder(nextBorder);
+      }
+
+      cellFormat.borders = borders;
+      cellFormats[rowIndex][columnIndex] = cellFormat;
+    }
+  }
+
+  return {
+    ...settings,
+    cellFormats
+  };
+}
+
+function getTableFormatBorder(
+  settings: TableSettings,
+  rowIndex: number,
+  columnIndex: number,
+  edge: TableBorderEdge
+): TableCellBorder | null {
+  const merge = getTableMergeForCell(settings, rowIndex, columnIndex);
+  const formatRow = merge ? merge.row : rowIndex;
+  const formatColumn = merge ? merge.column : columnIndex;
+
+  return settings.cellFormats?.[formatRow]?.[formatColumn]?.borders?.[edge] ?? null;
+}
+
+function getTableBorderCssValue(border: TableCellBorder | null, fallback: TableCellBorder): string {
+  const effectiveBorder = border ?? fallback;
+
+  if (effectiveBorder.strokeStyle === "none") {
+    return "1px solid color-mix(in srgb, var(--border) 46%, transparent)";
+  }
+
+  const width = effectiveBorder.strokeWeight === "thick" ? "3px" : effectiveBorder.strokeWeight === "medium" ? "2px" : "1px";
+  const style = effectiveBorder.strokeStyle === "double" ? "double" : effectiveBorder.strokeStyle;
+  const color = border
+    ? "color-mix(in srgb, var(--text) 58%, var(--border))"
+    : "color-mix(in srgb, var(--text) 34%, var(--border))";
+
+  return `${width} ${style} ${color}`;
+}
+
+function getTablePaddingCssValue(padding: TablePadding): string {
+  switch (padding) {
+    case "none":
+      return "0.08rem";
+    case "medium":
+      return "0.45rem 0.65rem";
+    case "large":
+      return "0.65rem 0.85rem";
+    case "small":
+    default:
+      return "0.3rem 0.45rem";
+  }
+}
+
+function resolveTableCellFormat(settings: TableSettings, rowIndex: number, columnIndex: number): TableResolvedCellFormat {
+  return {
+    ...DEFAULT_TABLE_FORMAT,
+    align: normalizeTableHorizontalAlignment(settings.align),
+    padding: settings.inset === "medium" ? "medium" : settings.inset === "none" ? "none" : "small",
+    strokeStyle: settings.stroke === "none" ? "none" : "solid",
+    ...(settings.tableFormat ?? {}),
+    ...(settings.columnFormats?.[columnIndex] ?? {}),
+    ...(settings.rowFormats?.[rowIndex] ?? {}),
+    ...(settings.cellFormats?.[rowIndex]?.[columnIndex] ?? {})
+  };
+}
+
+function getTableScopeFormat(
+  settings: TableSettings,
+  scope: TableFormatScope,
+  selection: TableSelection
+): TableResolvedCellFormat {
+  const range = normalizeTableSelection(clampTableSelection(selection, settings));
+
+  if (scope === "table") {
+    return {
+      ...DEFAULT_TABLE_FORMAT,
+      align: normalizeTableHorizontalAlignment(settings.align),
+      padding: settings.inset === "medium" ? "medium" : settings.inset === "none" ? "none" : "small",
+      strokeStyle: settings.stroke === "none" ? "none" : "solid",
+      ...(settings.tableFormat ?? {})
+    };
+  }
+
+  if (scope === "column") {
+    return resolveTableCellFormat(settings, range.startRow, range.startColumn);
+  }
+
+  if (scope === "row") {
+    return resolveTableCellFormat(settings, range.startRow, range.startColumn);
+  }
+
+  return resolveTableCellFormat(settings, selection.focusRow, selection.focusColumn);
+}
+
+function updateTableFormatForScope(
+  settings: TableSettings,
+  scope: TableFormatScope,
+  selection: TableSelection,
+  patch: TableCellFormat
+): TableSettings {
+  const range = normalizeTableSelection(clampTableSelection(selection, settings));
+
+  if (scope === "table") {
+    return {
+      ...settings,
+      align: patch.align ?? settings.align,
+      inset: patch.padding === "none" ? "none" : patch.padding === "medium" || patch.padding === "large" ? "medium" : patch.padding === "small" ? "small" : settings.inset,
+      stroke: patch.strokeStyle === "none" ? "none" : patch.strokeStyle ? "default" : settings.stroke,
+      tableFormat: {
+        ...(settings.tableFormat ?? {}),
+        ...patch
+      }
+    };
+  }
+
+  if (scope === "column") {
+    const columnFormats = createTableFormatList(settings.columns, settings.columnFormats);
+
+    for (let columnIndex = range.startColumn; columnIndex <= range.endColumn; columnIndex += 1) {
+      columnFormats[columnIndex] = {
+        ...columnFormats[columnIndex],
+        ...patch
+      };
+    }
+
+    return { ...settings, columnFormats };
+  }
+
+  if (scope === "row") {
+    const rowFormats = createTableFormatList(settings.rows, settings.rowFormats);
+
+    for (let rowIndex = range.startRow; rowIndex <= range.endRow; rowIndex += 1) {
+      rowFormats[rowIndex] = {
+        ...rowFormats[rowIndex],
+        ...patch
+      };
+    }
+
+    return { ...settings, rowFormats };
+  }
+
+  const cellFormats = createTableFormatGrid(settings.rows, settings.columns, settings.cellFormats);
+
+  for (let rowIndex = range.startRow; rowIndex <= range.endRow; rowIndex += 1) {
+    for (let columnIndex = range.startColumn; columnIndex <= range.endColumn; columnIndex += 1) {
+      cellFormats[rowIndex][columnIndex] = {
+        ...cellFormats[rowIndex][columnIndex],
+        ...patch
+      };
+    }
+  }
+
+  return { ...settings, cellFormats };
+}
+
+
+const TABLE_MIN_ROWS = 1;
+const TABLE_MIN_COLUMNS = 1;
+const TABLE_MAX_ROWS = 60;
+const TABLE_MAX_COLUMNS = 24;
+const DEFAULT_TABLE_FORMAT: TableResolvedCellFormat = {
+  align: "left",
+  verticalAlign: "middle",
+  padding: "small",
+  strokeStyle: "solid",
+  strokeWeight: "thin",
+  backgroundColor: ""
+};
+const TABLE_HORIZONTAL_ALIGNMENT_OPTIONS: Array<{ id: TableHorizontalAlignment; label: string }> = [
   { id: "left", label: "Left" },
   { id: "center", label: "Center" },
+  { id: "right", label: "Right" }
+];
+const TABLE_VERTICAL_ALIGNMENT_OPTIONS: Array<{ id: TableVerticalAlignment; label: string; typstValue: string }> = [
+  { id: "top", label: "Top", typstValue: "top" },
+  { id: "middle", label: "Middle", typstValue: "horizon" },
+  { id: "bottom", label: "Bottom", typstValue: "bottom" }
+];
+const TABLE_PADDING_OPTIONS: Array<{ id: TablePadding; label: string; typstValue: string; latexTabcolsep: string; latexArrayStretch: string }> = [
+  { id: "none", label: "None", typstValue: "0pt", latexTabcolsep: "0pt", latexArrayStretch: "1" },
+  { id: "small", label: "Small", typstValue: "0.15em", latexTabcolsep: "3pt", latexArrayStretch: "1.05" },
+  { id: "medium", label: "Medium", typstValue: "0.35em", latexTabcolsep: "6pt", latexArrayStretch: "1.15" },
+  { id: "large", label: "Large", typstValue: "0.65em", latexTabcolsep: "10pt", latexArrayStretch: "1.3" }
+];
+const TABLE_STROKE_STYLE_OPTIONS: Array<{ id: TableStrokeStyle; label: string }> = [
+  { id: "none", label: "None" },
+  { id: "solid", label: "Solid" },
+  { id: "dashed", label: "Dashed" },
+  { id: "dotted", label: "Dotted" },
+  { id: "double", label: "Double" }
+];
+const TABLE_STROKE_WEIGHT_OPTIONS: Array<{ id: TableStrokeWeight; label: string; typstValue: string; latexValue: string }> = [
+  { id: "thin", label: "Thin", typstValue: "0.5pt", latexValue: "0.4pt" },
+  { id: "medium", label: "Medium", typstValue: "0.9pt", latexValue: "0.8pt" },
+  { id: "thick", label: "Thick", typstValue: "1.3pt", latexValue: "1.2pt" }
+];
+const TABLE_BORDER_EDGES: TableBorderEdge[] = ["top", "right", "bottom", "left"];
+const TABLE_BORDER_PRESET_OPTIONS: Array<{ id: TableBorderPreset; label: string }> = [
+  { id: "outer", label: "Outer" },
+  { id: "all", label: "All" },
+  { id: "inner", label: "Inner" },
+  { id: "horizontal", label: "Horizontal" },
+  { id: "vertical", label: "Vertical" },
+  { id: "top", label: "Top" },
   { id: "right", label: "Right" },
-  { id: "horizon", label: "Horizon" }
+  { id: "bottom", label: "Bottom" },
+  { id: "left", label: "Left" },
+  { id: "clear", label: "No border" }
 ];
 const TABLE_GUTTER_OPTIONS: Array<{ id: TableGutter; label: string; value: string }> = [
   { id: "none", label: "None", value: "0pt" },
   { id: "small", label: "Small", value: "0.2em" },
   { id: "medium", label: "Medium", value: "0.45em" }
 ];
-const TABLE_INSET_OPTIONS: Array<{ id: TableInset; label: string; value: string }> = [
-  { id: "none", label: "None", value: "0pt" },
-  { id: "small", label: "Small", value: "0.15em" },
-  { id: "medium", label: "Medium", value: "0.35em" }
-];
+function isMarkdownTableLanguage(language: SourceLanguage): boolean {
+  return language === "markdown" || language === "text";
+}
+
+function getSupportedTableStrokeStyles(language: SourceLanguage): TableStrokeStyle[] {
+  if (language === "typst") {
+    return ["none", "solid", "dashed", "dotted"];
+  }
+
+  return ["none", "solid", "dashed", "dotted", "double"];
+}
+
+function supportsTableMerges(language: SourceLanguage): boolean {
+  return language === "latex" || language === "typst";
+}
+
+function supportsTableVerticalAlignment(language: SourceLanguage): boolean {
+  return language === "typst";
+}
+
+function supportsTablePaddingControl(language: SourceLanguage, _scope: TableFormatScope): boolean {
+  return language === "typst" || language === "latex";
+}
+
+function supportsTableStrokeControl(language: SourceLanguage, scope: TableFormatScope): boolean {
+  return language === "typst" || language === "markdown" || language === "text" || (language === "latex" && scope === "table");
+}
+
+function supportsTableBorderControl(_language: SourceLanguage): boolean {
+  return true;
+}
+
+function supportsTableBackgroundControl(language: SourceLanguage): boolean {
+  return language === "typst" || language === "latex";
+}
+
+function supportsTableMarginControl(language: SourceLanguage): boolean {
+  return language === "typst";
+}
 
 function clampPanelWidth(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -1178,66 +1756,6 @@ function normalizeWorkspaceOpenFolderPaths(paths: readonly unknown[]): string[] 
   ).sort((left, right) => left.localeCompare(right));
 }
 
-function isSettingsTab(value: unknown): value is SettingsTab {
-  return typeof value === "string" && SETTINGS_TABS.includes(value as SettingsTab);
-}
-
-function normalizeSettingsScrollPositions(value: unknown): SettingsScrollPositions {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-
-  return SETTINGS_TABS.reduce<SettingsScrollPositions>((positions, tab) => {
-    const scrollTop = (value as Partial<Record<SettingsTab, unknown>>)[tab];
-
-    if (typeof scrollTop === "number" && Number.isFinite(scrollTop) && scrollTop > 0) {
-      positions[tab] = Math.round(scrollTop);
-    }
-
-    return positions;
-  }, {});
-}
-
-function readStoredSettingsMenuState(): StoredSettingsMenuState {
-  if (typeof window === "undefined") {
-    return { tab: "git", scrollByTab: {} };
-  }
-
-  try {
-    const stored = window.localStorage.getItem(SETTINGS_MENU_STORAGE_KEY);
-
-    if (!stored) {
-      return { tab: "git", scrollByTab: {} };
-    }
-
-    const parsed = JSON.parse(stored);
-
-    return {
-      tab: isSettingsTab(parsed?.tab) ? parsed.tab : "git",
-      scrollByTab: normalizeSettingsScrollPositions(parsed?.scrollByTab)
-    };
-  } catch {
-    return { tab: "git", scrollByTab: {} };
-  }
-}
-
-function writeStoredSettingsMenuState(
-  tab: SettingsTab,
-  scrollByTab: SettingsScrollPositions
-): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(
-    SETTINGS_MENU_STORAGE_KEY,
-    JSON.stringify({
-      tab,
-      scrollByTab
-    })
-  );
-}
-
 function isSidebarTool(value: unknown): value is SidebarTool {
   return (
     value === "files" ||
@@ -1249,7 +1767,6 @@ function isSidebarTool(value: unknown): value is SidebarTool {
     value === "sync" ||
     value === "debug" ||
     value === "diagram" ||
-    value === "graph" ||
     value === "docs" ||
     value === "settings"
   );
@@ -1500,39 +2017,9 @@ function readStoredLatexPackageSelections(): string[] {
   }
 }
 
-function createInitialGitHubCloneState(): GitHubCloneState {
-  return {
-    isOpen: false,
-    mode: "clone",
-    status: "idle",
-    token: "",
-    owner: "",
-    repo: "",
-    branch: "main",
-    projectName: "",
-    repositoryUrl: "",
-    message: "",
-    accountLogin: null,
-    owners: [],
-    repos: [],
-    branches: [],
-    isLoadingRepos: false,
-    isLoadingBranches: false,
-    progress: null
-  };
-}
 
-function parseGitHubRepositoryUrl(value: string): { owner: string; repo: string } | null {
-  const match = /github\.com[:/]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/?#\s]|$)/i.exec(value.trim());
-
-  if (!match) {
-    return null;
-  }
-
-  return {
-    owner: match[1],
-    repo: match[2]
-  };
+function getRemoteTrackingRefPath(config: RemoteGitConfig): string {
+  return `refs/remotes/${config.remoteName.trim()}/${config.branch.trim()}`;
 }
 
 function renameProjectRepositoryDisplayName(
@@ -1668,25 +2155,13 @@ function getCurrentViewportWidth() {
   return window.visualViewport?.width ?? window.innerWidth;
 }
 
-function getWorkspaceParentPath(path: string): string | null {
-  const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
-  segments.pop();
-  return segments.length > 0 ? segments.join("/") : null;
-}
-
-function getWorkspaceBaseName(path: string): string {
-  return normalizeWorkspacePath(path).split("/").filter(Boolean).at(-1) ?? path;
-}
-
 function getSafeDownloadName(name: string, fallback = "download"): string {
   const normalizedName = name.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ");
   return normalizedName || fallback;
 }
 
 function getWorkspacePathDirectory(path: string): string {
-  const segments = normalizeWorkspacePath(path).split("/").filter(Boolean);
-  segments.pop();
-  return segments.join("/");
+  return getWorkspaceParentPath(path) ?? "";
 }
 
 function hasWorkspacePathExtension(path: string): boolean {
@@ -1949,13 +2424,6 @@ function getWorkspaceDownloadBundleForPaths(
   };
 }
 
-function getWorkspaceDownloadFilesForPaths(
-  project: TyprProjectRepository,
-  selectedPaths: string[]
-): WorkspaceDownloadFile[] {
-  return getWorkspaceDownloadBundleForPaths(project, selectedPaths).files;
-}
-
 function formatMissingWorkspaceReferences(missingReferences: WorkspaceMissingReference[]): string {
   if (missingReferences.length === 0) {
     return "";
@@ -1995,133 +2463,6 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function renderMarkdownInlineHtml(value: string): string {
-  const placeholders: string[] = [];
-  const stash = (html: string) => {
-    const token = `\u0000${placeholders.length}\u0000`;
-    placeholders.push(html);
-    return token;
-  };
-
-  let rendered = escapeHtml(value);
-  rendered = rendered.replace(/`([^`]+)`/g, (_match, code: string) =>
-    stash(`<code>${escapeHtml(code)}</code>`)
-  );
-  rendered = rendered.replace(/!\[([^\]]*)]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_match, alt: string, href: string) =>
-    stash(`<img alt="${escapeHtml(alt)}" src="${escapeHtml(href)}">`)
-  );
-  rendered = rendered.replace(/\[([^\]]+)]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_match, label: string, href: string) =>
-    stash(`<a href="${escapeHtml(href)}">${renderMarkdownInlineHtml(label)}</a>`)
-  );
-  rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  rendered = rendered.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  rendered = rendered.replace(/\+\+([^+]+)\+\+/g, "<u>$1</u>");
-
-  return rendered.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => placeholders[Number(index)] ?? "");
-}
-
-function renderMarkdownDocumentHtml(source: string): string {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  const html: string[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-
-    const fence = line.match(/^\s*(```+|~~~+)\s*(.*)$/);
-    if (fence) {
-      const fenceMarker = fence[1];
-      const language = fence[2]?.trim();
-      const codeLines: string[] = [];
-      index += 1;
-
-      while (index < lines.length && !lines[index].trimStart().startsWith(fenceMarker)) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-
-      if (index < lines.length) {
-        index += 1;
-      }
-
-      html.push(
-        `<pre><code${language ? ` data-language="${escapeHtml(language)}"` : ""}>${escapeHtml(
-          codeLines.join("\n")
-        )}</code></pre>`
-      );
-      continue;
-    }
-
-    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-    if (heading) {
-      const level = heading[1].length;
-      html.push(`<h${level}>${renderMarkdownInlineHtml(heading[2])}</h${level}>`);
-      index += 1;
-      continue;
-    }
-
-    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      html.push("<hr>");
-      index += 1;
-      continue;
-    }
-
-    const listMatch = line.match(/^\s{0,3}([-*+]|\d+[.)])\s+(.+)$/);
-    if (listMatch) {
-      const ordered = /\d/.test(listMatch[1]);
-      const items: string[] = [];
-
-      while (index < lines.length) {
-        const itemMatch = lines[index].match(/^\s{0,3}([-*+]|\d+[.)])\s+(.+)$/);
-        if (!itemMatch || /\d/.test(itemMatch[1]) !== ordered) {
-          break;
-        }
-        items.push(`<li>${renderMarkdownInlineHtml(itemMatch[2])}</li>`);
-        index += 1;
-      }
-
-      html.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`);
-      continue;
-    }
-
-    if (/^\s{0,3}>\s?/.test(line)) {
-      const quoteLines: string[] = [];
-      while (index < lines.length) {
-        const quoteMatch = lines[index].match(/^\s{0,3}>\s?(.*)$/);
-        if (!quoteMatch) {
-          break;
-        }
-        quoteLines.push(quoteMatch[1]);
-        index += 1;
-      }
-      html.push(`<blockquote><p>${renderMarkdownInlineHtml(quoteLines.join(" "))}</p></blockquote>`);
-      continue;
-    }
-
-    const paragraphLines: string[] = [];
-    while (
-      index < lines.length &&
-      lines[index].trim() &&
-      !/^\s*(```+|~~~+)/.test(lines[index]) &&
-      !/^\s{0,3}(#{1,6})\s+/.test(lines[index]) &&
-      !/^\s{0,3}([-*+]|\d+[.)])\s+/.test(lines[index]) &&
-      !/^\s{0,3}>\s?/.test(lines[index])
-    ) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-
-    html.push(`<p>${renderMarkdownInlineHtml(paragraphLines.join(" "))}</p>`);
-  }
-
-  return html.join("\n");
-}
-
 function createRenderedMarkdownHtml(source: string, title: string): string {
   return [
     "<!doctype html>",
@@ -2136,135 +2477,12 @@ function createRenderedMarkdownHtml(source: string, title: string): string {
     "</style>",
     "</head>",
     "<body>",
-    renderMarkdownDocumentHtml(source),
+    renderMarkdownHtml(source, "export"),
     "</body>",
     "</html>"
   ].join("\n");
 }
 
-function areWorkspacePathListsEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((path, index) => path === right[index]);
-}
-
-function normalizeUniqueWorkspacePaths(paths: readonly string[]): string[] {
-  const seenPaths = new Set<string>();
-  const normalizedPaths: string[] = [];
-
-  for (const path of paths) {
-    const normalizedPath = normalizeWorkspacePath(path);
-
-    if (!normalizedPath || seenPaths.has(normalizedPath)) {
-      continue;
-    }
-
-    seenPaths.add(normalizedPath);
-    normalizedPaths.push(normalizedPath);
-  }
-
-  return normalizedPaths;
-}
-
-function appendUniqueWorkspacePath(paths: string[], path: string): string[] {
-  const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
-  const normalizedPath = normalizeWorkspacePath(path);
-
-  if (!normalizedPath || normalizedPaths.includes(normalizedPath)) {
-    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
-  }
-
-  return [...normalizedPaths, normalizedPath];
-}
-
-function insertWorkspacePathAfterActive(
-  paths: string[],
-  path: string,
-  activePath: string | null
-): string[] {
-  const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
-  const normalizedPath = normalizeWorkspacePath(path);
-
-  if (!normalizedPath || normalizedPaths.includes(normalizedPath)) {
-    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
-  }
-
-  const normalizedActivePath = activePath ? normalizeWorkspacePath(activePath) : null;
-  const activeIndex = normalizedActivePath ? normalizedPaths.indexOf(normalizedActivePath) : -1;
-
-  if (activeIndex < 0) {
-    return [...normalizedPaths, normalizedPath];
-  }
-
-  return [
-    ...normalizedPaths.slice(0, activeIndex + 1),
-    normalizedPath,
-    ...normalizedPaths.slice(activeIndex + 1)
-  ];
-}
-
-function reorderWorkspacePaths(
-  paths: string[],
-  draggedPath: string,
-  targetPath: string,
-  insertAfterTarget: boolean
-): string[] {
-  const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
-  const normalizedDraggedPath = normalizeWorkspacePath(draggedPath);
-  const normalizedTargetPath = normalizeWorkspacePath(targetPath);
-  const draggedIndex = normalizedPaths.indexOf(normalizedDraggedPath);
-  const targetIndex = normalizedPaths.indexOf(normalizedTargetPath);
-
-  if (
-    !normalizedDraggedPath ||
-    !normalizedTargetPath ||
-    draggedIndex === -1 ||
-    targetIndex === -1 ||
-    draggedIndex === targetIndex
-  ) {
-    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
-  }
-
-  const nextPaths = normalizedPaths.filter((path) => path !== normalizedDraggedPath);
-  const targetInsertIndex = nextPaths.indexOf(normalizedTargetPath);
-
-  if (targetInsertIndex === -1) {
-    return areWorkspacePathListsEqual(paths, normalizedPaths) ? paths : normalizedPaths;
-  }
-
-  nextPaths.splice(targetInsertIndex + (insertAfterTarget ? 1 : 0), 0, normalizedDraggedPath);
-  return nextPaths;
-}
-
-function createIdleCompilerStatusForSource(path: string): CompilerStatus {
-  const language = getSourceLanguage(path);
-  const isCompilable = isCompilableSourceFile(path);
-
-  return {
-    phase: "idle",
-    mode: "worker",
-    label: isCompilable
-      ? language === "latex"
-        ? "LaTeX ready"
-        : "Typst ready"
-      : "No compiler for active file",
-    detail:
-      language === "latex"
-        ? "Press Compile or Ctrl+Enter to update the PDF preview."
-        : undefined
-  };
-}
-
-function createCompilePreviewState(
-  path: string,
-  overrides: Partial<CompilePreviewState> = {}
-): CompilePreviewState {
-  return {
-    result: null,
-    lastSuccessfulResult: null,
-    compilerStatus: createIdleCompilerStatusForSource(path),
-    isCompiling: false,
-    ...overrides
-  };
-}
 
 function collectWorkspaceFilePaths(nodes: WorkspaceTreeNode[]): string[] {
   const paths: string[] = [];
@@ -2305,366 +2523,6 @@ function getSnapshotWorkspaceStructureKey(snapshot: AppSnapshot): string {
   ].join("|");
 }
 
-function joinWorkspacePath(path: string | null, name: string): string {
-  const normalizedPath = normalizeWorkspacePath(path ?? "");
-  return normalizedPath ? `${normalizedPath}/${name}` : name;
-}
-
-function getWorkspaceMovePromptLabel(node: WorkspaceTreeNode): string {
-  if (node.source.kind === "diagram" || node.source.kind === "graph") {
-    return "Move to folder inside figures (blank for figures root)";
-  }
-
-  return "Move to folder (blank for root)";
-}
-
-function isFigureWorkspacePath(path: string | null): boolean {
-  const normalizedPath = normalizeWorkspacePath(path ?? "");
-  return normalizedPath === "figures" || normalizedPath.startsWith("figures/");
-}
-
-function stripFiguresWorkspaceRoot(path: string): string {
-  const normalizedPath = normalizeWorkspacePath(path);
-
-  if (normalizedPath === "figures") {
-    return "";
-  }
-
-  return normalizedPath.startsWith("figures/")
-    ? normalizedPath.slice("figures/".length)
-    : normalizedPath;
-}
-
-function cloneWorkspaceContent(content: string | Uint8Array): string | Uint8Array {
-  return typeof content === "string" ? content : new Uint8Array(content);
-}
-
-function clonePlainValue<T>(value: T): T {
-  if (typeof structuredClone === "function") {
-    return structuredClone(value);
-  }
-
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function cloneDiagramAssetForWorkspacePath(
-  diagram: DiagramAsset,
-  path: string,
-  now: string
-): DiagramAsset {
-  return {
-    ...diagram,
-    id: createPrefixedId("diagram"),
-    name: normalizeDiagramFileName(stripFiguresWorkspaceRoot(path)),
-    updatedAt: now,
-    frame: diagram.frame ? { ...diagram.frame } : null,
-    strokes: clonePlainValue(diagram.strokes),
-    shapes: clonePlainValue(diagram.shapes)
-  };
-}
-
-function cloneGraphAssetForWorkspacePath(
-  graph: GraphAsset,
-  path: string,
-  now: string
-): GraphAsset {
-  return {
-    ...graph,
-    id: createPrefixedId("graph"),
-    name: normalizeGraphFileNameForContentType(stripFiguresWorkspaceRoot(path), graph.contentType),
-    updatedAt: now,
-    style: clonePlainValue(graph.style),
-    viewport: graph.viewport ? { ...graph.viewport } : null,
-    content: new Uint8Array(graph.content)
-  };
-}
-
-function collectWorkspaceNodePaths(nodes: WorkspaceTreeNode[]): string[] {
-  const paths: string[] = [];
-
-  for (const node of nodes) {
-    paths.push(node.path);
-    paths.push(...collectWorkspaceNodePaths(node.children));
-  }
-
-  return paths;
-}
-
-function flattenWorkspaceNodeSubtree(node: WorkspaceTreeNode): WorkspaceTreeNode[] {
-  return [node, ...node.children.flatMap((child) => flattenWorkspaceNodeSubtree(child))];
-}
-
-function removeDescendantWorkspaceNodes(nodes: WorkspaceTreeNode[]): WorkspaceTreeNode[] {
-  const sortedNodes = [...nodes].sort((left, right) => left.path.length - right.path.length);
-  const rootNodes: WorkspaceTreeNode[] = [];
-
-  for (const node of sortedNodes) {
-    if (rootNodes.some((rootNode) => node.path.startsWith(`${rootNode.path}/`))) {
-      continue;
-    }
-
-    rootNodes.push(node);
-  }
-
-  return rootNodes;
-}
-
-function createWorkspacePathSet(snapshot: AppSnapshot): Set<string> {
-  return new Set(
-    collectWorkspaceNodePaths(buildWorkspaceTree(buildProjectWorkspaceEntries(snapshot)))
-  );
-}
-
-function createWorkspaceCopyPath(
-  requestedPath: string,
-  existingPaths: Set<string>,
-  isFolder: boolean
-): string {
-  const normalizedPath = normalizeWorkspacePath(requestedPath);
-
-  if (!existingPaths.has(normalizedPath)) {
-    return normalizedPath;
-  }
-
-  const parentPath = getWorkspaceParentPath(normalizedPath);
-  const baseName = getWorkspaceBaseName(normalizedPath);
-  const extensionMatch = isFolder ? null : /\.([^.]+)$/i.exec(baseName);
-  const extension = extensionMatch ? `.${extensionMatch[1]}` : "";
-  const stem = extension ? baseName.slice(0, -extension.length) : baseName;
-  let copyIndex = 1;
-
-  while (true) {
-    const copySuffix = copyIndex === 1 ? " copy" : ` copy ${copyIndex}`;
-    const candidate = joinWorkspacePath(parentPath, `${stem}${copySuffix}${extension}`);
-
-    if (!existingPaths.has(candidate)) {
-      return candidate;
-    }
-
-    copyIndex += 1;
-  }
-}
-
-function isWorkspaceNodeCopyable(node: WorkspaceTreeNode): boolean {
-  return (
-    node.source.kind === "document" ||
-    node.source.kind === "diagram" ||
-    node.source.kind === "graph" ||
-    node.source.kind === "folder"
-  );
-}
-
-function getWorkspaceNodeCopyDomain(node: WorkspaceTreeNode): "regular" | "figure" | null {
-  if (!isWorkspaceNodeCopyable(node)) {
-    return null;
-  }
-
-  return isFigureWorkspacePath(node.path) ? "figure" : "regular";
-}
-
-function getWorkspaceClipboardDomain(nodes: WorkspaceTreeNode[]): "regular" | "figure" | null {
-  let domain: "regular" | "figure" | null = null;
-
-  for (const node of nodes) {
-    const nodeDomain = getWorkspaceNodeCopyDomain(node);
-
-    if (!nodeDomain) {
-      return null;
-    }
-
-    if (!domain) {
-      domain = nodeDomain;
-      continue;
-    }
-
-    if (domain !== nodeDomain) {
-      return null;
-    }
-  }
-
-  return domain;
-}
-
-function normalizeWorkspacePasteDestination(
-  domain: "regular" | "figure",
-  destinationFolderPath: string | null
-): { destinationFolderPath: string | null; error: string | null } {
-  const normalizedDestination = normalizeWorkspacePath(destinationFolderPath ?? "");
-
-  if (domain === "figure") {
-    return {
-      destinationFolderPath:
-        normalizedDestination && isFigureWorkspacePath(normalizedDestination)
-          ? normalizedDestination
-          : "figures",
-      error: null
-    };
-  }
-
-  if (normalizedDestination && isFigureWorkspacePath(normalizedDestination)) {
-    return {
-      destinationFolderPath: null,
-      error: "Documents cannot be pasted inside figures."
-    };
-  }
-
-  return {
-    destinationFolderPath: normalizedDestination || null,
-    error: null
-  };
-}
-
-function copyWorkspaceNodesToSnapshot(
-  snapshot: AppSnapshot,
-  nodes: WorkspaceTreeNode[],
-  destinationFolderPath: string | null
-): { snapshot: AppSnapshot; copiedPaths: string[] } {
-  const rootNodes = removeDescendantWorkspaceNodes(nodes).filter(isWorkspaceNodeCopyable);
-
-  if (rootNodes.length === 0) {
-    return { snapshot, copiedPaths: [] };
-  }
-
-  const now = new Date().toISOString();
-  const existingPaths = createWorkspacePathSet(snapshot);
-  const copiedPaths: string[] = [];
-  const copiedRootPaths: string[] = [];
-  let nextDocuments = [...snapshot.project.documents];
-  let nextFolders = [...snapshot.project.folders];
-  let nextFigures = [...snapshot.project.figures];
-  let nextGraphs = [...snapshot.project.graphs];
-  let activeDocumentId = snapshot.project.activeDocumentId;
-
-  for (const rootNode of rootNodes) {
-    const domain = getWorkspaceNodeCopyDomain(rootNode);
-    const requestedRootPath = joinWorkspacePath(
-      destinationFolderPath,
-      getWorkspaceBaseName(rootNode.path)
-    );
-    const rootTargetPath = createWorkspaceCopyPath(
-      requestedRootPath,
-      existingPaths,
-      rootNode.kind === "folder"
-    );
-    let didCopyRoot = false;
-
-    existingPaths.add(rootTargetPath);
-
-    for (const sourceNode of flattenWorkspaceNodeSubtree(rootNode)) {
-      const relativePath =
-        sourceNode.path === rootNode.path
-          ? ""
-          : sourceNode.path.slice(rootNode.path.length + 1);
-      const targetPath = relativePath
-        ? joinWorkspacePath(rootTargetPath, relativePath)
-        : rootTargetPath;
-
-      if (sourceNode.kind === "folder") {
-        if (domain === "regular" && sourceNode.source.kind === "folder") {
-          nextFolders = [
-            ...nextFolders,
-            {
-              id: createPrefixedId("folder"),
-              name: targetPath,
-              updatedAt: now
-            }
-          ];
-          didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
-        }
-
-        existingPaths.add(targetPath);
-        continue;
-      }
-
-      if (sourceNode.source.kind === "document" && domain === "regular") {
-        const sourceDocument = snapshot.project.documents.find(
-          (document) => document.id === sourceNode.source.id
-        );
-
-        if (!sourceDocument) {
-          continue;
-        }
-
-        const copiedDocument = {
-          ...sourceDocument,
-          id: createPrefixedId("doc"),
-          name: targetPath,
-          content: cloneWorkspaceContent(sourceDocument.content),
-          updatedAt: now
-        };
-
-        nextDocuments = [...nextDocuments, copiedDocument];
-        activeDocumentId = copiedDocument.id;
-        copiedPaths.push(targetPath);
-        didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
-        existingPaths.add(targetPath);
-        continue;
-      }
-
-      if (sourceNode.source.kind === "diagram" && domain === "figure") {
-        const sourceDiagram = snapshot.project.figures.find(
-          (figure) => figure.id === sourceNode.source.id
-        );
-
-        if (!sourceDiagram) {
-          continue;
-        }
-
-        nextFigures = [
-          ...nextFigures,
-          cloneDiagramAssetForWorkspacePath(sourceDiagram, targetPath, now)
-        ];
-        copiedPaths.push(targetPath);
-        didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
-        existingPaths.add(targetPath);
-        continue;
-      }
-
-      if (sourceNode.source.kind === "graph" && domain === "figure") {
-        const sourceGraph = snapshot.project.graphs.find(
-          (graph) => graph.id === sourceNode.source.id
-        );
-
-        if (!sourceGraph) {
-          continue;
-        }
-
-        nextGraphs = [
-          ...nextGraphs,
-          cloneGraphAssetForWorkspacePath(sourceGraph, targetPath, now)
-        ];
-        copiedPaths.push(targetPath);
-        didCopyRoot = didCopyRoot || sourceNode.path === rootNode.path;
-        existingPaths.add(targetPath);
-      }
-    }
-
-    if (didCopyRoot) {
-      copiedRootPaths.push(rootTargetPath);
-    }
-  }
-
-  if (copiedPaths.length === 0 && copiedRootPaths.length === 0) {
-    return { snapshot, copiedPaths: [] };
-  }
-
-  return {
-    snapshot: {
-      ...snapshot,
-      project: {
-        ...snapshot.project,
-        documents: nextDocuments,
-        folders: nextFolders,
-        figures: nextFigures,
-        graphs: nextGraphs,
-        activeDocumentId,
-        updatedAt: now
-      }
-    },
-    copiedPaths: copiedRootPaths.length > 0 ? copiedRootPaths : copiedPaths
-  };
-}
-
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -2675,15 +2533,88 @@ function isTypingTarget(target: EventTarget | null) {
 }
 
 function resolveZoomPaneTarget(target: EventTarget | null): ZoomPaneTarget | null {
-  if (!(target instanceof Element)) {
+  const element = target instanceof Element
+    ? target
+    : target instanceof Node
+      ? target.parentElement
+      : null;
+
+  if (!element) {
     return null;
   }
 
-  const pane = target.closest<HTMLElement>("[data-zoom-pane]");
+  const pane = element.closest<HTMLElement>("[data-zoom-pane]");
   const zoomPane = pane?.dataset.zoomPane;
   return zoomPane === "sidebar" || zoomPane === "source" || zoomPane === "preview"
     ? zoomPane
     : null;
+}
+
+function resolvePinchZoomPaneTarget(target: EventTarget | null): PinchZoomPaneTarget | null {
+  const zoomPane = resolveZoomPaneTarget(target);
+  return zoomPane === "source" || zoomPane === "preview" ? zoomPane : null;
+}
+
+function resolvePinchZoomPaneTargetFromTouches(event: TouchEvent): PinchZoomPaneTarget | null {
+  if (event.touches.length < 2 || typeof document === "undefined") {
+    return resolvePinchZoomPaneTarget(event.target);
+  }
+
+  const firstTouch = event.touches.item(0);
+  const secondTouch = event.touches.item(1);
+
+  if (!firstTouch || !secondTouch) {
+    return resolvePinchZoomPaneTarget(event.target);
+  }
+
+  const midpointTarget = document.elementFromPoint(
+    (firstTouch.clientX + secondTouch.clientX) / 2,
+    (firstTouch.clientY + secondTouch.clientY) / 2
+  );
+
+  return resolvePinchZoomPaneTarget(midpointTarget) ?? resolvePinchZoomPaneTarget(event.target);
+}
+
+function getTouchDistance(touches: TouchList): number | null {
+  if (touches.length < 2) {
+    return null;
+  }
+
+  const firstTouch = touches.item(0);
+  const secondTouch = touches.item(1);
+
+  if (!firstTouch || !secondTouch) {
+    return null;
+  }
+
+  return Math.hypot(
+    secondTouch.clientX - firstTouch.clientX,
+    secondTouch.clientY - firstTouch.clientY
+  );
+}
+
+function getPreviewZoomPercent(zoom: PreviewZoomState): number {
+  return zoom.mode === "percent" ? zoom.percent : 100;
+}
+
+function clampPreviewPinchPercent(percent: number): number {
+  return Math.max(
+    PREVIEW_PINCH_MIN_PERCENT,
+    Math.min(PREVIEW_PINCH_MAX_PERCENT, Math.round(percent * 10) / 10)
+  );
+}
+
+function clampEditorPinchFontSize(fontSize: number): number {
+  return Math.max(
+    EDITOR_PINCH_MIN_FONT_SIZE,
+    Math.min(EDITOR_PINCH_MAX_FONT_SIZE, Math.round(fontSize))
+  );
+}
+
+function preventNativePinchZoom(event: Event): void {
+  if (event.cancelable) {
+    event.preventDefault();
+  }
 }
 
 function getKeyboardZoomDirection(
@@ -2795,17 +2726,6 @@ function getKeybindingSequenceParts(binding: string): string[] {
   return binding.trim().split(/\s+/).filter(Boolean);
 }
 
-function clampTooltipPosition(x: number, y: number) {
-  const offset = 16;
-  const width = 240;
-  const height = 88;
-
-  return {
-    x: Math.max(12, Math.min(x + offset, window.innerWidth - width - 12)),
-    y: Math.max(12, Math.min(y + offset, window.innerHeight - height - 12))
-  };
-}
-
 function formatByteSize(bytes: number): string {
   if (bytes < 1024) {
     return `${bytes} B`;
@@ -2832,10 +2752,6 @@ function hasActiveMergeStop(status: RepoStatus | null): boolean {
   return Boolean(status?.mergeState);
 }
 
-function isRemoteDivergenceMessage(message: string): boolean {
-  return /remote contains work|pull first|diverged|non-fast-forward/i.test(message);
-}
-
 function getMergeDiffLines(
   versionText: string,
   baseText: string,
@@ -2859,30 +2775,6 @@ function getMergeDiffLines(
   });
 }
 
-function getFirstChangedMergeLineNumber(baseText: string, localText: string, remoteText: string): number {
-  const baseLines = baseText.split("\n");
-  const localLines = localText.split("\n");
-  const remoteLines = remoteText.split("\n");
-  const lineCount = Math.max(baseLines.length, localLines.length, remoteLines.length);
-
-  for (let index = 0; index < lineCount; index += 1) {
-    if (baseLines[index] !== localLines[index] || baseLines[index] !== remoteLines[index]) {
-      return index + 1;
-    }
-  }
-
-  return 1;
-}
-
-function scrollMergeBodyToLine(body: HTMLDivElement, lineNumber: number) {
-  const line = body.querySelector<HTMLElement>(`[data-merge-line="${lineNumber}"]`);
-  if (!line) {
-    return;
-  }
-
-  body.scrollTop = Math.max(0, line.offsetTop - body.offsetTop);
-}
-
 function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
   const assets = new Map<string, CompileAssetFile>();
 
@@ -2896,55 +2788,6 @@ function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
 
   return [...assets.values()];
 }
-
-function buildGraphShadowFiles(graphs: GraphAsset[]): CompileAssetFile[] {
-  const assets = new Map<string, CompileAssetFile>();
-
-  for (const graph of graphs) {
-    const path = getGraphCompilerPath(graph.name);
-    if (graph.content.length === 0) {
-      continue;
-    }
-
-    assets.set(path, {
-      path,
-      content: graph.content
-    });
-  }
-
-  return [...assets.values()];
-}
-
-function buildTypstProjectShadowFiles(
-  project: TyprProjectRepository | null,
-  mainFilePath: string,
-  mainSource: string
-): CompileAssetFile[] {
-  const assets = new Map<string, CompileAssetFile>();
-  const normalizedMainFilePath = normalizeTypstCompilerPath(mainFilePath);
-
-  if (project) {
-    for (const entry of listProjectEntries(project)) {
-      if (entry.kind !== "file") {
-        continue;
-      }
-
-      const path = normalizeTypstCompilerPath(entry.path);
-      assets.set(path, {
-        path,
-        content: typeof entry.content === "string" ? TEXT_ENCODER.encode(entry.content) : entry.content
-      });
-    }
-  }
-
-  assets.set(normalizedMainFilePath, {
-    path: normalizedMainFilePath,
-    content: TEXT_ENCODER.encode(mainSource)
-  });
-
-  return [...assets.values()];
-}
-
 
 type PastedSourceImage = {
   bytes: Uint8Array;
@@ -3036,12 +2879,6 @@ function loadClipboardImage(blob: Blob): Promise<HTMLImageElement> {
   });
 }
 
-function getWorkspaceDirectory(path: string): string {
-  const normalizedPath = normalizeWorkspacePath(path);
-  const slashIndex = normalizedPath.lastIndexOf("/");
-  return slashIndex >= 0 ? normalizedPath.slice(0, slashIndex) : "";
-}
-
 function normalizePastedImageDirectory(directory: string): string {
   const normalized = normalizeWorkspacePath(directory)
     .split("/")
@@ -3052,7 +2889,7 @@ function normalizePastedImageDirectory(directory: string): string {
 }
 
 function getWorkspaceRelativeReference(fromFilePath: string, toPath: string): string {
-  const fromDirectory = getWorkspaceDirectory(fromFilePath);
+  const fromDirectory = getWorkspacePathDirectory(fromFilePath);
   const fromSegments = fromDirectory ? fromDirectory.split("/").filter(Boolean) : [];
   const toSegments = normalizeWorkspacePath(toPath).split("/").filter(Boolean);
   let sharedSegmentCount = 0;
@@ -3067,7 +2904,7 @@ function getWorkspaceRelativeReference(fromFilePath: string, toPath: string): st
 
   const parentSegments = fromSegments.slice(sharedSegmentCount).map(() => "..");
   const targetSegments = toSegments.slice(sharedSegmentCount);
-  return [...parentSegments, ...targetSegments].join("/") || getPastedImageBaseName(toPath);
+  return [...parentSegments, ...targetSegments].join("/") || getWorkspaceBaseName(toPath);
 }
 
 function buildPastedImagePath(
@@ -3076,7 +2913,7 @@ function buildPastedImagePath(
   preferences: AppSnapshot["preferences"]["pastedImages"],
   extension: "png" | "jpg"
 ): { folderPath: string; imagePath: string; referencePath: string } {
-  const documentDirectory = getWorkspaceDirectory(activePath);
+  const documentDirectory = getWorkspacePathDirectory(activePath);
   const configuredDirectory = normalizePastedImageDirectory(preferences.figuresDirectory);
   const folderPath = preferences.figuresDirectoryRelativeToFile
     ? joinWorkspacePath(documentDirectory || null, configuredDirectory)
@@ -3123,7 +2960,7 @@ function findDuplicatePastedImagePath(
 
     const existingBytes = readProjectFileBytes(project, normalizedPath);
 
-    if (existingBytes && bytesEqual(existingBytes, bytes)) {
+    if (existingBytes && areBytesEqual(existingBytes, bytes)) {
       return normalizedPath;
     }
   }
@@ -3131,19 +2968,6 @@ function findDuplicatePastedImagePath(
   return null;
 }
 
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) {
-    return false;
-  }
-
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 function sanitizePastedImageFilePrefix(prefix: string): string {
   const normalized = prefix
@@ -3153,10 +2977,6 @@ function sanitizePastedImageFilePrefix(prefix: string): string {
     .replace(/^-+|-+$/g, "");
 
   return normalized || "pasted-image";
-}
-
-function getPastedImageBaseName(path: string): string {
-  return normalizeWorkspacePath(path).split("/").at(-1) ?? path;
 }
 
 function getPastedImageNameStem(name: string, extension: "png" | "jpg"): string {
@@ -3245,14 +3065,9 @@ function writeDiagramPdfProjectFile(
 
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
-  const [storedSettingsMenu] = useState(readStoredSettingsMenuState);
   const [storedLeftPane] = useState(readStoredLeftPaneState);
   const menuStripRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
-  const settingsBodyRef = useRef<HTMLDivElement | null>(null);
-  const settingsScrollByTabRef = useRef<SettingsScrollPositions>(storedSettingsMenu.scrollByTab);
-  const settingsTabRef = useRef<SettingsTab>(storedSettingsMenu.tab);
-  const settingsScrollRestoreFrameRef = useRef<number | null>(null);
   const leftPaneScrollByPaneRef = useRef<Record<string, number>>(storedLeftPane.scrollByPane);
   const leftPaneScrollRestoreFrameRef = useRef<number | null>(null);
   const editorRef = useRef<TypstEditorHandle | null>(null);
@@ -3260,9 +3075,6 @@ export function App() {
   const previewPaneRef = useRef<HTMLElement | null>(null);
   const sidebarPaneRef = useRef<HTMLElement | null>(null);
   const shouldFocusEditorAfterVimToggleRef = useRef(false);
-  const sourceTabsInitializedProjectRef = useRef<string | null>(null);
-  const previewTabsInitializedProjectRef = useRef<string | null>(null);
-  const workspaceTabDragRef = useRef<{ kind: WorkspaceTabKind; path: string } | null>(null);
   const activeSourceTabRef = useRef<HTMLDivElement | null>(null);
   const activePreviewTabRef = useRef<HTMLDivElement | null>(null);
   const themeImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -3272,10 +3084,9 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const filesSectionRef = useRef<HTMLElement | null>(null);
   const lastZoomPaneTargetRef = useRef<ZoomPaneTarget>("source");
+  const pinchZoomStateRef = useRef<PinchZoomState | null>(null);
   const openMenuTimerRef = useRef<number | null>(null);
   const closeMenuTimerRef = useRef<number | null>(null);
-  const compileTimerRef = useRef<number | null>(null);
-  const compileFrameRef = useRef<number | null>(null);
   const previewPendingGTimerRef = useRef<number | null>(null);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   const panelResizePendingWidthRef = useRef<number | null>(null);
@@ -3291,27 +3102,7 @@ export function App() {
     workspaceMode: Exclude<WorkspaceMode, "zen">;
     isSourcePaneHidden: boolean;
   } | null>(null);
-  const compileRequestRef = useRef(0);
-  const pendingSourceRef = useRef("");
-  const pendingSourcePathRef = useRef("main.typ");
-  const activeSourcePathRef = useRef("main.typ");
-  const activeSourceLanguageRef = useRef<SourceLanguage>("typst");
-  const isActiveSourceCompilableRef = useRef(true);
-  const previewSourceDraftRef = useRef("");
-  const diagramAssetsRevisionRef = useRef("");
-  const diagramAssetsRef = useRef<CompileAssetFile[]>([]);
-  const graphAssetsRevisionRef = useRef("");
-  const graphAssetsRef = useRef<CompileAssetFile[]>([]);
-  const gitStatusRequestRef = useRef(0);
-  const mergeVersionBodyRefs = useRef<Record<MergeVersionRole, HTMLDivElement | null>>({
-    base: null,
-    local: null,
-    remote: null
-  });
-  const isSyncingMergeScrollRef = useRef(false);
   const themeRef = useRef<ThemeDefinition | null>(null);
-  const compileResultRef = useRef<CompileResult | null>(null);
-  const readyTypstPreviewSignatureRef = useRef<string | null>(null);
   const editedSourcePathRef = useRef<string | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
   const handleFormatDocumentRef = useRef<() => void>(() => {});
@@ -3319,22 +3110,11 @@ export function App() {
   const compileOptionsMenuRef = useRef<HTMLDivElement | null>(null);
   const previewDownloadMenuRef = useRef<HTMLDivElement | null>(null);
   const activateWorkspaceTabRef = useRef<(direction: -1 | 1) => boolean>(() => false);
-  const compileInFlightRef = useRef(false);
-  const compileInFlightLanguageRef = useRef<SourceLanguage | null>(null);
-  const compileInFlightSourceRef = useRef("");
-  const compileInFlightSourcePathRef = useRef("");
-  const compileInFlightDiagramRevisionRef = useRef("");
-  const compileInFlightGraphRevisionRef = useRef("");
-  const pendingCompileTriggerRef = useRef<BuildLogTrigger>("auto");
-  const isMountedRef = useRef(true);
-  const [activeMenu, setActiveMenu] = useState<MenuLabel | null>(null);
+  const [, setActiveMenu] = useState<MenuLabel | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(
     () => storedLeftPane.activeSidebarTool === "settings"
   );
   const [isDocsOpen, setIsDocsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>(storedSettingsMenu.tab);
-  const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
-  const [isMobileSettingsNavOpen, setIsMobileSettingsNavOpen] = useState(false);
   const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
   const [previewDownloadMode, setPreviewDownloadMode] = useState<PreviewDownloadMode>("output");
   const [selectedLatexCompileProfileId, setSelectedLatexCompileProfileId] = useState<LatexCompileProfileId>("pdftex-quick");
@@ -3351,29 +3131,32 @@ export function App() {
     regexp: false,
     wholeWord: false
   });
-  const [matrixSettings, setMatrixSettings] = useState<MatrixSettings>({
-    rows: 2,
-    columns: 2,
-    delimiter: "paren"
+  const [matrixSettings, setMatrixSettings] = useState<MatrixSettings>(createInitialMatrixSettings);
+  const [matrixPickerSize, setMatrixPickerSize] = useState<MatrixSize>({
+    rows: MATRIX_SIZE_PICKER_INITIAL_ROWS,
+    columns: MATRIX_SIZE_PICKER_INITIAL_COLUMNS
   });
-  const [tableSettings, setTableSettings] = useState<TableSettings>({
-    rows: 3,
-    columns: 3,
-    header: true,
-    footer: false,
-    striped: true,
-    align: "left",
-    gutter: "small",
-    inset: "small",
-    stroke: "default"
+  const [matrixSizePreview, setMatrixSizePreview] = useState<MatrixSize | null>(null);
+  const [tableSettings, setTableSettings] = useState<TableSettings>(createInitialTableSettings);
+  const [tableSizePreview, setTableSizePreview] = useState<MatrixSize | null>(null);
+  const [tableSizeInput, setTableSizeInput] = useState({ rows: "3", columns: "3" });
+  const [isTableSizePickerOpen, setIsTableSizePickerOpen] = useState(false);
+  const [isTableBorderMenuOpen, setIsTableBorderMenuOpen] = useState(false);
+  const [tableSelection, setTableSelection] = useState<TableSelection>({
+    anchorRow: 0,
+    anchorColumn: 0,
+    focusRow: 0,
+    focusColumn: 0
   });
-  const [openToolbarMenu, setOpenToolbarMenu] = useState<"matrix" | "table" | "symbols" | null>(null);
+  const [tableBorderPreset, setTableBorderPreset] = useState<TableBorderPreset>("outer");
+  const [tableBorderStyle, setTableBorderStyle] = useState<TableStrokeStyle>("solid");
+  const [tableBorderWeight, setTableBorderWeight] = useState<TableStrokeWeight>("thin");
+  const [openToolbarMenu, setOpenToolbarMenu] = useState<"matrix" | "table" | null>(null);
   const [themeImportFeedback, setThemeImportFeedback] = useState<SyncFeedback>({
     tone: "neutral",
     text: ""
   });
   const [isPreviewPopupOpen, setIsPreviewPopupOpen] = useState(false);
-  const [gitMergePaneMode, setGitMergePaneMode] = useState<GitMergePaneMode>("sidebar");
   const [isPreviewDebugVisible, setIsPreviewDebugVisible] = useState(false);
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [isPaperView, setIsPaperView] = useState(false);
@@ -3381,27 +3164,34 @@ export function App() {
     useState<KeybindingCommandId | null>(null);
   const [pendingKeybindingConflict, setPendingKeybindingConflict] =
     useState<PendingKeybindingConflict | null>(null);
-  const [diagramInkColor, setDiagramInkColor] = useState("#000000");
-  const [diagramFillColor, setDiagramFillColor] = useState("transparent");
-  const [diagramStrokeStyle, setDiagramStrokeStyle] = useState<DiagramStrokeStyle>("solid");
-  const [diagramStrokeWidth, setDiagramStrokeWidth] = useState(2.5);
-  const [diagramStartMarker, setDiagramStartMarker] = useState<DiagramEndpoint>("none");
-  const [diagramEndMarker, setDiagramEndMarker] = useState<DiagramEndpoint>("none");
+  const settingsController = useSettingsSheetController({
+    isOpen: isSettingsOpen,
+    recordingKeybindingId
+  });
+  const settingsTab = settingsController.tab;
+  const settingsSearchQuery = settingsController.searchQuery;
+  const setSettingsTab = settingsController.handleTabChange;
+  const saveCurrentSettingsScrollPosition = settingsController.saveCurrentScrollPosition;
+  const setIsMobileSettingsNavOpen = settingsController.setIsMobileNavOpen;
   const [workspaceOpenFoldersByProject, setWorkspaceOpenFoldersByProject] =
     useState<WorkspaceOpenFolderStorage>(() => readStoredWorkspaceOpenFolders());
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
   const [isTrashViewOpen, setIsTrashViewOpen] = useState(storedLeftPane.isTrashViewOpen);
-  const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(null);
-  const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<string[]>([]);
-  const [sourceTabPaths, setSourceTabPaths] = useState<string[]>([]);
-  const [transientSourceTabPath, setTransientSourceTabPath] = useState<string | null>(null);
-  const [previewTabPaths, setPreviewTabPaths] = useState<string[]>([]);
-  const [activePreviewPath, setActivePreviewPath] = useState<string | null>(null);
-  const [draggingWorkspaceTab, setDraggingWorkspaceTab] =
-    useState<{ kind: WorkspaceTabKind; path: string } | null>(null);
-  const [workspaceTabDropTarget, setWorkspaceTabDropTarget] =
-    useState<{ kind: WorkspaceTabKind; path: string; side: "before" | "after" } | null>(null);
-  const [workspaceSelectionAnchorPath, setWorkspaceSelectionAnchorPath] = useState<string | null>(null);
+  const {
+    activePreviewPath,
+    draggingWorkspaceTab,
+    previewTabPaths,
+    setActivePreviewPath,
+    setDraggingWorkspaceTab,
+    setPreviewTabPaths,
+    setSourceTabPaths,
+    setTransientSourceTabPath,
+    setWorkspaceTabDropTarget,
+    sourceTabPaths,
+    transientSourceTabPath,
+    workspaceTabDragRef,
+    workspaceTabDropTarget
+  } = useWorkspaceTabs();
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null);
   const [renamingWorkspacePath, setRenamingWorkspacePath] = useState<string | null>(null);
@@ -3410,13 +3200,16 @@ export function App() {
   const [pendingWorkspaceDeletePath, setPendingWorkspaceDeletePath] = useState<string | null>(null);
   const [draggedWorkspacePath, setDraggedWorkspacePath] = useState<string | null>(null);
   const [workspaceDropTargetPath, setWorkspaceDropTargetPath] = useState<string | null>(null);
-  const [hoveredSourceSymbol, setHoveredSourceSymbol] = useState<SourceSymbolTooltipState | null>(
-    null
-  );
   const [collapsedOutlineEntries, setCollapsedOutlineEntries] = useState<Record<string, boolean>>(
     {}
   );
   const [currentEditorLineNumber, setCurrentEditorLineNumber] = useState(1);
+  const [sourceEditorSelection, setSourceEditorSelection] = useState<TypstEditorSelection>({
+    lineNumber: 1,
+    from: 0,
+    to: 0,
+    head: 0
+  });
   const [externalDiagnosticsState, setExternalDiagnosticsState] = useState<ExternalDiagnosticsState | null>(null);
   const [diagnosticProviderStatuses, setDiagnosticProviderStatuses] =
     useState<DiagnosticProviderStatus[]>(createInitialExternalDiagnosticStatuses);
@@ -3521,14 +3314,8 @@ export function App() {
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<MobileWorkspaceTab>(
     storedLeftPane.mobileWorkspaceTab
   );
-  const [compilerStatus, setCompilerStatus] = useState<CompilerStatus>({
-    phase: "idle",
-    mode: "worker",
-    label: "Waiting to compile"
-  });
   const [liveBuildOutput, setLiveBuildOutput] = useState("");
-  const handleCompilerStatusChange = useCallback((status: CompilerStatus) => {
-    setCompilerStatus(status);
+  const appendCompilerStatusToLiveBuildOutput = useCallback((status: CompilerStatus) => {
     setLiveBuildOutput((currentOutput) => {
       const timestamp = new Date().toLocaleTimeString();
       const detail = status.detail ? ` — ${status.detail}` : "";
@@ -3538,137 +3325,163 @@ export function App() {
 ${nextLine}` : nextLine;
     });
   }, []);
-  const symbolHoverTimerRef = useRef<number | null>(null);
-  const workspaceHoverExpandTimerRef = useRef<number | null>(null);
-  const symbolHoverItemRef = useRef<SourceSymbolItem | null>(null);
-  const symbolHoverPointRef = useRef({ x: 0, y: 0 });
-  const compiler = useMemo(
-    () =>
-      createTypstCompiler({
-        onStatusChange: handleCompilerStatusChange
-      }),
-    [handleCompilerStatusChange]
-  );
-  const defaultSnapshotRef = useRef<AppSnapshot | null>(null);
-  if (defaultSnapshotRef.current === null) {
-    defaultSnapshotRef.current = createDefaultSnapshot();
-  }
-  const [rawSnapshot, setRawSnapshot] = useState<AppSnapshot>(defaultSnapshotRef.current);
-  const [projectStorage, setProjectStorage] = useState<TyprProjectStorageState>(() =>
-    createProjectStorageFromSnapshot(defaultSnapshotRef.current as AppSnapshot)
-  );
-  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
-  const [projectDragOverId, setProjectDragOverId] = useState<string | null>(null);
-  const snapshot = rawSnapshot;
-  const selectedProjectRepository = useMemo(
-    () => getSelectedProjectRepository(projectStorage),
-    [projectStorage]
-  );
-  const selectedProjectRepositoryRef = useRef<TyprProjectRepository | null>(selectedProjectRepository);
-  const setSnapshot = useCallback<Dispatch<SetStateAction<AppSnapshot>>>((snapshotAction) => {
-    setRawSnapshot((currentSnapshot) => {
-      const nextSnapshot =
-        typeof snapshotAction === "function"
-          ? (snapshotAction as (snapshot: AppSnapshot) => AppSnapshot)(currentSnapshot)
-          : snapshotAction;
-
-      setProjectStorage((currentStorage) =>
-        syncProjectStorageFromSnapshot(nextSnapshot, currentStorage, currentSnapshot)
-      );
-
-      return nextSnapshot;
-    });
-  }, []);
-  const setProjectRepository = useCallback(
-    (updater: (project: TyprProjectRepository) => TyprProjectRepository) => {
-      setProjectStorage((currentStorage) => {
-        let nextProject: TyprProjectRepository | null = null;
-        const nextStorage = updateSelectedProjectRepository(currentStorage, (project) => {
-          nextProject = updater(project);
-          return nextProject;
-        });
-
-        const updatedProject = nextProject;
-        if (updatedProject) {
-          setRawSnapshot((currentSnapshot) => ({
-            ...currentSnapshot,
-            project: projectRepositoryToLegacyProject(updatedProject, currentSnapshot.project)
-          }));
-        }
-
-        return nextStorage;
-      });
-    },
-    []
-  );
-  const [gitWorkspace, setGitWorkspace] = useState<GitWorkspaceState>({
-    version: 1,
-    selectedProjectId: null,
-    selectedProjectIdsByTyprProjectId: {},
-    projects: []
+  const {
+    compiler,
+    compilerStatus,
+    setCompilerStatus,
+    handleCompilerStatusChange,
+    compileResult,
+    setCompileResult,
+    lastSuccessfulResult,
+    setLastSuccessfulResult,
+    compilePreviewsByPath,
+    setCompilePreviewsByPath,
+    isCompiling,
+    setIsCompiling,
+    compileTimerRef,
+    compileFrameRef,
+    compileRequestRef,
+    pendingSourceRef,
+    pendingSourcePathRef,
+    activeSourcePathRef,
+    activeSourceLanguageRef,
+    isActiveSourceCompilableRef,
+    previewSourceDraftRef,
+    diagramAssetsRevisionRef,
+    diagramAssetsRef,
+    compileResultRef,
+    readyTypstPreviewSignatureRef,
+    compileInFlightRef,
+    compileInFlightLanguageRef,
+    compileInFlightSourceRef,
+    compileInFlightSourcePathRef,
+    compileInFlightDiagramRevisionRef,
+    pendingCompileTriggerRef,
+    isMountedRef,
+    clearScheduledCompile,
+    queueCompile: scheduleCompilePreview,
+    hasActiveCompileWork: hasScheduledCompileWork,
+    applyRestoredCompilePreview
+  } = useCompilePreviewController<BuildLogTrigger>({
+    initialTrigger: "auto",
+    onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
+  const workspaceHoverExpandTimerRef = useRef<number | null>(null);
+  const matrixCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
+  const tableCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
+  const tableSelectionPointerRef = useRef(false);
+  const tableDragSelectionRef = useRef(false);
+  const loadedEditableTableSignatureRef = useRef<string | null>(null);
+  const handleSourceEditorSelectionChange = useCallback((selection: TypstEditorSelection) => {
+    setCurrentEditorLineNumber(selection.lineNumber);
+    setSourceEditorSelection(selection);
+  }, []);
   const [isHydrated, setIsHydrated] = useState(false);
   const [hasHydrationError, setHasHydrationError] = useState(false);
-  const [compileResult, setCompileResult] = useState<CompileResult | null>(null);
-  const [buildLogEntries, setBuildLogEntries] = useState<BuildLogEntry[]>([]);
-  const [buildLogFilter, setBuildLogFilter] = useState<BuildLogFilter>("all");
-  const [buildLogSearchQuery, setBuildLogSearchQuery] = useState("");
-  const [buildLogFeedback, setBuildLogFeedback] = useState("");
-  const [hideRepeatedBuildWarnings, setHideRepeatedBuildWarnings] = useState(true);
-  const [isBuildLogHydrated, setIsBuildLogHydrated] = useState(false);
-  const [lastSuccessfulResult, setLastSuccessfulResult] = useState<
-    Extract<CompileResult, { ok: true }> | null
-  >(null);
-  const [compilePreviewsByPath, setCompilePreviewsByPath] = useState<Record<string, CompilePreviewState>>({});
+  const [storageStatus, setStorageStatus] =
+    useState<"idle" | "saving" | "saved" | "error">("idle");
+  const {
+    lifecyclePersistenceRef,
+    persistencePayloadRef,
+    projectStorage,
+    selectedProjectRepository,
+    selectedProjectRepositoryRef,
+    setProjectRepository,
+    setProjectStorage,
+    setRawSnapshot,
+    setSnapshot,
+    snapshot
+  } = useWorkspacePersistence({
+    hasHydrationError,
+    isHydrated,
+    isMountedRef,
+    setStorageStatus
+  });
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+  const [projectDragOverId, setProjectDragOverId] = useState<string | null>(null);
+  const previewZoomRef = useRef(previewZoom);
+  const editorFontSizeRef = useRef(snapshot.preferences.editorFontSize);
+  previewZoomRef.current = previewZoom;
+  editorFontSizeRef.current = snapshot.preferences.editorFontSize;
   const [isErrorSettled, setIsErrorSettled] = useState(false);
-  const [isCompiling, setIsCompiling] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const syncOperationRef = useRef(false);
-  const [isExportingPdf, setIsExportingPdf] = useState(false);
-  const [storageStatus, setStorageStatus] = useState<"idle" | "saving" | "saved" | "error">(
-    "idle"
-  );
-  const pendingSyncProgressRef = useRef<RemoteGitProgress | null>(null);
-  const syncProgressFlushTimerRef = useRef<number | null>(null);
-  const lastSyncProgressFlushAtRef = useRef(0);
   const setSyncFeedback = useCallback((feedback: SyncFeedback) => {
     setSyncStatusSnapshot({ ...feedback, progress: null });
   }, []);
-  const [gitCredentials, setGitCredentials] = useState<Record<string, string>>({});
-  const [gitHubDiscovery, setGitHubDiscovery] = useState<GitHubDiscoveryState>({
-    status: "idle",
-    message: "",
-    accountLogin: null,
-    owners: [],
-    repos: [],
-    branches: [],
-    repoMode: "select",
-    isLoadingRepos: false,
-    isLoadingBranches: false
+  const {
+    abortGitMerge: handleAbortGitMerge,
+    activeMergeState,
+    addGitProject: handleAddGitProject,
+    commitGitChanges: handleCommitGitChanges,
+    continueGitMerge: handleContinueGitMerge,
+    createGitHubRepoPrivate,
+    ensureGitProject: addDefaultGitManagedProject,
+    editMergeResolution: handleEditMergeResolution,
+    fetchRemote: runFetchRemote,
+    filesGitConflictNotice,
+    gitBranches,
+    gitCommitHistory,
+    gitCredentials,
+    gitFileStatuses,
+    gitHubClone,
+    gitHubDiscovery,
+    gitMergePaneMode,
+    gitRefreshToken,
+    gitWorkspace,
+    gitWorkingTreeEntries,
+    handleMergeVersionBodyScroll,
+    isGitStatusLoading,
+    isMergeFilePreviewLoading,
+    isSyncing,
+    localGitCommits,
+    localRepoStatus,
+    mergeCommitMessage,
+    mergeFilePreview,
+    mergeResolutionDrafts,
+    mergeResolutionEditorValue,
+    mergeVersionBodyRefs,
+    remoteConfig,
+    pullRemote: runPullRemote,
+    pushRemote: runPushRemote,
+    remoteGitService,
+    removeSelectedGitProject: handleRemoveSelectedGitProject,
+    repoBackend,
+    selectedGitProject,
+    selectedGitProjectIsGitHubConnected,
+    selectedGitToken,
+    selectedMergePath,
+    selectedProjectGitConnectionLabel,
+    setCreateGitHubRepoPrivate,
+    setGitCredentials,
+    setGitHubClone,
+    setGitHubDiscovery,
+    setGitMergePaneMode,
+    setGitRefreshToken,
+    setGitWorkspace,
+    setIsSyncing,
+    setLocalRepoBranches,
+    setLocalRepoCommits,
+    setLocalRepoStatus,
+    setMergeCommitMessage,
+    setSelectedMergePath,
+    setUpstreamTracking,
+    stageAllGitChanges: handleStageAllGitChanges,
+    stageGitPaths: handleStageGitPaths,
+    unstageGitPath: handleUnstageGitPath,
+    syncRemote: runSyncRemote,
+    unresolvedMergeConflictCount,
+    useMergeVersion: handleUseMergeVersion,
+    updateGitManagedProject,
+    updateSelectedGitProject,
+    upstreamTracking
+  } = useGitPanelController({
+    isHydrated,
+    selectedProjectRepository,
+    fallbackProjectId: snapshot.project.id,
+    fallbackProjectName: snapshot.project.name,
+    setProjectRepository,
+    setSyncFeedback,
+    setSyncStatusSnapshot
   });
-  const [gitHubClone, setGitHubClone] = useState<GitHubCloneState>(
-    createInitialGitHubCloneState
-  );
-  const [upstreamTracking, setUpstreamTracking] = useState<UpstreamTracking | null>(null);
-  const [createGitHubRepoPrivate, setCreateGitHubRepoPrivate] = useState(true);
-  const [gitCommitHistory, setGitCommitHistory] = useState<RepoCommit[]>([]);
-  const [gitFileStatuses, setGitFileStatuses] = useState<GitFileStatus[]>([]);
-  const [gitBranches, setGitBranches] = useState<
-    Array<{ name: string; sha: string | null; protected?: boolean; current: boolean }>
-  >([]);
-  const [isGitStatusLoading, setIsGitStatusLoading] = useState(false);
-  const repoBackend = useMemo(() => createRepoBackend(), []);
-  const remoteGitService = useMemo(() => createRemoteGitService({ repoBackend }), [repoBackend]);
-  const [localRepoStatus, setLocalRepoStatus] = useState<RepoStatus | null>(null);
-  const [localRepoCommits, setLocalRepoCommits] = useState<RepoCommit[]>([]);
-  const [localRepoBranches, setLocalRepoBranches] = useState<RepoBranch[]>([]);
-  const [filesGitConflictNotice, setFilesGitConflictNotice] = useState<string | null>(null);
-  const [selectedMergePath, setSelectedMergePath] = useState<string | null>(null);
-  const [mergeFilePreview, setMergeFilePreview] = useState<MergeFilePreview | null>(null);
-  const [isMergeFilePreviewLoading, setIsMergeFilePreviewLoading] = useState(false);
-  const [mergeResolutionDrafts, setMergeResolutionDrafts] = useState<Record<string, MergeResolutionDraft>>({});
-  const [mergeCommitMessage, setMergeCommitMessage] = useState("");
-  const [gitRefreshToken, setGitRefreshToken] = useState(0);
   const [repoStorageStats, setRepoStorageStats] = useState<RepoStorageStats | null>(null);
   const [isRepoStorageLoading, setIsRepoStorageLoading] = useState(false);
   const [repoStorageFeedback, setRepoStorageFeedback] = useState<SyncFeedback>({
@@ -3684,14 +3497,6 @@ ${nextLine}` : nextLine;
     keybindings.compile,
     isAppleShortcutPlatform
   );
-  const formatDocumentShortcutLabel = formatKeybinding(
-    keybindings.formatDocument,
-    isAppleShortcutPlatform
-  );
-  const vimToggleShortcutLabel = formatKeybinding(
-    keybindings.toggleVim,
-    isAppleShortcutPlatform
-  );
   const handleVimToggle = useCallback(() => {
     setSnapshot((currentSnapshot) => {
       const nextVimMode = !currentSnapshot.preferences.vimMode;
@@ -3699,76 +3504,6 @@ ${nextLine}` : nextLine;
       return updateVimPreference(currentSnapshot, nextVimMode);
     });
   }, []);
-
-  const saveCurrentSettingsScrollPosition = useCallback(() => {
-    const element = settingsBodyRef.current;
-
-    if (!element) {
-      return;
-    }
-
-    const tab = settingsTabRef.current;
-    settingsScrollByTabRef.current = {
-      ...settingsScrollByTabRef.current,
-      [tab]: Math.max(0, Math.round(element.scrollTop))
-    };
-    writeStoredSettingsMenuState(tab, settingsScrollByTabRef.current);
-  }, []);
-
-  const handleSettingsBodyScroll = useCallback(() => {
-    saveCurrentSettingsScrollPosition();
-  }, [saveCurrentSettingsScrollPosition]);
-
-  const handleSettingsTabChange = useCallback(
-    (tab: SettingsTab) => {
-      if (settingsTabRef.current === tab) {
-        return;
-      }
-
-      saveCurrentSettingsScrollPosition();
-      setSettingsTab(tab);
-    },
-    [saveCurrentSettingsScrollPosition]
-  );
-
-  const handleSettingsTabSelect = useCallback(
-    (tab: SettingsTab) => {
-      handleSettingsTabChange(tab);
-      setIsMobileSettingsNavOpen(false);
-    },
-    [handleSettingsTabChange]
-  );
-
-  const settingsSearchMatchingTabs = useMemo(() => {
-    const query = settingsSearchQuery.trim().toLowerCase();
-
-    if (!query) {
-      return SETTINGS_TABS;
-    }
-
-    return SETTINGS_TABS.filter((tab) =>
-      SETTINGS_SEARCH_INDEX[tab].some((term) => term.toLowerCase().includes(query))
-    );
-  }, [settingsSearchQuery]);
-
-  useEffect(() => {
-    const query = settingsSearchQuery.trim();
-
-    if (!isSettingsOpen || !query || settingsSearchMatchingTabs.includes(settingsTab)) {
-      return;
-    }
-
-    const [firstMatch] = settingsSearchMatchingTabs;
-    if (firstMatch) {
-      handleSettingsTabChange(firstMatch);
-    }
-  }, [
-    handleSettingsTabChange,
-    isSettingsOpen,
-    settingsSearchMatchingTabs,
-    settingsSearchQuery,
-    settingsTab
-  ]);
 
   const handleCursorSmearChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -3867,54 +3602,6 @@ ${nextLine}` : nextLine;
     setPendingKeybindingConflict(null);
   }, []);
 
-  useEffect(() => {
-    settingsTabRef.current = settingsTab;
-    writeStoredSettingsMenuState(settingsTab, settingsScrollByTabRef.current);
-  }, [settingsTab]);
-
-  useEffect(() => {
-    if (!isSettingsOpen) {
-      return;
-    }
-
-    if (settingsScrollRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(settingsScrollRestoreFrameRef.current);
-    }
-
-    settingsScrollRestoreFrameRef.current = window.requestAnimationFrame(() => {
-      const element = settingsBodyRef.current;
-
-      if (element) {
-        element.scrollTop = settingsScrollByTabRef.current[settingsTab] ?? 0;
-      }
-
-      settingsScrollRestoreFrameRef.current = null;
-    });
-
-    return () => {
-      if (settingsScrollRestoreFrameRef.current !== null) {
-        window.cancelAnimationFrame(settingsScrollRestoreFrameRef.current);
-        settingsScrollRestoreFrameRef.current = null;
-      }
-    };
-  }, [isSettingsOpen, settingsTab]);
-
-  useEffect(() => {
-    if (!isSettingsOpen || settingsTab !== "keybindings" || !recordingKeybindingId) {
-      return;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      document
-        .querySelector<HTMLButtonElement>(
-          `[data-keybinding-recorder="${recordingKeybindingId}"]`
-        )
-        ?.focus();
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [isSettingsOpen, recordingKeybindingId, settingsTab]);
-
   const setEditorFontSize = useCallback((editorFontSize: number) => {
     setSnapshot((currentSnapshot) =>
       updateEditorFontSizePreference(currentSnapshot, editorFontSize)
@@ -3943,6 +3630,129 @@ ${nextLine}` : nextLine;
         currentSnapshot.preferences.editorFontSize + direction
       )
     );
+  }, []);
+
+  const applyPinchZoomScale = useCallback((
+    pinchState: PinchZoomState,
+    scale: number
+  ): boolean => {
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return false;
+    }
+
+    if (pinchState.pane === "preview") {
+      const nextPercent = clampPreviewPinchPercent(pinchState.startPreviewPercent * scale);
+
+      if (nextPercent !== pinchState.lastPreviewPercent) {
+        pinchState.lastPreviewPercent = nextPercent;
+        setPreviewZoom({ mode: "percent", percent: nextPercent });
+      }
+
+      return true;
+    }
+
+    const nextFontSize = clampEditorPinchFontSize(pinchState.startEditorFontSize * scale);
+
+    if (nextFontSize !== pinchState.lastEditorFontSize) {
+      pinchState.lastEditorFontSize = nextFontSize;
+      setSnapshot((currentSnapshot) =>
+        updateEditorFontSizePreference(currentSnapshot, nextFontSize)
+      );
+    }
+
+    return true;
+  }, [setSnapshot]);
+
+  const beginPinchZoom = useCallback((event: TouchEvent): boolean => {
+    const pane = resolvePinchZoomPaneTargetFromTouches(event);
+    const distance = getTouchDistance(event.touches);
+
+    if (!pane || distance === null || distance <= 0) {
+      return false;
+    }
+
+    preventNativePinchZoom(event);
+    lastZoomPaneTargetRef.current = pane;
+    pinchZoomStateRef.current = {
+      input: "touch",
+      pane,
+      startDistance: distance,
+      startPreviewPercent: getPreviewZoomPercent(previewZoomRef.current),
+      startEditorFontSize: editorFontSizeRef.current,
+      lastPreviewPercent: getPreviewZoomPercent(previewZoomRef.current),
+      lastEditorFontSize: editorFontSizeRef.current
+    };
+
+    return true;
+  }, []);
+
+  const updatePinchZoom = useCallback((event: TouchEvent): boolean => {
+    const pinchState = pinchZoomStateRef.current;
+    const distance = getTouchDistance(event.touches);
+
+    if (
+      !pinchState ||
+      pinchState.input !== "touch" ||
+      distance === null ||
+      pinchState.startDistance <= 0
+    ) {
+      return false;
+    }
+
+    preventNativePinchZoom(event);
+    return applyPinchZoomScale(pinchState, distance / pinchState.startDistance);
+  }, [applyPinchZoomScale]);
+
+  const endPinchZoom = useCallback((event: TouchEvent) => {
+    if (
+      event.touches.length < 2 &&
+      pinchZoomStateRef.current?.input === "touch"
+    ) {
+      pinchZoomStateRef.current = null;
+    }
+  }, []);
+
+  const beginGestureZoom = useCallback((event: Event): boolean => {
+    const pane =
+      resolvePinchZoomPaneTarget(event.target) ??
+      pinchZoomStateRef.current?.pane;
+
+    if (!pane) {
+      return false;
+    }
+
+    preventNativePinchZoom(event);
+    lastZoomPaneTargetRef.current = pane;
+    pinchZoomStateRef.current = {
+      input: "gesture",
+      pane,
+      startDistance: 1,
+      startPreviewPercent: getPreviewZoomPercent(previewZoomRef.current),
+      startEditorFontSize: editorFontSizeRef.current,
+      lastPreviewPercent: getPreviewZoomPercent(previewZoomRef.current),
+      lastEditorFontSize: editorFontSizeRef.current
+    };
+    return true;
+  }, []);
+
+  const updateGestureZoom = useCallback((event: Event): boolean => {
+    const pinchState = pinchZoomStateRef.current;
+    const scale = Number((event as Event & { scale?: number }).scale);
+
+    if (!pinchState || pinchState.input !== "gesture") {
+      return false;
+    }
+
+    preventNativePinchZoom(event);
+    return applyPinchZoomScale(pinchState, scale);
+  }, [applyPinchZoomScale]);
+
+  const endGestureZoom = useCallback((event: Event) => {
+    preventNativePinchZoom(event);
+
+    if (pinchZoomStateRef.current?.input === "gesture") {
+      pinchZoomStateRef.current = null;
+    }
   }, []);
 
   const handleCursorSmoothToggle = useCallback(() => {
@@ -4177,58 +3987,6 @@ ${nextLine}` : nextLine;
   const activeDocument = getActiveDocument(snapshot.project);
   const activeDocumentTextContent =
     typeof activeDocument.content === "string" ? activeDocument.content : "";
-  const gitProjectsForSelectedTyprProject = useMemo(
-    () =>
-      selectedProjectRepository
-        ? gitWorkspace.projects.filter((project) => project.projectId === selectedProjectRepository.id)
-        : [],
-    [gitWorkspace.projects, selectedProjectRepository]
-  );
-  const selectedGitProject = useMemo(
-    () => {
-      if (!selectedProjectRepository) {
-        return null;
-      }
-
-      const scopedSelection =
-        gitWorkspace.selectedProjectIdsByTyprProjectId[selectedProjectRepository.id] ??
-        gitWorkspace.selectedProjectId;
-      return (
-        gitProjectsForSelectedTyprProject.find((project) => project.id === scopedSelection) ??
-        gitProjectsForSelectedTyprProject[0] ??
-        null
-      );
-    },
-    [
-      gitProjectsForSelectedTyprProject,
-      gitWorkspace.selectedProjectId,
-      gitWorkspace.selectedProjectIdsByTyprProjectId,
-      selectedProjectRepository
-    ]
-  );
-  const remoteConfig = useMemo<RemoteGitConfig>(
-    () =>
-      selectedGitProject
-        ? {
-            owner: selectedGitProject.owner,
-            repo: selectedGitProject.repo,
-            branch: selectedGitProject.branch,
-            remoteName: selectedGitProject.remoteName
-          }
-        : {
-            owner: "",
-            repo: "",
-            branch: "main",
-            remoteName: "origin"
-          },
-    [selectedGitProject]
-  );
-  const selectedGitToken = selectedGitProject ? (gitCredentials[selectedGitProject.id] ?? "") : "";
-  const selectedGitProjectIsGitHubConnected =
-    Boolean(selectedGitProject?.connected && selectedGitProject.owner.trim() && selectedGitProject.repo.trim());
-  const selectedProjectGitConnectionLabel = selectedGitProjectIsGitHubConnected
-    ? "Connected"
-    : "Not connected";
   useEffect(() => {
     if (!isHydrated || !selectedGitProject || !selectedProjectRepository || !selectedGitProject.connected) {
       return;
@@ -4277,139 +4035,6 @@ ${nextLine}` : nextLine;
     selectedProjectRepository,
     setProjectRepository
   ]);
-  const gitWorkingTreeEntries = useMemo<RepoStatusEntry[]>(
-    () =>
-      selectedGitProject
-        ? (localRepoStatus?.entries ?? []).filter(
-            (entry) => !shouldIgnorePath(entry.path, selectedGitProject.ignorePatterns)
-          )
-        : [],
-    [localRepoStatus, selectedGitProject]
-  );
-  const localGitCommits = useMemo<RepoCommit[]>(
-    () => (selectedGitProject ? localRepoCommits : []),
-    [localRepoCommits, selectedGitProject]
-  );
-  const activeMergeState = localRepoStatus?.mergeState ?? null;
-  const activeMergeKey = activeMergeState
-    ? `${activeMergeState.localSha}:${activeMergeState.remoteSha}:${activeMergeState.startedAt}`
-    : "";
-  const conflictMergeFiles = useMemo(
-    () => activeMergeState?.files.filter((file) => file.state === "conflict") ?? [],
-    [activeMergeState]
-  );
-  const unresolvedMergeConflictCount = conflictMergeFiles.filter(
-    (file) => !mergeResolutionDrafts[file.path]
-  ).length;
-  const selectedMergeDraft = selectedMergePath ? mergeResolutionDrafts[selectedMergePath] : null;
-  const mergeResolutionEditorValue = useMemo(() => {
-    if (!selectedMergeDraft || !mergeFilePreview) {
-      return "";
-    }
-    if (selectedMergeDraft.kind === "content") {
-      return selectedMergeDraft.content;
-    }
-
-    const matchingVersion = [
-      mergeFilePreview.base,
-      mergeFilePreview.local,
-      mergeFilePreview.remote
-    ].find((version) => version.oid === selectedMergeDraft.oid);
-    return matchingVersion?.oid ? matchingVersion.text : "";
-  }, [mergeFilePreview, selectedMergeDraft]);
-  const updateGitManagedProject = useCallback(
-    (projectId: string, updater: (project: GitManagedProject) => GitManagedProject) => {
-      setGitWorkspace((currentWorkspace) => ({
-        ...currentWorkspace,
-        projects: currentWorkspace.projects.map((project) =>
-          project.id === projectId ? updater(project) : project
-        )
-      }));
-    },
-    []
-  );
-  const updateSelectedGitProject = useCallback(
-    (updater: (project: GitManagedProject) => GitManagedProject) => {
-      setGitWorkspace((currentWorkspace) => ({
-        ...currentWorkspace,
-        projects: currentWorkspace.projects.map((project) =>
-          project.id === selectedGitProject?.id
-            ? updater(project)
-            : project
-        )
-      }));
-    },
-    [selectedGitProject?.id]
-  );
-  useEffect(() => {
-    if (!activeMergeState) {
-      setSelectedMergePath(null);
-      setMergeFilePreview(null);
-      setMergeResolutionDrafts({});
-      setMergeCommitMessage("");
-      return;
-    }
-
-    const firstFile = activeMergeState.files.find((file) => file.state === "conflict") ??
-      activeMergeState.files[0] ??
-      null;
-    setSelectedMergePath(firstFile?.path ?? null);
-    setMergeFilePreview(null);
-    setMergeResolutionDrafts({});
-    setMergeCommitMessage(
-      `Merge ${activeMergeState.remoteName}/${activeMergeState.remoteBranch} into ${activeMergeState.branch}`
-    );
-  }, [activeMergeKey]);
-
-  useEffect(() => {
-    if (!activeMergeState || !selectedProjectRepository || !selectedMergePath) {
-      setMergeFilePreview(null);
-      setIsMergeFilePreviewLoading(false);
-      return;
-    }
-
-    const file = activeMergeState.files.find((entry) => entry.path === selectedMergePath);
-    if (!file) {
-      setMergeFilePreview(null);
-      return;
-    }
-
-    let cancelled = false;
-    const readVersion = async (oid: string | null, label: string): Promise<MergeVersionPreview> => {
-      if (!oid) {
-        return { oid: null, label, text: "(deleted)" };
-      }
-      const object = await repoBackend.readObject(selectedProjectRepository, oid);
-      if (!object.ok) {
-        return { oid, label, text: formatRepoError(object.error) };
-      }
-      if (object.value.type !== "blob") {
-        return { oid, label, text: `Unsupported ${object.value.type} object.` };
-      }
-      return {
-        oid,
-        label,
-        text: new TextDecoder().decode(object.value.content)
-      };
-    };
-
-    setIsMergeFilePreviewLoading(true);
-    void Promise.all([
-      readVersion(file.baseOid, "Base"),
-      readVersion(file.localOid, "Local"),
-      readVersion(file.remoteOid, "Remote")
-    ]).then(([base, local, remote]) => {
-      if (cancelled) {
-        return;
-      }
-      setMergeFilePreview({ path: file.path, base, local, remote });
-      setIsMergeFilePreviewLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMergeState, repoBackend, selectedMergePath, selectedProjectRepository]);
   const trashWorkspaceTree = useMemo(
     () => buildWorkspaceTree(buildTrashWorkspaceEntries(snapshot.project.trash ?? [])),
     [snapshot.project.trash]
@@ -4423,6 +4048,18 @@ ${nextLine}` : nextLine;
       ? workspaceTree
       : filterGitignoreFromWorkspaceTree(workspaceTree);
   }, [isTrashViewOpen, snapshot.preferences.showGitignoreInFileTree, trashWorkspaceTree, workspaceTree]);
+  const {
+    selectedWorkspacePath,
+    selectedWorkspacePaths,
+    setSelectedWorkspacePath,
+    setSelectedWorkspacePaths,
+    workspaceSelectionAnchorPath,
+    setWorkspaceSelectionAnchorPath
+  } = useWorkspaceSelection({
+    activeDocumentPath: activeDocument.name,
+    isTrashViewOpen,
+    tree: visibleWorkspaceTree
+  });
   const workspaceFolderStorageKey = `${selectedProjectRepository?.id ?? snapshot.project.id}:${
     isTrashViewOpen ? "trash" : "files"
   }`;
@@ -4469,7 +4106,6 @@ ${nextLine}` : nextLine;
     },
     [workspaceFolderStorageKey]
   );
-  const [inspectedWorkspacePath, setInspectedWorkspacePath] = useState<string | null>(null);
   const normalizedSelectedWorkspacePath = selectedWorkspacePath
     ? normalizeWorkspacePath(selectedWorkspacePath)
     : null;
@@ -4511,26 +4147,7 @@ ${nextLine}` : nextLine;
   const workspaceStructureKey = selectedProjectRepository
     ? getProjectWorkspaceStructureKey(selectedProjectRepository)
     : getSnapshotWorkspaceStructureKey(snapshot);
-  const inspectedGraph = useMemo(() => {
-    if (
-      !sourceWorkspaceNode ||
-      sourceWorkspaceNode.kind !== "file" ||
-      sourceWorkspaceNode.source.kind !== "graph" ||
-      normalizeWorkspacePath(sourceWorkspaceNode.path) !== inspectedWorkspacePath
-    ) {
-      return null;
-    }
-
-    return (snapshot.project.graphs ?? []).find(
-      (graphAsset) => graphAsset.id === sourceWorkspaceNode.source.id
-    ) ?? null;
-  }, [inspectedWorkspacePath, snapshot.project.graphs, sourceWorkspaceNode]);
-  const inspectedGraphSource = useMemo(
-    () => (inspectedGraph ? buildGraphTypstFigure(inspectedGraph) ?? "" : ""),
-    [inspectedGraph]
-  );
-  const isInspectingGraphSource = inspectedGraph !== null;
-  const sourceEditorValue = isInspectingGraphSource ? inspectedGraphSource : activeDocumentTextContent;
+  const sourceEditorValue = activeDocumentTextContent;
   const workspacePreviewFileCacheRef = useRef(new Map<string, WorkspacePreviewFile>());
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -4540,20 +4157,6 @@ ${nextLine}` : nextLine;
     return () => window.clearTimeout(handle);
   }, [activeDocumentTextContent]);
   const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
-  useEffect(() => {
-    if (
-      sourceWorkspaceNode &&
-      sourceWorkspaceNode.kind === "file" &&
-      sourceWorkspaceNode.source.kind === "graph" &&
-      normalizeWorkspacePath(sourceWorkspaceNode.path) === inspectedWorkspacePath
-    ) {
-      return;
-    }
-
-    if (inspectedWorkspacePath !== null) {
-      setInspectedWorkspacePath(null);
-    }
-  }, [inspectedWorkspacePath, sourceWorkspaceNode]);
   const workspaceContextMenuPosition = useMemo(() => {
     if (!workspaceContextMenu || !filesSectionRef.current) {
       return null;
@@ -4568,42 +4171,57 @@ ${nextLine}` : nextLine;
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
     sourceWorkspaceNode === null ||
-    isInspectingGraphSource ||
     (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path));
   const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument.name;
   const activeSourceLanguage = getSourceLanguage(activeSourcePath);
-  const activeSourceToolLanguage = getEditorToolLanguage(activeSourceLanguage);
-  const isActiveSourceFormatterEnabled =
-    isSourceFileEditable &&
-    !isInspectingGraphSource &&
-    activeSourceToolLanguage !== null &&
-    snapshot.preferences.editorTooling.languages[activeSourceToolLanguage].formatter !== "disabled";
+  const activeEditableTableMatch = useMemo(
+    () => isSourceFileEditable
+      ? findEditableTableAtCursor(sourceEditorValue, activeSourceLanguage, sourceEditorSelection.head)
+      : null,
+    [activeSourceLanguage, isSourceFileEditable, sourceEditorSelection.head, sourceEditorValue]
+  );
+  const activeEditableTableSignature = activeEditableTableMatch
+    ? [
+        activeSourcePath,
+        activeEditableTableMatch.language,
+        activeEditableTableMatch.from,
+        activeEditableTableMatch.to,
+        sourceEditorValue.slice(activeEditableTableMatch.from, activeEditableTableMatch.to)
+      ].join("\u001f")
+    : null;
+
+  useEffect(() => {
+    if (!activeEditableTableMatch || !activeEditableTableSignature) {
+      loadedEditableTableSignatureRef.current = null;
+      return;
+    }
+
+    if (loadedEditableTableSignatureRef.current === activeEditableTableSignature) {
+      return;
+    }
+
+    loadedEditableTableSignatureRef.current = activeEditableTableSignature;
+    setTableSettings(activeEditableTableMatch.settings);
+    setTableSelection({
+      anchorRow: 0,
+      anchorColumn: 0,
+      focusRow: 0,
+      focusColumn: 0
+    });
+  }, [activeEditableTableMatch, activeEditableTableSignature]);
+
   const isActiveSourceCompilable = isCompilableSourceFile(activeSourcePath);
   const showSourceCompileButton =
     isSourceFileEditable &&
     isActiveSourceCompilable &&
     activeSourceLanguage !== "markdown";
   const normalizedActiveSourcePath = normalizeWorkspacePath(activeSourcePath);
-  const isDocumentSourceTab =
-    sourceWorkspaceNode === null || sourceWorkspaceNode.source.kind === "document";
-  const canPreviewActiveSource =
-    isActiveSourceCompilable || activeSourceLanguage === "markdown";
   const activeProjectTabKey = selectedProjectRepository?.id ?? snapshot.project.id;
-  const buildLogStorageKey = `${BUILD_LOG_STORAGE_KEY}:${activeProjectTabKey}`;
-
-  useEffect(() => {
-    setIsBuildLogHydrated(false);
-    setBuildLogEntries(loadPersistedBuildLogEntries(buildLogStorageKey));
-    setIsBuildLogHydrated(true);
-  }, [buildLogStorageKey]);
-
-  useEffect(() => {
-    if (!isBuildLogHydrated) {
-      return;
-    }
-
-    persistBuildLogEntries(buildLogStorageKey, buildLogEntries);
-  }, [buildLogEntries, buildLogStorageKey, isBuildLogHydrated]);
+  const buildLogController = useBuildLogController({
+    currentPath: activeSourcePath,
+    projectKey: activeProjectTabKey
+  });
+  const buildLogEntries = buildLogController.entries;
   const workspaceFilePathSet = useMemo(
     () => new Set(collectWorkspaceFilePaths(workspaceTree)),
     [workspaceTree]
@@ -4663,12 +4281,14 @@ ${nextLine}` : nextLine;
         : null,
     [activePreviewPath, workspaceTree]
   );
-  const activePreviewTextContent =
-    activePreviewPath && activePreviewPath === normalizedActiveSourcePath
-      ? sourceEditorValue
-      : typeof activePreviewWorkspaceNode?.content === "string"
-        ? activePreviewWorkspaceNode.content
-        : "";
+  const activePreviewTextContent = resolvePreviewTextContent({
+    activePreviewPath,
+    activeSourceContent: sourceEditorValue,
+    activeSourcePath: normalizedActiveSourcePath,
+    isTextPreview: activePreviewPath ? isTextWorkspaceFile(activePreviewPath) : false,
+    previewNode: activePreviewWorkspaceNode,
+    project: selectedProjectRepository
+  });
   const activePreviewCompileSourcePath = activePreviewPath
     ? resolveLatexSourcePathForPdfPreview(
         activePreviewPath,
@@ -4825,12 +4445,24 @@ ${nextLine}` : nextLine;
   const activeCompileTargetPath = normalizeWorkspacePath(
     compileInFlightSourcePathRef.current || pendingSourcePathRef.current
   );
+  const hasActiveCompileWork = hasScheduledCompileWork();
   const activePreviewIsCompileTarget = Boolean(
     activePreviewCompilePath &&
       activeCompileTargetPath &&
       activePreviewCompilePath === activeCompileTargetPath
   );
-  const visiblePreviewIsCompiling = Boolean(activePreviewCompileState?.isCompiling);
+  const rawVisiblePreviewCompilerStatus = activePreviewPath
+    ? activePreviewCompileState?.isCompiling && activePreviewIsCompileTarget && hasActiveCompileWork
+      ? compilerStatus
+      : activePreviewCompileState?.compilerStatus ??
+        createIdleCompilerStatusForSource(activePreviewCompileSourcePath ?? activePreviewPath)
+    : compilerStatus;
+  const visiblePreviewIsCompiling = shouldShowCompileActivity({
+    compilerStatus: rawVisiblePreviewCompilerStatus,
+    hasActiveCompileWork,
+    isActiveCompileTarget: activePreviewIsCompileTarget,
+    isCompiling: Boolean(activePreviewCompileState?.isCompiling)
+  });
   const visibleWorkspacePreview =
     activePreviewPath && selectedWorkspacePreview?.path === activePreviewPath && !activePreviewHasCompiledPdfResult
       ? selectedWorkspacePreview
@@ -4843,12 +4475,6 @@ ${nextLine}` : nextLine;
     activePreviewPath && !visibleWorkspacePreview
       ? activePreviewCompileState?.lastSuccessfulResult ?? null
       : null;
-  const rawVisiblePreviewCompilerStatus = activePreviewPath
-    ? activePreviewCompileState?.isCompiling && activePreviewIsCompileTarget
-      ? compilerStatus
-      : activePreviewCompileState?.compilerStatus ??
-        createIdleCompilerStatusForSource(activePreviewCompileSourcePath ?? activePreviewPath)
-    : compilerStatus;
   const visiblePreviewCompilerStatus =
     rawVisiblePreviewCompilerStatus.phase === "compiling" && !visiblePreviewIsCompiling
       ? activePreviewCompileSourcePath
@@ -4907,14 +4533,33 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    const activate = options.activate ?? true;
     setPreviewTabPaths((currentPaths) =>
-      insertWorkspacePathAfterActive(currentPaths, normalizedPath, activePreviewPath)
+      openWorkspacePreviewTab(currentPaths, normalizedPath, activePreviewPath, activate).paths
     );
 
-    if (options.activate ?? true) {
+    if (activate) {
       setActivePreviewPath(normalizedPath);
     }
-  }, [activePreviewPath]);
+
+    setProjectRepository((project) => {
+      const nextState = openWorkspacePreviewTab(
+        project.editor.previewTabPaths,
+        normalizedPath,
+        project.editor.previewPath ?? activePreviewPath,
+        activate
+      );
+
+      return {
+        ...project,
+        editor: {
+          ...project.editor,
+          previewPath: nextState.activePath,
+          previewTabPaths: nextState.paths
+        }
+      };
+    });
+  }, [activePreviewPath, setProjectRepository]);
   const isAvailablePreviewTabPath = useCallback(
     (path: string) => {
       const normalizedPath = normalizeWorkspacePath(path);
@@ -4928,201 +4573,22 @@ ${nextLine}` : nextLine;
     },
     [compiledLatexPdfPreviewPathSet, workspaceFilePathSet]
   );
-  useEffect(() => {
-    if (
-      isTrashViewOpen ||
-      workspaceFilePathSet.size === 0 ||
-      sourceTabsInitializedProjectRef.current === activeProjectTabKey
-    ) {
-      return;
-    }
-
-    const storedSourceTabs = normalizeUniqueWorkspacePaths(
-      selectedProjectRepository?.selection.openFilePaths ?? []
-    ).filter(
-      (path) =>
-        workspaceFilePathSet.has(path) &&
-        isTextWorkspaceFile(path)
-    );
-
-    setSourceTabPaths(storedSourceTabs);
-    if (
-      selectedProjectRepository &&
-      !areWorkspacePathListsEqual(
-        selectedProjectRepository.selection.openFilePaths,
-        storedSourceTabs
-      )
-    ) {
-      setProjectRepository((project) => ({
-        ...project,
-        selection: {
-          ...project.selection,
-          openFilePaths: storedSourceTabs
-        }
-      }));
-    }
-    sourceTabsInitializedProjectRef.current = activeProjectTabKey;
-  }, [
-    activeProjectTabKey,
-    isTrashViewOpen,
-    selectedProjectRepository?.selection.openFilePaths,
-    selectedProjectRepository,
-    setProjectRepository,
-    workspaceFilePathSet
-  ]);
-  useEffect(() => {
-    if (isTrashViewOpen || previewTabsInitializedProjectRef.current === activeProjectTabKey) {
-      return;
-    }
-
-    const storedPreviewTabs = normalizeUniqueWorkspacePaths([
-      ...(selectedProjectRepository?.editor.previewTabPaths ?? []),
-      selectedProjectRepository?.editor.previewPath ?? ""
-    ]).filter(isAvailablePreviewTabPath);
-    const storedActivePreviewPath = normalizeWorkspacePath(
-      selectedProjectRepository?.editor.previewPath ?? ""
-    );
-
-    setPreviewTabPaths(storedPreviewTabs);
-    setActivePreviewPath(
-      storedActivePreviewPath && storedPreviewTabs.includes(storedActivePreviewPath)
-        ? storedActivePreviewPath
-        : storedPreviewTabs[0] ?? null
-    );
-    previewTabsInitializedProjectRef.current = activeProjectTabKey;
-  }, [
-    activeProjectTabKey,
-    isAvailablePreviewTabPath,
-    isTrashViewOpen,
-    selectedLatexCompileProfileId,
-    selectedProjectRepository
-  ]);
-  useEffect(() => {
-    const nextSourceTabs = normalizeUniqueWorkspacePaths(sourceTabPaths).filter(
-      (path) => workspaceFilePathSet.has(path) && isTextWorkspaceFile(path)
-    );
-
-    if (
-      nextSourceTabs.length !== sourceTabPaths.length ||
-      nextSourceTabs.some((path, index) => path !== sourceTabPaths[index])
-    ) {
-      setSourceTabPaths(nextSourceTabs);
-    }
-  }, [sourceTabPaths, workspaceFilePathSet]);
-  useEffect(() => {
-    const normalizedCurrentTabs = normalizeUniqueWorkspacePaths(sourceTabPaths);
-    const storedSourceTabs = normalizeUniqueWorkspacePaths(
-      selectedProjectRepository?.selection.openFilePaths ?? []
-    ).filter(
-      (path) =>
-        workspaceFilePathSet.has(path) &&
-        isTextWorkspaceFile(path)
-    );
-
-    const nextSourceTabs = storedSourceTabs.filter((path) => !normalizedCurrentTabs.includes(path));
-
-    if (nextSourceTabs.length > 0) {
-      setSourceTabPaths((currentPaths) =>
-        normalizeUniqueWorkspacePaths([...currentPaths, ...nextSourceTabs])
-      );
-    }
-  }, [
-    selectedProjectRepository?.selection.openFilePaths,
-    sourceTabPaths,
-    workspaceFilePathSet
-  ]);
-  useEffect(() => {
-    if (!transientSourceTabPath) {
-      return;
-    }
-
-    const normalizedPath = normalizeWorkspacePath(transientSourceTabPath);
-
-    if (
-      !normalizedPath ||
-      !workspaceFilePathSet.has(normalizedPath) ||
-      sourceTabPaths.includes(normalizedPath)
-    ) {
-      setTransientSourceTabPath(null);
-    }
-  }, [sourceTabPaths, transientSourceTabPath, workspaceFilePathSet]);
-  useEffect(() => {
-    const nextPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter(
-      isAvailablePreviewTabPath
-    );
-
-    if (
-      nextPreviewTabs.length !== previewTabPaths.length ||
-      nextPreviewTabs.some((path, index) => path !== previewTabPaths[index])
-    ) {
-      setPreviewTabPaths(nextPreviewTabs);
-    }
-
-    const normalizedActivePreviewPath = activePreviewPath
-      ? normalizeWorkspacePath(activePreviewPath)
-      : "";
-
-    if (
-      normalizedActivePreviewPath &&
-      !nextPreviewTabs.includes(normalizedActivePreviewPath)
-    ) {
-      setActivePreviewPath(nextPreviewTabs[0] ?? null);
-    }
-  }, [activePreviewPath, isAvailablePreviewTabPath, previewTabPaths]);
-  useEffect(() => {
-    if (
-      !selectedProjectRepository ||
-      isTrashViewOpen ||
-      previewTabsInitializedProjectRef.current !== activeProjectTabKey
-    ) {
-      return;
-    }
-
-    const nextPreviewTabs = normalizeUniqueWorkspacePaths(previewTabPaths).filter(
-      isAvailablePreviewTabPath
-    );
-    const normalizedActivePreviewPath = activePreviewPath
-      ? normalizeWorkspacePath(activePreviewPath)
-      : "";
-    const nextPreviewPath =
-      normalizedActivePreviewPath && nextPreviewTabs.includes(normalizedActivePreviewPath)
-        ? normalizedActivePreviewPath
-        : null;
-    const storedPreviewTabs = normalizeUniqueWorkspacePaths(
-      selectedProjectRepository.editor.previewTabPaths ?? []
-    ).filter(isAvailablePreviewTabPath);
-    const storedPreviewPath = normalizeWorkspacePath(
-      selectedProjectRepository.editor.previewPath ?? ""
-    ) || null;
-
-    if (
-      areWorkspacePathListsEqual(nextPreviewTabs, storedPreviewTabs) &&
-      nextPreviewPath === storedPreviewPath
-    ) {
-      return;
-    }
-
-    setProjectRepository((project) =>
-      project.id === selectedProjectRepository.id
-        ? {
-            ...project,
-            editor: {
-              ...project.editor,
-              previewPath: nextPreviewPath,
-              previewTabPaths: nextPreviewTabs
-            }
-          }
-        : project
-    );
-  }, [
+  useWorkspaceTabPersistence({
     activePreviewPath,
     activeProjectTabKey,
     isAvailablePreviewTabPath,
     isTrashViewOpen,
     previewTabPaths,
     selectedProjectRepository,
-    setProjectRepository
-  ]);
+    setActivePreviewPath,
+    setPreviewTabPaths,
+    setProjectRepository,
+    setSourceTabPaths,
+    setTransientSourceTabPath,
+    sourceTabPaths,
+    transientSourceTabPath,
+    workspaceFilePathSet
+  });
   useEffect(() => {
     if (!selectedProjectRepository) {
       return;
@@ -5210,24 +4676,24 @@ ${nextLine}` : nextLine;
     const scheduledCompilePath = normalizeWorkspacePath(
       compileInFlightSourcePathRef.current || pendingSourcePathRef.current
     );
-    const sourceHasScheduledCompile = Boolean(
-      normalizedSourcePath &&
-        scheduledCompilePath === normalizedSourcePath &&
-        (compileInFlightRef.current || compileFrameRef.current !== null || compileTimerRef.current !== null)
-    );
+    const transition = decideCompilePreviewTransition({
+      type: "source-switched",
+      hasScheduledCompileForSource: Boolean(
+        normalizedSourcePath &&
+          scheduledCompilePath === normalizedSourcePath &&
+          (compileInFlightRef.current ||
+            compileFrameRef.current !== null ||
+            compileTimerRef.current !== null)
+      ),
+      isCompilable: isActiveSourceCompilable,
+      language: activeSourceLanguage
+    });
 
-    if (sourceHasScheduledCompile) {
+    if (transition.type !== "reset") {
       return;
     }
 
-    if (compileTimerRef.current !== null) {
-      window.clearTimeout(compileTimerRef.current);
-      compileTimerRef.current = null;
-    }
-    if (compileFrameRef.current !== null) {
-      window.cancelAnimationFrame(compileFrameRef.current);
-      compileFrameRef.current = null;
-    }
+    clearScheduledCompile();
 
     compileRequestRef.current += 1;
     compileResultRef.current = null;
@@ -5235,52 +4701,22 @@ ${nextLine}` : nextLine;
     setIsCompiling(false);
     setCompileResult(null);
     setLastSuccessfulResult(null);
-    setCompilerStatus({
-      phase: "idle",
-      mode: "worker",
-      label: isActiveSourceCompilable
-        ? activeSourceLanguage === "latex"
-          ? "LaTeX ready"
-          : "Typst ready"
-        : "No compiler for active file",
-      detail:
-        activeSourceLanguage === "latex"
-          ? "Press Compile or Ctrl+Enter to update the PDF preview."
-          : undefined
-    });
-  }, [activeSourceLanguage, activeSourcePath, isActiveSourceCompilable, isHydrated]);
-  const showGraphInspectWarning = isInspectingGraphSource;
+    setCompilerStatus(transition.status);
+  }, [
+    activeSourceLanguage,
+    activeSourcePath,
+    clearScheduledCompile,
+    isActiveSourceCompilable,
+    isHydrated
+  ]);
   const diagram = useMemo(
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
-  );
-  const graph = useMemo(
-    () => snapshot.project.graph ?? createDefaultGraph(snapshot.preferences.graphProvider),
-    [snapshot.preferences.graphProvider, snapshot.project.graph]
   );
   const savedFigures = useMemo(
     () => snapshot.project.figures ?? [],
     [snapshot.project.figures]
   );
-  const savedGraphs = useMemo(
-    () => snapshot.project.graphs ?? [],
-    [snapshot.project.graphs]
-  );
-  useEffect(() => {
-    const normalizedName = normalizeGraphFileNameForContentType(graph.name, graph.contentType);
-
-    if (normalizedName === graph.name) {
-      return;
-    }
-
-    setSnapshot((currentSnapshot) =>
-      updateGraph(currentSnapshot, (currentGraph) => ({
-        ...currentGraph,
-        name: normalizedName
-      }))
-    );
-  }, [graph.contentType, graph.name]);
-
   useEffect(() => {
     if (!workspaceContextMenu) {
       return;
@@ -5300,25 +4736,16 @@ ${nextLine}` : nextLine;
     () => buildDiagramShadowFiles([...savedFigures, diagram]),
     [diagram, savedFigures]
   );
-  const graphShadowAssets = useMemo(
-    () => buildGraphShadowFiles([...savedGraphs, graph]),
-    [graph, savedGraphs]
-  );
   const diagramAssetsRevision = useMemo(
     () =>
       [diagram, ...savedFigures].map((asset) => `${asset.id}:${asset.updatedAt}`)
         .join("|"),
     [diagram, savedFigures]
   );
-  const graphAssetsRevision = useMemo(
-    () => [graph, ...savedGraphs].map((asset) => `${asset.id}:${asset.updatedAt}`).join("|"),
-    [graph, savedGraphs]
-  );
   const typstPreviewCacheSignature = useMemo(
     () =>
       createTypstPreviewCacheSignature({
         diagramAssetsRevision,
-        graphAssetsRevision,
         isPaperView,
         projectUpdatedAt: selectedProjectRepository?.filesystem.updatedAt ?? snapshot.project.updatedAt,
         source: sourceEditorValue,
@@ -5328,7 +4755,6 @@ ${nextLine}` : nextLine;
     [
       activeSourcePath,
       diagramAssetsRevision,
-      graphAssetsRevision,
       isPaperView,
       selectedProjectRepository?.filesystem.updatedAt,
       snapshot.project.updatedAt,
@@ -5340,10 +4766,6 @@ ${nextLine}` : nextLine;
   useEffect(() => {
     themeRef.current = theme;
   }, [theme]);
-
-  useEffect(() => {
-    compileResultRef.current = compileResult;
-  }, [compileResult]);
 
   useEffect(() => {
     if (
@@ -5376,18 +4798,40 @@ ${nextLine}` : nextLine;
     typstPreviewCacheSignature
   ]);
 
-  const appendBuildLogEntry = useCallback((entry: Omit<BuildLogEntry, "id">) => {
-    setBuildLogEntries((currentEntries) => [
-      {
-        ...entry,
-        id: entry.startedAt + ":" + entry.sourcePath + ":" + currentEntries.length
-      },
-      ...currentEntries
-    ].slice(0, 20));
-  }, []);
+  const appendBuildLogEntry = buildLogController.appendEntry;
 
   useEffect(() => {
-    if (!compileInFlightRef.current && !isCompiling) {
+    const hasScheduledCompile = hasScheduledCompileWork();
+
+    if (!hasScheduledCompile) {
+      if (isCompiling) {
+        setIsCompiling(false);
+      }
+
+      setCompilePreviewsByPath((currentPreviews) => {
+        let nextPreviews = currentPreviews;
+
+        for (const [path, preview] of Object.entries(currentPreviews)) {
+          if (!preview.isCompiling) {
+            continue;
+          }
+
+          if (nextPreviews === currentPreviews) {
+            nextPreviews = { ...currentPreviews };
+          }
+
+          nextPreviews[path] = {
+            ...preview,
+            compilerStatus:
+              preview.compilerStatus.phase === "compiling"
+                ? createIdleCompilerStatusForSource(path)
+                : preview.compilerStatus,
+            isCompiling: false
+          };
+        }
+
+        return nextPreviews;
+      });
       return;
     }
 
@@ -5414,7 +4858,13 @@ ${nextLine}` : nextLine;
         }
       };
     });
-  }, [compilerStatus, isCompiling]);
+  }, [
+    compilerStatus,
+    hasScheduledCompileWork,
+    isCompiling,
+    activeSourcePath,
+    activePreviewPath
+  ]);
 
   useEffect(() => {
     if (
@@ -5436,31 +4886,23 @@ ${nextLine}` : nextLine;
       sourcePath: activeSourcePath
     });
 
-    if (!savedResult || !savedResult.ok) {
+    const transition = decideCompilePreviewTransition({
+      type: "restore-requested",
+      language: "latex",
+      result: savedResult?.ok ? savedResult : null
+    });
+
+    if (transition.type !== "restore") {
       return;
     }
 
-    setCompileResult(savedResult);
-    setLastSuccessfulResult(savedResult);
-    setCompilerStatus({
-      phase: "ready",
-      mode: "worker",
-      label: "Saved PDF preview ready"
+    applyRestoredCompilePreview({
+      result: transition.result,
+      sourcePaths: getCompilePreviewSourcePathsForResult(activeSourcePath, transition.result),
+      statusLabel: transition.statusLabel
     });
-    setCompilePreviewsByPath((currentPreviews) => ({
-      ...currentPreviews,
-      [normalizedActiveSourcePath]: createCompilePreviewState(normalizedActiveSourcePath, {
-        result: savedResult,
-        lastSuccessfulResult: savedResult,
-        compilerStatus: {
-          phase: "ready",
-          mode: "worker",
-          label: "Saved PDF preview ready"
-        },
-        isCompiling: false
-      })
-    }));
   }, [
+    applyRestoredCompilePreview,
     activeSourceLanguage,
     activeSourcePath,
     compileResult,
@@ -5470,62 +4912,6 @@ ${nextLine}` : nextLine;
     normalizedActiveSourcePath,
     selectedProjectRepository,
     sourceEditorValue
-  ]);
-
-  useEffect(() => {
-    if (
-      !isHydrated ||
-      compileResult !== null ||
-      isCompiling ||
-      compileInFlightRef.current ||
-      activeSourceLanguage !== "typst" ||
-      !isActiveSourceCompilable ||
-      activePreviewPath !== normalizedActiveSourcePath
-    ) {
-      return;
-    }
-
-    const cachedResult = loadTypstPreviewCacheResult({
-      projectKey: activeProjectTabKey,
-      signature: typstPreviewCacheSignature,
-      sourcePath: activeSourcePath
-    });
-
-    if (!cachedResult) {
-      return;
-    }
-
-    const readyStatus: CompilerStatus = {
-      phase: "ready",
-      mode: "worker",
-      label: "Restored Typst preview"
-    };
-
-    compileResultRef.current = cachedResult;
-    readyTypstPreviewSignatureRef.current = typstPreviewCacheSignature;
-    setCompileResult(cachedResult);
-    setLastSuccessfulResult(cachedResult);
-    setCompilerStatus(readyStatus);
-    setCompilePreviewsByPath((currentPreviews) => ({
-      ...currentPreviews,
-      [normalizedActiveSourcePath]: createCompilePreviewState(normalizedActiveSourcePath, {
-        result: cachedResult,
-        lastSuccessfulResult: cachedResult,
-        compilerStatus: readyStatus,
-        isCompiling: false
-      })
-    }));
-  }, [
-    activePreviewPath,
-    activeProjectTabKey,
-    activeSourceLanguage,
-    activeSourcePath,
-    compileResult,
-    isActiveSourceCompilable,
-    isHydrated,
-    isCompiling,
-    normalizedActiveSourcePath,
-    typstPreviewCacheSignature
   ]);
 
   useEffect(() => {
@@ -5568,85 +4954,6 @@ ${nextLine}` : nextLine;
       window.clearTimeout(handle);
     };
   }, [isHydrated, workspaceStructureKey]);
-
-  const refreshLocalRepoState = useCallback(
-    async (project: TyprProjectRepository | null = selectedProjectRepository) => {
-      const requestId = gitStatusRequestRef.current + 1;
-      gitStatusRequestRef.current = requestId;
-      if (!project) {
-        setLocalRepoStatus(null);
-        setLocalRepoCommits([]);
-        setLocalRepoBranches([]);
-        return;
-      }
-
-      setIsGitStatusLoading(true);
-      const initResult = await repoBackend.initRepository(project);
-      if (gitStatusRequestRef.current !== requestId) {
-        return;
-      }
-      if (!initResult.ok) {
-        setIsGitStatusLoading(false);
-        setSyncFeedback({
-          tone: "error",
-          text: formatRepoError(initResult.error)
-        });
-        return;
-      }
-
-      if (initResult.value !== project) {
-        setProjectRepository((currentProject) =>
-          currentProject.id === initResult.value.id ? initResult.value : currentProject
-        );
-      }
-
-      const initializedProject = initResult.value;
-      const [statusResult, branchesResult, commitsResult] = await Promise.all([
-        repoBackend.status(initializedProject),
-        repoBackend.listBranches(initializedProject),
-        repoBackend.log(initializedProject, 30)
-      ]);
-
-      if (gitStatusRequestRef.current !== requestId) {
-        return;
-      }
-      setIsGitStatusLoading(false);
-      if (!statusResult.ok) {
-        setSyncFeedback({
-          tone: "error",
-          text: formatRepoError(statusResult.error)
-        });
-        return;
-      }
-
-      setLocalRepoStatus(statusResult.value);
-      setLocalRepoBranches(branchesResult.ok ? branchesResult.value : []);
-      setLocalRepoCommits(commitsResult.ok ? commitsResult.value : []);
-      setGitBranches(branchesResult.ok ? branchesResult.value : []);
-      setGitCommitHistory(commitsResult.ok ? commitsResult.value : []);
-      setGitFileStatuses(
-        statusResult.value.entries.map((entry) => ({
-          path: entry.path,
-          state: entry.staged || entry.worktree ? "diverged" : "in-sync"
-        }))
-      );
-      if (selectedGitProject) {
-        const upstream = await remoteGitService.inspectUpstream(initializedProject, {
-          owner: selectedGitProject.owner,
-          repo: selectedGitProject.repo,
-          branch: statusResult.value.branch,
-          remoteName: selectedGitProject.remoteName
-        });
-        if (gitStatusRequestRef.current !== requestId) {
-          return;
-        }
-        setUpstreamTracking(upstream.ok ? upstream.value : null);
-      } else {
-        setUpstreamTracking(null);
-      }
-    },
-    [repoBackend, remoteGitService, selectedGitProject, selectedProjectRepository, setProjectRepository]
-  );
 
   const refreshRepoStorageStats = useCallback(
     async (project: TyprProjectRepository | null = selectedProjectRepository) => {
@@ -5703,31 +5010,6 @@ ${nextLine}` : nextLine;
 
   useEffect(() => {
     if (!isHydrated || !selectedProjectRepository) {
-      return;
-    }
-
-    let cancelled = false;
-    const handle = window.setTimeout(() => {
-      if (!cancelled) {
-        void refreshLocalRepoState(selectedProjectRepository);
-      }
-    }, 180);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(handle);
-    };
-  }, [
-    gitRefreshToken,
-    isHydrated,
-    refreshLocalRepoState,
-    selectedProjectRepository?.filesystem.updatedAt,
-    selectedProjectRepository?.git.headRef,
-    selectedProjectRepository?.id
-  ]);
-
-  useEffect(() => {
-    if (!isHydrated || !selectedProjectRepository) {
       setRepoStorageStats(null);
       return;
     }
@@ -5742,58 +5024,9 @@ ${nextLine}` : nextLine;
   ]);
 
   useEffect(() => {
-    setSelectedWorkspacePath((currentPath) => {
-      if (currentPath && findWorkspaceNodeByPath(visibleWorkspaceTree, currentPath)) {
-        return currentPath;
-      }
-
-      if (isTrashViewOpen) {
-        return null;
-      }
-
-      return normalizeWorkspacePath(activeDocument.name);
-    });
-  }, [activeDocument.name, isTrashViewOpen, visibleWorkspaceTree]);
-
-  useEffect(() => {
-    setSelectedWorkspacePaths((currentPaths) => {
-      const nextPaths = currentPaths.filter((path) => findWorkspaceNodeByPath(visibleWorkspaceTree, path));
-
-      if (nextPaths.length > 0) {
-        return nextPaths;
-      }
-
-      if (isTrashViewOpen) {
-        return [];
-      }
-
-      return [normalizeWorkspacePath(activeDocument.name)];
-    });
-  }, [activeDocument.name, isTrashViewOpen, visibleWorkspaceTree]);
-
-  useEffect(() => {
-    setWorkspaceSelectionAnchorPath((currentPath) => {
-      if (currentPath && findWorkspaceNodeByPath(visibleWorkspaceTree, currentPath)) {
-        return currentPath;
-      }
-
-      if (isTrashViewOpen) {
-        return null;
-      }
-
-      return normalizeWorkspacePath(activeDocument.name);
-    });
-  }, [activeDocument.name, isTrashViewOpen, visibleWorkspaceTree]);
-
-  useEffect(() => {
     diagramAssetsRef.current = diagramShadowAssets;
     diagramAssetsRevisionRef.current = diagramAssetsRevision;
   }, [diagramAssetsRevision, diagramShadowAssets]);
-
-  useEffect(() => {
-    graphAssetsRef.current = graphShadowAssets;
-    graphAssetsRevisionRef.current = graphAssetsRevision;
-  }, [graphAssetsRevision, graphShadowAssets]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -5801,39 +5034,15 @@ ${nextLine}` : nextLine;
     }
 
     handleCompileRef.current();
-  }, [diagramAssetsRevision, graphAssetsRevision, isHydrated]);
+  }, [diagramAssetsRevision, isHydrated]);
 
   useEffect(() => {
-    isMountedRef.current = true;
-
     return () => {
-      isMountedRef.current = false;
-      if (compileTimerRef.current !== null) {
-        window.clearTimeout(compileTimerRef.current);
-      }
-      if (compileFrameRef.current !== null) {
-        window.cancelAnimationFrame(compileFrameRef.current);
-      }
       if (workspaceHoverExpandTimerRef.current !== null) {
         window.clearTimeout(workspaceHoverExpandTimerRef.current);
       }
     };
   }, []);
-
-  useEffect(() => {
-    return () => {
-      if (symbolHoverTimerRef.current !== null) {
-        window.clearTimeout(symbolHoverTimerRef.current);
-        symbolHoverTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      compiler.dispose();
-    };
-  }, [compiler]);
 
   useEffect(() => {
     return () => {
@@ -5930,12 +5139,20 @@ ${nextLine}` : nextLine;
     async function hydrate() {
       try {
         reportBootProgress(0.34);
-        const [storedSnapshot, storedProjectStorage, storedGitWorkspace, storedGitHubConfig, storedGitCredentials] = await Promise.all([
+        const [
+          storedSnapshot,
+          storedProjectStorage,
+          storedGitWorkspace,
+          storedGitHubConfig,
+          storedGitCredentials,
+          storedProjectDeletionTombstones
+        ] = await Promise.all([
           loadSnapshot(),
           loadProjectStorage(),
           loadGitWorkspace(),
           loadGitHubConfig(),
-          loadGitCredentialMap()
+          loadGitCredentialMap(),
+          loadProjectDeletionTombstones()
         ]);
         reportBootProgress(0.58);
         const storedSnippets = await loadCustomSnippets();
@@ -5948,10 +5165,30 @@ ${nextLine}` : nextLine;
         const nextSnapshot = storedSnapshot
           ? normalizeSnapshot(storedSnapshot)
           : createDefaultSnapshot();
-        const nextProjectStorage = normalizeProjectStorageState(
+        let nextProjectStorage = normalizeProjectStorageState(
           storedProjectStorage,
           nextSnapshot
         );
+        if (storedProjectDeletionTombstones.length > 0) {
+          const recovery = await retryProjectDeletions({
+            dependencies: {
+              deleteBrowserGitFiles: deleteProjectGitFiles,
+              deleteTombstone: deleteProjectDeletionTombstone,
+              removeOpfsProject: removeProjectFromOpfs,
+              saveProjectStorage
+            },
+            fallbackProject: createEmptyProjectRepository({
+              displayName: "Untitled project",
+              defaultFileName: null
+            }),
+            storage: nextProjectStorage,
+            tombstones: storedProjectDeletionTombstones
+          });
+          nextProjectStorage = recovery.storage;
+          if (recovery.errors.length > 0) {
+            console.warn("Project deletion cleanup remains pending.", recovery.errors);
+          }
+        }
         reportBootProgress(0.76);
         const selectedProject = getSelectedProjectRepository(nextProjectStorage);
         const hydratedSnapshot = selectedProject
@@ -6296,17 +5533,35 @@ ${nextLine}` : nextLine;
 
   const handleGlobalZoomWheel = useCallback(
     (event: WheelEvent) => {
-      if (!event.altKey || event.ctrlKey || event.metaKey || event.deltaY === 0) {
+      if (event.metaKey || event.deltaY === 0) {
         return;
       }
 
       const zoomPaneTarget = resolveZoomPaneTarget(event.target);
+
       if (!zoomPaneTarget) {
+        return;
+      }
+
+      const isPreviewGesture =
+        zoomPaneTarget === "preview" && (event.altKey || event.ctrlKey);
+      const isPaneFontGesture =
+        zoomPaneTarget !== "preview" && event.altKey && !event.ctrlKey;
+
+      if (!isPreviewGesture && !isPaneFontGesture) {
         return;
       }
 
       event.preventDefault();
       lastZoomPaneTargetRef.current = zoomPaneTarget;
+
+      if (zoomPaneTarget === "preview") {
+        setPreviewZoom((currentZoom) =>
+          zoomPreviewByWheel(currentZoom, event.deltaY, event.deltaMode)
+        );
+        return;
+      }
+
       adjustZoomPaneTarget(zoomPaneTarget, event.deltaY < 0 ? 1 : -1);
     },
     [adjustZoomPaneTarget]
@@ -6540,6 +5795,49 @@ ${nextLine}` : nextLine;
       }
     }
 
+    function handlePinchTouchStart(event: TouchEvent) {
+      if (event.touches.length >= 2) {
+        beginPinchZoom(event);
+      }
+    }
+
+    function handlePinchTouchMove(event: TouchEvent) {
+      if (pinchZoomStateRef.current) {
+        if (event.touches.length >= 2) {
+          preventNativePinchZoom(event);
+        }
+        updatePinchZoom(event);
+        return;
+      }
+
+      if (event.touches.length >= 2 && beginPinchZoom(event)) {
+        updatePinchZoom(event);
+      }
+    }
+
+    function handlePinchTouchEnd(event: TouchEvent) {
+      endPinchZoom(event);
+    }
+
+    function handleGestureStart(event: Event) {
+      beginGestureZoom(event);
+    }
+
+    function handleGestureChange(event: Event) {
+      if (
+        pinchZoomStateRef.current?.input !== "gesture" &&
+        !beginGestureZoom(event)
+      ) {
+        return;
+      }
+
+      updateGestureZoom(event);
+    }
+
+    function handleGestureEnd(event: Event) {
+      endGestureZoom(event);
+    }
+
     function handleVimShortcutCapture(event: KeyboardEvent) {
       if (event.defaultPrevented || recordingKeybindingId || isTypingTarget(event.target)) {
         return;
@@ -6689,6 +5987,13 @@ ${nextLine}` : nextLine;
     }
 
     window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("touchstart", handlePinchTouchStart, { capture: true, passive: false });
+    window.addEventListener("touchmove", handlePinchTouchMove, { capture: true, passive: false });
+    window.addEventListener("touchend", handlePinchTouchEnd, { capture: true });
+    window.addEventListener("touchcancel", handlePinchTouchEnd, { capture: true });
+    window.addEventListener("gesturestart", handleGestureStart, { capture: true, passive: false });
+    window.addEventListener("gesturechange", handleGestureChange, { capture: true, passive: false });
+    window.addEventListener("gestureend", handleGestureEnd, { capture: true, passive: false });
     window.addEventListener("keydown", handleVimShortcutCapture, true);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("wheel", handleGlobalZoomWheel, { passive: false });
@@ -6697,6 +6002,13 @@ ${nextLine}` : nextLine;
 
     return () => {
       window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("touchstart", handlePinchTouchStart, true);
+      window.removeEventListener("touchmove", handlePinchTouchMove, true);
+      window.removeEventListener("touchend", handlePinchTouchEnd, true);
+      window.removeEventListener("touchcancel", handlePinchTouchEnd, true);
+      window.removeEventListener("gesturestart", handleGestureStart, true);
+      window.removeEventListener("gesturechange", handleGestureChange, true);
+      window.removeEventListener("gestureend", handleGestureEnd, true);
       window.removeEventListener("keydown", handleVimShortcutCapture, true);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("wheel", handleGlobalZoomWheel);
@@ -6705,9 +6017,13 @@ ${nextLine}` : nextLine;
     };
   }, [
     adjustZoomPaneTarget,
+    beginGestureZoom,
+    beginPinchZoom,
     cancelPendingMenuClose,
     cancelPendingMenuOpen,
     activeSidebarTool,
+    endGestureZoom,
+    endPinchZoom,
     focusSidebarPane,
     focusPreviewPane,
     focusSourcePane,
@@ -6718,56 +6034,20 @@ ${nextLine}` : nextLine;
     runAppKeybindingCommand,
     snapshot.preferences.vimMode,
     snapshot.preferences.keybindings,
+    updateGestureZoom,
+    updatePinchZoom,
     workspaceMode
   ]);
 
-  useEffect(() => {
-    if (!selectedGitProject) {
-      setGitBranches([]);
-      setGitCommitHistory([]);
-      setGitFileStatuses([]);
-      setUpstreamTracking(null);
-      return;
-    }
-
-    setGitBranches(localRepoBranches);
-    setGitCommitHistory(localRepoCommits);
-    setGitFileStatuses(
-      gitWorkingTreeEntries.map((entry) => ({
-        path: entry.path,
-        state: entry.staged || entry.worktree ? "diverged" : "in-sync"
-      }))
-    );
-  }, [
-    gitWorkingTreeEntries,
-    localRepoBranches,
-    localRepoCommits,
-    localRepoStatus,
-    selectedGitProject
-  ]);
 
   useEffect(() => {
     if (!isHydrated) {
       return;
     }
 
+    document.documentElement.dataset.typrAppReady = "true";
     window.dispatchEvent(new Event("typr:app-ready"));
   }, [isHydrated]);
-
-  useEffect(() => {
-    if (!isHydrated || hasHydrationError) {
-      return;
-    }
-
-    const handle = window.setTimeout(() => {
-      setStorageStatus("saving");
-      Promise.all([saveSnapshot(snapshot), saveProjectStorage(projectStorage)])
-        .then(() => setStorageStatus("saved"))
-        .catch(() => setStorageStatus("error"));
-    }, SAVE_DEBOUNCE_MS);
-
-    return () => window.clearTimeout(handle);
-  }, [hasHydrationError, isHydrated, projectStorage, snapshot]);
 
   useEffect(() => {
     if (!isHydrated || hasHydrationError) {
@@ -6848,7 +6128,7 @@ ${nextLine}` : nextLine;
   }, [workspaceOpenFoldersByProject]);
 
   const saveGeneratedLatexPdfToProject = useCallback(
-    ({
+    async ({
       projectId,
       result,
       sourcePath
@@ -6856,28 +6136,90 @@ ${nextLine}` : nextLine;
       projectId: string;
       result: Extract<CompileResult, { ok: true }>;
       sourcePath: string;
-    }) => {
-      setProjectRepository((project) =>
-        project.id === projectId
-          ? writeGeneratedLatexPdfFile(project, sourcePath, result)
-          : project
+    }): Promise<void> => {
+      const currentPayload = persistencePayloadRef.current;
+      const currentProject = getSelectedProjectRepository(currentPayload.projectStorage);
+
+      if (!currentProject || currentProject.id !== projectId) {
+        return;
+      }
+
+      const nextProject = writeGeneratedLatexPdfFile(currentProject, sourcePath, result);
+      const nextProjectStorage = updateSelectedProjectRepository(
+        currentPayload.projectStorage,
+        () => nextProject
       );
+      const nextSnapshot = {
+        ...currentPayload.snapshot,
+        project: projectRepositoryToLegacyProject(
+          nextProject,
+          currentPayload.snapshot.project
+        )
+      };
+      const nextPayload = {
+        snapshot: nextSnapshot,
+        projectStorage: nextProjectStorage
+      };
+
+      persistencePayloadRef.current = nextPayload;
+      selectedProjectRepositoryRef.current = nextProject;
+      setProjectStorage(nextProjectStorage);
+      setRawSnapshot(nextSnapshot);
+      lifecyclePersistenceRef.current?.update(nextPayload);
+
+      try {
+        await lifecyclePersistenceRef.current?.persistNow();
+      } catch {
+        // Storage status already exposes the failure; keep the successful preview available.
+      }
     },
-    [setProjectRepository]
+    [
+      lifecyclePersistenceRef,
+      persistencePayloadRef,
+      selectedProjectRepositoryRef,
+      setProjectStorage,
+      setRawSnapshot
+    ]
   );
 
+  const prepareForLatexCompile = useCallback(() =>
+    prepareBrowserForLatexCompile({
+      lowMemoryMode: shouldUseLowMemoryCompilerMode(),
+      persistWorkspace: () => lifecyclePersistenceRef.current?.persistNow() ?? Promise.resolve(),
+      releaseHarperMemory: releaseHarperDiagnosticsMemory,
+      releaseTypstMemory: releaseTypstCompilerMemory,
+      yieldToBrowser: () => new Promise<void>((resolve) => window.setTimeout(resolve, 250))
+    }), [lifecyclePersistenceRef]);
+
   const runCompile = useCallback(async () => {
+    const sourcePath = pendingSourcePathRef.current;
+
     if (compileInFlightRef.current || !isHydrated) {
+      setCompilePreviewsByPath((currentPreviews) => {
+        const sourcePathKey = normalizeWorkspacePath(sourcePath);
+        const currentPreview = sourcePathKey ? currentPreviews[sourcePathKey] : null;
+
+        if (!currentPreview?.isCompiling) {
+          return currentPreviews;
+        }
+
+        return {
+          ...currentPreviews,
+          [sourcePathKey]: {
+            ...currentPreview,
+            compilerStatus: createIdleCompilerStatusForSource(sourcePathKey),
+            isCompiling: false
+          }
+        };
+      });
+      setIsCompiling(false);
       return;
     }
 
     const source = pendingSourceRef.current;
-    const sourcePath = pendingSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
     const diagramRevision = diagramAssetsRevisionRef.current;
     const diagramAssets = diagramAssetsRef.current;
-    const graphRevision = graphAssetsRevisionRef.current;
-    const graphAssets = graphAssetsRef.current;
     const requestId = compileRequestRef.current + 1;
     compileRequestRef.current = requestId;
     compileInFlightRef.current = true;
@@ -6885,7 +6227,6 @@ ${nextLine}` : nextLine;
     compileInFlightSourceRef.current = source;
     compileInFlightSourcePathRef.current = sourcePath;
     compileInFlightDiagramRevisionRef.current = diagramRevision;
-    compileInFlightGraphRevisionRef.current = graphRevision;
     const requestedLatexCompileProfile = pendingLatexCompileProfileRef.current;
     const requestedLatexCompileMode = requestedLatexCompileProfile.mode;
     const compileStartedAtIso = new Date().toISOString();
@@ -6900,6 +6241,10 @@ ${nextLine}` : nextLine;
       handleCompilerStatusChange(status);
     };
 
+    if (sourceLanguage === "latex") {
+      await prepareForLatexCompile();
+    }
+
     try {
       const compileAssets = sourceLanguage === "typst"
         ? [
@@ -6908,10 +6253,9 @@ ${nextLine}` : nextLine;
               sourcePath,
               source
             ),
-            ...diagramAssets,
-            ...graphAssets
+            ...diagramAssets
           ]
-        : [...diagramAssets, ...graphAssets];
+        : [...diagramAssets];
       let result: CompileResult;
       let compileUsedCachedOutput = false;
       let generatedLatexPdf: {
@@ -6991,7 +6335,7 @@ ${nextLine}` : nextLine;
       }
 
       if (generatedLatexPdf) {
-        saveGeneratedLatexPdfToProject(generatedLatexPdf);
+        const persistGeneratedPdf = saveGeneratedLatexPdfToProject(generatedLatexPdf);
 
         if (generatedLatexPdf.activatePreview) {
           openPreviewTab(
@@ -7001,6 +6345,8 @@ ${nextLine}` : nextLine;
             { activate: true }
           );
         }
+
+        await persistGeneratedPdf;
       }
 
       const compileDurationMs =
@@ -7008,10 +6354,14 @@ ${nextLine}` : nextLine;
           ? 0
           : performance.now() - compileStartedAt;
       const currentCompileResult = compileResultRef.current;
-      const nextResult = reuseCompileOutputIfUnchanged(currentCompileResult, result);
-      const changedPreview = nextResult === result && didCompileOutputChange(currentCompileResult, result);
+      const compileResolution = resolveCompileResultCompletion(
+        currentCompileResult,
+        result
+      );
+      const nextResult = compileResolution.diagnosticResult;
+      const changedPreview = compileResolution.outputChanged;
 
-      if (!shouldReuseCompileResult(currentCompileResult, nextResult)) {
+      if (nextResult !== currentCompileResult) {
         setCompileResult(nextResult);
       }
 
@@ -7020,11 +6370,15 @@ ${nextLine}` : nextLine;
       }
 
       setCompilePreviewsByPath((currentPreviews) => {
-        const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, nextResult);
+        const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, result);
         const nextPreviews = { ...currentPreviews };
 
         for (const sourcePathKey of sourcePathKeys) {
           const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+          const previewResult = resolveCompileResultCompletion(
+            currentPreview.result,
+            result
+          ).previewResult;
           const nextCompilerStatus = createCompletedPreviewCompilerStatus(
             result,
             currentPreview.compilerStatus
@@ -7032,9 +6386,9 @@ ${nextLine}` : nextLine;
 
           nextPreviews[sourcePathKey] = {
             ...currentPreview,
-            result: nextResult,
-            lastSuccessfulResult: nextResult.ok
-              ? nextResult
+            result: previewResult,
+            lastSuccessfulResult: previewResult.ok
+              ? previewResult
               : currentPreview.lastSuccessfulResult,
             compilerStatus: nextCompilerStatus,
             isCompiling: false
@@ -7052,8 +6406,8 @@ ${nextLine}` : nextLine;
         durationMs: compileDurationMs,
         changed: changedPreview,
         ok: result.ok,
-        diagnosticsCount: result.ok ? result.diagnostics.length : result.errors.length,
-        metadata: result.metadata
+        diagnosticsCount: compileResolution.buildLog.diagnostics.length,
+        metadata: compileResolution.buildLog.metadata
       });
       appendBuildLogEntry({
         sourcePath,
@@ -7062,8 +6416,8 @@ ${nextLine}` : nextLine;
         ok: result.ok,
         startedAt: compileStartedAtIso,
         durationMs: compileDurationMs,
-        diagnostics: result.ok ? result.diagnostics : result.errors,
-        metadata: result.metadata,
+        diagnostics: compileResolution.buildLog.diagnostics,
+        metadata: compileResolution.buildLog.metadata,
         trigger: pendingCompileTriggerRef.current,
         compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
         cached: compileUsedCachedOutput,
@@ -7132,30 +6486,36 @@ ${nextLine}` : nextLine;
         shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(failedResult.output?.content ?? "")
       });
     } finally {
+      if (sourceLanguage === "latex" && shouldUseLowMemoryCompilerMode()) {
+        releaseLatexCompilerMemory();
+      }
+
       compileInFlightRef.current = false;
       compileInFlightLanguageRef.current = null;
       compileInFlightSourceRef.current = "";
       compileInFlightSourcePathRef.current = "";
       compileInFlightDiagramRevisionRef.current = "";
-      compileInFlightGraphRevisionRef.current = "";
       pendingLatexCompileProfileRef.current = getLatexCompileProfile("pdftex-quick");
 
       if (!isMountedRef.current) {
         return;
       }
 
-      if (
-        shouldRunPendingCompileAfterCompletion({
-          completedDiagramRevision: diagramRevision,
-          completedGraphRevision: graphRevision,
-          completedSource: source,
-          completedSourcePath: sourcePath,
-          pendingDiagramRevision: diagramAssetsRevisionRef.current,
-          pendingGraphRevision: graphAssetsRevisionRef.current,
-          pendingSource: pendingSourceRef.current,
-          pendingSourcePath: pendingSourcePathRef.current
-        })
-      ) {
+      const completionTransition = decideCompilePreviewTransition({
+        type: "compile-completed",
+        completed: {
+          diagramRevision,
+          source,
+          sourcePath
+        },
+        pending: {
+          diagramRevision: diagramAssetsRevisionRef.current,
+          source: pendingSourceRef.current,
+          sourcePath: pendingSourcePathRef.current
+        }
+      });
+
+      if (completionTransition.type === "schedule") {
         void runCompile();
       } else {
         setIsCompiling(false);
@@ -7177,69 +6537,19 @@ ${nextLine}` : nextLine;
         });
       }
     }
-  }, [appendBuildLogEntry, compiler, isHydrated, openPreviewTab, saveGeneratedLatexPdfToProject]);
-
-  const shouldCancelInFlightLatexCompile = useCallback(
-    ({
-      source,
-      sourcePath,
-      diagramRevision,
-      graphRevision
-    }: {
-      source: string;
-      sourcePath: string;
-      diagramRevision: string;
-      graphRevision: string;
-    }) => {
-      return (
-        compileInFlightLanguageRef.current === "latex" &&
-        compileInFlightSourcePathRef.current === sourcePath &&
-        (compileInFlightSourceRef.current !== source ||
-          compileInFlightDiagramRevisionRef.current !== diagramRevision ||
-          compileInFlightGraphRevisionRef.current !== graphRevision)
-      );
-    },
-    []
-  );
-
-  const clearScheduledCompile = useCallback(() => {
-    if (compileTimerRef.current !== null) {
-      window.clearTimeout(compileTimerRef.current);
-      compileTimerRef.current = null;
-    }
-    if (compileFrameRef.current !== null) {
-      window.cancelAnimationFrame(compileFrameRef.current);
-      compileFrameRef.current = null;
-    }
-  }, []);
-
-  const scheduleCompileAfterPaint = useCallback((delayMs: number) => {
-    clearScheduledCompile();
-    compileFrameRef.current = window.requestAnimationFrame(() => {
-      compileFrameRef.current = null;
-      compileTimerRef.current = window.setTimeout(() => {
-        compileTimerRef.current = null;
-        void runCompile();
-      }, delayMs);
-    });
-  }, [clearScheduledCompile, runCompile]);
+  }, [
+    appendBuildLogEntry,
+    compiler,
+    isHydrated,
+    openPreviewTab,
+    prepareForLatexCompile,
+    saveGeneratedLatexPdfToProject
+  ]);
 
   const queueCompile = useCallback((debounced: boolean) => {
-    clearScheduledCompile();
-
     const sourcePath = activeSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
-    const sourcePathKey = normalizeWorkspacePath(sourcePath);
-    const inFlightSourcePathKey = normalizeWorkspacePath(compileInFlightSourcePathRef.current);
-    const isQueuedBehindAnotherCompile = Boolean(
-      compileInFlightRef.current &&
-        sourcePathKey &&
-        inFlightSourcePathKey &&
-        sourcePathKey !== inFlightSourcePathKey
-    );
-
-    pendingSourcePathRef.current = sourcePath;
-    pendingSourceRef.current =
+    const source =
       sourceLanguage === "typst"
         ? createThemedPreviewSource(
             previewSourceDraftRef.current,
@@ -7247,62 +6557,24 @@ ${nextLine}` : nextLine;
             isPaperView
           )
         : previewSourceDraftRef.current;
-    const nextCompilerStatus: CompilerStatus = {
-      phase: "compiling",
-      mode: "worker",
-      label: isQueuedBehindAnotherCompile
-        ? sourceLanguage === "latex"
-          ? "Queued LaTeX compile"
-          : "Queued compile"
-        : sourceLanguage === "latex"
-          ? "Compiling LaTeX"
-          : "Compiling"
-    };
-    setIsCompiling(true);
-    if (!isQueuedBehindAnotherCompile) {
-      setCompilerStatus(nextCompilerStatus);
-    }
-    setCompilePreviewsByPath((currentPreviews) => {
-      const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
 
-      return {
-        ...currentPreviews,
-        [sourcePathKey]: {
-          ...currentPreview,
-          compilerStatus: {
-            ...nextCompilerStatus,
-            mode: currentPreview.compilerStatus.mode
-          },
-          isCompiling: true
-        }
-      };
+    scheduleCompilePreview({
+      debounceMs: COMPILE_DEBOUNCE_MS,
+      debounced,
+      diagramRevision: diagramAssetsRevisionRef.current,
+      runCompile,
+      source,
+      sourcePath
     });
-
-    if (compileInFlightRef.current) {
-      if (shouldCancelInFlightLatexCompile({
-        source: pendingSourceRef.current,
-        sourcePath,
-        diagramRevision: diagramAssetsRevisionRef.current,
-        graphRevision: graphAssetsRevisionRef.current
-      })) {
-        compileRequestRef.current += 1;
-        setCompilerStatus({
-          phase: "compiling",
-          mode: "worker",
-          label: "Cancelling stale LaTeX compile",
-          detail: "A newer edit is ready; stopping the current BusyTeX worker"
-        });
-        cancelLatexCompile();
-      }
-
-      return;
-    }
-
-    scheduleCompileAfterPaint(debounced ? COMPILE_DEBOUNCE_MS : 0);
-  }, [clearScheduledCompile, isPaperView, scheduleCompileAfterPaint, shouldCancelInFlightLatexCompile]);
+  }, [
+    isPaperView,
+    runCompile,
+    scheduleCompilePreview,
+    theme
+  ]);
 
   const formatActiveSource = useCallback((reason: "compile" | "manual") => {
-    if (!isSourceFileEditable || isInspectingGraphSource) {
+    if (!isSourceFileEditable) {
       return sourceEditorValue;
     }
 
@@ -7357,7 +6629,6 @@ ${nextLine}` : nextLine;
 
     return result.source;
   }, [
-    isInspectingGraphSource,
     isSourceFileEditable,
     snapshot.preferences.editorTooling,
     sourceEditorValue
@@ -7423,69 +6694,63 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    if (sourceLanguage === "latex" && selectedProjectRepository) {
-      const savedResult = loadSavedLatexPdfCompileResult({
-        allowStale: false,
-        project: selectedProjectRepository,
-        source: nextSource,
-        sourcePath
-      });
+    const savedResult =
+      sourceLanguage === "latex" && selectedProjectRepository
+        ? loadSavedLatexPdfCompileResult({
+            allowStale: false,
+            project: selectedProjectRepository,
+            source: nextSource,
+            sourcePath
+          })
+        : null;
+    const manualTransition = decideCompilePreviewTransition({
+      type: "manual-compile-requested",
+      language: sourceLanguage,
+      latexMode: effectiveLatexMode,
+      result: savedResult?.ok ? savedResult : null
+    });
 
-      if (effectiveLatexMode === "quick" && savedResult?.ok) {
-        openCompilePreviewTab(getLatexPdfOutputPath(getLatexPdfSourcePathForResult(sourcePath, savedResult)), { forceActivate: true });
+    if (manualTransition.type === "restore") {
+      openCompilePreviewTab(
+        getLatexPdfOutputPath(
+          getLatexPdfSourcePathForResult(sourcePath, manualTransition.result)
+        ),
+        { forceActivate: true }
+      );
+      clearScheduledCompile();
 
-        clearScheduledCompile();
-
-        if (compileInFlightRef.current && compileInFlightLanguageRef.current === "latex") {
-          compileRequestRef.current += 1;
-          cancelLatexCompile("LaTeX compile was skipped because a matching PDF already exists.");
-        }
-
-        const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, savedResult);
-        const readyStatus: CompilerStatus = {
-          phase: "ready",
-          mode: "worker",
-          label: "Saved PDF preview ready"
-        };
-
-        setIsCompiling(false);
-        setCompileResult(savedResult);
-        setLastSuccessfulResult(savedResult);
-        setCompilerStatus(readyStatus);
-        setCompilePreviewsByPath((currentPreviews) => {
-          const nextPreviews = { ...currentPreviews };
-
-          for (const sourcePathKey of sourcePathKeys) {
-            nextPreviews[sourcePathKey] = createCompilePreviewState(sourcePathKey, {
-              result: savedResult,
-              lastSuccessfulResult: savedResult,
-              compilerStatus: readyStatus,
-              isCompiling: false
-            });
-          }
-
-          return nextPreviews;
-        });
-        setIsCompileOptionsMenuOpen(false);
-        appendBuildLogEntry({
-          sourcePath,
-          language: "latex",
-          engine: savedResult.engine,
-          ok: true,
-          startedAt: new Date().toISOString(),
-          durationMs: 0,
-          diagnostics: savedResult.diagnostics,
-          metadata: savedResult.metadata,
-          trigger: "manual",
-          compileMode: effectiveLatexMode,
-          cached: true,
-          outputChanged: false,
-          rawLog: savedResult.output.content,
-          packageDetails: extractBuildLogPackageDetails(savedResult.output.content),
-          shellEscapeUnavailable: hasShellEscapeConstraint(savedResult.output.content)
-        });
-        return;
+      if (compileInFlightRef.current && compileInFlightLanguageRef.current === "latex") {
+        compileRequestRef.current += 1;
+        cancelLatexCompile("LaTeX compile was skipped because a matching PDF already exists.");
       }
+
+      applyRestoredCompilePreview({
+        result: manualTransition.result,
+        sourcePaths: getCompilePreviewSourcePathsForResult(sourcePath, manualTransition.result),
+        statusLabel: manualTransition.statusLabel
+      });
+      setIsCompileOptionsMenuOpen(false);
+      appendBuildLogEntry({
+        sourcePath,
+        language: "latex",
+        engine: manualTransition.result.engine,
+        ok: true,
+        startedAt: new Date().toISOString(),
+        durationMs: 0,
+        diagnostics: manualTransition.result.diagnostics,
+        metadata: manualTransition.result.metadata,
+        trigger: "manual",
+        compileMode: effectiveLatexMode,
+        cached: true,
+        outputChanged: false,
+        rawLog: manualTransition.result.output.content,
+        packageDetails: extractBuildLogPackageDetails(manualTransition.result.output.content),
+        shellEscapeUnavailable: hasShellEscapeConstraint(manualTransition.result.output.content)
+      });
+      return;
+    }
+    if (manualTransition.type !== "schedule") {
+      return;
     }
 
     if (sourceLanguage === "latex") {
@@ -7498,9 +6763,10 @@ ${nextLine}` : nextLine;
 
     setIsCompileOptionsMenuOpen(false);
     pendingCompileTriggerRef.current = "manual";
-    queueCompile(false);
+    queueCompile(manualTransition.debounced);
   }, [
     activePreviewPath,
+    applyRestoredCompilePreview,
     appendBuildLogEntry,
     clearScheduledCompile,
     formatActiveSourceForCompile,
@@ -7548,34 +6814,29 @@ ${nextLine}` : nextLine;
     }
 
     if (compileResult === null) {
-      const cachedResult = loadTypstPreviewCacheResult({
-        projectKey: activeProjectTabKey,
-        signature: typstPreviewCacheSignature,
-        sourcePath: activeSourcePath
+      const transition = decideCompilePreviewTransition({
+        type: "restore-requested",
+        language: "typst",
+        result: loadTypstPreviewCacheResult({
+          projectKey: activeProjectTabKey,
+          signature: typstPreviewCacheSignature,
+          sourcePath: activeSourcePath
+        })
       });
 
-      if (cachedResult) {
-        const readyStatus: CompilerStatus = {
-          phase: "ready",
-          mode: "worker",
-          label: "Restored Typst preview"
-        };
+      if (transition.type === "restore") {
+        applyRestoredCompilePreview({
+          result: transition.result,
+          sourcePaths: [normalizedActiveSourcePath],
+          statusLabel: transition.statusLabel,
+          typstSignature: typstPreviewCacheSignature
+        });
+        return;
+      }
 
-        compileResultRef.current = cachedResult;
-        readyTypstPreviewSignatureRef.current = typstPreviewCacheSignature;
-        setIsCompiling(false);
-        setCompileResult(cachedResult);
-        setLastSuccessfulResult(cachedResult);
-        setCompilerStatus(readyStatus);
-        setCompilePreviewsByPath((currentPreviews) => ({
-          ...currentPreviews,
-          [normalizedActiveSourcePath]: createCompilePreviewState(normalizedActiveSourcePath, {
-            result: cachedResult,
-            lastSuccessfulResult: cachedResult,
-            compilerStatus: readyStatus,
-            isCompiling: false
-          })
-        }));
+      if (transition.type === "schedule") {
+        pendingCompileTriggerRef.current = "auto";
+        queueCompile(transition.debounced);
         return;
       }
     }
@@ -7599,6 +6860,7 @@ ${nextLine}` : nextLine;
     }
   }, [
     activePreviewPath,
+    applyRestoredCompilePreview,
     activeProjectTabKey,
     activeSourceLanguage,
     activeSourcePath,
@@ -7606,7 +6868,6 @@ ${nextLine}` : nextLine;
     sourceEditorValue,
     diagramAssetsRevision,
     compileResult,
-    graphAssetsRevision,
     isHydrated,
     isActiveSourceCompilable,
     normalizedActiveSourcePath,
@@ -7698,36 +6959,8 @@ ${nextLine}` : nextLine;
       }
     }
 
-    if (isInspectingGraphSource && inspectedGraph) {
-      const encodedContent = new TextEncoder().encode(content);
-      setSnapshot((currentSnapshot) => {
-        const now = new Date().toISOString();
-        const currentGraph = currentSnapshot.project.graph ?? createDefaultGraph(currentSnapshot.preferences.graphProvider);
-        const nextGraph =
-          currentGraph.id === inspectedGraph.id
-            ? { ...currentGraph, content: encodedContent, updatedAt: now }
-            : currentGraph;
-        const nextGraphs = (currentSnapshot.project.graphs ?? []).map((graphEntry) =>
-          graphEntry.id === inspectedGraph.id
-            ? { ...graphEntry, content: encodedContent, updatedAt: now }
-            : graphEntry
-        );
-
-        return {
-          ...currentSnapshot,
-          project: {
-            ...currentSnapshot.project,
-            graph: nextGraph,
-            graphs: nextGraphs,
-            updatedAt: now
-          }
-        };
-      });
-      return;
-    }
-
     setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
-  }, [activeSourcePath, inspectedGraph, isInspectingGraphSource]);
+  }, [activeSourcePath]);
 
   const commitPastedImageRename = useCallback(() => {
     const pastedImageBinding = pastedImageRenameBindingRef.current;
@@ -7737,7 +6970,7 @@ ${nextLine}` : nextLine;
       return null;
     }
 
-    const nextName = normalizePastedImageRename(getPastedImageBaseName(pastedImageBinding.imagePath));
+    const nextName = normalizePastedImageRename(getWorkspaceBaseName(pastedImageBinding.imagePath));
 
     if (!nextName) {
       pastedImageRenameBindingRef.current = null;
@@ -7808,107 +7041,483 @@ ${nextLine}` : nextLine;
     editorRef.current?.insertTemplate(template);
   }, []);
 
-  const handleInsertSymbol = useCallback((template: string) => {
-    editorRef.current?.insertSymbol(template);
+  const handleMatrixSizePreview = useCallback((rows: number, columns: number) => {
+    setMatrixSizePreview({ rows, columns });
+    setMatrixPickerSize((current) => ({
+      rows:
+        rows >= current.rows
+          ? Math.min(MATRIX_MAX_ROWS, current.rows + 1)
+          : current.rows,
+      columns:
+        columns >= current.columns
+          ? Math.min(MATRIX_MAX_COLUMNS, current.columns + 1)
+          : current.columns
+    }));
   }, []);
 
-  const handleWrapEditorSelection = useCallback(
-    (before: string, after?: string) => {
-      editorRef.current?.surroundSelection(before, after);
+  const handleMatrixSizeSelect = useCallback((rows: number, columns: number) => {
+    setMatrixSettings((current) => resizeMatrixSettings(current, rows, columns));
+    setMatrixSizePreview(null);
+  }, []);
+
+  const handleMatrixCellChange = useCallback(
+    (rowIndex: number, columnIndex: number, value: string) => {
+      setMatrixSettings((current) => updateMatrixCell(current, rowIndex, columnIndex, value));
     },
     []
   );
 
-  const handleToggleCurrentLines = useCallback((prefix: string, alternatePrefix?: string) => {
-    editorRef.current?.toggleCurrentLines(prefix, alternatePrefix);
-  }, []);
+  const focusMatrixCell = useCallback((rowIndex: number, columnIndex: number) => {
+    window.requestAnimationFrame(() => {
+      const cell = matrixCellRefs.current[rowIndex]?.[columnIndex];
 
-  const handleBold = useCallback(() => {
-    editorRef.current?.toggleTextFormat("bold");
-  }, []);
-
-  const handleItalic = useCallback(() => {
-    editorRef.current?.toggleTextFormat("italic");
-  }, []);
-
-  const clearSourceSymbolPreview = useCallback(() => {
-    if (symbolHoverTimerRef.current !== null) {
-      window.clearTimeout(symbolHoverTimerRef.current);
-      symbolHoverTimerRef.current = null;
-    }
-
-    symbolHoverItemRef.current = null;
-    setHoveredSourceSymbol(null);
-  }, []);
-
-  const positionSourceSymbolTooltip = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
-    symbolHoverPointRef.current = clampTooltipPosition(event.clientX, event.clientY);
-
-    setHoveredSourceSymbol((current) =>
-      current && symbolHoverItemRef.current === current.item
-        ? {
-            item: current.item,
-            x: symbolHoverPointRef.current.x,
-            y: symbolHoverPointRef.current.y
-          }
-        : current
-    );
-  }, []);
-
-  const showSourceSymbolPreview = useCallback(
-    (symbol: SourceSymbolItem, event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (symbolHoverTimerRef.current !== null) {
-        window.clearTimeout(symbolHoverTimerRef.current);
+      if (!cell) {
+        return;
       }
 
-      symbolHoverItemRef.current = symbol;
-      symbolHoverPointRef.current = clampTooltipPosition(event.clientX, event.clientY);
-      symbolHoverTimerRef.current = window.setTimeout(() => {
-        if (symbolHoverItemRef.current !== symbol) {
+      cell.focus();
+      cell.select();
+    });
+  }, []);
+
+  const handleMatrixCellKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>, rowIndex: number, columnIndex: number) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+
+      let nextRow = rowIndex;
+      let nextColumn = columnIndex;
+
+      switch (event.key) {
+        case "ArrowLeft":
+          nextColumn = Math.max(0, columnIndex - 1);
+          break;
+        case "ArrowRight":
+          nextColumn = Math.min(matrixSettings.columns - 1, columnIndex + 1);
+          break;
+        case "ArrowUp":
+          nextRow = Math.max(0, rowIndex - 1);
+          break;
+        case "ArrowDown":
+          nextRow = Math.min(matrixSettings.rows - 1, rowIndex + 1);
+          break;
+        case "Tab": {
+          const offset = event.shiftKey ? -1 : 1;
+          const currentIndex = rowIndex * matrixSettings.columns + columnIndex;
+          const nextIndex = Math.max(
+            0,
+            Math.min(matrixSettings.rows * matrixSettings.columns - 1, currentIndex + offset)
+          );
+
+          nextRow = Math.floor(nextIndex / matrixSettings.columns);
+          nextColumn = nextIndex % matrixSettings.columns;
+          break;
+        }
+        case "Enter":
+          nextRow = event.shiftKey
+            ? Math.max(0, rowIndex - 1)
+            : Math.min(matrixSettings.rows - 1, rowIndex + 1);
+          break;
+        default:
+          return;
+      }
+
+      event.preventDefault();
+      focusMatrixCell(nextRow, nextColumn);
+    },
+    [focusMatrixCell, matrixSettings.columns, matrixSettings.rows]
+  );
+
+  const handleInsertMatrix = useCallback(() => {
+    const template = buildMatrixTemplate(matrixSettings, activeSourceLanguage);
+
+    if (activeSourceLanguage === "latex") {
+      editorRef.current?.insertLatexTemplateWithPackages(template, ["amsmath"]);
+      return;
+    }
+
+    if (activeSourceLanguage === "typst") {
+      editorRef.current?.insertMathTemplate(template);
+      return;
+    }
+
+    handleInsertEditorTemplate(template);
+  }, [activeSourceLanguage, handleInsertEditorTemplate, matrixSettings]);
+
+  const handleTableSizePreview = useCallback((rows: number, columns: number) => {
+    setTableSizePreview({ rows, columns });
+  }, []);
+
+  const handleTableSizeSelect = useCallback((rows: number, columns: number) => {
+    setTableSettings((current) => resizeTableSettings(current, rows, columns));
+    setTableSelection((current) =>
+      clampTableSelection(current, {
+        ...tableSettings,
+        rows,
+        columns
+      })
+    );
+    setTableSizePreview(null);
+    setIsTableSizePickerOpen(false);
+  }, [tableSettings]);
+
+  const handleTableSizeInputChange = useCallback(
+    (dimension: "rows" | "columns", value: string) => {
+      setTableSizeInput((current) => ({
+        ...current,
+        [dimension]: value
+      }));
+
+      const parsedValue = Number.parseInt(value, 10);
+
+      if (!Number.isFinite(parsedValue)) {
+        return;
+      }
+
+      const rows = clampMatrixDimension(
+        dimension === "rows" ? parsedValue : tableSettings.rows,
+        TABLE_MIN_ROWS,
+        TABLE_MAX_ROWS
+      );
+      const columns = clampMatrixDimension(
+        dimension === "columns" ? parsedValue : tableSettings.columns,
+        TABLE_MIN_COLUMNS,
+        TABLE_MAX_COLUMNS
+      );
+
+      setTableSettings((current) => resizeTableSettings(current, rows, columns));
+      setTableSelection((current) =>
+        clampTableSelection(current, {
+          ...tableSettings,
+          rows,
+          columns
+        })
+      );
+      setTableSizePreview(null);
+    },
+    [tableSettings]
+  );
+
+  const handleTableSizeInputBlur = useCallback(() => {
+    setTableSizeInput({
+      rows: String(tableSettings.rows),
+      columns: String(tableSettings.columns)
+    });
+  }, [tableSettings.columns, tableSettings.rows]);
+
+  const handleTableCellChange = useCallback(
+    (rowIndex: number, columnIndex: number, value: string) => {
+      setTableSettings((current) => updateTableCell(current, rowIndex, columnIndex, value));
+    },
+    []
+  );
+
+  const handleTableCellPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLInputElement>, rowIndex: number, columnIndex: number) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      setIsTableSizePickerOpen(false);
+      setIsTableBorderMenuOpen(false);
+      setTableSizePreview(null);
+      tableSelectionPointerRef.current = true;
+      tableDragSelectionRef.current = true;
+
+      if (event.shiftKey) {
+        setTableSelection((current) => ({
+          ...current,
+          focusRow: rowIndex,
+          focusColumn: columnIndex
+        }));
+      } else {
+        setTableSelection({
+          anchorRow: rowIndex,
+          anchorColumn: columnIndex,
+          focusRow: rowIndex,
+          focusColumn: columnIndex
+        });
+      }
+
+      window.requestAnimationFrame(() => {
+        event.currentTarget.focus();
+        event.currentTarget.select();
+      });
+    },
+    []
+  );
+
+  const handleTableCellPointerEnter = useCallback(
+    (event: ReactPointerEvent<HTMLInputElement>, rowIndex: number, columnIndex: number) => {
+      if (!tableDragSelectionRef.current) {
+        return;
+      }
+
+      if ((event.buttons & 1) === 0) {
+        tableDragSelectionRef.current = false;
+        return;
+      }
+
+      tableSelectionPointerRef.current = true;
+      setTableSelection((current) => ({
+        ...current,
+        focusRow: rowIndex,
+        focusColumn: columnIndex
+      }));
+    },
+    []
+  );
+
+  const handleTableGridPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!tableDragSelectionRef.current) {
+      return;
+    }
+
+    if ((event.buttons & 1) === 0) {
+      tableDragSelectionRef.current = false;
+      return;
+    }
+
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const cell = target instanceof HTMLElement
+      ? target.closest<HTMLInputElement>("[data-table-row][data-table-column]")
+      : null;
+
+    if (!cell || !event.currentTarget.contains(cell)) {
+      return;
+    }
+
+    const rowIndex = Number.parseInt(cell.dataset.tableRow ?? "", 10);
+    const columnIndex = Number.parseInt(cell.dataset.tableColumn ?? "", 10);
+
+    if (!Number.isFinite(rowIndex) || !Number.isFinite(columnIndex)) {
+      return;
+    }
+
+    tableSelectionPointerRef.current = true;
+    setTableSelection((current) => {
+      if (current.focusRow === rowIndex && current.focusColumn === columnIndex) {
+        return current;
+      }
+
+      return {
+        ...current,
+        focusRow: rowIndex,
+        focusColumn: columnIndex
+      };
+    });
+  }, []);
+
+  const handleTableCellFocus = useCallback((rowIndex: number, columnIndex: number) => {
+    setIsTableSizePickerOpen(false);
+    setIsTableBorderMenuOpen(false);
+    setTableSizePreview(null);
+
+    if (tableSelectionPointerRef.current) {
+      tableSelectionPointerRef.current = false;
+      return;
+    }
+
+    setTableSelection({
+      anchorRow: rowIndex,
+      anchorColumn: columnIndex,
+      focusRow: rowIndex,
+      focusColumn: columnIndex
+    });
+  }, []);
+
+  useEffect(() => {
+    const stopTableDragSelection = () => {
+      tableDragSelectionRef.current = false;
+    };
+
+    window.addEventListener("pointerup", stopTableDragSelection);
+    window.addEventListener("pointercancel", stopTableDragSelection);
+
+    return () => {
+      window.removeEventListener("pointerup", stopTableDragSelection);
+      window.removeEventListener("pointercancel", stopTableDragSelection);
+    };
+  }, []);
+
+  const handleTableFormatChange = useCallback(
+    (patch: TableCellFormat) => {
+      setTableSettings((current) => updateTableFormatForScope(current, "cell", tableSelection, patch));
+    },
+    [tableSelection]
+  );
+
+  const handleMergeTableSelection = useCallback(() => {
+    setTableSettings((current) => mergeSelectedTableCells(current, tableSelection));
+  }, [tableSelection]);
+
+  const handleUnmergeTableSelection = useCallback(() => {
+    setTableSettings((current) => unmergeSelectedTableCells(current, tableSelection));
+  }, [tableSelection]);
+
+  const handleApplyTableBorder = useCallback(() => {
+    const supportedStyles = getSupportedTableStrokeStyles(activeSourceLanguage);
+
+    if (supportedStyles.length === 0) {
+      return;
+    }
+
+    const strokeStyle = tableBorderPreset === "clear"
+      ? "none"
+      : supportedStyles.includes(tableBorderStyle)
+        ? tableBorderStyle
+        : supportedStyles.includes("solid")
+          ? "solid"
+          : supportedStyles[0];
+
+    setTableSettings((current) =>
+      updateTableBordersForSelection(current, tableSelection, tableBorderPreset, {
+        strokeStyle,
+        strokeWeight: tableBorderWeight
+      })
+    );
+  }, [activeSourceLanguage, tableBorderPreset, tableBorderStyle, tableBorderWeight, tableSelection]);
+
+  const focusNextTableCell = useCallback(
+    (rowIndex: number, columnIndex: number, extendSelection: boolean) => {
+      const nextSelection = extendSelection
+        ? (current: TableSelection) => ({
+            ...current,
+            focusRow: rowIndex,
+            focusColumn: columnIndex
+          })
+        : () => ({
+            anchorRow: rowIndex,
+            anchorColumn: columnIndex,
+            focusRow: rowIndex,
+            focusColumn: columnIndex
+          });
+
+      setTableSelection(nextSelection);
+      window.requestAnimationFrame(() => {
+        const cell = tableCellRefs.current[rowIndex]?.[columnIndex];
+
+        if (!cell) {
           return;
         }
 
-        setHoveredSourceSymbol({
-          item: symbol,
-          x: symbolHoverPointRef.current.x,
-          y: symbolHoverPointRef.current.y
-        });
-      }, 1100);
+        cell.focus();
+        cell.select();
+      });
     },
     []
   );
 
-  const handleBulletList = useCallback(() => {
-    handleToggleCurrentLines("- ", "+ ");
-  }, [handleToggleCurrentLines]);
+  const handleTableCellKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>, rowIndex: number, columnIndex: number) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
 
-  const handleNumberedList = useCallback(() => {
-    handleToggleCurrentLines("+ ", "- ");
-  }, [handleToggleCurrentLines]);
+      let nextRow = rowIndex;
+      let nextColumn = columnIndex;
+      let rowStep = 0;
+      let columnStep = 0;
+      let flatOffset = 0;
+      const extendSelection = event.shiftKey && event.key.startsWith("Arrow");
 
-  const handleMathMode = useCallback(() => {
-    editorRef.current?.toggleMathMode();
-  }, []);
+      switch (event.key) {
+        case "ArrowLeft":
+          columnStep = -1;
+          nextColumn = Math.max(0, columnIndex - 1);
+          break;
+        case "ArrowRight":
+          columnStep = 1;
+          nextColumn = Math.min(tableSettings.columns - 1, columnIndex + 1);
+          break;
+        case "ArrowUp":
+          rowStep = -1;
+          nextRow = Math.max(0, rowIndex - 1);
+          break;
+        case "ArrowDown":
+          rowStep = 1;
+          nextRow = Math.min(tableSettings.rows - 1, rowIndex + 1);
+          break;
+        case "Tab":
+          flatOffset = event.shiftKey ? -1 : 1;
+          break;
+        case "Enter":
+          rowStep = event.shiftKey ? -1 : 1;
+          nextRow = event.shiftKey
+            ? Math.max(0, rowIndex - 1)
+            : Math.min(tableSettings.rows - 1, rowIndex + 1);
+          break;
+        default:
+          return;
+      }
 
-  const handleUnderline = useCallback(() => {
-    editorRef.current?.toggleTextFormat("underline");
-  }, []);
+      const visibleCell = flatOffset
+        ? findVisibleTableCellByOffset(tableSettings, rowIndex, columnIndex, flatOffset)
+        : findVisibleTableCell(tableSettings, nextRow, nextColumn, rowStep, columnStep);
 
-  const handleCycleHeading = useCallback(() => {
-    editorRef.current?.cycleCurrentLinesHeading();
-  }, []);
+      event.preventDefault();
+      focusNextTableCell(visibleCell.rowIndex, visibleCell.columnIndex, extendSelection);
+    },
+    [focusNextTableCell, tableSettings]
+  );
 
-  const handleInsertMatrix = useCallback(() => {
-    editorRef.current?.insertMathTemplate(buildMatrixTemplate(matrixSettings));
-  }, [matrixSettings]);
+  useEffect(() => {
+    setTableSelection((current) => clampTableSelection(current, tableSettings));
+  }, [tableSettings.columns, tableSettings.rows]);
+
+  useEffect(() => {
+    setTableSizeInput({
+      rows: String(tableSettings.rows),
+      columns: String(tableSettings.columns)
+    });
+  }, [tableSettings.columns, tableSettings.rows]);
 
   const handleInsertTable = useCallback(() => {
-    handleInsertEditorTemplate(buildTableTemplate(tableSettings));
-  }, [handleInsertEditorTemplate, tableSettings]);
+    const template = buildTableTemplate(tableSettings, activeSourceLanguage);
 
-  const toggleToolbarMenu = useCallback((menu: "matrix" | "table" | "symbols") => {
+    if (activeEditableTableMatch) {
+      if (activeSourceLanguage === "latex") {
+        editorRef.current?.replaceRangeWithLatexTemplateWithPackages(
+          activeEditableTableMatch.from,
+          activeEditableTableMatch.to,
+          template,
+          getLatexTableRequiredPackages(tableSettings)
+        );
+        return;
+      }
+
+      editorRef.current?.replaceRangeWithTemplate(
+        activeEditableTableMatch.from,
+        activeEditableTableMatch.to,
+        template
+      );
+      return;
+    }
+
+    if (activeSourceLanguage === "latex") {
+      editorRef.current?.insertLatexTemplateWithPackages(template, getLatexTableRequiredPackages(tableSettings));
+      return;
+    }
+
+    handleInsertEditorTemplate(template);
+  }, [activeEditableTableMatch, activeSourceLanguage, handleInsertEditorTemplate, tableSettings]);
+
+  const toggleToolbarMenu = useCallback((menu: "matrix" | "table") => {
     setOpenToolbarMenu((current) => (current === menu ? null : menu));
   }, []);
+
+  useEffect(() => {
+    if (openToolbarMenu !== "matrix") {
+      setMatrixSizePreview(null);
+    }
+
+    if (openToolbarMenu !== "table") {
+      setTableSizePreview(null);
+      setIsTableSizePickerOpen(false);
+      setIsTableBorderMenuOpen(false);
+    }
+  }, [openToolbarMenu]);
 
   const mobileKeyboardLabels = activeSourceLanguage === "typst" || activeSourceLanguage === "latex" || activeSourceLanguage === "markdown"
     ? snapshot.preferences.mobileKeyboard.keys[activeSourceLanguage]
@@ -8017,7 +7626,6 @@ ${nextLine}` : nextLine;
         return;
       }
 
-      setInspectedWorkspacePath(null);
       handleSelectDocument(targetDocument.id, { sourceTabMode: "preserve" });
 
       if (isMobileWorkspace) {
@@ -8250,16 +7858,9 @@ ${nextLine}` : nextLine;
       if (modifiers.range) {
         const selectablePaths = visibleWorkspaceNodes.map((entry) => entry.path);
         const anchorPath = workspaceSelectionAnchorPath ?? selectedWorkspacePath ?? normalizedPath;
-        const anchorIndex = selectablePaths.indexOf(anchorPath);
-        const targetIndex = selectablePaths.indexOf(normalizedPath);
-
-        if (anchorIndex >= 0 && targetIndex >= 0) {
-          const start = Math.min(anchorIndex, targetIndex);
-          const end = Math.max(anchorIndex, targetIndex);
-          setSelectedWorkspacePaths(selectablePaths.slice(start, end + 1));
-        } else {
-          setSelectedWorkspacePaths([normalizedPath]);
-        }
+        setSelectedWorkspacePaths(
+          selectWorkspaceRange(selectablePaths, anchorPath, normalizedPath)
+        );
 
         return;
       }
@@ -8285,7 +7886,7 @@ ${nextLine}` : nextLine;
   const handleRequestWorkspaceRename = useCallback((node: WorkspaceTreeNode) => {
     setWorkspaceContextMenu(null);
     setRenamingWorkspacePath(node.path);
-    setWorkspaceRenameDraft(node.name);
+    setWorkspaceRenameDraft(getWorkspaceRenameDraft(node));
   }, []);
 
   const handleCancelWorkspaceRename = useCallback(() => {
@@ -8314,25 +7915,7 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    setSnapshot((currentSnapshot) => {
-      if (targetNode.source.kind === "document") {
-        return renameDocumentById(currentSnapshot, targetNode.source.id, nextName);
-      }
-
-      if (targetNode.source.kind === "folder") {
-        return renameFolderById(currentSnapshot, targetNode.source.id, nextName);
-      }
-
-      if (targetNode.source.kind === "diagram") {
-        return renameDiagramById(currentSnapshot, targetNode.source.id, nextName);
-      }
-
-      if (targetNode.source.kind === "graph") {
-        return renameGraphById(currentSnapshot, targetNode.source.id, nextName);
-      }
-
-      return currentSnapshot;
-    });
+    setSnapshot((currentSnapshot) => renameWorkspaceNode(currentSnapshot, targetNode, nextName));
 
     setSelectedWorkspacePath(null);
     handleCancelWorkspaceRename();
@@ -8412,35 +7995,13 @@ ${nextLine}` : nextLine;
 
   const handleDeleteWorkspaceNode = useCallback(
     (node: WorkspaceTreeNode) => {
-      setSnapshot((currentSnapshot) => {
-        if (node.source.kind === "document") {
-          return moveDocumentToTrash(currentSnapshot, node.source.id);
-        }
-
-        if (node.source.kind === "folder") {
-          return moveFolderToTrash(currentSnapshot, node.source.id);
-        }
-
-        if (node.source.kind === "diagram") {
-          return moveDiagramToTrash(currentSnapshot, node.source.id);
-        }
-
-        if (node.source.kind === "graph") {
-          return moveGraphToTrash(currentSnapshot, node.source.id);
-        }
-
-        if (node.source.kind === "trash-item") {
-          return permanentlyDeleteTrashEntry(currentSnapshot, node.source.id);
-        }
-
-        return currentSnapshot;
-      });
+      setSnapshot((currentSnapshot) => trashWorkspaceNode(currentSnapshot, node));
 
       if (selectedWorkspacePath === node.path) {
         setSelectedWorkspacePath(null);
       }
       setSelectedWorkspacePaths((currentPaths) =>
-        currentPaths.filter((path) => path !== node.path && !path.startsWith(`${node.path}/`))
+        removeWorkspaceSelectionSubtree(currentPaths, node.path)
       );
 
       handleCancelWorkspaceRename();
@@ -8462,73 +8023,34 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    setSnapshot((currentSnapshot) => emptyTrash(currentSnapshot));
+    setSnapshot((currentSnapshot) => emptyWorkspaceTrash(currentSnapshot));
     setWorkspaceContextMenu(null);
     setSelectedWorkspacePath(null);
   }, []);
 
   const handleMoveWorkspaceNode = useCallback(
     (node: WorkspaceTreeNode, destinationFolderPath: string | null) => {
-      const normalizedDestination = normalizeWorkspacePath(destinationFolderPath ?? "");
-      const nextDestination = normalizedDestination || null;
-      const movedBaseName = getWorkspaceBaseName(node.path);
-      const nextPath =
-        node.source.kind === "diagram" || node.source.kind === "graph"
-          ? joinWorkspacePath(nextDestination === "figures" ? null : nextDestination?.replace(/^figures\/?/, "") ?? null, movedBaseName)
-          : joinWorkspacePath(nextDestination, movedBaseName);
-      const displayNextPath =
-        node.source.kind === "diagram" || node.source.kind === "graph"
-          ? joinWorkspacePath("figures", nextPath)
-          : nextPath;
-      const nextSelectedPath =
-        selectedWorkspacePath === node.path
-          ? displayNextPath
-          : selectedWorkspacePath && node.source.kind === "folder" && selectedWorkspacePath.startsWith(`${node.path}/`)
-            ? `${displayNextPath}${selectedWorkspacePath.slice(node.path.length)}`
-            : selectedWorkspacePath;
-      const nextSelectedPaths = selectedWorkspacePaths.map((path) =>
-        path === node.path
-          ? displayNextPath
-          : node.source.kind === "folder" && path.startsWith(`${node.path}/`)
-            ? `${displayNextPath}${path.slice(node.path.length)}`
-            : path
+      const { movedPath } = moveWorkspaceNodeInSnapshot(
+        snapshot,
+        node,
+        destinationFolderPath
       );
+      const nextSelectedPaths = remapWorkspaceSelectionAfterMove(
+        selectedWorkspacePaths,
+        node.path,
+        movedPath,
+        node.kind === "folder"
+      );
+      const nextSelectedPath = remapWorkspaceSelectionAfterMove(
+        selectedWorkspacePath ? [selectedWorkspacePath] : [],
+        node.path,
+        movedPath,
+        node.kind === "folder"
+      )[0] ?? null;
 
-      setSnapshot((currentSnapshot) => {
-        if (node.source.kind === "document") {
-          return moveDocumentToFolder(currentSnapshot, node.source.id, nextDestination);
-        }
-
-        if (node.source.kind === "folder") {
-          return moveFolderToFolder(currentSnapshot, node.source.id, nextDestination);
-        }
-
-        if (node.source.kind === "diagram") {
-          const figureDestination =
-            nextDestination === null
-              ? null
-              : nextDestination === "figures"
-                ? null
-                : nextDestination.startsWith("figures/")
-                  ? nextDestination.slice("figures/".length)
-                  : null;
-          return moveDiagramToFolder(currentSnapshot, node.source.id, figureDestination);
-        }
-
-        if (node.source.kind === "graph") {
-          const figureDestination =
-            nextDestination === null
-              ? null
-              : nextDestination === "figures"
-                ? null
-                : nextDestination.startsWith("figures/")
-                  ? nextDestination.slice("figures/".length)
-                  : null;
-          return moveGraphToFolder(currentSnapshot, node.source.id, figureDestination);
-        }
-
-        return currentSnapshot;
-      });
+      setSnapshot((currentSnapshot) =>
+        moveWorkspaceNodeInSnapshot(currentSnapshot, node, destinationFolderPath).snapshot
+      );
 
       setWorkspaceContextMenu(null);
       setDraggedWorkspacePath(null);
@@ -8538,7 +8060,7 @@ ${nextLine}` : nextLine;
         setSelectedWorkspacePath(nextSelectedPath);
       }
     },
-    [selectedWorkspacePath, selectedWorkspacePaths]
+    [selectedWorkspacePath, selectedWorkspacePaths, snapshot]
   );
 
   const handleRequestWorkspaceMove = useCallback(
@@ -8556,7 +8078,7 @@ ${nextLine}` : nextLine;
 
       const requestedPath = normalizeWorkspacePath(nextValue);
 
-      if (node.source.kind === "diagram" || node.source.kind === "graph") {
+      if (node.source.kind === "diagram") {
         if (requestedPath && requestedPath !== "figures" && !requestedPath.startsWith("figures/")) {
           window.alert("Figures can only be moved inside the figures folder.");
           return;
@@ -8627,7 +8149,7 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    if (draggedNode.source.kind === "diagram" || draggedNode.source.kind === "graph") {
+    if (draggedNode.source.kind === "diagram") {
       handleMoveWorkspaceNode(draggedNode, "figures");
       return;
     }
@@ -8648,7 +8170,7 @@ ${nextLine}` : nextLine;
         return;
       }
 
-      if (draggedNode.source.kind === "diagram" || draggedNode.source.kind === "graph") {
+      if (draggedNode.source.kind === "diagram") {
         if (targetNode.path !== "figures" && !targetNode.path.startsWith("figures/")) {
           handleWorkspaceDragEnd();
           return;
@@ -8788,59 +8310,6 @@ ${nextLine}` : nextLine;
     setSyncFeedback({ tone: "success", text: result.message });
     return { ok: true as const };
   }, [handleGitRemoteConfigChange, remoteConfig.owner, remoteGitService, selectedGitProject, selectedGitToken]);
-
-  const handleGitHubRepoModeChange = useCallback((mode: GitHubRepoMode) => {
-    setGitHubDiscovery((current) => ({
-      ...current,
-      repoMode: mode,
-      branches: mode === "select" ? current.branches : []
-    }));
-    if (mode === "create") {
-      handleGitRemoteConfigChange("repo", "");
-      handleGitRemoteConfigChange("branch", "main");
-    }
-  }, [handleGitRemoteConfigChange]);
-
-  const handleGitHubOwnerChange = useCallback(
-    (owner: string) => {
-      handleGitRemoteConfigChange("owner", owner);
-      handleGitRemoteConfigChange("repo", "");
-      handleGitRemoteConfigChange("branch", "main");
-      setGitHubDiscovery((current) => ({
-        ...current,
-        repos: [],
-        branches: []
-      }));
-    },
-    [handleGitRemoteConfigChange]
-  );
-
-  const handleGitHubRepoSelection = useCallback(
-    (repoName: string) => {
-      const selectedRepo = gitHubDiscovery.repos.find((repo) => repo.name === repoName);
-      handleGitRemoteConfigChange("repo", repoName);
-      if (selectedRepo?.defaultBranch) {
-        handleGitRemoteConfigChange("branch", selectedRepo.defaultBranch);
-      }
-    },
-    [gitHubDiscovery.repos, handleGitRemoteConfigChange]
-  );
-
-  const handleGitHubUrlPaste = useCallback((value: string) => {
-    const parsedUrl = parseGitHubRepositoryUrl(value);
-    if (!parsedUrl) {
-      return false;
-    }
-
-    handleGitRemoteConfigChange("owner", parsedUrl.owner);
-    handleGitRemoteConfigChange("repo", parsedUrl.repo);
-    setGitHubDiscovery((current) => ({
-      ...current,
-      repoMode: "manual",
-      branches: []
-    }));
-    return true;
-  }, [handleGitRemoteConfigChange]);
 
   useEffect(() => {
     if (
@@ -9190,16 +8659,6 @@ ${nextLine}` : nextLine;
     [updateSelectedGitProject]
   );
 
-  const handleGitProjectBackendChange = useCallback(
-    (backendId: GitManagedProject["backendId"]) => {
-      updateSelectedGitProject((currentProject) => ({
-        ...currentProject,
-        backendId
-      }));
-    },
-    [updateSelectedGitProject]
-  );
-
   const handleGitIgnorePatternsChange = useCallback(
     (value: string) => {
       updateSelectedGitProject((currentProject) => ({
@@ -9218,254 +8677,6 @@ ${nextLine}` : nextLine;
     },
     [setProjectRepository]
   );
-
-  const handleStageGitPaths = useCallback(
-    async (paths: string[]) => {
-      if (!selectedProjectRepository) {
-        return;
-      }
-
-      const result = await repoBackend.stagePaths(selectedProjectRepository, paths);
-      if (!result.ok) {
-        setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
-        return;
-      }
-      setLocalRepoStatus(result.value);
-      setGitRefreshToken((token) => token + 1);
-    },
-    [repoBackend, selectedProjectRepository]
-  );
-
-  const handleUnstageGitPath = useCallback(
-    async (path: string) => {
-      if (!selectedProjectRepository) {
-        return;
-      }
-
-      const result = await repoBackend.resetIndex(selectedProjectRepository, [path]);
-      if (!result.ok) {
-        setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
-        return;
-      }
-      setLocalRepoStatus(result.value);
-      setGitRefreshToken((token) => token + 1);
-    },
-    [repoBackend, selectedProjectRepository]
-  );
-
-  const handleStageAllGitChanges = useCallback(() => {
-    const changedPaths = gitWorkingTreeEntries.map((entry) => entry.path);
-    if (changedPaths.length === 0) {
-      setSyncFeedback({
-        tone: "neutral",
-        text: "No local changes to stage."
-      });
-      return;
-    }
-
-    void handleStageGitPaths(changedPaths);
-    setSyncFeedback({
-      tone: "success",
-      text: `Staged ${changedPaths.length} path${changedPaths.length === 1 ? "" : "s"}.`
-    });
-  }, [gitWorkingTreeEntries, handleStageGitPaths]);
-
-  const handleCommitGitChanges = useCallback(async () => {
-    if (!selectedGitProject || !selectedProjectRepository) {
-      setSyncFeedback({
-        tone: "error",
-        text: "Create or select a managed git project first."
-      });
-      return;
-    }
-
-    if (!localRepoStatus?.entries.some((entry) => entry.staged !== null)) {
-      setSyncFeedback({
-        tone: "error",
-        text: "Stage one or more files before committing."
-      });
-      return;
-    }
-
-    const message = selectedGitProject.draftCommitMessage.trim();
-    if (!message) {
-      setSyncFeedback({
-        tone: "error",
-        text: "Enter a commit message first."
-      });
-      return;
-    }
-
-    const commitResult = await repoBackend.commit(selectedProjectRepository, { message });
-    if (!commitResult.ok) {
-      setSyncFeedback({
-        tone: "error",
-        text: formatRepoError(commitResult.error)
-      });
-      return;
-    }
-
-    updateGitManagedProject(selectedGitProject.id, (currentProject) => ({
-      ...currentProject,
-      draftCommitMessage: "",
-      commitMessageTemplate: message
-    }));
-    setGitRefreshToken((token) => token + 1);
-    setSyncFeedback({
-      tone: "success",
-      text: `Committed ${commitResult.value.shortSha}: ${commitResult.value.message}`
-    });
-  }, [
-    localRepoStatus,
-    repoBackend,
-    selectedGitProject,
-    selectedProjectRepository,
-    updateGitManagedProject
-  ]);
-
-  const handleAbortGitMerge = useCallback(async () => {
-    if (!selectedProjectRepository) {
-      return;
-    }
-
-    const result = await repoBackend.abortMerge(selectedProjectRepository);
-    if (!result.ok) {
-      setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
-      return;
-    }
-
-    setLocalRepoStatus(result.value);
-    setGitRefreshToken((token) => token + 1);
-    setSyncFeedback({
-      tone: "neutral",
-      text: "Cleared the browser merge stop. Local files and commits were left unchanged."
-    });
-  }, [repoBackend, selectedProjectRepository]);
-
-  const handleUseMergeVersion = useCallback(
-    (path: string, label: string, oid: string | null) => {
-      setMergeResolutionDrafts((currentDrafts) => ({
-        ...currentDrafts,
-        [path]: { kind: "oid", oid, label }
-      }));
-    },
-    []
-  );
-
-  const handleEditMergeResolution = useCallback((path: string, content: string) => {
-    setMergeResolutionDrafts((currentDrafts) => ({
-      ...currentDrafts,
-      [path]: { kind: "content", content }
-    }));
-  }, []);
-
-  const handleContinueGitMerge = useCallback(async () => {
-    if (!selectedProjectRepository || !activeMergeState) {
-      return;
-    }
-
-    const unresolvedFile = conflictMergeFiles.find((file) => !mergeResolutionDrafts[file.path]);
-    if (unresolvedFile) {
-      setSyncFeedback({
-        tone: "error",
-        text: `Resolve ${unresolvedFile.path} before continuing the merge.`
-      });
-      setSelectedMergePath(unresolvedFile.path);
-      return;
-    }
-
-    const resolutions: RepoMergeResolution[] = conflictMergeFiles.map((file) => {
-      const draft = mergeResolutionDrafts[file.path];
-      return draft.kind === "content"
-        ? { path: file.path, content: draft.content }
-        : { path: file.path, oid: draft.oid };
-    });
-    const result = await repoBackend.continueMerge(selectedProjectRepository, {
-      message: mergeCommitMessage.trim() ||
-        `Merge ${activeMergeState.remoteName}/${activeMergeState.remoteBranch} into ${activeMergeState.branch}`,
-      resolutions
-    });
-    if (!result.ok) {
-      setSyncFeedback({ tone: "error", text: formatRepoError(result.error) });
-      return;
-    }
-
-    setProjectRepository((project) =>
-      project.id === result.value.project.id ? result.value.project : project
-    );
-    setLocalRepoStatus(result.value.status);
-    setMergeResolutionDrafts({});
-    setMergeFilePreview(null);
-    setSelectedMergePath(null);
-    setGitRefreshToken((token) => token + 1);
-    setSyncFeedback({
-      tone: "success",
-      text: `Created merge commit ${result.value.commit.shortSha}. You can push again now.`
-    });
-  }, [
-    activeMergeState,
-    conflictMergeFiles,
-    mergeCommitMessage,
-    mergeResolutionDrafts,
-    repoBackend,
-    selectedProjectRepository,
-    setProjectRepository
-  ]);
-
-  const handleAddGitProject = useCallback(() => {
-    if (!selectedProjectRepository) {
-      return;
-    }
-
-    const nextProject = createEmptyGitManagedProject({
-      projectId: selectedProjectRepository.id,
-      projectName: selectedProjectRepository.displayName
-    });
-
-    setGitWorkspace((currentWorkspace) => ({
-      ...currentWorkspace,
-      selectedProjectId: nextProject.id,
-      selectedProjectIdsByTyprProjectId: {
-        ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-        [selectedProjectRepository.id]: nextProject.id
-      },
-      projects: [...currentWorkspace.projects, nextProject]
-    }));
-  }, [selectedProjectRepository]);
-
-  const handleRemoveSelectedGitProject = useCallback(() => {
-    if (!selectedGitProject) {
-      return;
-    }
-
-    setGitWorkspace((currentWorkspace) => {
-      const remainingProjects = currentWorkspace.projects.filter(
-        (project) => project.id !== selectedGitProject.id
-      );
-      const remainingProjectScopedSelection =
-        remainingProjects.find((project) => project.projectId === selectedGitProject.projectId)?.id ?? null;
-      return normalizeGitWorkspaceState(
-        {
-          ...currentWorkspace,
-          selectedProjectId: remainingProjectScopedSelection,
-          selectedProjectIdsByTyprProjectId: {
-            ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-            [selectedGitProject.projectId]: remainingProjectScopedSelection
-          },
-          projects: remainingProjects
-        },
-        {
-          projectId: selectedProjectRepository?.id ?? snapshot.project.id,
-          projectName: selectedProjectRepository?.displayName ?? snapshot.project.name
-        }
-      );
-    });
-  }, [
-    selectedGitProject,
-    selectedProjectRepository,
-    snapshot.project.id,
-    snapshot.project.name
-  ]);
 
   const selectProjectRepository = useCallback((project: TyprProjectRepository) => {
     setProjectStorage((currentStorage) => addProjectRepository(currentStorage, project));
@@ -9494,47 +8705,6 @@ ${nextLine}` : nextLine;
     });
   }, []);
 
-  const addDefaultGitManagedProject = useCallback(
-    (project: TyprProjectRepository, projectName = project.displayName) => {
-      const nextProject = createEmptyGitManagedProject({
-        projectId: project.id,
-        projectName
-      });
-
-      setGitWorkspace((currentWorkspace) => {
-        const existingProjects = currentWorkspace.projects.filter(
-          (managedProject) => managedProject.projectId === project.id
-        );
-        const scopedSelection = currentWorkspace.selectedProjectIdsByTyprProjectId[project.id];
-        const existingProject =
-          existingProjects.find((managedProject) => managedProject.id === scopedSelection) ??
-          existingProjects[0];
-        if (existingProject) {
-          return {
-            ...currentWorkspace,
-            selectedProjectId: existingProject.id,
-            selectedProjectIdsByTyprProjectId: {
-              ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-              [project.id]: existingProject.id
-            }
-          };
-        }
-
-        return {
-          ...currentWorkspace,
-          selectedProjectId: nextProject.id,
-          selectedProjectIdsByTyprProjectId: {
-            ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-            [project.id]: nextProject.id
-          },
-          projects: [...currentWorkspace.projects, nextProject]
-        };
-      });
-
-      return nextProject.id;
-    },
-    []
-  );
 
   const handleSelectLocalProject = useCallback(
     (projectId: string) => {
@@ -9603,150 +8773,6 @@ ${nextLine}` : nextLine;
     setDraggedProjectId(null);
     setProjectDragOverId(null);
   }, []);
-
-  const handleOpenRecentFile = useCallback(
-    (entry: RecentFileEntry) => {
-      const normalizedPath = normalizeWorkspacePath(entry.path);
-      const project = projectStorage.projects.find((candidate) => candidate.id === entry.projectId);
-      const projectFile = project
-        ? listProjectEntries(project).find(
-            (candidate) =>
-              candidate.kind === "file" &&
-              normalizeWorkspacePath(candidate.path) === normalizedPath
-          )
-        : null;
-
-      if (!project || !projectFile || !normalizedPath) {
-        setRecentWorkspaceState((current) => ({
-          ...current,
-          files: current.files.filter(
-            (recentFile) =>
-              recentFile.projectId !== entry.projectId || recentFile.path !== entry.path
-          )
-        }));
-        setSyncFeedback({ tone: "error", text: "That recent file is no longer available." });
-        return;
-      }
-
-      const nextOpenFilePaths = isTextWorkspaceFile(normalizedPath)
-        ? appendUniqueWorkspacePath(project.selection.openFilePaths ?? [], normalizedPath)
-        : project.selection.openFilePaths ?? [];
-      const nextProject: TyprProjectRepository = {
-        ...project,
-        selection: {
-          activeFilePath: normalizedPath,
-          openFilePaths: nextOpenFilePaths
-        },
-        editor: {
-          ...project.editor,
-          previewPath:
-            getSourceLanguage(normalizedPath) === "markdown" || getWorkspacePreviewMimeType(normalizedPath)
-              ? normalizedPath
-              : project.editor.previewPath
-        }
-      };
-
-      setProjectStorage((currentStorage) => ({
-        ...currentStorage,
-        selectedProjectId: nextProject.id,
-        projects: currentStorage.projects.map((candidate) =>
-          candidate.id === nextProject.id ? nextProject : candidate
-        )
-      }));
-      setRawSnapshot((currentSnapshot) => ({
-        ...currentSnapshot,
-        project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
-      }));
-      addDefaultGitManagedProject(nextProject, nextProject.displayName);
-      setIsTrashViewOpen(false);
-      setSelectedWorkspacePath(normalizedPath);
-      setSelectedWorkspacePaths([normalizedPath]);
-      setWorkspaceSelectionAnchorPath(normalizedPath);
-      setWorkspaceContextMenu(null);
-      setInspectedWorkspacePath(null);
-      setGitRefreshToken((token) => token + 1);
-
-      if (isTextWorkspaceFile(normalizedPath)) {
-        setSourceTabPaths(nextOpenFilePaths);
-        setTransientSourceTabPath(null);
-      } else {
-        setSourceTabPaths([]);
-      }
-
-      if (getSourceLanguage(normalizedPath) === "markdown" || getWorkspacePreviewMimeType(normalizedPath)) {
-        setPreviewTabPaths([normalizedPath]);
-        setActivePreviewPath(normalizedPath);
-        setIsPreviewCollapsed(false);
-      } else {
-        setPreviewTabPaths([]);
-        setActivePreviewPath(null);
-      }
-
-      if (isMobileWorkspace) {
-        setMobileWorkspaceTab(isTextWorkspaceFile(normalizedPath) ? "editor" : "preview");
-      }
-    },
-    [addDefaultGitManagedProject, isMobileWorkspace, projectStorage.projects, setSyncFeedback]
-  );
-
-  const handleToggleSelectedGitHubConnection = useCallback(() => {
-    if (!selectedGitProject) {
-      return;
-    }
-
-    if (selectedGitProjectIsGitHubConnected) {
-      const remoteName = selectedGitProject.remoteName.trim();
-      updateSelectedGitProject((project) => ({
-        ...project,
-        connected: false,
-        lastPulledAt: null,
-        lastPushedAt: null
-      }));
-      setGitCredentials((currentCredentials) => {
-        const nextCredentials = { ...currentCredentials };
-        delete nextCredentials[selectedGitProject.id];
-        return nextCredentials;
-      });
-      if (remoteName) {
-        setProjectRepository((project) => ({
-          ...project,
-          git: {
-            ...project.git,
-            remotes: project.git.remotes.filter((remote) => remote.name !== remoteName)
-          }
-        }));
-      }
-      setSyncFeedback({
-        tone: "success",
-        text: "Disconnected GitHub. The GitHub repository was not deleted."
-      });
-      return;
-    }
-
-    if (!remoteConfig.owner.trim() || !remoteConfig.repo.trim() || !remoteConfig.branch.trim() || !selectedGitToken.trim()) {
-      setSyncFeedback({
-        tone: "error",
-        text: "Fill in owner, repo, branch, and token before connecting."
-      });
-      return;
-    }
-
-    updateSelectedGitProject((project) => ({
-      ...project,
-      connected: true
-    }));
-    setSyncFeedback({
-      tone: "success",
-      text: `Connected GitHub to ${remoteConfig.owner}/${remoteConfig.repo}.`
-    });
-  }, [
-    remoteConfig,
-    selectedGitProject,
-    selectedGitProjectIsGitHubConnected,
-    selectedGitToken,
-    setProjectRepository,
-    updateSelectedGitProject
-  ]);
 
   const handleGitHubTokenConnectionAction = useCallback(async () => {
     await handleConnectGitHub();
@@ -9850,19 +8876,6 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    try {
-      await deleteProjectGitFiles(projectToDelete.id);
-      await removeProjectFromOpfs(projectToDelete.id);
-    } catch (error) {
-      setSyncFeedback({
-        tone: "error",
-        text: error instanceof Error
-          ? `Unable to delete local repo data: ${error.message}`
-          : "Unable to delete local repo data."
-      });
-      return;
-    }
-
     const fallbackProject =
       projectStorage.projects.length <= 1
         ? createEmptyProjectRepository({
@@ -9870,22 +8883,83 @@ ${nextLine}` : nextLine;
             defaultFileName: null
           })
         : undefined;
-    const nextProjectStorage = removeProjectRepository(
+    const pendingProjectStorage = applyProjectDeletionTombstones(
       projectStorage,
-      projectToDelete.id,
+      [{
+        projectId: projectToDelete.id,
+        createdAt: ""
+      }],
       fallbackProject
     );
+    const pendingProject = getSelectedProjectRepository(pendingProjectStorage);
+    const pendingSnapshot = pendingProject
+      ? {
+          ...snapshot,
+          project: projectRepositoryToLegacyProject(pendingProject, snapshot.project)
+        }
+      : snapshot;
+
+    try {
+      await lifecyclePersistenceRef.current?.persistNow();
+    } catch {
+      // The lifecycle persistence path has already reported its storage error.
+      // The independent deletion tombstone can still make this action durable.
+    }
+
+    let deletionResult;
+    try {
+      deletionResult = await deleteProjectDurably({
+        dependencies: {
+          deleteBrowserGitFiles: deleteProjectGitFiles,
+          deleteTombstone: deleteProjectDeletionTombstone,
+          removeOpfsProject: removeProjectFromOpfs,
+          saveProjectStorage,
+          saveTombstone: async (id) => {
+            const tombstone = await saveProjectDeletionTombstone(id);
+            const pendingPayload = {
+              snapshot: pendingSnapshot,
+              projectStorage: pendingProjectStorage
+            };
+            persistencePayloadRef.current = pendingPayload;
+            lifecyclePersistenceRef.current?.update(pendingPayload);
+            return tombstone;
+          }
+        },
+        fallbackProject,
+        projectId: projectToDelete.id,
+        storage: projectStorage
+      });
+    } catch (error) {
+      setSyncFeedback({
+        tone: "error",
+        text: error instanceof Error
+          ? `Unable to record project deletion: ${error.message}`
+          : "Unable to record project deletion."
+      });
+      return;
+    }
+
+    const nextProjectStorage = deletionResult.storage;
     const nextProject = getSelectedProjectRepository(nextProjectStorage);
+    const nextSnapshot = nextProject
+      ? {
+          ...snapshot,
+          project: projectRepositoryToLegacyProject(nextProject, snapshot.project)
+        }
+      : snapshot;
+    const nextPersistencePayload = {
+      snapshot: nextSnapshot,
+      projectStorage: nextProjectStorage
+    };
+    persistencePayloadRef.current = nextPersistencePayload;
+    lifecyclePersistenceRef.current?.update(nextPersistencePayload);
     const deletedManagedProjectIds = gitWorkspace.projects
       .filter((project) => project.projectId === projectToDelete.id)
       .map((project) => project.id);
 
     setProjectStorage(nextProjectStorage);
     if (nextProject) {
-      setRawSnapshot((currentSnapshot) => ({
-        ...currentSnapshot,
-        project: projectRepositoryToLegacyProject(nextProject, currentSnapshot.project)
-      }));
+      setRawSnapshot(nextSnapshot);
       setSelectedWorkspacePath(nextProject.selection.activeFilePath);
       setSelectedWorkspacePaths(nextProject.selection.activeFilePath ? [nextProject.selection.activeFilePath] : []);
       setWorkspaceSelectionAnchorPath(nextProject.selection.activeFilePath);
@@ -9957,14 +9031,22 @@ ${nextLine}` : nextLine;
     setLocalRepoBranches([]);
     setUpstreamTracking(null);
     setGitRefreshToken((token) => token + 1);
-    setSyncFeedback({
-      tone: "success",
-      text: `Deleted local project "${projectToDelete.displayName}". GitHub repositories were not changed.`
-    });
+    setSyncFeedback(
+      deletionResult.pendingProjectIds.includes(projectToDelete.id)
+        ? {
+            tone: "neutral",
+            text: `Deleted local project "${projectToDelete.displayName}". Auxiliary browser data cleanup will retry on reload.`
+          }
+        : {
+            tone: "success",
+            text: `Deleted local project "${projectToDelete.displayName}". GitHub repositories were not changed.`
+          }
+    );
   }, [
     gitWorkspace.projects,
     projectStorage,
-    selectedProjectRepository
+    selectedProjectRepository,
+    snapshot
   ]);
 
   const replaceProjectEntries = useCallback(
@@ -10052,11 +9134,8 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    let remoteProject = createEmptyProjectRepository({
-      displayName: selectedProjectRepository.displayName,
-      defaultFileName: null
-    });
-    const initResult = await repoBackend.initRepository(remoteProject);
+    let localProject = selectedProjectRepository;
+    const initResult = await repoBackend.initRepository(localProject);
     if (!initResult.ok) {
       const message = formatRepoError(initResult.error);
       setIsSyncing(false);
@@ -10064,19 +9143,75 @@ ${nextLine}` : nextLine;
       setSyncFeedback({ tone: "error", text: message });
       return;
     }
-    remoteProject = initResult.value;
+    localProject = initResult.value;
 
-    const pullResult = await remoteGitService.pull(remoteProject, createConfig, () => token);
-    if (!pullResult.ok || !pullResult.project) {
-      const message = redactGitSecrets(pullResult.message, [token]);
+    const localBranchResult = await repoBackend.getRef(localProject, `refs/heads/${branch}`);
+    if (!localBranchResult.ok) {
+      const message = formatRepoError(localBranchResult.error);
+      setIsSyncing(false);
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
+      return;
+    }
+    const baselineProject = localBranchResult.value
+      ? localProject
+      : replaceProjectEntries(localProject, []);
+
+    const fetchResult = await remoteGitService.fetch(baselineProject, createConfig, () => token, {
+      onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message })
+    });
+    if (!fetchResult.ok) {
+      const message = redactGitSecrets(fetchResult.message, [token]);
       setIsSyncing(false);
       setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
       setSyncFeedback({ tone: "error", text: message });
       return;
     }
 
-    remoteProject = replaceProjectEntries(pullResult.project, sourceEntries);
-    const stageResult = await repoBackend.stagePaths(remoteProject, ["."]);
+    const remoteRefResult = await repoBackend.getRef(
+      baselineProject,
+      getRemoteTrackingRefPath(createConfig)
+    );
+    if (!remoteRefResult.ok || !remoteRefResult.value) {
+      const message = !remoteRefResult.ok
+        ? formatRepoError(remoteRefResult.error)
+        : `Fetched ${owner}/${repo}, but no ${createConfig.remoteName}/${branch} ref was available.`;
+      setIsSyncing(false);
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
+      return;
+    }
+
+    if (localBranchResult.value && localBranchResult.value !== remoteRefResult.value) {
+      const backupResult = await repoBackend.setRef(
+        localProject,
+        "refs/heads/typr-local-before-github-create",
+        localBranchResult.value
+      );
+      if (!backupResult.ok) {
+        const message = formatRepoError(backupResult.error);
+        setIsSyncing(false);
+        setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+        setSyncFeedback({ tone: "error", text: message });
+        return;
+      }
+    }
+
+    const checkoutResult = await repoBackend.fastForwardBranch(
+      baselineProject,
+      branch,
+      remoteRefResult.value
+    );
+    if (!checkoutResult.ok) {
+      const message = formatRepoError(checkoutResult.error);
+      setIsSyncing(false);
+      setGitHubClone((current) => ({ ...current, status: "error", message, progress: null }));
+      setSyncFeedback({ tone: "error", text: message });
+      return;
+    }
+    localProject = replaceProjectEntries(checkoutResult.value.project, sourceEntries);
+
+    const stageResult = await repoBackend.stagePaths(localProject, ["."]);
     if (!stageResult.ok) {
       const message = formatRepoError(stageResult.error);
       setIsSyncing(false);
@@ -10084,7 +9219,9 @@ ${nextLine}` : nextLine;
       setSyncFeedback({ tone: "error", text: message });
       return;
     }
-    const commitResult = await repoBackend.commit(remoteProject, {
+    setLocalRepoStatus(stageResult.value);
+
+    const commitResult = await repoBackend.commit(localProject, {
       message: `Import ${selectedProjectRepository.displayName} from Typr`
     });
     if (!commitResult.ok) {
@@ -10095,7 +9232,9 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    const pushResult = await remoteGitService.push(remoteProject, createConfig, () => token);
+    const pushResult = await remoteGitService.push(localProject, createConfig, () => token, {
+      onProgress: (progress) => setSyncFeedback({ tone: "neutral", text: progress.message })
+    });
     setIsSyncing(false);
     if (!pushResult.ok) {
       const message = redactGitSecrets(pushResult.message, [token]);
@@ -10104,24 +9243,69 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    const remoteUrl = remoteGitService.getRemoteUrl(createConfig);
+    localProject = {
+      ...localProject,
+      git: {
+        ...localProject.git,
+        remotes: [
+          ...localProject.git.remotes.filter((remote) => remote.name !== createConfig.remoteName),
+          { name: createConfig.remoteName, url: remoteUrl }
+        ].sort((left, right) => left.name.localeCompare(right.name))
+      }
+    };
+    setProjectRepository((project) =>
+      project.id === localProject.id ? localProject : project
+    );
+    if (pushResult.status) {
+      setLocalRepoStatus(pushResult.status);
+    }
+
     const managedProject = createManagedProjectForRepository(
-      remoteProject,
+      localProject,
       selectedProjectRepository.displayName,
       createConfig
     );
-    selectProjectRepository(remoteProject);
-    setGitWorkspace((currentWorkspace) => ({
-      ...currentWorkspace,
-      selectedProjectId: managedProject.id,
-      selectedProjectIdsByTyprProjectId: {
-        ...currentWorkspace.selectedProjectIdsByTyprProjectId,
-        [remoteProject.id]: managedProject.id
-      },
-      projects: [...currentWorkspace.projects, managedProject]
-    }));
+    const existingManagedProject = gitWorkspace.projects.find(
+      (project) =>
+        project.projectId === localProject.id &&
+        (project.id === selectedGitProject?.id ||
+          (!project.connected && !project.owner.trim() && !project.repo.trim()))
+    );
+    const connectedGitProjectId = existingManagedProject?.id ?? managedProject.id;
+    setGitWorkspace((currentWorkspace) => {
+      const existingProject = currentWorkspace.projects.find(
+        (project) => project.id === connectedGitProjectId
+      );
+      const connectedProject = {
+        ...(existingProject ?? managedProject),
+        name: selectedProjectRepository.displayName,
+        projectId: localProject.id,
+        owner: createConfig.owner,
+        repo: createConfig.repo,
+        connected: true,
+        branch: createConfig.branch,
+        remoteName: createConfig.remoteName
+      };
+      const nextProjects = existingProject
+        ? currentWorkspace.projects.map((project) =>
+            project.id === existingProject.id ? connectedProject : project
+          )
+        : [...currentWorkspace.projects, connectedProject];
+
+      return {
+        ...currentWorkspace,
+        selectedProjectId: connectedGitProjectId,
+        selectedProjectIdsByTyprProjectId: {
+          ...currentWorkspace.selectedProjectIdsByTyprProjectId,
+          [localProject.id]: connectedGitProjectId
+        },
+        projects: nextProjects
+      };
+    });
     setGitCredentials((currentCredentials) => ({
       ...currentCredentials,
-      [managedProject.id]: token
+      [connectedGitProjectId ?? managedProject.id]: token
     }));
     setGitHubClone((current) => ({
       ...current,
@@ -10138,14 +9322,16 @@ ${nextLine}` : nextLine;
     createGitHubRepoPrivate,
     createManagedProjectForRepository,
     gitHubClone.branch,
+    gitWorkspace.projects,
     gitHubClone.owner,
     gitHubClone.repo,
     gitHubClone.token,
     remoteGitService,
     repoBackend,
     replaceProjectEntries,
-    selectProjectRepository,
-    selectedProjectRepository
+    selectedGitProject,
+    selectedProjectRepository,
+    setProjectRepository
   ]);
 
   const handleCloneGitHubRepository = useCallback(async () => {
@@ -10699,16 +9885,6 @@ ${nextLine}` : nextLine;
     setWorkspaceContextMenu(null);
   }
 
-  const handleRenameDocument = () => {
-    const nextName = window.prompt("File name", activeDocument.name);
-
-    if (nextName === null) {
-      return;
-    }
-
-    setSnapshot((currentSnapshot) => renameActiveDocument(currentSnapshot, nextName));
-  };
-
   const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
@@ -10731,23 +9907,6 @@ ${nextLine}` : nextLine;
         (nextSnapshot, file) => createDocumentFromFile(nextSnapshot, file.name, file.content),
         currentSnapshot
       )
-    );
-  };
-
-  const handleDownloadDocument = () => {
-    if (selectedProjectRepository) {
-      downloadWorkspaceFiles([activeDocument.name], {
-        zipName: `${getWorkspaceBaseName(activeDocument.name).replace(/\.[^.]+$/, "")}-bundle.zip`
-      });
-      return;
-    }
-
-    downloadFile(
-      activeDocument.name,
-      activeDocument.content,
-      typeof activeDocument.content === "string"
-        ? "text/plain"
-        : getWorkspacePreviewMimeType(activeDocument.name) ?? "application/octet-stream"
     );
   };
 
@@ -10807,10 +9966,13 @@ ${nextLine}` : nextLine;
       if (renderedResult.output.kind === "svg") {
         if (isTypstSourceFile(activePreviewCompileSourcePath ?? sourcePath)) {
           try {
-            const pdfBytes = await exportTypstPdf(activePreviewTextContent, [
-              ...diagramShadowAssets,
-              ...graphShadowAssets
-            ]);
+            const pdfBytes = await exportTypstPreviewPdf({
+              activePreviewCompileSourcePath,
+              assets: diagramShadowAssets,
+              project: selectedProjectRepository,
+              source: activePreviewTextContent,
+              sourcePath
+            });
             downloadFile(`${baseName}.pdf`, pdfBytes, "application/pdf");
             setSyncFeedback({ tone: "success", text: `Downloaded ${baseName}.pdf.` });
           } catch (error) {
@@ -10848,21 +10010,13 @@ ${nextLine}` : nextLine;
     activePreviewTextContent,
     diagramShadowAssets,
     downloadWorkspaceFiles,
-    graphShadowAssets,
     normalizedActiveSourcePath,
     previewDownloadMode,
+    selectedProjectRepository,
     visibleWorkspacePreview,
     visibleLastSuccessfulResult,
     visiblePreviewResult
   ]);
-
-  const handleDownloadProject = () => {
-    downloadFile(
-      `${snapshot.project.name}.json`,
-      JSON.stringify(snapshot, null, 2),
-      "application/json"
-    );
-  };
 
   const handleImportProjectFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -10909,70 +10063,6 @@ ${nextLine}` : nextLine;
       });
     }
   };
-
-  const handleAddDiagramStroke = useCallback(
-    (stroke: DiagramStroke) => {
-      setSnapshot((currentSnapshot) =>
-        updateDiagram(currentSnapshot, (diagramAsset) => ({
-          ...diagramAsset,
-          strokes: [...diagramAsset.strokes, stroke]
-        }))
-      );
-    },
-    []
-  );
-
-  const handleAddDiagramShape = useCallback((shape: DiagramShape) => {
-    setSnapshot((currentSnapshot) =>
-      updateDiagram(currentSnapshot, (diagramAsset) => ({
-        ...diagramAsset,
-        shapes: [...diagramAsset.shapes, shape]
-      }))
-    );
-  }, []);
-
-  const handleUndoDiagramStroke = useCallback(() => {
-    setSnapshot((currentSnapshot) => removeLatestDiagramItem(currentSnapshot));
-  }, []);
-
-  const handleRemoveDiagramStroke = useCallback((strokeId: string) => {
-    setSnapshot((currentSnapshot) => removeDiagramStroke(currentSnapshot, strokeId));
-  }, []);
-
-  const handleRemoveDiagramShape = useCallback((shapeId: string) => {
-    setSnapshot((currentSnapshot) => removeDiagramShape(currentSnapshot, shapeId));
-  }, []);
-
-  const handleUpdateDiagramStroke = useCallback((nextStroke: DiagramStroke) => {
-    setSnapshot((currentSnapshot) =>
-      updateDiagram(currentSnapshot, (diagramAsset) => ({
-        ...diagramAsset,
-        strokes: diagramAsset.strokes.map((stroke) =>
-          stroke.id === nextStroke.id ? nextStroke : stroke
-        )
-      }))
-    );
-  }, []);
-
-  const handleUpdateDiagramShape = useCallback((nextShape: DiagramShape) => {
-    setSnapshot((currentSnapshot) =>
-      updateDiagram(currentSnapshot, (diagramAsset) => ({
-        ...diagramAsset,
-        shapes: diagramAsset.shapes.map((shape) =>
-          shape.id === nextShape.id ? nextShape : shape
-        )
-      }))
-    );
-  }, []);
-
-  const handleUpdateDiagramFrame = useCallback((nextFrame: DiagramCanvasFrame | null) => {
-    setSnapshot((currentSnapshot) =>
-      updateDiagram(currentSnapshot, (diagramAsset) => ({
-        ...diagramAsset,
-        frame: nextFrame
-      }))
-    );
-  }, []);
 
   const handleUpdateDiagramSvg = useCallback((svgMarkup: string) => {
     setSnapshot((currentSnapshot) =>
@@ -11112,87 +10202,6 @@ ${nextLine}` : nextLine;
     handleCompileRef.current();
   }, [activeSourceLanguage, diagram.id, diagram.name, setProjectRepository]);
 
-  const handleSaveGraph = useCallback((nextGraph: GraphAsset) => {
-    setSnapshot((currentSnapshot) => saveCurrentGraph(updateGraph(currentSnapshot, () => nextGraph)));
-  }, []);
-
-  const handleNewGraph = useCallback((nextGraph: GraphAsset) => {
-    setSnapshot((currentSnapshot) =>
-      createNextGraphSnapshot(
-        updateGraph(currentSnapshot, () => nextGraph),
-        currentSnapshot.preferences.graphProvider
-      )
-    );
-  }, []);
-
-  const handleRenameGraph = useCallback((nextName: string) => {
-    setSnapshot((currentSnapshot) => {
-      const currentGraph = currentSnapshot.project.graph ?? createDefaultGraph();
-      const normalizedName = normalizeGraphFileNameForContentType(
-        nextName,
-        currentGraph.contentType
-      );
-
-      if (currentGraph.name === normalizedName) {
-        return currentSnapshot;
-      }
-
-      const renamedGraph = {
-        ...currentGraph,
-        name: normalizedName
-      };
-
-      const now = new Date().toISOString();
-      const nextGraphs = (currentSnapshot.project.graphs ?? []).map((graphEntry) =>
-        graphEntry.id === currentGraph.id ? renamedGraph : graphEntry
-      );
-
-      return {
-        ...currentSnapshot,
-        project: {
-          ...currentSnapshot.project,
-          graph: {
-            ...renamedGraph,
-            updatedAt: now
-          },
-          graphs: nextGraphs,
-          updatedAt: now
-        }
-      };
-    });
-  }, []);
-
-  const handleInsertGraphIntoDocument = useCallback((graphAsset: GraphAsset) => {
-    setSnapshot((currentSnapshot) => {
-      return saveCurrentGraph(updateGraph(currentSnapshot, () => graphAsset));
-    });
-    const insertResult = buildGraphInsertResult(graphAsset);
-
-    if (!insertResult.supported) {
-      window.alert("Save the graph before inserting it into the document.");
-      return;
-    }
-
-    editorRef.current?.insertTextAndSelect(`\n${insertResult.text}\n`);
-    window.setTimeout(() => {
-      handleCompileRef.current();
-    }, 0);
-  }, []);
-
-  const handleInsertGraphSourceIntoDocument = useCallback((graphAsset: GraphAsset) => {
-    const insertResult = buildGraphSourceInsertResult(graphAsset);
-
-    if (!insertResult.supported) {
-      window.alert("Add at least one valid function before inserting source.");
-      return;
-    }
-
-    editorRef.current?.insertTextAndSelect(`\n${insertResult.text}\n`);
-    window.setTimeout(() => {
-      handleCompileRef.current();
-    }, 0);
-  }, []);
-
   const handleDownloadDiagramSvg = useCallback(async (svgMarkup: string) => {
     if (activeSourceLanguage === "latex") {
       try {
@@ -11285,7 +10294,7 @@ ${nextLine}` : nextLine;
         return nextPaths;
       });
       const insertedText = `\n${insertion}\n`;
-      const pastedImageBaseName = getPastedImageBaseName(imagePath);
+      const pastedImageBaseName = getWorkspaceBaseName(imagePath);
       const pastedImageNameStem = getPastedImageNameStem(
         pastedImageBaseName,
         preparedImage.extension
@@ -11404,104 +10413,6 @@ ${nextLine}` : nextLine;
     }, 0);
   }, [activeSourceLanguage, diagram.id, diagram.name, setProjectRepository]);
 
-  const handleExportPdf = useCallback(async () => {
-    if (isExportingPdf) {
-      return;
-    }
-
-    setIsExportingPdf(true);
-
-    try {
-      const baseName = activeSourcePath.replace(/\.(typ|typst|tex|ltx|latex)$/i, "");
-      const pdfName = `${baseName || activeDocument.name}.pdf`;
-      let pdfBytes: Uint8Array;
-
-      if (isLatexMainSourceFile(activeSourcePath)) {
-        const exportStartedAtIso = new Date().toISOString();
-        const exportStartedAt = typeof performance === "undefined" ? 0 : performance.now();
-
-        if (!selectedProjectRepository) {
-          throw new Error("Project filesystem is unavailable for LaTeX export.");
-        }
-
-        const result = await compileLatexDocument({
-          mainFilePath: activeSourcePath,
-          source: sourceEditorValue,
-          project: selectedProjectRepository,
-          assets: [...diagramShadowAssets, ...graphShadowAssets],
-          compileMode: "full",
-          onStatusChange: handleCompilerStatusChange
-        });
-        const exportDurationMs = typeof performance === "undefined" ? 0 : performance.now() - exportStartedAt;
-        appendBuildLogEntry({
-          sourcePath: activeSourcePath,
-          language: "latex",
-          engine: result.engine,
-          ok: result.ok,
-          startedAt: exportStartedAtIso,
-          durationMs: exportDurationMs,
-          diagnostics: result.ok ? result.diagnostics : result.errors,
-          metadata: result.metadata,
-          trigger: "export",
-          compileMode: "full",
-          cached: false,
-          outputChanged: true,
-          rawLog: result.output?.content,
-          packageDetails: extractBuildLogPackageDetails(result.output?.content ?? ""),
-          shellEscapeUnavailable: hasShellEscapeConstraint(result.output?.content ?? "")
-        });
-
-        if (!result.ok || result.output.kind !== "pdf" || !result.output.artifactData) {
-          throw new Error(result.ok ? "LaTeX export produced no PDF." : formatSourceError(result));
-        }
-
-        pdfBytes = result.output.artifactData;
-      } else if (isTypstSourceFile(activeSourcePath)) {
-        pdfBytes = await exportTypstPdf(
-          sourceEditorValue,
-          [
-            ...buildTypstProjectShadowFiles(
-              selectedProjectRepository,
-              activeSourcePath,
-              sourceEditorValue
-            ),
-            ...diagramShadowAssets,
-            ...graphShadowAssets
-          ],
-          { mainFilePath: activeSourcePath }
-        );
-      } else {
-        throw new Error("The active file cannot be exported as PDF.");
-      }
-
-      const pdfBuffer = Uint8Array.from(pdfBytes).buffer;
-      downloadBlob(
-        pdfName,
-        new Blob([pdfBuffer], {
-          type: "application/pdf"
-        })
-      );
-    } catch (error) {
-      window.alert(
-        error instanceof Error
-          ? `Unable to export PDF: ${error.message}`
-          : "Unable to export PDF."
-      );
-    } finally {
-      setIsExportingPdf(false);
-    }
-  }, [
-    activeSourcePath,
-    activeDocumentTextContent,
-    appendBuildLogEntry,
-    activeDocument.name,
-    diagramShadowAssets,
-    graphShadowAssets,
-    isExportingPdf,
-    selectedProjectRepository,
-    sourceEditorValue
-  ]);
-
   const compileProjectFile = useCallback(async (
     requestedPath?: string,
     options: { latexMode?: LatexCompileMode } = {}
@@ -11551,10 +10462,14 @@ ${nextLine}` : nextLine;
     const compileAssets = sourceLanguage === "typst"
       ? [
           ...buildTypstProjectShadowFiles(project, sourcePath, typstCompileSource),
-          ...diagramShadowAssets,
-          ...graphShadowAssets
+          ...diagramShadowAssets
         ]
-      : [...diagramShadowAssets, ...graphShadowAssets];
+      : [...diagramShadowAssets];
+
+    if (sourceLanguage === "latex") {
+      await prepareForLatexCompile();
+    }
+
     setIsCompiling(true);
 
     try {
@@ -11587,21 +10502,21 @@ ${nextLine}` : nextLine;
 
       return result;
     } finally {
+      if (sourceLanguage === "latex" && shouldUseLowMemoryCompilerMode()) {
+        releaseLatexCompilerMemory();
+      }
+
       setIsCompiling(false);
     }
   }, [
     compiler,
     diagramShadowAssets,
-    graphShadowAssets,
     isPaperView,
+    prepareForLatexCompile,
     sourceEditorValue,
     theme
   ]);
 
-  const handleUndo = () => editorRef.current?.undo();
-  const handleRedo = () => editorRef.current?.redo();
-  const handleGoToLine = () => editorRef.current?.goToLine();
-  const handleSelectAll = () => editorRef.current?.selectAll();
   const openSearchPane = useCallback(() => {
     const editorSearchQuery = editorRef.current?.getSearchQuery();
     if (editorSearchQuery) {
@@ -11666,34 +10581,6 @@ ${nextLine}` : nextLine;
     });
   }, [activeSidebarTool, isSidebarCollapsed]);
 
-  const togglePreviewPopup = () => {
-    setIsPreviewPopupOpen((current) => !current);
-  };
-
-  const setPreviewZoomStep = (direction: -1 | 1) => {
-    setPreviewZoom((current) => nextZoomStep(current, direction));
-  };
-
-  const handleShowVersion = () => {
-    window.alert(`Typr version ${APP_VERSION}`);
-  };
-
-  const handleShowAbout = () => {
-    window.alert(
-      "Typr is a local-first Typst editor for writing, previewing, and syncing projects."
-    );
-  };
-
-  const handleShowTutorial = () => {
-    window.alert(
-      "Tutorial: open Projects to switch workspaces, use Files for documents, type in Source, use View for layout controls, and use Git settings when you want to connect a remote."
-    );
-  };
-
-  const handleOpenTypstReference = () => {
-    window.open("https://typst.app/docs/", "_blank", "noopener,noreferrer");
-  };
-
   const handleOpenTyprDocs = () => {
     saveCurrentSettingsScrollPosition();
     setIsSettingsOpen(false);
@@ -11731,10 +10618,6 @@ ${nextLine}` : nextLine;
       setActiveSidebarTool("settings");
       setMobileWorkspaceTab("files");
     }
-  };
-
-  const handleOpenGitRemoteHelp = () => {
-    handleOpenSettingsTab("git");
   };
 
   const handleRemoveCustomTheme = (themeId: string) => {
@@ -11786,323 +10669,22 @@ ${nextLine}` : nextLine;
     };
   }, [isOnline, remoteConfig, selectedGitProject, selectedGitToken, selectedProjectRepository]);
 
-  const finishRemoteOperation = useCallback(
-    async (
-      result: Awaited<ReturnType<typeof remoteGitService.push>>,
-      updateProject: "pull" | "push" | "fetch" | "sync"
-    ) => {
-      syncOperationRef.current = false;
-      pendingSyncProgressRef.current = null;
-      if (syncProgressFlushTimerRef.current !== null) {
-        window.clearTimeout(syncProgressFlushTimerRef.current);
-        syncProgressFlushTimerRef.current = null;
-      }
-      setIsSyncing(false);
-      const message = redactGitSecrets(result.message, [selectedGitToken]);
-      setSyncFeedback({ tone: result.ok ? "success" : "error", text: message });
-      if (result.project) {
-        setProjectRepository((project) =>
-          project.id === result.project?.id ? result.project : project
-        );
-      }
-      if (result.status) {
-        setLocalRepoStatus(result.status);
-      }
-      if (result.ok && selectedGitProject) {
-        updateGitManagedProject(selectedGitProject.id, (project) => ({
-          ...project,
-          lastPulledAt: updateProject === "pull" || updateProject === "sync" || updateProject === "fetch"
-            ? new Date().toISOString()
-            : project.lastPulledAt,
-          lastPushedAt: updateProject === "push" || updateProject === "sync"
-            ? new Date().toISOString()
-            : project.lastPushedAt
-        }));
-      }
-      setGitRefreshToken((token) => token + 1);
-      return result.ok
-        ? { ok: true as const, message }
-        : { ok: false as const, message };
-    },
-    [selectedGitProject, selectedGitToken, setProjectRepository, updateGitManagedProject]
-  );
-
-  const applyRemoteGitProgress = useCallback((progress: RemoteGitProgress) => {
-    if (
-      typeof progress.current === "number" &&
-      typeof progress.total === "number" &&
-      progress.total > 0
-    ) {
-      setSyncStatusSnapshot({
-        tone: "neutral",
-        text: progress.message,
-        progress: {
-          current: Math.max(0, Math.min(progress.current, progress.total)),
-          total: progress.total
-        }
-      });
-      return;
-    }
-    setSyncStatusSnapshot({ tone: "neutral", text: progress.message, progress: null });
-  }, []);
-
-  const flushRemoteGitProgress = useCallback(() => {
-    const progress = pendingSyncProgressRef.current;
-    if (!progress) {
-      return;
-    }
-    pendingSyncProgressRef.current = null;
-    if (syncProgressFlushTimerRef.current !== null) {
-      window.clearTimeout(syncProgressFlushTimerRef.current);
-      syncProgressFlushTimerRef.current = null;
-    }
-    lastSyncProgressFlushAtRef.current = Date.now();
-    applyRemoteGitProgress(progress);
-  }, [applyRemoteGitProgress]);
-
-  const handleRemoteGitProgress = useCallback((progress: RemoteGitProgress) => {
-    if (
-      typeof progress.current === "number" &&
-      typeof progress.total === "number" &&
-      progress.total > 0
-    ) {
-      pendingSyncProgressRef.current = progress;
-      const now = Date.now();
-      const elapsed = now - lastSyncProgressFlushAtRef.current;
-      const complete = progress.current >= progress.total;
-      if (complete || elapsed >= SYNC_PROGRESS_UPDATE_INTERVAL_MS) {
-        flushRemoteGitProgress();
-        return;
-      }
-      if (syncProgressFlushTimerRef.current === null) {
-        syncProgressFlushTimerRef.current = window.setTimeout(
-          flushRemoteGitProgress,
-          SYNC_PROGRESS_UPDATE_INTERVAL_MS - elapsed
-        );
-      }
-      return;
-    }
-    pendingSyncProgressRef.current = progress;
-    flushRemoteGitProgress();
-  }, [flushRemoteGitProgress]);
-
-  const beginRemoteOperation = useCallback((message: string) => {
-    if (syncOperationRef.current) {
-      const busyMessage = "A Git remote operation is already running.";
-      setSyncFeedback({ tone: "neutral", text: busyMessage });
-      return false;
-    }
-    syncOperationRef.current = true;
-    pendingSyncProgressRef.current = null;
-    if (syncProgressFlushTimerRef.current !== null) {
-      window.clearTimeout(syncProgressFlushTimerRef.current);
-      syncProgressFlushTimerRef.current = null;
-    }
-    lastSyncProgressFlushAtRef.current = 0;
-    setIsSyncing(true);
-    setSyncFeedback({ tone: "neutral", text: message });
-    return true;
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (syncProgressFlushTimerRef.current !== null) {
-        window.clearTimeout(syncProgressFlushTimerRef.current);
-      }
-    };
-  }, []);
-
   const handleFetchRemote = useCallback(async () => {
     const ready = validateRemoteAction();
-    if (!ready.ok) return ready;
-    if (!beginRemoteOperation(`Fetching ${remoteConfig.remoteName}/${remoteConfig.branch}...`)) {
-      return { ok: false as const, message: "A Git remote operation is already running." };
-    }
-    const result = await remoteGitService.fetch(
-      ready.repository,
-      remoteConfig,
-      () => selectedGitToken,
-      { onProgress: handleRemoteGitProgress }
-    );
-    return finishRemoteOperation(result, "fetch");
-  }, [
-    beginRemoteOperation,
-    finishRemoteOperation,
-    handleRemoteGitProgress,
-    remoteConfig,
-    remoteGitService,
-    selectedGitToken,
-    validateRemoteAction
-  ]);
-
+    return ready.ok ? runFetchRemote(ready.repository) : ready;
+  }, [runFetchRemote, validateRemoteAction]);
   const handlePushRemote = useCallback(async () => {
     const ready = validateRemoteAction();
-    if (!ready.ok) return ready;
-    if (!beginRemoteOperation(`Pushing ${remoteConfig.branch} to ${remoteConfig.remoteName}...`)) {
-      return { ok: false as const, message: "A Git remote operation is already running." };
-    }
-    const result = await remoteGitService.push(
-      ready.repository,
-      remoteConfig,
-      () => selectedGitToken,
-      { onProgress: handleRemoteGitProgress }
-    );
-    return finishRemoteOperation(result, "push");
-  }, [
-    beginRemoteOperation,
-    finishRemoteOperation,
-    handleRemoteGitProgress,
-    remoteConfig,
-    remoteGitService,
-    selectedGitToken,
-    validateRemoteAction
-  ]);
-
+    return ready.ok ? runPushRemote(ready.repository) : ready;
+  }, [runPushRemote, validateRemoteAction]);
   const handlePullRemote = useCallback(async () => {
     const ready = validateRemoteAction();
-    if (!ready.ok) return ready;
-    if (hasActiveMergeStop(localRepoStatus)) {
-      const message = "A browser merge stop is active. Resolve it with Continue merge, or use git merge --abort before pulling again.";
-      setSyncFeedback({ tone: "error", text: message });
-      return { ok: false as const, message };
-    }
-    if (hasRepoChanges(localRepoStatus)) {
-      const message = "Commit or reset local changes before pulling.";
-      setSyncFeedback({ tone: "error", text: message });
-      return { ok: false as const, message };
-    }
-    if (!beginRemoteOperation(`Pulling ${remoteConfig.remoteName}/${remoteConfig.branch}...`)) {
-      return { ok: false as const, message: "A Git remote operation is already running." };
-    }
-    const result = await remoteGitService.pull(
-      ready.repository,
-      remoteConfig,
-      () => selectedGitToken,
-      { onProgress: handleRemoteGitProgress }
-    );
-    return finishRemoteOperation(result, "pull");
-  }, [
-    beginRemoteOperation,
-    finishRemoteOperation,
-    handleRemoteGitProgress,
-    localRepoStatus,
-    remoteConfig,
-    remoteGitService,
-    selectedGitToken,
-    validateRemoteAction
-  ]);
-
-  const handleQuickSaveToGit = useCallback(async () => {
-    setFilesGitConflictNotice(null);
-    const ready = validateRemoteAction();
-    if (!ready.ok) return ready;
-
-    const conflictMessage = "Git conflicts need to be resolved before saving to Git.";
-    if (hasActiveMergeStop(localRepoStatus)) {
-      setFilesGitConflictNotice(conflictMessage);
-      setSyncFeedback({ tone: "error", text: conflictMessage });
-      return { ok: false as const, message: conflictMessage };
-    }
-
-    if (!beginRemoteOperation(`Saving ${ready.repository.displayName} to Git...`)) {
-      return { ok: false as const, message: "A Git remote operation is already running." };
-    }
-
-    try {
-      setSyncFeedback({ tone: "neutral", text: "Staging all local changes..." });
-      const stageResult = await repoBackend.stagePaths(ready.repository, ["."]);
-      if (!stageResult.ok) {
-        return finishRemoteOperation(
-          { ok: false, message: formatRepoError(stageResult.error) },
-          "push"
-        );
-      }
-      setLocalRepoStatus(stageResult.value);
-
-      const hasStagedChanges = stageResult.value.entries.some((entry) => entry.staged !== null);
-      if (hasStagedChanges) {
-        const message =
-          ready.project.commitMessageTemplate.trim() ||
-          `Sync ${ready.repository.displayName} from Typr`;
-        setSyncFeedback({ tone: "neutral", text: "Committing local changes..." });
-        const commitResult = await repoBackend.commit(ready.repository, { message });
-        if (!commitResult.ok) {
-          return finishRemoteOperation(
-            { ok: false, message: formatRepoError(commitResult.error) },
-            "push"
-          );
-        }
-        const statusResult = await repoBackend.status(ready.repository);
-        if (statusResult.ok) {
-          setLocalRepoStatus(statusResult.value);
-        }
-        setGitRefreshToken((token) => token + 1);
-      } else {
-        setSyncFeedback({ tone: "neutral", text: "No local changes to commit. Checking remote..." });
-      }
-
-      setSyncFeedback({
-        tone: "neutral",
-        text: `Pushing ${remoteConfig.branch} to ${remoteConfig.remoteName}...`
-      });
-      const pushResult = await remoteGitService.push(
-        ready.repository,
-        remoteConfig,
-        () => selectedGitToken,
-        { onProgress: handleRemoteGitProgress }
-      );
-
-      if (!pushResult.ok && isRemoteDivergenceMessage(pushResult.message)) {
-        setSyncFeedback({ tone: "neutral", text: "Remote changes found. Checking conflicts..." });
-        const pullResult = await remoteGitService.pull(
-          ready.repository,
-          remoteConfig,
-          () => selectedGitToken,
-          { onProgress: handleRemoteGitProgress }
-        );
-        if (!pullResult.status) {
-          const statusResult = await repoBackend.status(ready.repository);
-          if (statusResult.ok) {
-            setLocalRepoStatus(statusResult.value);
-          }
-        }
-        if (!pullResult.ok && isRemoteDivergenceMessage(pullResult.message)) {
-          await finishRemoteOperation(pullResult, "pull");
-          setFilesGitConflictNotice(conflictMessage);
-          setSyncFeedback({ tone: "error", text: conflictMessage });
-          return { ok: false as const, message: conflictMessage };
-        }
-        return finishRemoteOperation(pullResult, "pull");
-      }
-
-      return finishRemoteOperation(pushResult, "push");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Quick Git sync failed.";
-      return finishRemoteOperation({ ok: false, message }, "push");
-    }
-  }, [
-    beginRemoteOperation,
-    finishRemoteOperation,
-    handleRemoteGitProgress,
-    localRepoStatus,
-    remoteConfig,
-    remoteGitService,
-    repoBackend,
-    selectedGitToken,
-    setSyncFeedback,
-    validateRemoteAction
-  ]);
-
+    return ready.ok ? runPullRemote(ready.repository) : ready;
+  }, [runPullRemote, validateRemoteAction]);
   const handleSyncRemote = useCallback(async () => {
-    const pullResult = await handlePullRemote();
-    if (!pullResult.ok && !/Already up to date/i.test(pullResult.message)) {
-      return pullResult;
-    }
-    const pushResult = await handlePushRemote();
-    return pushResult.ok
-      ? { ok: true as const, message: "Sync complete." }
-      : pushResult;
-  }, [handlePullRemote, handlePushRemote]);
+    const ready = validateRemoteAction();
+    return ready.ok ? runSyncRemote(ready.repository) : ready;
+  }, [runSyncRemote, validateRemoteAction]);
 
   const terminalRuntime = useMemo(
     () => ({
@@ -12153,8 +10735,7 @@ ${nextLine}` : nextLine;
             pdfBytes = result.output.artifactData;
           } else if (isTypstSourceFile(sourcePath)) {
             pdfBytes = await exportTypstPdf(sourceEditorValue, [
-              ...diagramShadowAssets,
-              ...graphShadowAssets
+              ...diagramShadowAssets
             ]);
           } else {
             return {
@@ -12547,8 +11128,7 @@ ${nextLine}` : nextLine;
       compileProjectFile,
       compilerStatus,
       diagramShadowAssets,
-      graphShadowAssets,
-      handleFetchRemote,
+        handleFetchRemote,
       handleSyncRemote,
       handlePullRemote,
       handlePushRemote,
@@ -12570,58 +11150,6 @@ ${nextLine}` : nextLine;
       updateGitManagedProject,
       updateSelectedGitProject
     ]
-  );
-
-  const closeMenusWithDelay = useCallback(() => {
-    cancelPendingMenuOpen();
-    cancelPendingMenuClose();
-
-    closeMenuTimerRef.current = window.setTimeout(() => {
-      setActiveMenu(null);
-      closeMenuTimerRef.current = null;
-    }, MENU_CLOSE_DELAY_MS);
-  }, [cancelPendingMenuClose, cancelPendingMenuOpen]);
-
-  const openMenuWithDelay = useCallback(
-    (menuLabel: MenuLabel) => {
-      cancelPendingMenuClose();
-      cancelPendingMenuOpen();
-
-      if (activeMenu === null || activeMenu === menuLabel) {
-        return;
-      }
-
-      openMenuTimerRef.current = window.setTimeout(() => {
-        setActiveMenu(menuLabel);
-        openMenuTimerRef.current = null;
-      }, 1);
-    },
-    [activeMenu, cancelPendingMenuClose, cancelPendingMenuOpen]
-  );
-
-  const openMenuImmediately = useCallback(
-    (menuLabel: MenuLabel) => {
-      cancelPendingMenuClose();
-      cancelPendingMenuOpen();
-      setActiveMenu(menuLabel);
-    },
-    [cancelPendingMenuClose, cancelPendingMenuOpen]
-  );
-
-  const closeMenusImmediately = useCallback(() => {
-    cancelPendingMenuClose();
-    cancelPendingMenuOpen();
-    setActiveMenu(null);
-  }, [cancelPendingMenuClose, cancelPendingMenuOpen]);
-
-  const handleMenuNavigate = useCallback(
-    (currentLabel: MenuLabel, direction: -1 | 1) => {
-      const currentIndex = MENU_ITEMS.indexOf(currentLabel);
-      const nextIndex =
-        (currentIndex + direction + MENU_ITEMS.length) % MENU_ITEMS.length;
-      openMenuImmediately(MENU_ITEMS[nextIndex]);
-    },
-    [openMenuImmediately]
   );
 
   function getVisibleDesktopPaneCount() {
@@ -12806,26 +11334,6 @@ ${nextLine}` : nextLine;
         });
       });
     }
-  }
-
-  function describeWorkspaceMode(mode: WorkspaceMode) {
-    if (mode === "split") {
-      return "Split";
-    }
-
-    if (mode === "sidebar") {
-      return "Sidebar only";
-    }
-
-    if (mode === "editor") {
-      return "Editor only";
-    }
-
-    if (mode === "zen") {
-      return "Zen";
-    }
-
-    return "Preview only";
   }
 
   function createThemedPreviewSource(
@@ -13116,14 +11624,6 @@ ${nextLine}` : nextLine;
     Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
     !hasActiveMergeStop(localRepoStatus) &&
     !isSyncing;
-  const canQuickSaveToGit =
-    isOnline &&
-    Boolean(selectedProjectRepository) &&
-    Boolean(selectedGitProject) &&
-    selectedGitProject?.backendId === "browser" &&
-    selectedGitProjectIsGitHubConnected &&
-    Boolean(remoteConfig.owner.trim() && remoteConfig.repo.trim() && remoteConfig.branch.trim() && selectedGitToken.trim()) &&
-    !isSyncing;
   const canCreateGitHubRepository =
     isOnline &&
     gitHubClone.status === "connected" &&
@@ -13163,62 +11663,6 @@ ${nextLine}` : nextLine;
     gitHubClone.progress && gitHubClone.progress.total > 0
       ? Math.max(0, Math.min(100, (gitHubClone.progress.current / gitHubClone.progress.total) * 100))
       : null;
-  const handleMergeVersionBodyScroll = useCallback((role: MergeVersionRole) => {
-    const sourceBody = mergeVersionBodyRefs.current[role];
-    if (!sourceBody || isSyncingMergeScrollRef.current) {
-      return;
-    }
-
-    const lines = Array.from(
-      sourceBody.querySelectorAll<HTMLElement>("[data-merge-line]")
-    );
-    const scrollTop = sourceBody.scrollTop;
-    const currentLine =
-      lines.find((line) => line.offsetTop - sourceBody.offsetTop >= scrollTop) ??
-      lines[lines.length - 1];
-    const lineNumber = Number(currentLine?.dataset.mergeLine ?? 1);
-
-    isSyncingMergeScrollRef.current = true;
-    (Object.keys(mergeVersionBodyRefs.current) as MergeVersionRole[]).forEach((targetRole) => {
-      if (targetRole === role) {
-        return;
-      }
-
-      const targetBody = mergeVersionBodyRefs.current[targetRole];
-      if (targetBody) {
-        scrollMergeBodyToLine(targetBody, lineNumber);
-      }
-    });
-    window.requestAnimationFrame(() => {
-      isSyncingMergeScrollRef.current = false;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!mergeFilePreview) {
-      return;
-    }
-
-    const firstChangedLine = getFirstChangedMergeLineNumber(
-      mergeFilePreview.base.text,
-      mergeFilePreview.local.text,
-      mergeFilePreview.remote.text
-    );
-
-    window.requestAnimationFrame(() => {
-      isSyncingMergeScrollRef.current = true;
-      (Object.keys(mergeVersionBodyRefs.current) as MergeVersionRole[]).forEach((role) => {
-        const body = mergeVersionBodyRefs.current[role];
-        if (body) {
-          scrollMergeBodyToLine(body, firstChangedLine);
-        }
-      });
-      window.requestAnimationFrame(() => {
-        isSyncingMergeScrollRef.current = false;
-      });
-    });
-  }, [gitMergePaneMode, mergeFilePreview, selectedMergePath]);
-
   const renderMergeVersionPanel = (
     version: MergeVersionPreview,
     options: {
@@ -13384,7 +11828,8 @@ ${nextLine}` : nextLine;
     ]
   );
   const debugOutputResult = compileResult?.ok ? compileResult : lastSuccessfulResult;
-  const debugOutputContent = isCompiling && liveBuildOutput
+  const hasLiveCompileOutput = Boolean(isCompiling && hasActiveCompileWork && liveBuildOutput);
+  const debugOutputContent = hasLiveCompileOutput
     ? liveBuildOutput
     : activeSourceLanguage === "markdown"
       ? sourceEditorValue
@@ -13392,62 +11837,12 @@ ${nextLine}` : nextLine;
   const debugOutputExcerpt = formatDebugOutputExcerpt(debugOutputContent);
   const debugOutputKind = activeSourceLanguage === "markdown"
     ? "source"
-    : isCompiling && liveBuildOutput
+    : hasLiveCompileOutput
       ? "live log"
       : debugOutputResult?.output.kind ?? "none";
   const debugSourceLanguageLabel = formatSourceLanguageLabel(activeSourceLanguage);
   const shouldShowPreviewInternals = activeSourceLanguage === "typst" && debugOutputContent.length > 0;
-  const filteredBuildLogEntries = useMemo(
-    () => filterBuildLogEntries(buildLogEntries, buildLogFilter, activeSourcePath, buildLogSearchQuery),
-    [activeSourcePath, buildLogEntries, buildLogFilter, buildLogSearchQuery]
-  );
   const lastBuildFailed = buildLogEntries[0]?.ok === false;
-  const buildLogTimelineMaxMs = Math.max(...filteredBuildLogEntries.map((entry) => entry.durationMs), 1);
-
-  const handleCopyText = useCallback(async (text: string, feedback: string) => {
-    if (!text.trim()) {
-      setBuildLogFeedback("Nothing to copy.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(text);
-      setBuildLogFeedback(feedback);
-    } catch {
-      setBuildLogFeedback("Clipboard access is unavailable.");
-    }
-  }, []);
-
-  const handleCopyBuildLog = useCallback(() => {
-    void handleCopyText(formatBuildLogEntriesText(filteredBuildLogEntries), "Build log copied.");
-  }, [filteredBuildLogEntries, handleCopyText]);
-
-  const handleCopyDiagnostics = useCallback(() => {
-    void handleCopyText(
-      filteredBuildLogEntries
-        .flatMap((entry) => entry.diagnostics.map((diagnostic) => `${entry.sourcePath}: ${diagnostic.severity}: ${diagnostic.message}`))
-        .join("\n"),
-      "Diagnostics copied."
-    );
-  }, [filteredBuildLogEntries, handleCopyText]);
-
-  const handleExportBuildLogJson = useCallback(() => {
-    downloadFile(
-      `typr-build-log-${activeProjectTabKey}.json`,
-      JSON.stringify(filteredBuildLogEntries, null, 2),
-      "application/json"
-    );
-    setBuildLogFeedback("Build log exported.");
-  }, [activeProjectTabKey, downloadFile, filteredBuildLogEntries]);
-
-  const handleExportBuildLogText = useCallback(() => {
-    downloadFile(
-      `typr-build-log-${activeProjectTabKey}.txt`,
-      formatBuildLogEntriesText(filteredBuildLogEntries),
-      "text/plain"
-    );
-    setBuildLogFeedback("Build log text exported.");
-  }, [activeProjectTabKey, downloadFile, filteredBuildLogEntries]);
 
   const storageLabel =
     storageStatus === "saved"
@@ -13465,7 +11860,6 @@ ${nextLine}` : nextLine;
     (selectedGitProject?.lastPushedAt
       ? ` · last push ${new Date(selectedGitProject.lastPushedAt).toLocaleString()}`
       : "");
-  const workspaceModeLabel = describeWorkspaceMode(workspaceMode);
   const allSnippetsByLanguage = useMemo<SnippetCollections>(
     () => ({
       typst: mergeSnippets([...DEFAULT_SNIPPETS_BY_LANGUAGE.typst, ...customSnippets.typst]),
@@ -13602,7 +11996,6 @@ ${nextLine}` : nextLine;
     : 0;
   const showDesktopSidebar = !isMobileWorkspace && !isZenMode && !isSidebarCollapsed;
   const isDiagramInlineExpanded = false;
-  const isGraphInlineExpanded = false;
   const isGitMergeInlineExpanded =
     showDesktopSidebar &&
     workspaceMode === "split" &&
@@ -13872,7 +12265,6 @@ ${nextLine}` : nextLine;
       }
 
       setWorkspaceContextMenu(null);
-      setInspectedWorkspacePath(null);
       const sourceDocument = snapshot.project.documents.find(
         (document) => typeof document.content === "string" && document.content.includes(node.path)
       );
@@ -13927,88 +12319,6 @@ ${nextLine}` : nextLine;
     [isMobileWorkspace, snapshot.project.documents]
   );
 
-  const handleOpenWorkspaceGraph = useCallback(
-    (node: WorkspaceTreeNode) => {
-      if (node.source.kind !== "graph") {
-        return;
-      }
-
-      setWorkspaceContextMenu(null);
-      setInspectedWorkspacePath(null);
-      const sourceDocument = snapshot.project.documents.find(
-        (document) => typeof document.content === "string" && document.content.includes(node.path)
-      );
-
-      setSnapshot((currentSnapshot) => {
-        const savedSnapshot = saveCurrentGraph(currentSnapshot);
-        const targetGraph = savedSnapshot.project.graphs.find((graphEntry) => graphEntry.id === node.source.id);
-
-        if (!targetGraph) {
-          return savedSnapshot;
-        }
-
-        const withActiveDocument = sourceDocument
-          ? setActiveDocument(savedSnapshot, sourceDocument.id)
-          : savedSnapshot;
-
-        return {
-          ...withActiveDocument,
-          project: {
-            ...withActiveDocument.project,
-            graph: targetGraph,
-            updatedAt: new Date().toISOString()
-          }
-        };
-      });
-
-      if (sourceDocument) {
-        const selectedPath = normalizeWorkspacePath(sourceDocument.name);
-        setSelectedWorkspacePath(selectedPath);
-        setSelectedWorkspacePaths([selectedPath]);
-        setWorkspaceSelectionAnchorPath(selectedPath);
-      } else {
-        setSelectedWorkspacePath(node.path);
-        setSelectedWorkspacePaths([node.path]);
-        setWorkspaceSelectionAnchorPath(node.path);
-      }
-
-      if (sourceDocument) {
-        setWorkspaceMode("split");
-        if (isMobileWorkspace) {
-          setMobileWorkspaceTab("editor");
-        }
-      }
-
-      setActiveSidebarTool("graph");
-      setIsSidebarCollapsed(false);
-      setWorkspaceMode("split");
-      if (isMobileWorkspace) {
-        setMobileWorkspaceTab("files");
-      }
-    },
-    [isMobileWorkspace, snapshot.project.documents]
-  );
-
-  const handleInspectWorkspaceGraph = useCallback(
-    (node: WorkspaceTreeNode) => {
-      if (node.source.kind !== "graph") {
-        return;
-      }
-
-      setWorkspaceContextMenu(null);
-      setSelectedWorkspacePath(node.path);
-      setSelectedWorkspacePaths([node.path]);
-      setWorkspaceSelectionAnchorPath(node.path);
-      setInspectedWorkspacePath(normalizeWorkspacePath(node.path));
-      setWorkspaceMode("split");
-      setIsPreviewCollapsed(false);
-      if (isMobileWorkspace) {
-        setMobileWorkspaceTab("editor");
-      }
-    },
-    [isMobileWorkspace]
-  );
-
   const handleOpenWorkspaceFile = useCallback(
     (path: string, options: { pinSourceTab?: boolean } = {}) => {
       const normalizedPath = normalizeWorkspacePath(path);
@@ -14019,7 +12329,6 @@ ${nextLine}` : nextLine;
       }
 
       if (isWorkspacePreviewFile(normalizedPath)) {
-        setInspectedWorkspacePath(null);
         openPreviewTab(normalizedPath);
         setWorkspaceMode("split");
         setIsPreviewCollapsed(false);
@@ -14040,7 +12349,6 @@ ${nextLine}` : nextLine;
       );
 
       if (matchingDocument) {
-        setInspectedWorkspacePath(null);
         handleSelectDocument(matchingDocument.id, {
           sourceTabMode: options.pinSourceTab ? "pin" : "preview"
         });
@@ -14068,12 +12376,6 @@ ${nextLine}` : nextLine;
           return;
         }
 
-        if (matchingNode.source.kind === "graph") {
-          handleOpenWorkspaceGraph(matchingNode);
-          return;
-        }
-
-        setInspectedWorkspacePath(null);
         if (getWorkspacePreviewMimeType(normalizedPath)) {
           openPreviewTab(normalizedPath);
         }
@@ -14083,7 +12385,6 @@ ${nextLine}` : nextLine;
     },
     [
       handleOpenWorkspaceDiagram,
-      handleOpenWorkspaceGraph,
       handleSelectDocument,
       getExistingLatexPdfPreviewPath,
       isMobileWorkspace,
@@ -14525,14 +12826,6 @@ ${nextLine}` : nextLine;
     ]
   );
 
-  const handleToggleTrashView = useCallback(() => {
-    setIsTrashViewOpen((current) => !current);
-    setWorkspaceContextMenu(null);
-    setRenamingWorkspacePath(null);
-    setWorkspaceRenameDraft("");
-    setDraggedWorkspacePath(null);
-    setWorkspaceDropTargetPath(null);
-  }, []);
   const focusDocumentLocation = useCallback(
     (
       documentId: string,
@@ -14874,112 +13167,67 @@ ${nextLine}` : nextLine;
       </div>
     );
   };
+  const activeMatrixSize = matrixSizePreview ?? matrixSettings;
+  const activeTableSize = tableSizePreview ?? tableSettings;
+  const visibleTablePickerSize = {
+    rows: Math.min(TABLE_MAX_ROWS, activeTableSize.rows + 1),
+    columns: Math.min(TABLE_MAX_COLUMNS, activeTableSize.columns + 1)
+  };
+  const handleTableSizePickerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const firstCell = event.currentTarget.querySelector<HTMLElement>(".matrix-size-picker__cell");
+    const firstRow = event.currentTarget.querySelector<HTMLElement>(".matrix-size-picker__row");
+
+    if (!firstCell || !firstRow) {
+      return;
+    }
+
+    const cellRect = firstCell.getBoundingClientRect();
+    const rowStyle = window.getComputedStyle(firstRow);
+    const columnGap = Number.parseFloat(rowStyle.columnGap || rowStyle.gap) || 0;
+    const rowGap = Number.parseFloat(rowStyle.rowGap || rowStyle.gap) || columnGap;
+    const columnStep = Math.max(1, cellRect.width + columnGap);
+    const rowStep = Math.max(1, cellRect.height + rowGap);
+    const columns = Math.min(
+      visibleTablePickerSize.columns,
+      Math.max(1, Math.floor((event.clientX - cellRect.left + columnGap / 2) / columnStep) + 1)
+    );
+    const rows = Math.min(
+      visibleTablePickerSize.rows,
+      Math.max(1, Math.floor((event.clientY - cellRect.top + rowGap / 2) / rowStep) + 1)
+    );
+
+    handleTableSizePreview(rows, columns);
+  };
+  const matrixColumnTemplate = useMemo(
+    () => buildTableauColumnTemplate(matrixSettings.cells, matrixSettings.columns),
+    [matrixSettings.cells, matrixSettings.columns]
+  );
+  const tableColumnTemplate = useMemo(
+    () => buildTableauColumnTemplate(tableSettings.cells, tableSettings.columns),
+    [tableSettings.cells, tableSettings.columns]
+  );
+  const activeTableFormat = getTableScopeFormat(tableSettings, "cell", tableSelection);
+  const tableStrokeStyleOptions = TABLE_STROKE_STYLE_OPTIONS.filter((option) =>
+    getSupportedTableStrokeStyles(activeSourceLanguage).includes(option.id)
+  );
+  const showTableMergeControls = supportsTableMerges(activeSourceLanguage);
+  const showTableVerticalControls = supportsTableVerticalAlignment(activeSourceLanguage);
+  const showTablePaddingControls = supportsTablePaddingControl(activeSourceLanguage, "cell");
+  const showTableStrokeControls = supportsTableStrokeControl(activeSourceLanguage, "cell");
+  const showTableBorderControls = supportsTableBorderControl(activeSourceLanguage);
+  const showTableBackgroundControls = supportsTableBackgroundControl(activeSourceLanguage);
+  const showTableMarginControls = supportsTableMarginControl(activeSourceLanguage);
+  const activeTableBorderStyle = tableStrokeStyleOptions.some((option) => option.id === tableBorderStyle)
+    ? tableBorderStyle
+    : tableStrokeStyleOptions.find((option) => option.id === "solid")?.id ?? tableStrokeStyleOptions[0]?.id ?? "solid";
+  const showTableBorderWeightControl = showTableBorderControls && activeTableBorderStyle !== "none";
+  const tableSelectionLabel = getTableSelectionLabel(tableSelection);
+  const canMergeTableSelection = showTableMergeControls && isTableSelectionMergedRange(tableSelection);
+  const canUnmergeTableSelection = showTableMergeControls && tableSettings.merges.some((merge) =>
+    tableMergeIntersectsRange(merge, normalizeTableSelection(tableSelection))
+  );
   const sourceToolsPanel = isSourceFileEditable ? (
     <div className="source-tools-panel">
-      <div className="source-tools-panel__section">
-        <div className="pane__toolbar-group source-tools-panel__grid">
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleBold}
-            type="button"
-            aria-label="Bold"
-            title="Bold"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--bold" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleItalic}
-            type="button"
-            aria-label="Italic"
-            title="Italic"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--italic" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleUnderline}
-            type="button"
-            aria-label="Underline"
-            title="Underline"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--underline" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleBulletList}
-            type="button"
-            aria-label="Bulleted list"
-            title="Bulleted list"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--bullet-list" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleNumberedList}
-            type="button"
-            aria-label="Numbered list"
-            title="Numbered list"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--numbered-list" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleMathMode}
-            type="button"
-            aria-label="Math mode"
-            title="Math mode"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--math" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleCycleHeading}
-            type="button"
-            aria-label="Cycle heading level"
-            title="Cycle heading level"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--heading" />
-          </button>
-          <button
-            aria-label="Format document"
-            className="pane__button pane__button--compact pane__icon-button"
-            disabled={!isActiveSourceFormatterEnabled}
-            onClick={handleFormatDocument}
-            title={`Format document (${formatDocumentShortcutLabel})`}
-            type="button"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--format" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={() => {
-              setSettingsTab("snippets");
-              setIsSettingsOpen(true);
-            }}
-            type="button"
-            aria-label="Snippets"
-            title="Snippets"
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--snippets" />
-          </button>
-          <button
-            className="pane__button pane__button--compact pane__icon-button"
-            onClick={handleVimToggle}
-            type="button"
-            aria-label={snapshot.preferences.vimMode ? "Disable Vim mode" : "Enable Vim mode"}
-            aria-pressed={snapshot.preferences.vimMode}
-            title={
-              snapshot.preferences.vimMode
-                ? `Vim mode on (${vimToggleShortcutLabel})`
-                : `Vim mode off (${vimToggleShortcutLabel})`
-            }
-          >
-            <span aria-hidden="true" className="toolbar-icon toolbar-icon--vim" />
-          </button>
-        </div>
-      </div>
-
       <div className="source-tools-panel__section">
         <div className={`matrix-menu ${openToolbarMenu === "matrix" ? "matrix-menu--open" : ""}`}>
           <button
@@ -14993,43 +13241,49 @@ ${nextLine}` : nextLine;
             <span>Matrix</span>
           </button>
           {openToolbarMenu === "matrix" ? (
-            <div className="matrix-menu__panel" role="menu" aria-label="Matrix options">
-              <label className="matrix-menu__field">
-                <span>Rows</span>
-                <select
-                  onChange={(event) =>
-                    setMatrixSettings((current) => ({
-                      ...current,
-                      rows: Number(event.target.value)
-                    }))
-                  }
-                  value={matrixSettings.rows}
-                >
-                  {MATRIX_ROW_OPTIONS.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="matrix-menu__field">
-                <span>Columns</span>
-                <select
-                  onChange={(event) =>
-                    setMatrixSettings((current) => ({
-                      ...current,
-                      columns: Number(event.target.value)
-                    }))
-                  }
-                  value={matrixSettings.columns}
-                >
-                  {MATRIX_COLUMN_OPTIONS.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <div className="matrix-menu__panel" aria-label="Matrix options">
+              <div className="matrix-menu__size-header">
+                <span>Size</span>
+                <strong>{activeMatrixSize.rows} x {activeMatrixSize.columns}</strong>
+              </div>
+              <div
+                aria-label="Matrix size"
+                className="matrix-size-picker"
+                onPointerLeave={() => setMatrixSizePreview(null)}
+                style={
+                  {
+                    "--matrix-picker-columns": matrixPickerSize.columns
+                  } as CSSProperties
+                }
+              >
+                {Array.from({ length: matrixPickerSize.rows }, (_unusedRow, rowIndex) => (
+                  <div className="matrix-size-picker__row" key={`matrix-size-row-${rowIndex}`}>
+                    {Array.from({ length: matrixPickerSize.columns }, (_unusedColumn, columnIndex) => {
+                      const rows = rowIndex + 1;
+                      const columns = columnIndex + 1;
+                      const isActive = rows <= activeMatrixSize.rows && columns <= activeMatrixSize.columns;
+                      const isSelected = rows === matrixSettings.rows && columns === matrixSettings.columns;
+
+                      return (
+                        <button
+                          aria-label={`${rows} by ${columns} matrix`}
+                          aria-pressed={isSelected}
+                          className={`matrix-size-picker__cell ${
+                            isActive ? "matrix-size-picker__cell--active" : ""
+                          } ${isSelected ? "matrix-size-picker__cell--selected" : ""}`}
+                          key={`matrix-size-${rows}-${columns}`}
+                          onClick={() => handleMatrixSizeSelect(rows, columns)}
+                          onFocus={() => handleMatrixSizePreview(rows, columns)}
+                          onPointerEnter={() => handleMatrixSizePreview(rows, columns)}
+                          title={`${rows} x ${columns}`}
+                          type="button"
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+              <div className="matrix-menu__label">Brackets</div>
               <div className="matrix-menu__delimiters" role="group" aria-label="Brackets">
                 {MATRIX_DELIMITER_OPTIONS.map((option) => (
                   <button
@@ -15050,6 +13304,37 @@ ${nextLine}` : nextLine;
                     {option.label}
                   </button>
                 ))}
+              </div>
+              <div className="matrix-menu__label">Values</div>
+              <div className="matrix-tableau-wrap">
+                <div
+                  aria-label="Matrix values"
+                  className="matrix-tableau"
+                  role="grid"
+                  style={{ gridTemplateColumns: matrixColumnTemplate }}
+                >
+                  {Array.from({ length: matrixSettings.rows }, (_unusedRow, rowIndex) =>
+                    Array.from({ length: matrixSettings.columns }, (_unusedColumn, columnIndex) => (
+                      <input
+                        aria-label={`Row ${rowIndex + 1}, column ${columnIndex + 1}`}
+                        className="matrix-tableau__cell"
+                        key={`matrix-cell-${rowIndex}-${columnIndex}`}
+                        onChange={(event) =>
+                          handleMatrixCellChange(rowIndex, columnIndex, event.target.value)
+                        }
+                        onKeyDown={(event) => handleMatrixCellKeyDown(event, rowIndex, columnIndex)}
+                        placeholder="*"
+                        ref={(element) => {
+                          matrixCellRefs.current[rowIndex] ??= [];
+                          matrixCellRefs.current[rowIndex][columnIndex] = element;
+                        }}
+                        role="gridcell"
+                        type="text"
+                        value={matrixSettings.cells[rowIndex]?.[columnIndex] ?? ""}
+                      />
+                    ))
+                  )}
+                </div>
               </div>
               <button
                 className="pane__button matrix-menu__insert"
@@ -15077,206 +13362,506 @@ ${nextLine}` : nextLine;
             <span>Table</span>
           </button>
           {openToolbarMenu === "table" ? (
-            <div className="table-menu__panel" role="menu" aria-label="Table options">
-              <div className="table-menu__grid">
-                <label className="table-menu__field">
-                  <span>Rows</span>
-                  <select
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        rows: Number(event.target.value)
-                      }))
-                    }
-                    value={tableSettings.rows}
+            <div className="table-menu__panel" aria-label="Table options">
+              <div className="table-menu__top-row">
+                <div className="table-size-dropdown">
+                  <button
+                    aria-expanded={isTableSizePickerOpen}
+                    className="pane__button table-size-dropdown__button"
+                    onClick={() => {
+                      setIsTableSizePickerOpen((current) => !current);
+                      setIsTableBorderMenuOpen(false);
+                      setTableSizePreview(null);
+                    }}
+                    type="button"
                   >
-                    {TABLE_ROW_OPTIONS.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="table-menu__field">
-                  <span>Columns</span>
-                  <select
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        columns: Number(event.target.value)
-                      }))
-                    }
-                    value={tableSettings.columns}
-                  >
-                    {TABLE_COLUMN_OPTIONS.map((value) => (
-                      <option key={value} value={value}>
-                        {value}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="table-menu__field">
-                  <span>Alignment</span>
-                  <select
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        align: event.target.value as TableAlignment
-                      }))
-                    }
-                    value={tableSettings.align}
-                  >
-                    {TABLE_ALIGNMENT_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="table-menu__field">
-                  <span>Gutter</span>
-                  <select
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        gutter: event.target.value as TableGutter
-                      }))
-                    }
-                    value={tableSettings.gutter}
-                  >
-                    {TABLE_GUTTER_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="table-menu__field">
-                  <span>Inset</span>
-                  <select
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        inset: event.target.value as TableInset
-                      }))
-                    }
-                    value={tableSettings.inset}
-                  >
-                    {TABLE_INSET_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="table-menu__field">
-                  <span>Stroke</span>
-                  <select
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        stroke: event.target.value as TableStroke
-                      }))
-                    }
-                    value={tableSettings.stroke}
-                  >
-                    <option value="default">Default</option>
-                    <option value="none">None</option>
-                  </select>
-                </label>
+                    <span className="table-size-dropdown__label">
+                      Size: <strong>{activeTableSize.rows}x{activeTableSize.columns}</strong>
+                    </span>
+                    <span aria-hidden="true" className="table-size-dropdown__caret" />
+                  </button>
+                  {isTableSizePickerOpen ? (
+                    <div aria-label="Table size" className="table-size-picker">
+                      <div className="table-size-picker__manual" aria-label="Manual table size">
+                        <label className="table-size-picker__manual-field">
+                          <span>Rows</span>
+                          <input
+                            inputMode="numeric"
+                            max={TABLE_MAX_ROWS}
+                            min={TABLE_MIN_ROWS}
+                            onBlur={handleTableSizeInputBlur}
+                            onChange={(event) => handleTableSizeInputChange("rows", event.target.value)}
+                            type="number"
+                            value={tableSizeInput.rows}
+                          />
+                        </label>
+                        <label className="table-size-picker__manual-field">
+                          <span>Columns</span>
+                          <input
+                            inputMode="numeric"
+                            max={TABLE_MAX_COLUMNS}
+                            min={TABLE_MIN_COLUMNS}
+                            onBlur={handleTableSizeInputBlur}
+                            onChange={(event) => handleTableSizeInputChange("columns", event.target.value)}
+                            type="number"
+                            value={tableSizeInput.columns}
+                          />
+                        </label>
+                      </div>
+                      <div
+                        className="table-size-picker__grid"
+                        onPointerMove={handleTableSizePickerPointerMove}
+                        style={
+                          {
+                            "--matrix-picker-columns": visibleTablePickerSize.columns
+                          } as CSSProperties
+                        }
+                      >
+                        {Array.from({ length: visibleTablePickerSize.rows }, (_unusedRow, rowIndex) => (
+                          <div className="matrix-size-picker__row" key={`table-size-row-${rowIndex}`}>
+                            {Array.from({ length: visibleTablePickerSize.columns }, (_unusedColumn, columnIndex) => {
+                              const rows = rowIndex + 1;
+                              const columns = columnIndex + 1;
+                              const isActive = rows <= activeTableSize.rows && columns <= activeTableSize.columns;
+                              const isSelected = rows === tableSettings.rows && columns === tableSettings.columns;
+
+                              return (
+                                <button
+                                  aria-label={`${rows} by ${columns} table`}
+                                  aria-pressed={isSelected}
+                                  className={`matrix-size-picker__cell ${
+                                    isActive ? "matrix-size-picker__cell--active" : ""
+                                  } ${isSelected ? "matrix-size-picker__cell--selected" : ""}`}
+                                  key={`table-size-${rows}-${columns}`}
+                                  onClick={() => handleTableSizeSelect(rows, columns)}
+                                  onFocus={() => handleTableSizePreview(rows, columns)}
+                                  onPointerEnter={() => handleTableSizePreview(rows, columns)}
+                                  title={`${rows} x ${columns}`}
+                                  type="button"
+                                />
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="table-menu__structure-toggles">
+                  <label className="table-menu__toggle">
+                    <input
+                      checked={tableSettings.header}
+                      onChange={(event) =>
+                        setTableSettings((current) => ({
+                          ...current,
+                          header: event.target.checked
+                        }))
+                      }
+                      type="checkbox"
+                    />
+                    <span>Header row</span>
+                  </label>
+                  <label className="table-menu__toggle">
+                    <input
+                      checked={tableSettings.footer}
+                      disabled={tableSettings.rows < 2}
+                      onChange={(event) =>
+                        setTableSettings((current) => ({
+                          ...current,
+                          footer: event.target.checked
+                        }))
+                      }
+                      type="checkbox"
+                    />
+                    <span>Footer row</span>
+                  </label>
+                  {activeSourceLanguage === "typst" ? (
+                    <label className="table-menu__toggle">
+                      <input
+                        checked={tableSettings.striped}
+                        onChange={(event) =>
+                          setTableSettings((current) => ({
+                            ...current,
+                            striped: event.target.checked
+                          }))
+                        }
+                        type="checkbox"
+                      />
+                      <span>Striped fill</span>
+                    </label>
+                  ) : null}
+                </div>
               </div>
-              <div className="table-menu__toggles">
-                <label className="table-menu__toggle">
-                  <input
-                    checked={tableSettings.header}
+              <div className="table-menu__selection-row">
+                <div className="table-menu__format-header">
+                  <span>Selection</span>
+                  <strong>{tableSelectionLabel}</strong>
+                </div>
+                {showTableMergeControls || showTableBorderControls ? (
+                  <div className="table-menu__actions">
+                    {showTableMergeControls ? (
+                      <>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          disabled={!canMergeTableSelection}
+                          onClick={handleMergeTableSelection}
+                          type="button"
+                        >
+                          Merge
+                        </button>
+                        <button
+                          className="pane__button pane__button--quiet"
+                          disabled={!canUnmergeTableSelection}
+                          onClick={handleUnmergeTableSelection}
+                          type="button"
+                        >
+                          Unmerge
+                        </button>
+                      </>
+                    ) : null}
+                    {showTableBorderControls ? (
+                      <div className="table-border-dropdown">
+                        <button
+                          aria-expanded={isTableBorderMenuOpen}
+                          aria-label="Border options"
+                          className="pane__button table-border-dropdown__button"
+                          onClick={() => {
+                            setIsTableBorderMenuOpen((current) => !current);
+                            setIsTableSizePickerOpen(false);
+                            setTableSizePreview(null);
+                          }}
+                          title="Border options"
+                          type="button"
+                        >
+                          <span aria-hidden="true" className="table-border-dropdown__grid-icon" />
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              {showTableBorderControls && isTableBorderMenuOpen ? (
+                <div className="table-border-dropdown__panel">
+                  <div className="table-menu__border-tools">
+                    <div className="table-menu__border-preset-field">
+                      <span>Border</span>
+                      <div className="table-menu__border-presets" role="radiogroup" aria-label="Border preset">
+                        {TABLE_BORDER_PRESET_OPTIONS.map((option) => (
+                          <button
+                            aria-checked={tableBorderPreset === option.id}
+                            aria-label={option.label}
+                            className={`table-border-preset ${
+                              tableBorderPreset === option.id ? "table-border-preset--active" : ""
+                            }`}
+                            key={option.id}
+                            onClick={() => setTableBorderPreset(option.id)}
+                            role="radio"
+                            title={option.label}
+                            type="button"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`table-border-preset__glyph table-border-preset__glyph--${option.id}`}
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <label className="table-menu__field table-menu__field--line-preview">
+                      <span>Line</span>
+                      <select
+                        disabled={tableBorderPreset === "clear"}
+                        onChange={(event) => setTableBorderStyle(event.target.value as TableStrokeStyle)}
+                        value={activeTableBorderStyle}
+                      >
+                        {tableStrokeStyleOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {showTableBorderWeightControl ? (
+                      <label className="table-menu__field">
+                        <span>Weight</span>
+                        <select
+                          onChange={(event) => setTableBorderWeight(event.target.value as TableStrokeWeight)}
+                          value={tableBorderWeight}
+                        >
+                          {TABLE_STROKE_WEIGHT_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    <button
+                      className="pane__button table-menu__border-apply"
+                      disabled={tableStrokeStyleOptions.length === 0}
+                      onClick={handleApplyTableBorder}
+                      type="button"
+                    >
+                      Apply
+                    </button>
+                    <span
+                      aria-hidden="true"
+                      className={`table-menu__line-preview table-menu__line-preview--${activeTableBorderStyle} table-menu__line-preview--${tableBorderWeight}`}
+                    />
+                  </div>
+                </div>
+              ) : null}
+              <div className="table-menu__grid table-menu__grid--format">
+                <label className="table-menu__field">
+                  <span>Horizontal</span>
+                  <select
                     onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        header: event.target.checked
-                      }))
+                      handleTableFormatChange({ align: event.target.value as TableHorizontalAlignment })
                     }
-                    type="checkbox"
-                  />
-                  <span>Header row</span>
+                    value={activeTableFormat.align}
+                  >
+                    {TABLE_HORIZONTAL_ALIGNMENT_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                <label className="table-menu__toggle">
-                  <input
-                    checked={tableSettings.footer}
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        footer: event.target.checked
-                      }))
-                    }
-                    type="checkbox"
-                  />
-                  <span>Footer row</span>
-                </label>
-                <label className="table-menu__toggle">
-                  <input
-                    checked={tableSettings.striped}
-                    onChange={(event) =>
-                      setTableSettings((current) => ({
-                        ...current,
-                        striped: event.target.checked
-                      }))
-                    }
-                    type="checkbox"
-                  />
-                  <span>Striped fill</span>
-                </label>
+                {showTableVerticalControls ? (
+                  <label className="table-menu__field">
+                    <span>Vertical</span>
+                    <select
+                      onChange={(event) =>
+                        handleTableFormatChange({ verticalAlign: event.target.value as TableVerticalAlignment })
+                      }
+                      value={activeTableFormat.verticalAlign}
+                    >
+                      {TABLE_VERTICAL_ALIGNMENT_OPTIONS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {showTablePaddingControls ? (
+                  <label className="table-menu__field">
+                    <span>Padding</span>
+                    <select
+                      onChange={(event) =>
+                        handleTableFormatChange({ padding: event.target.value as TablePadding })
+                      }
+                      value={activeTableFormat.padding}
+                    >
+                      {TABLE_PADDING_OPTIONS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {showTableMarginControls ? (
+                  <label className="table-menu__field">
+                    <span>Margins</span>
+                    <select
+                      onChange={(event) =>
+                        setTableSettings((current) => ({
+                          ...current,
+                          gutter: event.target.value as TableGutter
+                        }))
+                      }
+                      value={tableSettings.gutter}
+                    >
+                      {TABLE_GUTTER_OPTIONS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {showTableStrokeControls && tableStrokeStyleOptions.length > 0 ? (
+                  <label className="table-menu__field">
+                    <span>Stroke</span>
+                    <select
+                      onChange={(event) =>
+                        handleTableFormatChange({ strokeStyle: event.target.value as TableStrokeStyle })
+                      }
+                      value={tableStrokeStyleOptions.some((option) => option.id === activeTableFormat.strokeStyle)
+                        ? activeTableFormat.strokeStyle
+                        : tableStrokeStyleOptions[0].id}
+                    >
+                      {tableStrokeStyleOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {showTableStrokeControls && activeTableFormat.strokeStyle !== "none" ? (
+                  <label className="table-menu__field">
+                    <span>Weight</span>
+                    <select
+                      onChange={(event) =>
+                        handleTableFormatChange({ strokeWeight: event.target.value as TableStrokeWeight })
+                      }
+                      value={activeTableFormat.strokeWeight}
+                    >
+                      {TABLE_STROKE_WEIGHT_OPTIONS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+                {showTableBackgroundControls ? (
+                  <label className="table-menu__field table-menu__field--color">
+                    <span>Background</span>
+                    <div className="table-menu__color-row">
+                      <input
+                        aria-label="Background color"
+                        onChange={(event) =>
+                          handleTableFormatChange({ backgroundColor: event.target.value })
+                        }
+                        type="color"
+                        value={normalizeTableBackgroundColor(activeTableFormat.backgroundColor) || "#ffffff"}
+                      />
+                      <button
+                        className="pane__button pane__button--quiet table-menu__color-clear"
+                        disabled={!activeTableFormat.backgroundColor}
+                        onClick={() => handleTableFormatChange({ backgroundColor: "" })}
+                        type="button"
+                      >
+                        None
+                      </button>
+                    </div>
+                  </label>
+                ) : null}
+              </div>
+              <div className="table-menu__label">Values</div>
+              <div className="table-tableau-wrap">
+                <div
+                  aria-label="Table values"
+                  className="table-tableau"
+                  onPointerMove={handleTableGridPointerMove}
+                  role="grid"
+                  style={{
+                    gridTemplateColumns: tableColumnTemplate,
+                    gridTemplateRows: `repeat(${tableSettings.rows}, var(--tool-tableau-cell-size))`
+                  }}
+                >
+                  {Array.from({ length: tableSettings.rows }, (_unusedRow, rowIndex) =>
+                    Array.from({ length: tableSettings.columns }, (_unusedColumn, columnIndex) => {
+                      const merge = getTableMergeForCell(tableSettings, rowIndex, columnIndex);
+                      const isCoveredMergeCell = Boolean(
+                        merge && !tableMergeIsAnchor(merge, rowIndex, columnIndex)
+                      );
+
+                      if (isCoveredMergeCell) {
+                        tableCellRefs.current[rowIndex] ??= [];
+                        tableCellRefs.current[rowIndex][columnIndex] = null;
+                        return null;
+                      }
+
+                      const isHeader = tableSettings.header && rowIndex === 0;
+                      const isFooter = isTableFooterRow(tableSettings, rowIndex);
+                      const cellFormat = resolveTableCellFormat(tableSettings, rowIndex, columnIndex);
+                      const fallbackBorder: TableCellBorder = {
+                        strokeStyle: cellFormat.strokeStyle,
+                        strokeWeight: cellFormat.strokeWeight
+                      };
+                      const isSelected = isCellInTableSelection(tableSelection, rowIndex, columnIndex);
+                      const isMerged = Boolean(merge && (merge.rowSpan > 1 || merge.columnSpan > 1));
+                      const borderTop = getTableBorderCssValue(
+                        getTableFormatBorder(tableSettings, rowIndex, columnIndex, "top"),
+                        fallbackBorder
+                      );
+                      const borderRight = getTableBorderCssValue(
+                        getTableFormatBorder(tableSettings, rowIndex, columnIndex, "right"),
+                        fallbackBorder
+                      );
+                      const borderBottom = getTableBorderCssValue(
+                        getTableFormatBorder(tableSettings, rowIndex, columnIndex, "bottom"),
+                        fallbackBorder
+                      );
+                      const borderLeft = getTableBorderCssValue(
+                        getTableFormatBorder(tableSettings, rowIndex, columnIndex, "left"),
+                        fallbackBorder
+                      );
+                      const cellPadding = getTablePaddingCssValue(cellFormat.padding);
+                      const cellBackgroundColor = normalizeTableBackgroundColor(cellFormat.backgroundColor);
+
+                      return (
+                        <input
+                          aria-label={`Row ${rowIndex + 1}, column ${columnIndex + 1}`}
+                          className={`table-tableau__cell ${
+                            isHeader ? "table-tableau__cell--header" : ""
+                          } ${isFooter ? "table-tableau__cell--footer" : ""} ${
+                            isSelected ? "table-tableau__cell--selected" : ""
+                          } ${isMerged ? "table-tableau__cell--merged" : ""}`}
+                          data-table-column={columnIndex}
+                          data-table-row={rowIndex}
+                          key={`table-cell-${rowIndex}-${columnIndex}`}
+                          onChange={(event) =>
+                            handleTableCellChange(rowIndex, columnIndex, event.target.value)
+                          }
+                          onFocus={() => handleTableCellFocus(rowIndex, columnIndex)}
+                          onKeyDown={(event) => handleTableCellKeyDown(event, rowIndex, columnIndex)}
+                          onPointerDown={(event) => handleTableCellPointerDown(event, rowIndex, columnIndex)}
+                          onPointerEnter={(event) => handleTableCellPointerEnter(event, rowIndex, columnIndex)}
+                          placeholder={getTableCellPlaceholder(rowIndex, columnIndex, tableSettings)}
+                          ref={(element) => {
+                            tableCellRefs.current[rowIndex] ??= [];
+                            tableCellRefs.current[rowIndex][columnIndex] = element;
+                          }}
+                          role="gridcell"
+                          style={
+                            {
+                              borderTop,
+                              borderRight,
+                              borderBottom,
+                              borderLeft,
+                              padding: cellPadding,
+                              backgroundColor: cellBackgroundColor || undefined,
+                              gridColumn: `${columnIndex + 1} / span ${merge?.columnSpan ?? 1}`,
+                              gridRow: `${rowIndex + 1} / span ${merge?.rowSpan ?? 1}`,
+                              textAlign: cellFormat.align
+                            } as CSSProperties
+                          }
+                          type="text"
+                          value={tableSettings.cells[rowIndex]?.[columnIndex] ?? ""}
+                        />
+                      );
+                    })
+                  )}
+                </div>
               </div>
               <button
                 className="pane__button table-menu__insert"
                 onClick={() => {
                   handleInsertTable();
-                  setOpenToolbarMenu(null);
                 }}
                 type="button"
               >
-                Insert table
+                {activeEditableTableMatch ? "Update table" : "Insert table"}
               </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="source-tools-panel__section">
-        <div className={`source-symbol-menu ${openToolbarMenu === "symbols" ? "source-symbol-menu--open" : ""}`}>
-          <button
-            aria-expanded={openToolbarMenu === "symbols"}
-            aria-label="Symbols"
-            className="pane__button source-tools-panel__dropdown-button"
-            onClick={() => toggleToolbarMenu("symbols")}
-            title="Symbols"
-            type="button"
-          >
-            <span>Symbols</span>
-          </button>
-          {openToolbarMenu === "symbols" ? (
-            <div className="source-symbol-menu__panel" role="menu" aria-label="Typst symbols">
-              {SOURCE_SYMBOL_ITEMS.map((item) => (
-                <button
-                  key={item.template}
-                  className="source-symbol-menu__item"
-                  onBlur={clearSourceSymbolPreview}
-                  onClick={() => {
-                    handleInsertSymbol(item.template);
-                    clearSourceSymbolPreview();
-                    setOpenToolbarMenu(null);
-                  }}
-                  onPointerEnter={(event) => showSourceSymbolPreview(item, event)}
-                  onPointerMove={positionSourceSymbolTooltip}
-                  onPointerLeave={clearSourceSymbolPreview}
-                  title={item.label}
-                  type="button"
-                >
-                  <span aria-hidden="true" className="source-symbol-menu__glyph">
-                    {item.glyph}
-                  </span>
-                  <span className="visually-hidden">{item.label}</span>
-                </button>
-              ))}
+              <label className="table-menu__field table-menu__field--full table-menu__caption">
+                <span>Caption</span>
+                <input
+                  onChange={(event) =>
+                    setTableSettings((current) => ({
+                      ...current,
+                      caption: event.target.value
+                    }))
+                  }
+                  placeholder="Optional caption"
+                  type="text"
+                  value={tableSettings.caption}
+                />
+              </label>
             </div>
           ) : null}
         </div>
@@ -15480,1692 +14065,156 @@ ${nextLine}` : nextLine;
                             )}
                           </div>
                         </div>
-                      
+
   ) : null;
 
+  const settingsPanelBindings = {
+    AUTO_THEME_ID,
+    DocumentStatsPanel,
+    SNIPPET_LANGUAGES,
+    SNIPPET_LANGUAGE_LABELS,
+    ThemeCard,
+    activeAllSnippets,
+    activeCustomSnippets,
+    activeDefaultSnippets,
+    activeSnippetLanguage,
+    activeSnippetLanguageLabel,
+    customThemes,
+    darkThemes,
+    detectedLatexPackages,
+    documentStats,
+    filteredRepositoryPackages,
+    formatByteSize,
+    formatEditorToolLanguageLabel,
+    formatKeybinding,
+    formatLatexPackageBundleLabel,
+    formatMobileKeyboardLabels,
+    formatSourceLanguageLabel,
+    getEditorFormatterOptions,
+    getKeybindingConflictsForBinding,
+    getKeybindingLabel,
+    getSnippetImportTemplate,
+    gitHubDiscovery,
+    handleCacheLatexBundle,
+    handleCancelPendingKeybindingConflict,
+    handleClearCustomSnippets,
+    handleClearLatexBundles,
+    handleClearTypstPackages,
+    handleColorfulFileTreeIconsToggle,
+    handleCursorSmearChange,
+    handleCursorSmoothToggle,
+    handleDownloadCustomSnippets,
+    handleDownloadSnippetTemplate,
+    handleDownloadThemeTemplate,
+    handleExternalDiagnosticsChange,
+    handleFormatOnCompileToggle,
+    handleFormatterChange,
+    handleGitCredentialChange,
+    handleGitHubTokenConnectionAction,
+    handleGitIgnorePatternsChange,
+    handleGitProjectFieldChange,
+    handleImportPastedSnippets,
+    handleInstallTypstPackage,
+    handleKeybindingReset,
+    handleLatexMathPreviewToggle,
+    handleLintOnEditToggle,
+    handleLinterChange,
+    handleLiveCompilationToggle,
+    handleMobileKeyboardEnabledToggle,
+    handleMobileKeyboardLabelsChange,
+    handlePastedImageDirectoryAnchorToggle,
+    handlePastedImageDirectoryChange,
+    handlePastedImageFormatChange,
+    handlePastedImagePrefixChange,
+    handlePastedImageWrapperChange,
+    handlePastedImagesEnabledToggle,
+    handleProjectGitignoreChange,
+    handleRecordedKeybinding,
+    handleRelativeLineNumbersToggle,
+    handleRemoveCachedLatexPackage,
+    handleRemoveCustomSnippet,
+    handleRemoveCustomTheme,
+    handleRemoveLatexBundle,
+    handleRemoveTypstPackage,
+    handleResetAllKeybindings,
+    handleResolvePendingKeybindingConflict,
+    handleShowGitignoreInFileTreeToggle,
+    handleSnippetImportTextChange,
+    handleSnippetLanguageChange,
+    handleTypstMathPreviewToggle,
+    handleVimClipboardSharingToggle,
+    handleVimToggle,
+    handleWhackKeybindingConflicts,
+    installedPackageKeys,
+    installingLatexBundleId,
+    installingPackageName,
+    isAppleShortcutPlatform,
+    isLatexPackageCacheClearing,
+    isLatexPackageCacheLoading,
+    isOnline,
+    isPackageCacheClearing,
+    isPackageCacheLoading,
+    isPackageSearchLoading,
+    keybindingFromKeyboardEvent,
+    keybindingSearchQuery,
+    keybindings,
+    latexPackageBundleEntries,
+    latexPackageCatalog,
+    latexPackageFeedback,
+    latexPackageSearchQuery,
+    latexPackageSearchResults,
+    lightThemes,
+    manualExtraLatexPackages,
+    packageCacheEntries,
+    packageCacheFeedback,
+    packageCacheTotalBytes,
+    packageSearchQuery,
+    packageSettingsScope,
+    pendingKeybindingConflict,
+    projectGitignoreContent,
+    recordingKeybindingId,
+    refreshLatexPackageCache,
+    refreshTypstPackageCache,
+    renderLatexPackageResolutionRow,
+    selectedGitProject,
+    selectedGitToken,
+    selectedProjectRepository,
+    setKeybindingSearchQuery,
+    setLatexPackageSearchQuery,
+    setPackageSearchQuery,
+    setPackageSearchVisibleCount,
+    setPackageSettingsScope,
+    setPendingKeybindingConflict,
+    setRecordingKeybindingId,
+    setThemeMode,
+    settingsTab,
+    snapshot,
+    snippetImportFeedback,
+    snippetImportInputRef,
+    snippetImportText,
+    stringifyIgnorePatterns,
+    theme,
+    themeImportFeedback,
+    themeImportInputRef,
+    uncachedDetectedLatexPackages,
+    visibleKeybindingDefinitions,
+    visibleRepositoryPackages
+  };
+
+
   const renderSettingsSheet = (embedded: boolean) => (
-    <section
-      aria-label="Typr settings"
-      className={`settings-sheet ${embedded ? "settings-sheet--embedded" : ""} ${isMobileSettingsNavOpen ? "settings-sheet--mobile-nav-open" : ""}`}
-      onClick={embedded ? undefined : (event) => event.stopPropagation()}
+    <SettingsSheet
+      controller={settingsController}
+      embedded={embedded}
+      onClose={(isEmbedded) => {
+        setIsSettingsOpen(false);
+        if (isEmbedded) {
+          setActiveSidebarTool("files");
+        }
+      }}
     >
-      <div className="settings-sheet__header">
-        <div className="settings-sheet__header-main">
-          <h2>Settings</h2>
-          <div className="settings-search-field">
-            <input
-              aria-label="Search settings"
-              onChange={(event) => setSettingsSearchQuery(event.target.value)}
-              placeholder="Search settings"
-              type="search"
-              value={settingsSearchQuery}
-            />
-            {settingsSearchQuery ? (
-              <button
-                aria-label="Clear settings search"
-                className="settings-search-field__clear"
-                onClick={() => setSettingsSearchQuery("")}
-                type="button"
-              >
-                <span aria-hidden="true" className="package-search-clear__icon" />
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <div className="settings-sheet__header-actions">
-          <button
-            className="pane__button"
-            onClick={() => {
-              saveCurrentSettingsScrollPosition();
-              setIsMobileSettingsNavOpen(false);
-              setIsSettingsOpen(false);
-              if (embedded) {
-                setActiveSidebarTool("files");
-              }
-            }}
-            type="button"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-
-      <button
-        aria-expanded={isMobileSettingsNavOpen}
-        className="settings-sheet__mobile-nav-toggle"
-        onClick={() => setIsMobileSettingsNavOpen((current) => !current)}
-        type="button"
-      >
-        <span>{getSettingsTabTitle(settingsTab)}</span>
-        <span aria-hidden="true" className="settings-sheet__mobile-nav-chevron" />
-      </button>
-      <div className="settings-sheet__mobile-search">
-        <div className="settings-search-field">
-          <input
-            aria-label="Search settings"
-            onChange={(event) => setSettingsSearchQuery(event.target.value)}
-            placeholder="Search settings"
-            type="search"
-            value={settingsSearchQuery}
-          />
-          {settingsSearchQuery ? (
-            <button
-              aria-label="Clear settings search"
-              className="settings-search-field__clear"
-              onClick={() => setSettingsSearchQuery("")}
-              type="button"
-            >
-              <span aria-hidden="true" className="package-search-clear__icon" />
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <div className="settings-tabs" role="tablist" aria-label="Settings tabs">
-          <button
-            aria-selected={settingsTab === "git"}
-            className={`settings-tab ${settingsTab === "git" ? "settings-tab--active" : ""} ${
-              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("git")
-                ? "settings-tab--muted"
-                : ""
-            }`}
-            onClick={() => handleSettingsTabSelect("git")}
-            role="tab"
-            type="button"
-          >
-            Git
-          </button>
-          <button
-            aria-selected={settingsTab === "themes"}
-            className={`settings-tab ${settingsTab === "themes" ? "settings-tab--active" : ""} ${
-              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("themes")
-                ? "settings-tab--muted"
-                : ""
-            }`}
-            onClick={() => handleSettingsTabSelect("themes")}
-            role="tab"
-            type="button"
-          >
-            Themes
-          </button>
-          <button
-            aria-selected={settingsTab === "editor"}
-            className={`settings-tab ${settingsTab === "editor" ? "settings-tab--active" : ""} ${
-              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("editor")
-                ? "settings-tab--muted"
-                : ""
-            }`}
-            onClick={() => handleSettingsTabSelect("editor")}
-            role="tab"
-            type="button"
-          >
-            Editor
-          </button>
-          <button
-            aria-selected={settingsTab === "keybindings"}
-            className={`settings-tab ${settingsTab === "keybindings" ? "settings-tab--active" : ""} ${
-              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("keybindings")
-                ? "settings-tab--muted"
-                : ""
-            }`}
-            onClick={() => handleSettingsTabSelect("keybindings")}
-            role="tab"
-            type="button"
-          >
-            Keybindings
-          </button>
-          <button
-            aria-selected={settingsTab === "snippets"}
-            className={`settings-tab ${settingsTab === "snippets" ? "settings-tab--active" : ""} ${
-              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("snippets")
-                ? "settings-tab--muted"
-                : ""
-            }`}
-            onClick={() => handleSettingsTabSelect("snippets")}
-            role="tab"
-            type="button"
-          >
-            Snippets
-          </button>
-          <button
-            aria-selected={settingsTab === "packages"}
-            className={`settings-tab ${settingsTab === "packages" ? "settings-tab--active" : ""} ${
-              settingsSearchQuery.trim() && !settingsSearchMatchingTabs.includes("packages")
-                ? "settings-tab--muted"
-                : ""
-            }`}
-            onClick={() => handleSettingsTabSelect("packages")}
-            role="tab"
-            type="button"
-          >
-            Packages
-          </button>
-      </div>
-      <div
-        className="settings-sheet__body"
-        onScroll={handleSettingsBodyScroll}
-        ref={settingsBodyRef}
-      >
-        {settingsSearchQuery.trim() && settingsSearchMatchingTabs.length === 0 ? (
-          <div className="settings-search-empty">No matching settings.</div>
-        ) : null}
-
-        {settingsTab === "git" ? (
-          <div className="settings-panel settings-panel--git" role="tabpanel">
-            <div className="git-setup-strip git-setup-strip--token-only">
-              <a
-                aria-label="Open GitHub personal access token settings"
-                className="git-setup-step git-setup-step--link"
-                href="https://github.com/settings/personal-access-tokens/new"
-                rel="noreferrer"
-                target="_blank"
-                title="Open GitHub"
-              >
-                <span aria-hidden="true" className="git-setup-step__icon toolbar-icon toolbar-icon--github" />
-              </a>
-              <label className="sync-field git-token-field">
-                <span>Fine-grained token</span>
-                <input
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  onChange={(event) => handleGitCredentialChange(event.target.value)}
-                  placeholder="Paste token"
-                  type="password"
-                  value={selectedGitToken}
-                />
-              </label>
-              <button
-                className={`pane__button git-connect-button ${
-                  gitHubDiscovery.status === "connected" ? "pane__button--success" : ""
-                }`}
-                disabled={!selectedGitProject || gitHubDiscovery.status === "loading" || !selectedGitToken.trim()}
-                onClick={() => {
-                  void handleGitHubTokenConnectionAction();
-                }}
-                type="button"
-              >
-                {gitHubDiscovery.status === "loading"
-                  ? "Connecting..."
-                  : gitHubDiscovery.status === "connected"
-                    ? gitHubDiscovery.accountLogin
-                      ? `Connected as ${gitHubDiscovery.accountLogin}`
-                      : "Connected"
-                    : "Connect token"}
-              </button>
-            </div>
-
-            <div className="git-settings-card git-settings-card--guidance">
-              <p className="git-settings-note">
-                Use a fine-grained GitHub token with repository Contents read/write access. To create repositories from Typr, also grant Administration read/write for the selected owner. Prefer a token that expires in 30 to 90 days instead of one with no expiration.
-              </p>
-              <p className="git-settings-note">
-                Clone existing remote repositories from the Projects tab. Manage pulls, commits, pushes, and conflicts from the Sync tab.
-              </p>
-              <div className="git-permission-list">
-                <div className="git-permission-row">
-                  <span>Existing repos</span>
-                  <strong>Contents read/write</strong>
-                </div>
-                <div className="git-permission-row">
-                  <span>Create repos</span>
-                  <strong>Contents + Administration read/write</strong>
-                </div>
-              </div>
-            </div>
-
-            <div className="git-settings-card git-settings-card--advanced">
-              <div className="settings-toggle-stack">
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Show .gitignore in Files</strong>
-                    <small>Keep .gitignore editable here without showing it in the file tree.</small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.showGitignoreInFileTree}
-                    onChange={handleShowGitignoreInFileTreeToggle}
-                    type="checkbox"
-                  />
-                </label>
-              </div>
-
-              <div className="git-advanced-grid">
-                <label className="sync-field">
-                  <span>.gitignore</span>
-                  <textarea
-                    disabled={!selectedProjectRepository}
-                    onChange={(event) => handleProjectGitignoreChange(event.target.value)}
-                    placeholder={"*.pdf\n.env\nbuild/"}
-                    rows={6}
-                    value={projectGitignoreContent}
-                  />
-                </label>
-
-                <label className="sync-field">
-                  <span>Status ignore patterns</span>
-                  <textarea
-                    onChange={(event) => handleGitIgnorePatternsChange(event.target.value)}
-                    placeholder={"figures/\n*.pdf\nnotes/private/**"}
-                    rows={4}
-                    value={stringifyIgnorePatterns(selectedGitProject?.ignorePatterns ?? [])}
-                  />
-                </label>
-              </div>
-
-              <label className="sync-field">
-                <span>Default push message</span>
-                <input
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  onChange={(event) =>
-                    handleGitProjectFieldChange("commitMessageTemplate", event.target.value)
-                  }
-                  placeholder="Sync from Typr"
-                  type="text"
-                  value={selectedGitProject?.commitMessageTemplate ?? ""}
-                />
-              </label>
-            </div>
-
-          </div>
-        ) : settingsTab === "themes" ? (
-          <div className="settings-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="settings-section__header">
-                <h3>Theme</h3>
-              </div>
-
-              <div className="theme-auto-row">
-                <label
-                  className={`theme-auto-option ${
-                    snapshot.preferences.theme === AUTO_THEME_ID ? "theme-auto-option--active" : ""
-                  }`}
-                >
-                  <span>
-                    <strong>Follow system default</strong>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.theme === AUTO_THEME_ID}
-                    onChange={(event) =>
-                      setThemeMode(event.target.checked ? AUTO_THEME_ID : theme.id)
-                    }
-                    type="checkbox"
-                  />
-                </label>
-              </div>
-
-              <div className="settings-toggle-stack">
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Colorful file icons</strong>
-                    <small>Use file-type colors in the Files tree.</small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.colorfulFileTreeIcons}
-                    onChange={handleColorfulFileTreeIconsToggle}
-                    type="checkbox"
-                  />
-                </label>
-              </div>
-
-              <div className="theme-columns">
-                <section className="theme-column">
-                  <div className="theme-column__header">
-                    <h4>Light</h4>
-                  </div>
-                  <div className="theme-column__list">
-                    {lightThemes.map((themeDefinition) => (
-                      <ThemeCard
-                        key={themeDefinition.id}
-                        active={themeDefinition.id === theme.id}
-                        themeDefinition={themeDefinition}
-                        onClick={() => setThemeMode(themeDefinition.id)}
-                      />
-                    ))}
-                  </div>
-                </section>
-
-                <section className="theme-column">
-                  <div className="theme-column__header">
-                    <h4>Dark</h4>
-                  </div>
-                  <div className="theme-column__list">
-                    {darkThemes.map((themeDefinition) => (
-                      <ThemeCard
-                        key={themeDefinition.id}
-                        active={themeDefinition.id === theme.id}
-                        themeDefinition={themeDefinition}
-                        onClick={() => setThemeMode(themeDefinition.id)}
-                      />
-                    ))}
-                  </div>
-                </section>
-              </div>
-
-              {customThemes.length > 0 ? (
-                <section className="settings-section settings-section--nested">
-                  <div className="settings-section__header">
-                    <h3>Imported themes</h3>
-                    <span className="pane__meta">{customThemes.length}</span>
-                  </div>
-                  <div className="theme-column__list">
-                    {customThemes.map((themeDefinition) => (
-                      <div className="theme-card-shell" key={themeDefinition.id}>
-                        <ThemeCard
-                          active={themeDefinition.id === theme.id}
-                          themeDefinition={themeDefinition}
-                          onClick={() => setThemeMode(themeDefinition.id)}
-                        />
-                        <button
-                          className="theme-card__remove"
-                          onClick={() => handleRemoveCustomTheme(themeDefinition.id)}
-                          type="button"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ) : null}
-
-              <section className="theme-import-card">
-                <div className="theme-import-card__copy">
-                  <h4>Import a theme</h4>
-                  <p>
-                    Upload a JSON file with <code>name</code>, <code>mode</code>, and a full
-                    <code>colors</code> palette.
-                  </p>
-                </div>
-                <div className="theme-import-card__actions">
-                  <button
-                    className="pane__button"
-                    onClick={() => themeImportInputRef.current?.click()}
-                    type="button"
-                  >
-                    Import JSON
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    onClick={handleDownloadThemeTemplate}
-                    type="button"
-                  >
-                    Download template
-                  </button>
-                </div>
-                {themeImportFeedback.text ? (
-                  <div
-                    className={`sync-feedback theme-import-card__feedback ${
-                      themeImportFeedback.tone === "success"
-                        ? "sync-feedback--success"
-                        : themeImportFeedback.tone === "error"
-                          ? "sync-feedback--error"
-                          : ""
-                    }`}
-                  >
-                    <span>{themeImportFeedback.text}</span>
-                  </div>
-                ) : null}
-              </section>
-            </div>
-          </div>
-        ) : settingsTab === "editor" ? (
-          <div className="settings-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="settings-section__header">
-                <h3>Editor</h3>
-              </div>
-
-              <div className="settings-toggle-stack">
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Live compilation (experimental)</strong>
-                    <small>
-                      Recompile the active Typst document automatically while you edit.
-                    </small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.liveCompilation}
-                    onChange={handleLiveCompilationToggle}
-                    type="checkbox"
-                  />
-                </label>
-
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Lint while editing</strong>
-                    <small>
-                      Show browser-available linter diagnostics in the source editor.
-                    </small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.editorTooling.lintOnEdit}
-                    onChange={handleLintOnEditToggle}
-                    type="checkbox"
-                  />
-                </label>
-
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Format on compile</strong>
-                    <small>
-                      Run the selected formatter before compile or Markdown preview.
-                    </small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.editorTooling.formatOnCompile}
-                    onChange={handleFormatOnCompileToggle}
-                    type="checkbox"
-                  />
-                </label>
-
-                <div className="settings-toggle settings-toggle--stacked">
-                  <label className="settings-toggle__row">
-                    <span>
-                      <strong>Vim mode</strong>
-                      <small>Use Vim motions, operators, and normal-mode editing in the source editor.</small>
-                    </span>
-                    <input
-                      checked={snapshot.preferences.vimMode}
-                      onChange={handleVimToggle}
-                      type="checkbox"
-                    />
-                  </label>
-
-                  {snapshot.preferences.vimMode ? (
-                    <div className="settings-embedded-grid">
-                      <label className="sync-field sync-field--checkbox">
-                        <span>Clipboard sharing</span>
-                        <input
-                          checked={snapshot.preferences.vimClipboardSharing}
-                          onChange={handleVimClipboardSharingToggle}
-                          type="checkbox"
-                        />
-                      </label>
-                    </div>
-                  ) : null}
-                </div>
-
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Relative line numbers</strong>
-                    <small>
-                      Show line numbers relative to the cursor line.
-                    </small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.relativeLineNumbers}
-                    onChange={handleRelativeLineNumbersToggle}
-                    type="checkbox"
-                  />
-                </label>
-
-                <label className="settings-toggle">
-                  <span>
-                    <strong>LaTeX math preview</strong>
-                    <small>
-                      Show an inline RaTeX preview while typing valid math in LaTeX files.
-                    </small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.latexMathPreview}
-                    onChange={handleLatexMathPreviewToggle}
-                    type="checkbox"
-                  />
-                </label>
-
-                <label className="settings-toggle">
-                  <span>
-                    <strong>Typst math preview</strong>
-                    <small>
-                      Show an inline Typst preview while typing valid math in Typst files.
-                    </small>
-                  </span>
-                  <input
-                    checked={snapshot.preferences.typstMathPreview}
-                    onChange={handleTypstMathPreviewToggle}
-                    type="checkbox"
-                  />
-                </label>
-
-                <div className="settings-toggle settings-toggle--stacked">
-                  <label className="settings-toggle__row">
-                    <span>
-                      <strong>Paste clipboard images</strong>
-                      <small>Save pasted images to a figures directory and insert a source reference.</small>
-                    </span>
-                    <input
-                      checked={snapshot.preferences.pastedImages.enabled}
-                      onChange={handlePastedImagesEnabledToggle}
-                      type="checkbox"
-                    />
-                  </label>
-
-                  {snapshot.preferences.pastedImages.enabled ? (
-                    <div className="settings-embedded-grid">
-                      <label className="sync-field">
-                        <span>Format</span>
-                        <select
-                          onChange={(event) => handlePastedImageFormatChange(event.target.value as "png" | "jpeg")}
-                          value={snapshot.preferences.pastedImages.format}
-                        >
-                          <option value="png">PNG</option>
-                          <option value="jpeg">JPEG</option>
-                        </select>
-                      </label>
-                      <label className="sync-field">
-                        <span>Filename prefix</span>
-                        <input
-                          onChange={(event) => handlePastedImagePrefixChange(event.target.value)}
-                          value={snapshot.preferences.pastedImages.fileNamePrefix}
-                        />
-                      </label>
-                      <label className="sync-field">
-                        <span>Figures directory</span>
-                        <input
-                          onChange={(event) => handlePastedImageDirectoryChange(event.target.value)}
-                          value={snapshot.preferences.pastedImages.figuresDirectory}
-                        />
-                      </label>
-                      <label className="sync-field sync-field--checkbox">
-                        <span>Relative to current file</span>
-                        <input
-                          checked={snapshot.preferences.pastedImages.figuresDirectoryRelativeToFile}
-                          onChange={handlePastedImageDirectoryAnchorToggle}
-                          type="checkbox"
-                        />
-                      </label>
-                      <div className="pasted-image-template-grid">
-                        <span />
-                        <span>Prefix</span>
-                        <span />
-                        <span>Suffix</span>
-
-                        <span className="pasted-image-template-grid__language">Typst</span>
-                        <input
-                          aria-label="Typst image prefix"
-                          onChange={(event) => handlePastedImageWrapperChange("typstPrefix", event.target.value)}
-                          size={Math.max(12, snapshot.preferences.pastedImages.typstPrefix.length)}
-                          value={snapshot.preferences.pastedImages.typstPrefix}
-                        />
-                        <span className="pasted-image-template-grid__filename">image filename</span>
-                        <input
-                          aria-label="Typst image suffix"
-                          onChange={(event) => handlePastedImageWrapperChange("typstSuffix", event.target.value)}
-                          size={Math.max(12, snapshot.preferences.pastedImages.typstSuffix.length)}
-                          value={snapshot.preferences.pastedImages.typstSuffix}
-                        />
-
-                        <span className="pasted-image-template-grid__language">TeX</span>
-                        <input
-                          aria-label="TeX image prefix"
-                          onChange={(event) => handlePastedImageWrapperChange("latexPrefix", event.target.value)}
-                          size={Math.max(12, snapshot.preferences.pastedImages.latexPrefix.length)}
-                          value={snapshot.preferences.pastedImages.latexPrefix}
-                        />
-                        <span className="pasted-image-template-grid__filename">image filename</span>
-                        <input
-                          aria-label="TeX image suffix"
-                          onChange={(event) => handlePastedImageWrapperChange("latexSuffix", event.target.value)}
-                          size={Math.max(12, snapshot.preferences.pastedImages.latexSuffix.length)}
-                          value={snapshot.preferences.pastedImages.latexSuffix}
-                        />
-
-                        <span className="pasted-image-template-grid__language">Markdown</span>
-                        <input
-                          aria-label="Markdown image prefix"
-                          onChange={(event) => handlePastedImageWrapperChange("markdownPrefix", event.target.value)}
-                          size={Math.max(12, snapshot.preferences.pastedImages.markdownPrefix.length)}
-                          value={snapshot.preferences.pastedImages.markdownPrefix}
-                        />
-                        <span className="pasted-image-template-grid__filename">image filename</span>
-                        <input
-                          aria-label="Markdown image suffix"
-                          onChange={(event) => handlePastedImageWrapperChange("markdownSuffix", event.target.value)}
-                          size={Math.max(12, snapshot.preferences.pastedImages.markdownSuffix.length)}
-                          value={snapshot.preferences.pastedImages.markdownSuffix}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="settings-toggle settings-toggle--stacked">
-                  <label className="settings-toggle__row">
-                    <span>
-                      <strong>Smooth cursor</strong>
-                      <small>Animate the source cursor as it moves through text.</small>
-                    </span>
-                    <input
-                      checked={snapshot.preferences.cursorSmooth}
-                      onChange={handleCursorSmoothToggle}
-                      type="checkbox"
-                    />
-                  </label>
-
-                  {snapshot.preferences.cursorSmooth ? (
-                    <label className="settings-slider settings-slider--embedded">
-                      <span>
-                        <strong>Smear cursor</strong>
-                      </span>
-                      <div className="settings-slider__control">
-                        <input
-                          max="100"
-                          min="0"
-                          onChange={handleCursorSmearChange}
-                          type="range"
-                          value={snapshot.preferences.cursorSmear}
-                        />
-                        <output>{snapshot.preferences.cursorSmear}%</output>
-                      </div>
-                    </label>
-                  ) : null}
-                </div>
-              </div>
-
-              <section className="settings-section settings-section--nested mobile-keyboard-settings">
-                <div className="settings-section__header">
-                  <h3>Mobile quick keys</h3>
-                  <span className="pane__meta">Editor footer</span>
-                </div>
-
-                <div className="settings-toggle-stack">
-                  <label className="settings-toggle">
-                    <span>
-                      <strong>Show extra keyboard row</strong>
-                      <small>Show language-specific quick keys below the mobile source editor.</small>
-                    </span>
-                    <input
-                      checked={snapshot.preferences.mobileKeyboard.enabled}
-                      onChange={handleMobileKeyboardEnabledToggle}
-                      type="checkbox"
-                    />
-                  </label>
-                </div>
-
-                <div className="mobile-keyboard-settings__list">
-                  {(["typst", "latex", "markdown"] as MobileKeyboardLanguage[]).map((language) => (
-                    <label className="sync-field mobile-keyboard-settings__field" key={language}>
-                      <span>{formatSourceLanguageLabel(language)} keys</span>
-                      <textarea
-                        onChange={(event) => handleMobileKeyboardLabelsChange(language, event.target.value)}
-                        rows={2}
-                        spellCheck={false}
-                        value={formatMobileKeyboardLabels(snapshot.preferences.mobileKeyboard.keys[language])}
-                      />
-                    </label>
-                  ))}
-                </div>
-              </section>
-
-              <section className="settings-section settings-section--nested">
-                <div className="settings-section__header">
-                  <h3>External diagnostics</h3>
-                  <span className="pane__meta">Harper and LSP</span>
-                </div>
-
-                <div className="settings-toggle-stack">
-                  <label className="settings-toggle">
-                    <span>
-                      <strong>Offline Harper grammar check</strong>
-                      <small>Run private English writing diagnostics in the browser after the app is cached.</small>
-                    </span>
-                    <input
-                      checked={snapshot.preferences.externalDiagnostics.harper.enabled}
-                      onChange={() =>
-                        handleExternalDiagnosticsChange((preferences) => ({
-                          ...preferences,
-                          harper: {
-                            ...preferences.harper,
-                            enabled: !preferences.harper.enabled
-                          }
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                  </label>
-
-                  <div className="settings-toggle settings-toggle--stacked">
-                    <label className="settings-toggle__row">
-                      <span>
-                        <strong>Local WebSocket LSP</strong>
-                        <small>Connect to a language server bridge running on this device.</small>
-                      </span>
-                      <input
-                        checked={snapshot.preferences.externalDiagnostics.localLsp.enabled}
-                        onChange={() =>
-                          handleExternalDiagnosticsChange((preferences) => ({
-                            ...preferences,
-                            localLsp: {
-                              ...preferences.localLsp,
-                              enabled: !preferences.localLsp.enabled
-                            }
-                          }))
-                        }
-                        type="checkbox"
-                      />
-                    </label>
-                    <div className="settings-embedded-grid">
-                      <label className="sync-field">
-                        <span>Local WebSocket URL</span>
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) =>
-                            handleExternalDiagnosticsChange((preferences) => ({
-                              ...preferences,
-                              localLsp: {
-                                ...preferences.localLsp,
-                                url: event.target.value
-                              }
-                            }))
-                          }
-                          spellCheck={false}
-                          value={snapshot.preferences.externalDiagnostics.localLsp.url}
-                        />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="settings-toggle settings-toggle--stacked">
-                    <label className="settings-toggle__row">
-                      <span>
-                        <strong>Remote WebSocket LSP</strong>
-                        <small>Connect to a network LSP endpoint only after explicit document-upload consent.</small>
-                      </span>
-                      <input
-                        checked={snapshot.preferences.externalDiagnostics.remoteLsp.enabled}
-                        onChange={() =>
-                          handleExternalDiagnosticsChange((preferences) => ({
-                            ...preferences,
-                            remoteLsp: {
-                              ...preferences.remoteLsp,
-                              enabled: !preferences.remoteLsp.enabled
-                            }
-                          }))
-                        }
-                        type="checkbox"
-                      />
-                    </label>
-                    <div className="settings-embedded-grid">
-                      <label className="sync-field">
-                        <span>Remote WebSocket URL</span>
-                        <input
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          onChange={(event) =>
-                            handleExternalDiagnosticsChange((preferences) => ({
-                              ...preferences,
-                              remoteLsp: {
-                                ...preferences.remoteLsp,
-                                url: event.target.value
-                              }
-                            }))
-                          }
-                          spellCheck={false}
-                          value={snapshot.preferences.externalDiagnostics.remoteLsp.url}
-                        />
-                      </label>
-                      <label className="sync-field sync-field--checkbox">
-                        <span>Allow document upload</span>
-                        <input
-                          checked={snapshot.preferences.externalDiagnostics.remoteLsp.allowDocumentUpload}
-                          onChange={() =>
-                            handleExternalDiagnosticsChange((preferences) => ({
-                              ...preferences,
-                              remoteLsp: {
-                                ...preferences.remoteLsp,
-                                allowDocumentUpload: !preferences.remoteLsp.allowDocumentUpload
-                              }
-                            }))
-                          }
-                          type="checkbox"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              <section className="settings-section settings-section--nested">
-                <div className="settings-section__header">
-                  <h3>Formatters and linters</h3>
-                  <span className="pane__meta">Browser mode</span>
-                </div>
-
-                <div className="package-repository-list" role="list">
-                  {(["typst", "latex", "markdown"] as EditorToolLanguage[]).map((language) => {
-                    const languageTools = snapshot.preferences.editorTooling.languages[language];
-                    const builtInDescription =
-                      language === "typst"
-                        ? "Built-in Typst formatting and linting run offline in the browser."
-                        : language === "latex"
-                          ? "Built-in LaTeX formatting and BusyTeX-oriented linting run offline in the browser."
-                          : "Built-in Markdown formatting and linting run offline in the browser.";
-
-                    return (
-                      <article className="package-cache-row" key={language} role="listitem">
-                        <div className="package-cache-row__main">
-                          <strong>{formatEditorToolLanguageLabel(language)}</strong>
-                          <span>{builtInDescription}</span>
-                        </div>
-                        <label className="sync-field">
-                          <span>Formatter</span>
-                          <select
-                            onChange={(event) =>
-                              handleFormatterChange(language, event.target.value as EditorFormatterId)
-                            }
-                            value={languageTools.formatter}
-                          >
-                            {getEditorFormatterOptions(language).map((option) => (
-                              <option key={option.id} value={option.id}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="sync-field">
-                          <span>Linter</span>
-                          <select
-                            onChange={(event) =>
-                              handleLinterChange(language, event.target.value as EditorLinterId)
-                            }
-                            value={languageTools.linter}
-                          >
-                            <option value="disabled">Disabled</option>
-                            <option value="built-in">
-                              Built in
-                            </option>
-                          </select>
-                        </label>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            </div>
-          </div>
-        ) : settingsTab === "keybindings" ? (
-          <div className="settings-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="keybindings-search-field">
-                <input
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  onChange={(event) => setKeybindingSearchQuery(event.target.value)}
-                  placeholder="Search keybindings"
-                  type="search"
-                  value={keybindingSearchQuery}
-                />
-                {keybindingSearchQuery ? (
-                  <button
-                    aria-label="Clear keybinding search"
-                    className="package-search-clear"
-                    onClick={() => setKeybindingSearchQuery("")}
-                    type="button"
-                  >
-                    <span aria-hidden="true" className="package-search-clear__icon" />
-                  </button>
-                ) : null}
-              </div>
-              <div className="keybindings-table" role="table" aria-label="Keyboard shortcuts">
-                <div className="keybindings-table__row keybindings-table__row--head" role="row">
-                  <span role="columnheader">Action</span>
-                  <span role="columnheader">Shortcut</span>
-                </div>
-                {visibleKeybindingDefinitions.map((definition, index) => {
-                  const binding = keybindings[definition.id];
-                  const conflicts = getKeybindingConflictsForBinding(
-                    keybindings,
-                    definition.id,
-                    binding
-                  );
-                  const pendingConflict =
-                    pendingKeybindingConflict?.commandId === definition.id
-                      ? pendingKeybindingConflict
-                      : null;
-                  const displayedConflictIds = pendingConflict?.conflictIds ?? conflicts;
-                  const displayedConflictBinding = pendingConflict?.binding ?? binding;
-                  const conflictLabels = displayedConflictIds
-                    .map((conflictId) => getKeybindingLabel(conflictId))
-                    .join(", ");
-                  const isRecording = recordingKeybindingId === definition.id;
-                  const isModified = binding !== definition.defaultBinding;
-                  const previousDefinition = visibleKeybindingDefinitions[index - 1];
-                  const showGroupHeader = previousDefinition?.group !== definition.group;
-
-                  return (
-                    <Fragment key={definition.id}>
-                      {showGroupHeader ? (
-                        <div className="keybindings-table__group" role="row">
-                          <span role="cell">{definition.group}</span>
-                        </div>
-                      ) : null}
-                      <div className="keybindings-table__row" role="row">
-                        <span className="keybindings-table__action" role="cell">
-                          <strong>{definition.label}</strong>
-                        </span>
-                        <div className="keybindings-table__binding" role="cell">
-                          <button
-                            className={`keybinding-recorder ${
-                              isRecording ? "keybinding-recorder--active" : ""
-                            }`}
-                            data-keybinding-recorder={definition.id}
-                            onClick={() => {
-                              setPendingKeybindingConflict(null);
-                              setRecordingKeybindingId(definition.id);
-                            }}
-                            onKeyDown={(event) => {
-                              if (!isRecording) {
-                                return;
-                              }
-
-                              event.preventDefault();
-                              event.stopPropagation();
-
-                              if (event.key === "Escape") {
-                                setRecordingKeybindingId(null);
-                                return;
-                              }
-
-                              const nextBinding = keybindingFromKeyboardEvent(
-                                event.nativeEvent,
-                                isAppleShortcutPlatform
-                              );
-                              if (!nextBinding) {
-                                return;
-                              }
-
-                              handleRecordedKeybinding(definition.id, nextBinding);
-                              setRecordingKeybindingId(null);
-                            }}
-                            type="button"
-                          >
-                            {isRecording
-                              ? "Press keys"
-                              : formatKeybinding(binding, isAppleShortcutPlatform)}
-                          </button>
-                          {isModified ? (
-                            <button
-                              aria-label={`Reset ${definition.label}`}
-                              className="pane__button pane__button--compact pane__icon-button keybinding-reset-button"
-                              onClick={() => handleKeybindingReset(definition.id)}
-                              title={`Reset to ${formatKeybinding(
-                                definition.defaultBinding,
-                                isAppleShortcutPlatform
-                              )}`}
-                              type="button"
-                            >
-                              <span aria-hidden="true" className="toolbar-icon toolbar-icon--reset" />
-                            </button>
-                          ) : null}
-                        </div>
-                        {displayedConflictIds.length > 0 ? (
-                          <div className="keybinding-conflict" role="alert">
-                            <span>
-                              <strong>
-                                {formatKeybinding(
-                                  displayedConflictBinding,
-                                  isAppleShortcutPlatform
-                                )}
-                              </strong>{" "}
-                              is already used by {conflictLabels}.
-                            </span>
-                            <div className="keybinding-conflict__actions">
-                              <button
-                                className="pane__button pane__button--compact"
-                                onClick={() =>
-                                  pendingConflict
-                                    ? handleResolvePendingKeybindingConflict()
-                                    : handleWhackKeybindingConflicts(
-                                        definition.id,
-                                        displayedConflictBinding
-                                      )
-                                }
-                                type="button"
-                              >
-                                Whack-a-mole
-                              </button>
-                              {pendingConflict ? (
-                                <button
-                                  className="pane__button pane__button--compact pane__button--quiet"
-                                  onClick={handleCancelPendingKeybindingConflict}
-                                  type="button"
-                                >
-                                  Cancel
-                                </button>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </Fragment>
-                  );
-                })}
-                {visibleKeybindingDefinitions.length === 0 ? (
-                  <div className="snippet-empty">No matching keybindings.</div>
-                ) : null}
-              </div>
-
-              <section className="keybindings-card">
-                <div className="keybindings-card__header">
-                  <h4>Mouse gestures</h4>
-                  <span className="pane__meta">Fixed</span>
-                </div>
-                <div className="keybindings-gesture-list">
-                  <div>
-                    <span>Insert cursor</span>
-                    <kbd>{isAppleShortcutPlatform ? "Option+Click" : "Alt+Click"}</kbd>
-                  </div>
-                  <div>
-                    <span>Rectangular selection</span>
-                    <kbd>{isAppleShortcutPlatform ? "Shift+Option+Drag" : "Shift+Alt+Drag"}</kbd>
-                  </div>
-                  <div>
-                    <span>Zoom pane under pointer</span>
-                    <kbd>{isAppleShortcutPlatform ? "Option+Scroll" : "Alt+Scroll"}</kbd>
-                  </div>
-                </div>
-              </section>
-
-              <div className="keybindings-footer">
-                <button
-                  className="pane__button pane__button--quiet"
-                  onClick={handleResetAllKeybindings}
-                  type="button"
-                >
-                  Reset all
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : settingsTab === "snippets" ? (
-          <div className="settings-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="settings-section__header">
-                <h3>Snippets</h3>
-                <span className="pane__meta">
-                  {activeSnippetLanguageLabel} · {activeAllSnippets.length} total ·{" "}
-                  {activeCustomSnippets.length} custom
-                </span>
-              </div>
-
-              <div
-                className="snippet-language-tabs"
-                role="tablist"
-                aria-label="Snippet language"
-              >
-                {SNIPPET_LANGUAGES.map((language) => (
-                  <button
-                    aria-selected={activeSnippetLanguage === language}
-                    className={`snippet-language-tab ${
-                      activeSnippetLanguage === language ? "snippet-language-tab--active" : ""
-                    }`}
-                    key={language}
-                    onClick={() => handleSnippetLanguageChange(language)}
-                    role="tab"
-                    type="button"
-                  >
-                    {SNIPPET_LANGUAGE_LABELS[language]}
-                  </button>
-                ))}
-              </div>
-
-              <div className="snippet-columns">
-                <section className="snippet-column">
-                  <div className="snippet-column__header">
-                    <h4>Built in</h4>
-                    <span className="pane__meta">{activeDefaultSnippets.length}</span>
-                  </div>
-                  <div className="snippet-list">
-                    {activeDefaultSnippets.map((snippet) => (
-                      <article className="snippet-card" key={snippet.prefix}>
-                        <div className="snippet-card__top">
-                          <strong>{snippet.prefix}</strong>
-                          <span className="snippet-card__detail">{snippet.description}</span>
-                        </div>
-                        <code className="snippet-card__body">{snippet.body}</code>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="snippet-column">
-                  <div className="snippet-column__header">
-                    <h4>Custom</h4>
-                    <span className="pane__meta">{activeCustomSnippets.length}</span>
-                  </div>
-                  {activeCustomSnippets.length > 0 ? (
-                    <div className="snippet-list">
-                      {activeCustomSnippets.map((snippet) => (
-                        <article className="snippet-card" key={snippet.prefix}>
-                          <div className="snippet-card__top">
-                            <strong>{snippet.prefix}</strong>
-                            <button
-                              className="snippet-card__remove"
-                              onClick={() => handleRemoveCustomSnippet(snippet.prefix)}
-                              type="button"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                          <code className="snippet-card__body">{snippet.body}</code>
-                          {snippet.description ? (
-                            <span className="snippet-card__detail">{snippet.description}</span>
-                          ) : null}
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="snippet-empty">
-                      Import your own {activeSnippetLanguageLabel} snippets to extend
-                      autocomplete.
-                    </div>
-                  )}
-                  <DocumentStatsPanel stats={documentStats} />
-                </section>
-              </div>
-
-              <section className="snippet-import-card">
-                <div className="snippet-import-card__copy">
-                  <h4>Import snippets</h4>
-                  <p>
-                    Paste JSON here or upload a file for {activeSnippetLanguageLabel}. Accepted
-                    shapes include a <code>snippets</code> array or a simple object map of{" "}
-                    <code>prefix</code> to snippet body.
-                  </p>
-                </div>
-                <textarea
-                  className="snippet-import-card__textarea"
-                  onChange={handleSnippetImportTextChange}
-                  placeholder={JSON.stringify(
-                    getSnippetImportTemplate(activeSnippetLanguage),
-                    null,
-                    2
-                  )}
-                  value={snippetImportText}
-                />
-                <div className="snippet-import-card__actions">
-                  <button
-                    className="pane__button"
-                    onClick={() => snippetImportInputRef.current?.click()}
-                    type="button"
-                  >
-                    Import JSON
-                  </button>
-                  <button
-                    className="pane__button"
-                    onClick={handleImportPastedSnippets}
-                    type="button"
-                  >
-                    Import pasted JSON
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    onClick={handleDownloadSnippetTemplate}
-                    type="button"
-                  >
-                    Download template
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    onClick={handleDownloadCustomSnippets}
-                    type="button"
-                  >
-                    Download current
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    onClick={handleClearCustomSnippets}
-                    type="button"
-                  >
-                    Clear custom
-                  </button>
-                </div>
-                {snippetImportFeedback.text ? (
-                  <div
-                    className={`sync-feedback snippet-import-card__feedback ${
-                      snippetImportFeedback.tone === "success"
-                        ? "sync-feedback--success"
-                        : snippetImportFeedback.tone === "error"
-                          ? "sync-feedback--error"
-                          : ""
-                    }`}
-                  >
-                    <span>{snippetImportFeedback.text}</span>
-                  </div>
-                ) : null}
-              </section>
-            </div>
-          </div>
-        ) : settingsTab === "packages" ? (
-          <div className="settings-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="settings-section__header">
-                <h3>Packages</h3>
-                <span className="pane__meta">
-                  {packageSettingsScope === "typst"
-                    ? `${packageCacheEntries.length} installed · ${formatByteSize(packageCacheTotalBytes)}`
-                    : `${detectedLatexPackages.length} detected · ${
-                        latexPackageBundleEntries.filter((entry) => entry.cached).length
-                      } bundles ready`}
-                </span>
-              </div>
-
-              <div className="package-scope-tabs" role="tablist" aria-label="Package type">
-                <button
-                  aria-selected={packageSettingsScope === "typst"}
-                  className={`package-scope-tab ${
-                    packageSettingsScope === "typst" ? "package-scope-tab--active" : ""
-                  }`}
-                  onClick={() => setPackageSettingsScope("typst")}
-                  role="tab"
-                  type="button"
-                >
-                  Typst
-                </button>
-                <button
-                  aria-selected={packageSettingsScope === "latex"}
-                  className={`package-scope-tab ${
-                    packageSettingsScope === "latex" ? "package-scope-tab--active" : ""
-                  }`}
-                  onClick={() => setPackageSettingsScope("latex")}
-                  role="tab"
-                  type="button"
-                >
-                  LaTeX
-                </button>
-              </div>
-
-              {packageSettingsScope === "typst" ? (
-                <>
-                  <section className="package-cache-card">
-                <div className="package-cache-card__copy">
-                  <h4>Add from Universe</h4>
-                  <p>
-                    Search Typst Universe for packages while online, then download them now so
-                    they stay available offline later.
-                  </p>
-                </div>
-                <div className="package-search-field">
-                  <input
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    className="package-search-input"
-                    disabled={!isOnline}
-                    onChange={(event) => setPackageSearchQuery(event.target.value)}
-                    placeholder={
-                      isOnline
-                        ? "Search Universe packages like cetz or oxifmt"
-                        : "Go online to search Typst Universe"
-                    }
-                    type="search"
-                    value={packageSearchQuery}
-                  />
-                  {packageSearchQuery ? (
-                    <button
-                      aria-label="Clear package search"
-                      className="package-search-clear"
-                      onClick={() => setPackageSearchQuery("")}
-                      type="button"
-                    >
-                      <span aria-hidden="true" className="package-search-clear__icon" />
-                    </button>
-                  ) : null}
-                </div>
-                {!isOnline ? (
-                  <div className="snippet-empty">
-                    Universe search is only available while you are online.
-                  </div>
-                ) : isPackageSearchLoading ? (
-                  <div className="snippet-empty">Searching Typst Universe...</div>
-                ) : filteredRepositoryPackages.length > 0 ? (
-                  <div className="package-repository-list" role="list">
-                    {visibleRepositoryPackages.map((entry) => (
-                      <article className="package-cache-row" key={entry.name} role="listitem">
-                        <div className="package-cache-row__main">
-                          <strong>
-                            <a
-                              className="package-cache-row__link"
-                              href={`https://typst.app/universe/package/${entry.name}/`}
-                              rel="noreferrer"
-                              target="_blank"
-                            >
-                              @{entry.namespace}/{entry.name}
-                            </a>
-                          </strong>
-                          <span>
-                            v{entry.version}
-                            {entry.description ? ` · ${entry.description}` : ""}
-                          </span>
-                        </div>
-                        <button
-                          className="pane__button"
-                          disabled={
-                            !isOnline ||
-                            installingPackageName === entry.name ||
-                            installedPackageKeys.has(`${entry.namespace}/${entry.name}:${entry.version}`)
-                          }
-                          onClick={() => {
-                            void handleInstallTypstPackage(entry);
-                          }}
-                          type="button"
-                        >
-                          {installingPackageName === entry.name
-                            ? "Installing..."
-                            : installedPackageKeys.has(
-                                  `${entry.namespace}/${entry.name}:${entry.version}`
-                                )
-                              ? "Installed"
-                              : "Install"}
-                        </button>
-                      </article>
-                    ))}
-                    {filteredRepositoryPackages.length > visibleRepositoryPackages.length ? (
-                      <button
-                        className="pane__button pane__button--quiet package-repository-list__more"
-                        onClick={() =>
-                          setPackageSearchVisibleCount((currentCount) => currentCount + 5)
-                        }
-                        type="button"
-                      >
-                        Show more...
-                      </button>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="snippet-empty">
-                    {packageSearchQuery.trim()
-                      ? "No matching packages found on Typst Universe."
-                      : "Start typing to search Typst Universe packages."}
-                  </div>
-                )}
-              </section>
-
-              <section className="package-cache-card">
-                <div className="package-cache-card__copy">
-                  <h4>Offline package storage</h4>
-                  <p>
-                    Cached Typst packages stay available offline and are reused until you
-                    remove them here.
-                  </p>
-                </div>
-                <div className="package-cache-card__actions">
-                  <button
-                    className="pane__button"
-                    onClick={() => {
-                      void refreshTypstPackageCache();
-                    }}
-                    type="button"
-                  >
-                    {isPackageCacheLoading ? "Refreshing..." : "Refresh"}
-                  </button>
-                  <button
-                    className="pane__button pane__button--quiet"
-                    disabled={packageCacheEntries.length === 0 || isPackageCacheClearing}
-                    onClick={() => {
-                      void handleClearTypstPackages();
-                    }}
-                    type="button"
-                  >
-                    {isPackageCacheClearing ? "Clearing..." : "Clear cache"}
-                  </button>
-                </div>
-                {packageCacheFeedback.text ? (
-                  <div
-                    className={`sync-feedback package-cache-card__feedback ${
-                      packageCacheFeedback.tone === "success"
-                        ? "sync-feedback--success"
-                        : packageCacheFeedback.tone === "error"
-                          ? "sync-feedback--error"
-                          : ""
-                    }`}
-                  >
-                    <span>{packageCacheFeedback.text}</span>
-                  </div>
-                ) : null}
-              </section>
-
-              {isPackageCacheLoading && packageCacheEntries.length === 0 ? (
-                <div className="snippet-empty">Loading cached packages...</div>
-              ) : packageCacheEntries.length > 0 ? (
-                <div className="package-cache-list" role="list">
-                  {packageCacheEntries.map((entry) => (
-                    <article className="package-cache-row" key={entry.reference.key} role="listitem">
-                      <div className="package-cache-row__main">
-                        <strong>{entry.reference.key}</strong>
-                        <span>{formatByteSize(entry.sizeBytes)}</span>
-                      </div>
-                      <button
-                        className="pane__button pane__button--quiet"
-                        onClick={() => {
-                          void handleRemoveTypstPackage(entry);
-                        }}
-                        type="button"
-                      >
-                        Remove
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <div className="snippet-empty">
-                  No Typst packages are cached yet. Import a package in a document to install
-                  it here.
-                </div>
-              )}
-                </>
-              ) : (
-                <>
-                  <section className="package-cache-card">
-                    <div className="package-cache-card__copy">
-                      <h4>Manual download</h4>
-                      <p>
-                        Search LaTeX package names from the local BusyTeX catalog, then cache the
-                        TeX Live bundle that contains them.
-                      </p>
-                    </div>
-                    <div className="package-search-field">
-                      <input
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        className="package-search-input"
-                        onChange={(event) => setLatexPackageSearchQuery(event.target.value)}
-                        placeholder="Search LaTeX packages like amsmath or tikz"
-                        type="search"
-                        value={latexPackageSearchQuery}
-                      />
-                      {latexPackageSearchQuery ? (
-                        <button
-                          aria-label="Clear package search"
-                          className="package-search-clear"
-                          onClick={() => setLatexPackageSearchQuery("")}
-                          type="button"
-                        >
-                          <span aria-hidden="true" className="package-search-clear__icon" />
-                        </button>
-                      ) : null}
-                    </div>
-                    {isLatexPackageCacheLoading && !latexPackageCatalog ? (
-                      <div className="snippet-empty">Loading LaTeX package catalog...</div>
-                    ) : latexPackageSearchResults.length > 0 ? (
-                      <div className="package-repository-list" role="list">
-                        {latexPackageSearchResults.map((entry) =>
-                          renderLatexPackageResolutionRow(entry, `search-${entry.name}`)
-                        )}
-                      </div>
-                    ) : (
-                      <div className="snippet-empty">
-                        {latexPackageSearchQuery.trim()
-                          ? "No matching LaTeX packages found in the bundled catalog."
-                          : "Start typing to find the bundle for a LaTeX package."}
-                      </div>
-                    )}
-                  </section>
-
-                  <section className="package-cache-card">
-                    <div className="package-cache-card__copy">
-                      <h4>Used in project</h4>
-                      <p>
-                        Packages from LaTeX source files appear here automatically. Uncached
-                        entries can be downloaded from their row.
-                      </p>
-                    </div>
-                    {detectedLatexPackages.length > 0 ? (
-                      <div className="package-cache-list" role="list">
-                        {uncachedDetectedLatexPackages.map((entry) =>
-                          renderLatexPackageResolutionRow(entry, `detected-missing-${entry.name}`)
-                        )}
-                        {detectedLatexPackages
-                          .filter(
-                            (entry) =>
-                              !uncachedDetectedLatexPackages.some(
-                                (missingEntry) => missingEntry.name === entry.name
-                              )
-                          )
-                          .map((entry) =>
-                            renderLatexPackageResolutionRow(entry, `detected-cached-${entry.name}`)
-                          )}
-                      </div>
-                    ) : (
-                      <div className="snippet-empty">
-                        No LaTeX packages have been detected in this project yet.
-                      </div>
-                    )}
-                  </section>
-
-                  <section className="package-cache-card">
-                    <div className="package-cache-card__copy">
-                      <h4>Manual extra packages</h4>
-                      <p>Extra packages cached from search.</p>
-                    </div>
-                    {manualExtraLatexPackages.length > 0 ? (
-                      <div className="package-cache-list" role="list">
-                        {manualExtraLatexPackages.map((entry) => (
-                          <article className="package-cache-row" key={entry.name} role="listitem">
-                            <div className="package-cache-row__main">
-                              <strong>{entry.name}</strong>
-                              <span>{formatLatexPackageBundleLabel("texlive-extra")}</span>
-                            </div>
-                            <button
-                              className="pane__button pane__button--quiet"
-                              onClick={() => handleRemoveCachedLatexPackage(entry.name)}
-                              type="button"
-                            >
-                              Remove
-                            </button>
-                          </article>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="snippet-empty">
-                        No manually cached extra packages.
-                      </div>
-                    )}
-                  </section>
-
-                  <section className="package-cache-card">
-                    <div className="package-cache-card__copy">
-                      <h4>TeX Live bundle storage</h4>
-                      <p>
-                        BusyTeX downloads LaTeX packages as grouped TeX Live data bundles. Basic
-                        is loaded by default; Recommended and Extra can be cached manually.
-                      </p>
-                    </div>
-                    <div className="package-cache-card__actions">
-                      <button
-                        className="pane__button"
-                        onClick={() => {
-                          void refreshLatexPackageCache();
-                        }}
-                        type="button"
-                      >
-                        {isLatexPackageCacheLoading ? "Refreshing..." : "Refresh"}
-                      </button>
-                      <button
-                        className="pane__button pane__button--quiet"
-                        disabled={
-                          isLatexPackageCacheClearing ||
-                          latexPackageBundleEntries.every((entry) => entry.defaultLoaded || !entry.cached)
-                        }
-                        onClick={() => {
-                          void handleClearLatexBundles();
-                        }}
-                        type="button"
-                      >
-                        {isLatexPackageCacheClearing ? "Clearing..." : "Clear cache"}
-                      </button>
-                    </div>
-                    {latexPackageFeedback.text ? (
-                      <div
-                        className={`sync-feedback package-cache-card__feedback ${
-                          latexPackageFeedback.tone === "success"
-                            ? "sync-feedback--success"
-                            : latexPackageFeedback.tone === "error"
-                              ? "sync-feedback--error"
-                              : ""
-                        }`}
-                      >
-                        <span>{latexPackageFeedback.text}</span>
-                      </div>
-                    ) : null}
-                    {isLatexPackageCacheLoading && latexPackageBundleEntries.length === 0 ? (
-                      <div className="snippet-empty">Loading LaTeX package bundles...</div>
-                    ) : (
-                      <div className="package-cache-list" role="list">
-                        {latexPackageBundleEntries.map((entry) => (
-                          <article className="package-cache-row" key={entry.id} role="listitem">
-                            <div className="package-cache-row__main">
-                              <strong>{entry.label}</strong>
-                              <span>
-                                {entry.packageCount.toLocaleString()} packages ·{" "}
-                                {entry.sizeBytes > 0
-                                  ? formatByteSize(entry.sizeBytes)
-                                  : "size unavailable"}{" "}
-                                ·{" "}
-                                {entry.defaultLoaded
-                                  ? "Loaded by default"
-                                  : entry.cached
-                                    ? "Cached"
-                                    : "Not cached"}
-                              </span>
-                            </div>
-                            {entry.defaultLoaded ? (
-                              <span className="package-cache-row__badge">Default</span>
-                            ) : entry.cached ? (
-                              <button
-                                className="pane__button pane__button--quiet"
-                                disabled={installingLatexBundleId === entry.id}
-                                onClick={() => {
-                                  void handleRemoveLatexBundle(entry.id);
-                                }}
-                                type="button"
-                              >
-                                Remove
-                              </button>
-                            ) : (
-                              <button
-                                className="pane__button"
-                                disabled={installingLatexBundleId === entry.id}
-                                onClick={() => {
-                                  void handleCacheLatexBundle(entry.id);
-                                }}
-                                type="button"
-                              >
-                                {installingLatexBundleId === entry.id ? "Caching..." : "Cache"}
-                              </button>
-                            )}
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                </>
-              )}
-            </div>
-          </div>
-        ) : null}
-      </div>
-
-    </section>
+      <SettingsPanelContent bindings={settingsPanelBindings} />
+    </SettingsSheet>
   );
 
   return (
@@ -17237,7 +14286,7 @@ ${nextLine}` : nextLine;
               title="Docs"
               type="button"
             >
-              <span aria-hidden="true" className="activity-icon activity-icon--help">?</span>
+              <span aria-hidden="true" className="activity-icon activity-icon--docs" />
               <span className="visually-hidden">Docs</span>
             </button>
             <button
@@ -17325,10 +14374,8 @@ ${nextLine}` : nextLine;
                   >
                     <span
                       aria-hidden="true"
-                      className={`activity-icon activity-icon--${tool.id === "docs" ? "help" : tool.id}`}
-                    >
-                      {tool.id === "docs" ? "?" : null}
-                    </span>
+                      className={`activity-icon activity-icon--${tool.id}`}
+                    />
                     {tool.id === "debug" && lastBuildFailed ? <span className="activity-status-badge" aria-hidden="true" /> : null}
                     <span className="visually-hidden">{tool.label}</span>
                   </button>
@@ -17603,26 +14650,13 @@ ${nextLine}` : nextLine;
                         </>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
-                      workspaceContextMenu.node.source.kind === "graph" ? (
-                        <button
-                          className="workspace-context-menu__item"
-                          onClick={() => handleInspectWorkspaceGraph(workspaceContextMenu.node)}
-                          type="button"
-                        >
-                          Inspect
-                        </button>
-                      ) : null}
-                      {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
-                        workspaceContextMenu.node.source.kind === "diagram" ||
-                        workspaceContextMenu.node.source.kind === "graph") ? (
+                        workspaceContextMenu.node.source.kind === "diagram") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() =>
                             workspaceContextMenu.node.source.kind === "diagram"
                               ? handleOpenWorkspaceDiagram(workspaceContextMenu.node)
-                              : workspaceContextMenu.node.source.kind === "graph"
-                                ? handleOpenWorkspaceGraph(workspaceContextMenu.node)
                               : handleOpenWorkspaceFile(workspaceContextMenu.node.path)
                           }
                           type="button"
@@ -17633,8 +14667,7 @@ ${nextLine}` : nextLine;
                       {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
                         workspaceContextMenu.node.source.kind === "folder" ||
-                        workspaceContextMenu.node.source.kind === "diagram" ||
-                        workspaceContextMenu.node.source.kind === "graph") ? (
+                        workspaceContextMenu.node.source.kind === "diagram") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() => handleRequestWorkspaceRename(workspaceContextMenu.node)}
@@ -17646,8 +14679,7 @@ ${nextLine}` : nextLine;
                       {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
                         workspaceContextMenu.node.source.kind === "folder" ||
-                        workspaceContextMenu.node.source.kind === "diagram" ||
-                        workspaceContextMenu.node.source.kind === "graph") ? (
+                        workspaceContextMenu.node.source.kind === "diagram") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() => handleRequestWorkspaceMove(workspaceContextMenu.node)}
@@ -17659,8 +14691,7 @@ ${nextLine}` : nextLine;
                       {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
                         workspaceContextMenu.node.source.kind === "folder" ||
-                        workspaceContextMenu.node.source.kind === "diagram" ||
-                        workspaceContextMenu.node.source.kind === "graph") ? (
+                        workspaceContextMenu.node.source.kind === "diagram") ? (
                         <button
                           className="workspace-context-menu__item"
                           onClick={() => handleDownloadWorkspaceNode(workspaceContextMenu.node)}
@@ -17672,8 +14703,7 @@ ${nextLine}` : nextLine;
                       {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
                         workspaceContextMenu.node.source.kind === "folder" ||
-                        workspaceContextMenu.node.source.kind === "diagram" ||
-                        workspaceContextMenu.node.source.kind === "graph") ? (
+                        workspaceContextMenu.node.source.kind === "diagram") ? (
                         <button
                           className="workspace-context-menu__item workspace-context-menu__item--danger"
                           onClick={() => handleDeleteWorkspaceNode(workspaceContextMenu.node)}
@@ -17908,21 +14938,7 @@ ${nextLine}` : nextLine;
                   <DiagramEditorErrorBoundary>
                     <DiagramEditor
                       diagram={diagram}
-                      inkColor={diagramInkColor}
-                      fillColor={diagramFillColor}
-                      strokeStyle={diagramStrokeStyle}
-                      strokeWidth={diagramStrokeWidth}
-                      startMarker={diagramStartMarker}
-                      endMarker={diagramEndMarker}
-                      isExpanded={isDiagramInlineExpanded}
-                      onAddStroke={handleAddDiagramStroke}
-                      onAddShape={handleAddDiagramShape}
-                      onUpdateStroke={handleUpdateDiagramStroke}
-                      onUpdateShape={handleUpdateDiagramShape}
-                      onUpdateFrame={handleUpdateDiagramFrame}
                       onSvgChange={handleUpdateDiagramSvg}
-                      onRemoveStroke={handleRemoveDiagramStroke}
-                      onRemoveShape={handleRemoveDiagramShape}
                       onClear={handleClearDiagram}
                       onNew={handleNewDiagram}
                       onNewSvg={handleNewDiagramSvg}
@@ -17932,44 +14948,8 @@ ${nextLine}` : nextLine;
                       onInsertSvg={handleInsertDiagramSvgIntoDocument}
                       onRename={handleRenameDiagram}
                       onDownloadSvg={handleDownloadDiagramSvg}
-                      onUndo={handleUndoDiagramStroke}
-                      onInkColorChange={setDiagramInkColor}
-                      onFillColorChange={setDiagramFillColor}
-                      onStrokeStyleChange={setDiagramStrokeStyle}
-                      onStrokeWidthChange={setDiagramStrokeWidth}
-                      onStartMarkerChange={setDiagramStartMarker}
-                      onEndMarkerChange={setDiagramEndMarker}
-                      onExpandLeft={undefined}
-                      onExpandRight={undefined}
-                      paperView={isPaperView}
                     />
                   </DiagramEditorErrorBoundary>
-                </section>
-              ) : null}
-
-              {activeSidebarTool === "graph" ? (
-                <section
-                  ref={filesSectionRef}
-                  className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
-                    isGraphInlineExpanded ? "sidebar-section--pane-expanded" : ""
-                  } ${isSidebarOnlyWorkspace ? "sidebar-section--pane-full" : ""}`}
-                  onScroll={handleLeftPaneScroll}
-                >
-                  <GraphEditorErrorBoundary>
-                    <GraphEditor
-                      graph={graph}
-                      isExpanded={isGraphInlineExpanded}
-                      previewLayoutKey="sidebar"
-                      onExpandLeft={undefined}
-                      onExpandRight={undefined}
-                      onInsertIntoDocument={handleInsertGraphIntoDocument}
-                      onInsertSourceIntoDocument={handleInsertGraphSourceIntoDocument}
-                      onNew={handleNewGraph}
-                      onRename={handleRenameGraph}
-                      onSave={handleSaveGraph}
-                      paperView={isPaperView}
-                    />
-                  </GraphEditorErrorBoundary>
                 </section>
               ) : null}
 
@@ -18565,195 +15545,14 @@ ${nextLine}` : nextLine;
                     </details>
 
                     {activeSourceLanguage === "typst" || activeSourceLanguage === "latex" ? (
-                      <details className="sidebar-card debug-section" open>
-                        <summary className="debug-section__summary">
-                          <span>Build log</span>
-                          <span className="pane__meta">{filteredBuildLogEntries.length}/{buildLogEntries.length}</span>
-                        </summary>
-                        <div className="debug-control-grid">
-                          <label>
-                            <span>Filter</span>
-                            <select value={buildLogFilter} onChange={(event) => setBuildLogFilter(event.target.value as BuildLogFilter)}>
-                              <option value="all">All builds</option>
-                              <option value="errors">Errors only</option>
-                              <option value="warnings">Warnings only</option>
-                              <option value="current-file">Current file</option>
-                              <option value="latex">LaTeX only</option>
-                            </select>
-                          </label>
-                          <label>
-                            <span>Search</span>
-                            <input
-                              onChange={(event) => setBuildLogSearchQuery(event.target.value)}
-                              placeholder="log, file, package"
-                              type="search"
-                              value={buildLogSearchQuery}
-                            />
-                          </label>
-                          <label className="debug-toggle">
-                            <input
-                              checked={hideRepeatedBuildWarnings}
-                              onChange={(event) => setHideRepeatedBuildWarnings(event.target.checked)}
-                              type="checkbox"
-                            />
-                            <span className="debug-toggle__track" aria-hidden="true" />
-                            <span>Hide repeated warnings</span>
-                          </label>
-                        </div>
-                        <div className="sidebar-card__actions debug-action-row">
-                          <button className="pane__button pane__button--compact" onClick={handleCopyBuildLog} type="button">
-                            Copy filtered build log
-                          </button>
-                          <button className="pane__button pane__button--compact" onClick={handleCopyDiagnostics} type="button">
-                            Copy filtered diagnostics
-                          </button>
-                          <button className="pane__button pane__button--compact" onClick={handleExportBuildLogText} type="button">
-                            Export filtered build log text
-                          </button>
-                          <button className="pane__button pane__button--compact" onClick={handleExportBuildLogJson} type="button">
-                            Export filtered build log JSON
-                          </button>
-                          <button
-                            className="pane__button pane__button--compact"
-                            onClick={() => setBuildLogEntries([])}
-                            type="button"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                        {buildLogFeedback ? <p className="sidebar-card__copy">{buildLogFeedback}</p> : null}
-                        {filteredBuildLogEntries.length > 0 ? (
-                          <>
-                            <div className="build-log-timeline-header">
-                              <span>Recent build durations</span>
-                            </div>
-                            <div className="build-log-timeline" aria-label="Recent build duration timeline">
-                              {filteredBuildLogEntries.slice(0, 12).map((entry) => (
-                                <span
-                                  className={`build-log-timeline__bar build-log-timeline__bar--${entry.ok ? "success" : "error"}`}
-                                  key={`timeline:${entry.id}`}
-                                  style={{ height: `${Math.max(12, Math.round((entry.durationMs / buildLogTimelineMaxMs) * 42))}px` }}
-                                  title={`${entry.sourcePath}: ${formatDurationMs(entry.durationMs)}`}
-                                />
-                              ))}
-                            </div>
-                            <div className="build-log-list">
-                              {filteredBuildLogEntries.map((entry, index) => {
-                                const previousEntry = getPreviousBuildLogEntry(filteredBuildLogEntries, index);
-                                const visibleDiagnostics = hideRepeatedBuildWarnings
-                                  ? dedupeRepeatedWarnings(entry.diagnostics)
-                                  : entry.diagnostics;
-
-                                return (
-                                  <details className="build-log-entry" key={entry.id}>
-                                    <summary>
-                                      <span className={`build-log-status build-log-status--${entry.ok ? "success" : "error"}`}>
-                                        {entry.ok ? "ok" : "error"}
-                                      </span>
-                                      <span className="build-log-entry__main">
-                                        <strong>{entry.sourcePath}</strong>
-                                        <span>
-                                          {formatSourceLanguageLabel(entry.language)} · {entry.engine} · {entry.trigger} · {formatDurationMs(entry.durationMs)}
-                                        </span>
-                                      </span>
-                                      <time>{new Date(entry.startedAt).toLocaleTimeString()}</time>
-                                    </summary>
-                                    <div className="sidebar-card__actions build-log-entry__actions">
-                                      <button className="pane__button pane__button--compact" onClick={() => rerunBuildLogEntry(entry)} type="button">
-                                        Rerun
-                                      </button>
-                                      <button className="pane__button pane__button--compact" onClick={() => void handleCopyText(formatBuildLogEntryText(entry), "Build entry copied.")} type="button">
-                                        Copy
-                                      </button>
-                                    </div>
-                                    <ul className="sidebar-card__list build-log-entry__details">
-                                      <li>
-                                        <span>Started</span>
-                                        <span>{new Date(entry.startedAt).toLocaleString()}</span>
-                                      </li>
-                                      <li>
-                                        <span>Trigger</span>
-                                        <span>{entry.trigger}</span>
-                                      </li>
-                                      <li>
-                                        <span>Mode</span>
-                                        <span>{entry.compileMode}{entry.cached ? " · cached" : ""}</span>
-                                      </li>
-                                      <li>
-                                        <span>Output</span>
-                                        <span>{entry.outputChanged ? "changed" : "unchanged"}</span>
-                                      </li>
-                                      {previousEntry ? (
-                                        <li>
-                                          <span>Previous</span>
-                                          <span>
-                                            {formatDurationMs(entry.durationMs - previousEntry.durationMs)} duration · {entry.diagnostics.length - previousEntry.diagnostics.length} diagnostics
-                                          </span>
-                                        </li>
-                                      ) : null}
-                                      {entry.shellEscapeUnavailable ? (
-                                        <li>
-                                          <span>Shell escape</span>
-                                          <span>Unavailable in browser BusyTeX</span>
-                                        </li>
-                                      ) : null}
-                                      {entry.metadata?.strategy ? (
-                                        <li>
-                                          <span>Strategy</span>
-                                          <span>{formatCompileStrategySummary(entry.metadata)}</span>
-                                        </li>
-                                      ) : null}
-                                      {entry.metadata?.timings?.map((timing) => (
-                                        <li key={`${entry.id}:${timing.label}:${timing.durationMs}`}>
-                                          <span>{timing.label}</span>
-                                          <span>{formatDurationMs(timing.durationMs)}</span>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                    {entry.packageDetails.length > 0 ? (
-                                      <details className="build-log-nested-details">
-                                        <summary>Package resolution</summary>
-                                        <pre>{entry.packageDetails.join("\n")}</pre>
-                                      </details>
-                                    ) : null}
-                                    {entry.rawLog ? (
-                                      <details className="build-log-nested-details">
-                                        <summary>Raw LaTeX log</summary>
-                                        <pre>{formatDebugOutputExcerpt(entry.rawLog)}</pre>
-                                      </details>
-                                    ) : null}
-                                    {visibleDiagnostics.length > 0 ? (
-                                      <div className="sidebar-diagnostics build-log-entry__diagnostics" role="list">
-                                        {groupDiagnosticsByFile(visibleDiagnostics).map((group) => (
-                                          <div className="build-log-diagnostic-group" key={`${entry.id}:${group.file}`}>
-                                            <strong>{group.file}</strong>
-                                            {group.diagnostics.map((diagnostic, diagnosticIndex) => (
-                                              <div className="sidebar-diagnostic" key={`${entry.id}:${group.file}:${diagnostic.message}:${diagnosticIndex}`}>
-                                                <strong>
-                                                  {diagnostic.severity}
-                                                  {formatDiagnosticRange(diagnostic) ? ` · ${formatDiagnosticRange(diagnostic)}` : ""}
-                                                </strong>
-                                                <span>{diagnostic.message}</span>
-                                                {diagnostic.line ? (
-                                                  <button className="pane__button pane__button--compact" onClick={() => jumpToDiagnostic(diagnostic, entry.sourcePath)} type="button">
-                                                    Jump
-                                                  </button>
-                                                ) : null}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    ) : null}
-                                  </details>
-                                );
-                              })}
-                            </div>
-                          </>
-                        ) : (
-                          <p className="sidebar-card__copy">No builds match the current filters.</p>
-                        )}
-                      </details>
+                      <BuildLogPanel
+                        controller={buildLogController}
+                        downloadFile={downloadFile}
+                        formatCompileStrategySummary={formatCompileStrategySummary}
+                        formatRawLogExcerpt={formatDebugOutputExcerpt}
+                        jumpToDiagnostic={jumpToDiagnostic}
+                        rerunEntry={rerunBuildLogEntry}
+                      />
                     ) : null}
 
                     {activeSourceLanguage === "typst" || activeSourceLanguage === "latex" ? (
@@ -19074,11 +15873,6 @@ ${nextLine}` : nextLine;
           )}
           {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
             <>
-              {showGraphInspectWarning ? (
-                <div className="source-inline-status source-inline-status--warning">
-                  Editing this graph file changes the saved Typst source, but it will no longer round-trip through the graph editor tab.
-                </div>
-              ) : null}
               <TypstEditor
                 ref={editorRef}
                 diagnostics={editorDiagnostics}
@@ -19093,7 +15887,7 @@ ${nextLine}` : nextLine;
                 onFormatRequested={handleFormatDocument}
                 onCloseRequested={handleCloseActiveSourceTab}
                 onSearchRequested={openSearchPane}
-                onSelectionChange={setCurrentEditorLineNumber}
+                onSelectionChange={handleSourceEditorSelectionChange}
                 onSourceDoubleClick={handleEditorSourceDoubleClick}
                 onFocusChange={setIsEditorFocused}
                 imagePasteInVim={snapshot.preferences.pastedImages.enabled}
@@ -19153,25 +15947,6 @@ ${nextLine}` : nextLine;
           {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) && compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}
-            </div>
-          ) : null}
-          {hoveredSourceSymbol ? (
-            <div
-              className="source-symbol-tooltip"
-              style={
-                {
-                  left: `${hoveredSourceSymbol.x}px`,
-                  top: `${hoveredSourceSymbol.y}px`
-                } as CSSProperties
-              }
-            >
-              <div className="source-symbol-tooltip__label">{hoveredSourceSymbol.item.label}</div>
-              <code className="source-symbol-tooltip__code">
-                {hoveredSourceSymbol.item.template}
-              </code>
-              {hoveredSourceSymbol.item.template.includes("${") ? (
-                <span className="source-symbol-tooltip__hint">Tab moves through fields</span>
-              ) : null}
             </div>
           ) : null}
         </section>
@@ -19511,224 +16286,6 @@ function ThemeCard({
   );
 }
 
-function MenuDropdown({
-  activeMenu,
-  children,
-  label,
-  onClose,
-  onCloseImmediately,
-  onNavigate,
-  onOpen,
-  onOpenImmediately
-}: {
-  activeMenu: MenuLabel | null;
-  children: ReactNode;
-  label: MenuLabel;
-  onClose: () => void;
-  onCloseImmediately: () => void;
-  onNavigate: (currentLabel: MenuLabel, direction: -1 | 1) => void;
-  onOpen: () => void;
-  onOpenImmediately: () => void;
-}) {
-  const panelId = useId();
-  const isOpen = activeMenu === label;
-
-  function focusMenuItem(
-    container: HTMLDivElement | null,
-    direction: 1 | -1,
-    currentTarget?: EventTarget | null
-  ) {
-    if (!container) {
-      return;
-    }
-
-    const items = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".menu-action:not(:disabled)")
-    );
-
-    if (items.length === 0) {
-      return;
-    }
-
-    const currentIndex = currentTarget
-      ? items.findIndex((item) => item === currentTarget)
-      : -1;
-    const fallbackIndex = direction === 1 ? 0 : items.length - 1;
-    const nextIndex =
-      currentIndex === -1
-        ? fallbackIndex
-        : (currentIndex + direction + items.length) % items.length;
-
-    items[nextIndex]?.focus();
-  }
-
-  return (
-    <div
-      className={`menu-dropdown ${isOpen ? "menu-dropdown--open" : ""}`}
-      onMouseEnter={onOpen}
-      onMouseLeave={onClose}
-    >
-      <button
-        aria-controls={panelId}
-        aria-expanded={isOpen}
-        aria-haspopup="menu"
-        className="menu-dropdown__trigger"
-        onClick={() => {
-          if (isOpen) {
-            onCloseImmediately();
-            return;
-          }
-
-          onOpenImmediately();
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowRight") {
-            event.preventDefault();
-            onNavigate(label, 1);
-          }
-
-          if (event.key === "ArrowLeft") {
-            event.preventDefault();
-            onNavigate(label, -1);
-          }
-
-          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            onOpenImmediately();
-          }
-
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onClose();
-          }
-        }}
-        type="button"
-      >
-        {label}
-      </button>
-      {isOpen ? (
-        <div
-          className="menu-dropdown__panel"
-          id={panelId}
-          onKeyDown={(event) => {
-            const container = event.currentTarget;
-
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              focusMenuItem(container, 1, event.target);
-            }
-
-            if (event.key === "ArrowUp") {
-              event.preventDefault();
-              focusMenuItem(container, -1, event.target);
-            }
-
-            if (event.key === "Home") {
-              event.preventDefault();
-              focusMenuItem(container, 1);
-            }
-
-            if (event.key === "End") {
-              event.preventDefault();
-              focusMenuItem(container, -1);
-            }
-
-            if (event.key === "ArrowRight") {
-              event.preventDefault();
-              onNavigate(label, 1);
-            }
-
-            if (event.key === "ArrowLeft") {
-              event.preventDefault();
-              onNavigate(label, -1);
-            }
-
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
-            }
-          }}
-          role="menu"
-        >
-          {children}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-interface SavedLatexPdfOptions {
-  allowStale: boolean;
-  project: TyprProjectRepository;
-  sourcePath: string;
-  source: string;
-}
-
-function loadSavedLatexPdfCompileResult(
-  options: SavedLatexPdfOptions
-): CompileResult | null {
-  const pdfPath = getExistingLatexPdfPath(options.project, options.sourcePath);
-
-  if (!pdfPath) {
-    return null;
-  }
-
-  const pdfEntry = options.project.filesystem.entries[pdfPath];
-
-  if (!pdfEntry || pdfEntry.kind !== "file") {
-    return null;
-  }
-
-  const sourceEntry = options.project.filesystem.entries[
-    normalizeCompilerPath(options.sourcePath) || options.sourcePath
-  ];
-
-  if (
-    sourceEntry?.kind === "file" &&
-    typeof sourceEntry.content === "string" &&
-    sourceEntry.content !== options.source
-  ) {
-    return null;
-  }
-
-  if (
-    !options.allowStale &&
-    !isSavedLatexPdfFreshForSource({
-      pdfUpdatedAt: pdfEntry.updatedAt,
-      project: options.project,
-      source: options.source,
-      sourcePath: options.sourcePath
-    })
-  ) {
-    return null;
-  }
-
-  return {
-    ok: true,
-    engine: "busytex",
-    diagnostics: [],
-    output: {
-      kind: "pdf",
-      content: "",
-      artifactData:
-        typeof pdfEntry.content === "string"
-          ? new TextEncoder().encode(pdfEntry.content)
-          : new Uint8Array(pdfEntry.content),
-      sourceMapData: readSavedLatexSynctexBytes(options.project, options.sourcePath)
-    },
-    metadata: {
-      timings: [{ label: "Load saved PDF", durationMs: 0 }]
-    }
-  } satisfies CompileResult;
-}
-
-function readSavedLatexSynctexBytes(
-  project: TyprProjectRepository,
-  sourcePath: string
-): Uint8Array | undefined {
-  return readProjectFileBytes(project, getLatexSynctexOutputPath(sourcePath)) ?? undefined;
-}
-
 function writeGeneratedLatexPdfFile(
   project: TyprProjectRepository,
   sourcePath: string,
@@ -19775,65 +16332,6 @@ function writeGeneratedLatexPdfFile(
   );
 }
 
-function isSavedLatexPdfFreshForSource({
-  pdfUpdatedAt,
-  project,
-  source,
-  sourcePath
-}: {
-  pdfUpdatedAt: string;
-  project: TyprProjectRepository;
-  source: string;
-  sourcePath: string;
-}): boolean {
-  const pdfUpdatedAtMs = Date.parse(pdfUpdatedAt);
-
-  if (!Number.isFinite(pdfUpdatedAtMs)) {
-    return false;
-  }
-
-  const sourceEntry = project.filesystem.entries[
-    normalizeCompilerPath(sourcePath) || sourcePath
-  ];
-
-  if (
-    !sourceEntry ||
-    sourceEntry.kind !== "file" ||
-    typeof sourceEntry.content !== "string" ||
-    sourceEntry.content !== source
-  ) {
-    return false;
-  }
-
-  const sourceUpdatedAtMs = Date.parse(sourceEntry.updatedAt);
-
-  if (!Number.isFinite(sourceUpdatedAtMs)) {
-    return false;
-  }
-
-  return sourceUpdatedAtMs <= pdfUpdatedAtMs;
-}
-
-function getLatexSynctexOutputPath(sourcePath: string): string {
-  const normalizedSourcePath = normalizeCompilerPath(sourcePath) || sourcePath;
-
-  if (/\.(tex|ltx|latex)$/i.test(normalizedSourcePath)) {
-    return normalizedSourcePath.replace(/\.(tex|ltx|latex)$/i, ".synctex.gz");
-  }
-
-  return normalizedSourcePath + ".synctex.gz";
-}
-
-function getExistingLatexPdfPath(
-  project: TyprProjectRepository,
-  sourcePath: string
-): string | null {
-  const pdfPath = getLatexPdfOutputPath(sourcePath);
-  const pdfEntry = project.filesystem.entries[pdfPath];
-
-  return pdfEntry?.kind === "file" ? pdfPath : null;
-}
-
 function resolveLatexSourcePathForPdfPreview(
   previewPath: string,
   project: TyprProjectRepository | null,
@@ -19870,199 +16368,6 @@ function getWorkspaceTabDisplayPath(_kind: WorkspaceTabKind, path: string): stri
   return path;
 }
 
-function areBytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) {
-    return false;
-  }
-
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function shouldReuseCompileResult(
-  current: CompileResult | null,
-  next: CompileResult
-): current is CompileResult {
-  if (!current || current.ok !== next.ok || current.engine !== next.engine) {
-    return false;
-  }
-
-  if (current.ok && next.ok) {
-    return (
-      current.output.kind === next.output.kind &&
-      current.output.content === next.output.content &&
-      areDiagnosticsEqual(current.diagnostics, next.diagnostics) &&
-      areCompileMetadataEqual(current.metadata, next.metadata)
-    );
-  }
-
-  if (!current.ok && !next.ok) {
-    return (
-      areDiagnosticsEqual(current.errors, next.errors) &&
-      areCompileMetadataEqual(current.metadata, next.metadata)
-    );
-  }
-
-  return false;
-}
-
-function reuseCompileOutputIfUnchanged(
-  current: CompileResult | null,
-  next: CompileResult
-): CompileResult {
-  if (!current?.ok || !next.ok || current.engine !== next.engine) {
-    return next;
-  }
-
-  if (!areCompileOutputsEqual(current, next)) {
-    return next;
-  }
-
-  return {
-    ...next,
-    output:
-      next.output.kind === "pdf"
-        ? {
-            ...next.output,
-            artifactData: current.output.artifactData
-          }
-        : current.output
-  };
-}
-
-function didCompileOutputChange(
-  current: CompileResult | null,
-  next: CompileResult
-): boolean {
-  if (!current?.ok || !next.ok || current.engine !== next.engine) {
-    return true;
-  }
-
-  return !areCompileOutputsEqual(current, next);
-}
-
-function areCompileOutputsEqual(
-  current: Extract<CompileResult, { ok: true }>,
-  next: Extract<CompileResult, { ok: true }>
-): boolean {
-  if (current.output.kind !== next.output.kind) {
-    return false;
-  }
-
-  if (current.output.kind !== "pdf" && current.output.content !== next.output.content) {
-    return false;
-  }
-
-  return getCompileArtifactSignature(current) === getCompileArtifactSignature(next);
-}
-
-function getCompileArtifactSignature(result: Extract<CompileResult, { ok: true }>): string {
-  const artifactData = result.output.artifactData;
-
-  if (!artifactData) {
-    return "none";
-  }
-
-  let hash = 0x811c9dc5;
-
-  for (let index = 0; index < artifactData.byteLength; index += 1) {
-    hash ^= artifactData[index];
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  return `${artifactData.byteLength}:${(hash >>> 0).toString(16)}`;
-}
-
-function areDiagnosticsEqual(
-  current: {
-    message: string;
-    severity: "error" | "warning";
-    path?: string;
-    range?: string;
-    packageName?: string;
-    line?: number;
-    column?: number;
-    endLine?: number;
-    endColumn?: number;
-  }[],
-  next: {
-    message: string;
-    severity: "error" | "warning";
-    path?: string;
-    range?: string;
-    packageName?: string;
-    line?: number;
-    column?: number;
-    endLine?: number;
-    endColumn?: number;
-  }[]
-): boolean {
-  if (current.length !== next.length) {
-    return false;
-  }
-
-  return current.every((currentDiagnostic, index) => {
-    const nextDiagnostic = next[index];
-
-    return (
-      currentDiagnostic.message === nextDiagnostic.message &&
-      currentDiagnostic.severity === nextDiagnostic.severity &&
-      currentDiagnostic.path === nextDiagnostic.path &&
-      currentDiagnostic.range === nextDiagnostic.range &&
-      currentDiagnostic.packageName === nextDiagnostic.packageName &&
-      currentDiagnostic.line === nextDiagnostic.line &&
-      currentDiagnostic.column === nextDiagnostic.column &&
-      currentDiagnostic.endLine === nextDiagnostic.endLine &&
-      currentDiagnostic.endColumn === nextDiagnostic.endColumn
-    );
-  });
-}
-
-function areCompileMetadataEqual(
-  current: CompileMetadata | undefined,
-  next: CompileMetadata | undefined
-): boolean {
-  if (!current && !next) {
-    return true;
-  }
-
-  if (!current || !next) {
-    return false;
-  }
-
-  const currentTimings = current.timings ?? [];
-  const nextTimings = next.timings ?? [];
-
-  if (currentTimings.length !== nextTimings.length) {
-    return false;
-  }
-
-  for (let index = 0; index < currentTimings.length; index += 1) {
-    if (
-      currentTimings[index].label !== nextTimings[index].label ||
-      Math.round(currentTimings[index].durationMs) !== Math.round(nextTimings[index].durationMs)
-    ) {
-      return false;
-    }
-  }
-
-  const currentFileSync = current.fileSync;
-  const nextFileSync = next.fileSync;
-
-  return (
-    currentFileSync?.changedFiles === nextFileSync?.changedFiles &&
-    currentFileSync?.deletedFiles === nextFileSync?.deletedFiles &&
-    currentFileSync?.cachedFiles === nextFileSync?.cachedFiles &&
-    currentFileSync?.compileFiles === nextFileSync?.compileFiles &&
-    JSON.stringify(current.dirty ?? null) === JSON.stringify(next.dirty ?? null) &&
-    JSON.stringify(current.strategy ?? null) === JSON.stringify(next.strategy ?? null)
-  );
-}
 
 function formatCompileTimingTotal(metadata: CompileMetadata): string {
   const totalMs = (metadata.timings ?? []).reduce((total, timing) => total + timing.durationMs, 0);
@@ -20292,23 +16597,6 @@ function readProjectTextFileOrDefault(
   return bytes ? new TextDecoder().decode(bytes) : fallback;
 }
 
-function getSettingsTabTitle(tab: SettingsTab): string {
-  switch (tab) {
-    case "git":
-      return "Git";
-    case "themes":
-      return "Themes";
-    case "editor":
-      return "Editor";
-    case "keybindings":
-      return "Keybindings";
-    case "snippets":
-      return "Snippets";
-    case "packages":
-      return "Packages";
-  }
-}
-
 function getSidebarToolTitle(tool: SidebarTool): string {
   switch (tool) {
     case "projects":
@@ -20325,8 +16613,6 @@ function getSidebarToolTitle(tool: SidebarTool): string {
       return "MiTeX";
     case "diagram":
       return "Diagram";
-    case "graph":
-      return "Graph";
     case "sync":
       return "Sync";
     case "debug":
@@ -20338,93 +16624,1770 @@ function getSidebarToolTitle(tool: SidebarTool): string {
   }
 }
 
-function getSidebarToolSubtitle(tool: SidebarTool): string {
-  switch (tool) {
-    case "projects":
-      return "Local workspaces";
-    case "files":
-      return "Files";
-    case "source-tools":
-      return "Source actions";
-    case "search":
-      return "";
-    case "outline":
-      return "Document structure";
-    case "mitex":
-      return "LaTeX to Typst";
-    case "diagram":
-      return "Freehand SVG sketch";
-    case "graph":
-      return "Desmos graph editor";
-    case "sync":
-      return "Version control";
-    case "debug":
-      return "Compiler and diagnostics";
-    case "docs":
-      return "User guide";
-    case "settings":
-      return "Preferences";
-  }
+function buildSnippetPlaceholder(index: number, label: string): string {
+  return `\${${index}:${label}}`;
 }
 
-function buildMatrixTemplate(settings: MatrixSettings): string {
+function buildMatrixTemplate(settings: MatrixSettings, language: SourceLanguage): string {
+  if (language === "latex") {
+    return buildLatexMatrixTemplate(settings);
+  }
+
+  if (language === "markdown" || language === "text") {
+    return `$$\n${buildLatexMatrixBody(settings)}\n$$`;
+  }
+
+  return buildTypstMatrixTemplate(settings);
+}
+
+function buildTypstMatrixTemplate(settings: MatrixSettings): string {
   const delimiter = MATRIX_DELIMITER_OPTIONS.find((option) => option.id === settings.delimiter);
-  const rows = Math.max(1, Math.min(6, Math.floor(settings.rows)));
-  const columns = Math.max(1, Math.min(6, Math.floor(settings.columns)));
+  const rows = clampMatrixDimension(settings.rows, MATRIX_MIN_ROWS, MATRIX_MAX_ROWS);
+  const columns = clampMatrixDimension(settings.columns, MATRIX_MIN_COLUMNS, MATRIX_MAX_COLUMNS);
+  const cellsByRow = createMatrixCells(rows, columns, settings.cells);
   let cellIndex = 1;
   const rowStrings = Array.from({ length: rows }, (_unused, rowIndex) => {
     const cells = Array.from({ length: columns }, (_unusedCell, columnIndex) => {
-      const placeholder = `\${${cellIndex}:*}`;
+      const cellValue = cellsByRow[rowIndex]?.[columnIndex]?.trim() ?? "";
+
+      if (cellValue) {
+        return escapeSnippetText(cellValue);
+      }
+
+      const placeholder = buildSnippetPlaceholder(cellIndex, "*");
       cellIndex += 1;
       return placeholder;
     });
 
     return `  ${cells.join(", ")};`;
   });
-  const delimiterLine = delimiter && delimiter.id !== "none" ? `  delim: "${delimiter.delim}"` : "";
+  const delimiterLine = delimiter
+    ? delimiter.id === "none"
+      ? "  delim: none"
+      : `  delim: "${delimiter.delim}"`
+    : "";
   const body = delimiterLine ? `${rowStrings.join("\n")}\n${delimiterLine}` : rowStrings.join("\n");
 
-  return `mat(
-${body}
-)`;
+  return `mat(\n${body}\n)`;
 }
 
-function buildTableTemplate(settings: TableSettings): string {
-  const rows = Math.max(1, Math.min(8, Math.floor(settings.rows)));
-  const columns = Math.max(1, Math.min(6, Math.floor(settings.columns)));
+function buildLatexMatrixTemplate(settings: MatrixSettings): string {
+  return `\\[\n${buildLatexMatrixBody(settings)}\n\\]`;
+}
+
+function buildLatexMatrixBody(settings: MatrixSettings): string {
+  const rows = clampMatrixDimension(settings.rows, MATRIX_MIN_ROWS, MATRIX_MAX_ROWS);
+  const columns = clampMatrixDimension(settings.columns, MATRIX_MIN_COLUMNS, MATRIX_MAX_COLUMNS);
+  const cellsByRow = createMatrixCells(rows, columns, settings.cells);
   let cellIndex = 1;
+  const rowStrings = Array.from({ length: rows }, (_unused, rowIndex) => {
+    const cells = Array.from({ length: columns }, (_unusedCell, columnIndex) => {
+      const cellValue = cellsByRow[rowIndex]?.[columnIndex]?.trim() ?? "";
 
-  const buildRow = () =>
-    Array.from({ length: columns }, (_unusedCell, columnIndex) => {
-      const placeholder = `\${${cellIndex}:*}`;
+      if (cellValue) {
+        return escapeLatexText(cellValue);
+      }
+
+      const placeholder = buildSnippetPlaceholder(cellIndex, "*");
       cellIndex += 1;
-      return `[${placeholder}]`;
-    }).join(", ");
+      return placeholder;
+    });
 
-  const headerRow = settings.header ? `  table.header(\n    ${buildRow()},\n  ),` : "";
-  const bodyRows = Array.from({ length: rows }, () => {
-    return `  ${buildRow()},`;
-  }).join("\n");
-  const footerRow = settings.footer ? `  table.footer(\n    ${buildRow()},\n  ),` : "";
+    return `  ${cells.join(" & ")}${rowIndex < rows - 1 ? " \\\\" : ""}`;
+  });
+
+  if (settings.delimiter === "angle") {
+    return `\\left\\langle\n\\begin{matrix}\n${rowStrings.join("\n")}\n\\end{matrix}\n\\right\\rangle`;
+  }
+
+  const environment =
+    settings.delimiter === "bracket"
+      ? "bmatrix"
+      : settings.delimiter === "brace"
+        ? "Bmatrix"
+        : settings.delimiter === "bar"
+          ? "vmatrix"
+          : settings.delimiter === "none"
+            ? "matrix"
+            : "pmatrix";
+
+  return `\\begin{${environment}}\n${rowStrings.join("\n")}\n\\end{${environment}}`;
+}
+
+function normalizeTableBackgroundColor(color: string | undefined): string {
+  const trimmed = color?.trim() ?? "";
+  return /^#[0-9a-f]{6}$/i.test(trimmed) ? trimmed.toLowerCase() : "";
+}
+
+function getTypstColorValue(color: string | undefined): string | null {
+  const normalized = normalizeTableBackgroundColor(color);
+  return normalized ? `rgb("${normalized}")` : null;
+}
+
+function getLatexHtmlColor(color: string | undefined): string | null {
+  const normalized = normalizeTableBackgroundColor(color);
+  return normalized ? normalized.slice(1).toUpperCase() : null;
+}
+
+function tableHasBackgroundColor(settings: TableSettings): boolean {
+  return Boolean(
+    normalizeTableBackgroundColor(settings.tableFormat.backgroundColor) ||
+    settings.columnFormats.some((format) => normalizeTableBackgroundColor(format.backgroundColor)) ||
+    settings.rowFormats.some((format) => normalizeTableBackgroundColor(format.backgroundColor)) ||
+    settings.cellFormats.some((row) => row.some((format) => normalizeTableBackgroundColor(format.backgroundColor)))
+  );
+}
+
+function buildTableTemplate(settings: TableSettings, language: SourceLanguage): string {
+  if (language === "latex") {
+    return buildLatexTableTemplate(settings);
+  }
+
+  if (language === "markdown" || language === "text") {
+    return buildMarkdownTableTemplate(settings);
+  }
+
+  return buildTypstTableTemplate(settings);
+}
+
+function resolveTableBaseFormat(settings: TableSettings): TableResolvedCellFormat {
+  return {
+    ...DEFAULT_TABLE_FORMAT,
+    align: normalizeTableHorizontalAlignment(settings.align),
+    padding: settings.inset === "medium" ? "medium" : settings.inset === "none" ? "none" : "small",
+    strokeStyle: settings.stroke === "none" ? "none" : "solid",
+    ...(settings.tableFormat ?? {})
+  };
+}
+
+function resolveTableColumnFormat(settings: TableSettings, columnIndex: number): TableResolvedCellFormat {
+  return {
+    ...resolveTableBaseFormat(settings),
+    ...(settings.columnFormats?.[columnIndex] ?? {})
+  };
+}
+
+function getTablePaddingOption(padding: TablePadding) {
+  return TABLE_PADDING_OPTIONS.find((option) => option.id === padding) ?? TABLE_PADDING_OPTIONS[1];
+}
+
+function getTableStrokeWeightOption(weight: TableStrokeWeight) {
+  return TABLE_STROKE_WEIGHT_OPTIONS.find((option) => option.id === weight) ?? TABLE_STROKE_WEIGHT_OPTIONS[0];
+}
+
+function getTypstAlignmentValue(format: TableResolvedCellFormat): string {
+  const vertical = TABLE_VERTICAL_ALIGNMENT_OPTIONS.find((option) => option.id === format.verticalAlign)?.typstValue ?? "horizon";
+  return `${format.align} + ${vertical}`;
+}
+
+function getTypstStrokeValue(format: TableResolvedCellFormat): string {
+  if (format.strokeStyle === "none") {
+    return "none";
+  }
+
+  const thickness = getTableStrokeWeightOption(format.strokeWeight).typstValue;
+
+  if (format.strokeStyle === "dashed" || format.strokeStyle === "dotted") {
+    return `(paint: black, thickness: ${thickness}, dash: "${format.strokeStyle}")`;
+  }
+
+  return `${thickness} + black`;
+}
+
+function getTypstBorderStrokeValue(border: TableCellBorder): string {
+  if (border.strokeStyle === "none") {
+    return "none";
+  }
+
+  const thickness = getTableStrokeWeightOption(border.strokeWeight).typstValue;
+
+  if (border.strokeStyle === "dashed" || border.strokeStyle === "dotted") {
+    return `(paint: black, thickness: ${thickness}, dash: "${border.strokeStyle}")`;
+  }
+
+  return `${thickness} + black`;
+}
+
+function getTypstExplicitCellStrokeValue(settings: TableSettings, rowIndex: number, columnIndex: number): string | null {
+  const hasExplicitBorder = TABLE_BORDER_EDGES.some((edge) =>
+    Boolean(getTableFormatBorder(settings, rowIndex, columnIndex, edge))
+  );
+
+  if (!hasExplicitBorder) {
+    return null;
+  }
+
+  const cellFormat = resolveTableCellFormat(settings, rowIndex, columnIndex);
+  const fallbackBorder: TableCellBorder = {
+    strokeStyle: cellFormat.strokeStyle,
+    strokeWeight: cellFormat.strokeWeight
+  };
+  const borderEntries = TABLE_BORDER_EDGES.map((edge) => {
+    const border = getTableFormatBorder(settings, rowIndex, columnIndex, edge) ?? fallbackBorder;
+    return `${edge}: ${getTypstBorderStrokeValue(border)}`;
+  });
+
+  return `(${borderEntries.join(", ")})`;
+}
+
+function formatTypstCellContent(settings: TableSettings, rowIndex: number, columnIndex: number, cellIndex: { current: number }): string {
+  const cellValue = settings.cells[rowIndex]?.[columnIndex]?.trim() ?? "";
+
+  if (cellValue) {
+    return escapeTypstContent(cellValue);
+  }
+
+  const placeholderLabel = getTableCellPlaceholder(rowIndex, columnIndex, settings);
+  const placeholder = buildSnippetPlaceholder(
+    cellIndex.current,
+    placeholderLabel === "*" ? "Cell" : placeholderLabel
+  );
+  cellIndex.current += 1;
+  return placeholder;
+}
+
+function buildTypstTableCell(settings: TableSettings, rowIndex: number, columnIndex: number, cellIndex: { current: number }): string | null {
+  const merge = getTableMergeForCell(settings, rowIndex, columnIndex);
+
+  if (merge && !tableMergeIsAnchor(merge, rowIndex, columnIndex)) {
+    return null;
+  }
+
+  const baseFormat = resolveTableBaseFormat(settings);
+  const cellFormat = resolveTableCellFormat(settings, rowIndex, columnIndex);
+  const options: string[] = [];
+
+  if (merge?.columnSpan && merge.columnSpan > 1) {
+    options.push(`colspan: ${merge.columnSpan}`);
+  }
+
+  if (merge?.rowSpan && merge.rowSpan > 1) {
+    options.push(`rowspan: ${merge.rowSpan}`);
+  }
+
+  if (getTypstAlignmentValue(cellFormat) !== getTypstAlignmentValue(baseFormat)) {
+    options.push(`align: ${getTypstAlignmentValue(cellFormat)}`);
+  }
+
+  if (cellFormat.padding !== baseFormat.padding) {
+    options.push(`inset: ${getTablePaddingOption(cellFormat.padding).typstValue}`);
+  }
+
+  if (cellFormat.backgroundColor !== baseFormat.backgroundColor) {
+    options.push(`fill: ${getTypstColorValue(cellFormat.backgroundColor) ?? "none"}`);
+  }
+
+  const explicitStroke = getTypstExplicitCellStrokeValue(settings, rowIndex, columnIndex);
+
+  if (explicitStroke) {
+    options.push(`stroke: ${explicitStroke}`);
+  } else if (
+    cellFormat.strokeStyle !== baseFormat.strokeStyle ||
+    cellFormat.strokeWeight !== baseFormat.strokeWeight
+  ) {
+    options.push(`stroke: ${getTypstStrokeValue(cellFormat)}`);
+  }
+
+  const content = formatTypstCellContent(settings, rowIndex, columnIndex, cellIndex);
+
+  if (options.length === 0) {
+    return `[${content}]`;
+  }
+
+  return `table.cell(${options.join(", ")})[${content}]`;
+}
+
+function buildTypstTableTemplate(settings: TableSettings): string {
+  const rows = clampMatrixDimension(settings.rows, TABLE_MIN_ROWS, TABLE_MAX_ROWS);
+  const columns = clampMatrixDimension(settings.columns, TABLE_MIN_COLUMNS, TABLE_MAX_COLUMNS);
+  const cellIndex = { current: 1 };
+  const buildRow = (rowIndex: number) => {
+    const cells: string[] = [];
+
+    for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
+      const cell = buildTypstTableCell(settings, rowIndex, columnIndex, cellIndex);
+
+      if (cell) {
+        cells.push(cell);
+      }
+    }
+
+    return cells.join(", ");
+  };
+  const bodyRowIndexes = Array.from({ length: rows }, (_unused, rowIndex) => rowIndex).filter(
+    (rowIndex) => !(settings.header && rowIndex === 0) && !isTableFooterRow(settings, rowIndex)
+  );
+  const headerRow = settings.header ? `  table.header(\n    ${buildRow(0)},\n  ),` : "";
+  const bodyRows = bodyRowIndexes.map((rowIndex) => `  ${buildRow(rowIndex)},`).join("\n");
+  const footerRow = settings.footer && rows > 1 ? `  table.footer(\n    ${buildRow(rows - 1)},\n  ),` : "";
+  const baseFormat = resolveTableBaseFormat(settings);
   const gutter = TABLE_GUTTER_OPTIONS.find((option) => option.id === settings.gutter)?.value ?? "0pt";
-  const inset = TABLE_INSET_OPTIONS.find((option) => option.id === settings.inset)?.value ?? "0pt";
-  const stroke = settings.stroke === "none" ? "none" : "1pt + black";
-  const align = settings.align;
+  const backgroundFill = getTypstColorValue(baseFormat.backgroundColor);
   const fillLine = settings.striped
-    ? "  fill: (x, y) => if y == 0 { luma(232) } else if calc.odd(y) { luma(246) } else { white },"
-    : "";
+    ? `  fill: (x, y) => if y == 0 { luma(232) } else if calc.odd(y) { luma(246) } else { ${backgroundFill ?? "white"} },`
+    : backgroundFill
+      ? `  fill: ${backgroundFill},`
+      : "";
+  const tableRows = [fillLine, headerRow, bodyRows, footerRow].filter(Boolean).join("\n");
+  const table = `table(\n  columns: ${columns},\n  align: ${getTypstAlignmentValue(baseFormat)},\n  gutter: ${gutter},\n  inset: ${getTablePaddingOption(baseFormat.padding).typstValue},\n  stroke: ${getTypstStrokeValue(baseFormat)},\n${tableRows}\n)`;
+  const caption = settings.caption.trim();
 
-  return `#table(
-  columns: ${columns},
-  align: ${align},
-  gutter: ${gutter},
-  inset: ${inset},
-  stroke: ${stroke},
-${fillLine}
-${headerRow}
-${bodyRows}
-${footerRow}
-)`;
+  if (!caption) {
+    return `#${table}`;
+  }
+
+  return `#figure(\n  ${table.replace(/\n/g, "\n  ")},\n  caption: [${escapeTypstContent(caption)}],\n)`;
+}
+
+function getLatexAlignLetter(align: TableHorizontalAlignment): string {
+  if (align === "right") {
+    return "r";
+  }
+
+  if (align === "center") {
+    return "c";
+  }
+
+  return "l";
+}
+
+function getLatexRuleSeparator(format: TableResolvedCellFormat): string {
+  switch (format.strokeStyle) {
+    case "none":
+      return "";
+    case "double":
+      return "||";
+    case "dashed":
+    case "dotted":
+      return ":";
+    case "solid":
+    default:
+      return "|";
+  }
+}
+
+function getLatexColumnSpec(settings: TableSettings): string {
+  const baseFormat = resolveTableBaseFormat(settings);
+  const separator = getLatexRuleSeparator(baseFormat);
+  const columns = clampMatrixDimension(settings.columns, TABLE_MIN_COLUMNS, TABLE_MAX_COLUMNS);
+  const specs = Array.from({ length: columns }, (_unused, columnIndex) => {
+    const columnFormat = resolveTableColumnFormat(settings, columnIndex);
+    return getLatexAlignLetter(columnFormat.align);
+  });
+
+  if (!separator) {
+    return specs.join("");
+  }
+
+  return `${separator}${specs.join(separator)}${separator}`;
+}
+
+function getLatexRowRule(format: TableResolvedCellFormat): string | null {
+  switch (format.strokeStyle) {
+    case "none":
+      return null;
+    case "double":
+      return "\\hline\\hline";
+    case "dashed":
+    case "dotted":
+      return "\\hdashline";
+    case "solid":
+    default:
+      return "\\hline";
+  }
+}
+
+function getLatexMulticolumnSpec(format: TableResolvedCellFormat): string {
+  const separator = getLatexRuleSeparator(format);
+  const align = getLatexAlignLetter(format.align);
+
+  return separator ? `${separator}${align}${separator}` : align;
+}
+
+function getLatexRuleSeparatorForBorder(border: TableCellBorder | null): string {
+  switch (border?.strokeStyle) {
+    case "none":
+    case undefined:
+      return "";
+    case "double":
+      return "||";
+    case "dashed":
+    case "dotted":
+      return ":";
+    case "solid":
+    default:
+      return "|";
+  }
+}
+
+function hasExplicitLatexVerticalBorders(settings: TableSettings, rowIndex: number, columnIndex: number): boolean {
+  return Boolean(
+    getTableFormatBorder(settings, rowIndex, columnIndex, "left") ||
+    getTableFormatBorder(settings, rowIndex, columnIndex, "right")
+  );
+}
+
+function getLatexCellMulticolumnSpec(
+  settings: TableSettings,
+  rowIndex: number,
+  columnIndex: number,
+  format: TableResolvedCellFormat
+): string {
+  if (!hasExplicitLatexVerticalBorders(settings, rowIndex, columnIndex)) {
+    return getLatexMulticolumnSpec(format);
+  }
+
+  const left = getLatexRuleSeparatorForBorder(getTableFormatBorder(settings, rowIndex, columnIndex, "left"));
+  const right = getLatexRuleSeparatorForBorder(getTableFormatBorder(settings, rowIndex, columnIndex, "right"));
+
+  return `${left}${getLatexAlignLetter(format.align)}${right}`;
+}
+
+function getLatexHorizontalRuleForBorder(border: TableCellBorder, startColumn: number, endColumn: number): string[] {
+  const range = `${startColumn}-${endColumn}`;
+
+  switch (border.strokeStyle) {
+    case "none":
+      return [];
+    case "double":
+      return [`\\cline{${range}}`, `\\cline{${range}}`];
+    case "dashed":
+    case "dotted":
+      return [`\\cdashline{${range}}`];
+    case "solid":
+    default:
+      return [`\\cline{${range}}`];
+  }
+}
+
+function getLatexHorizontalBorderCommands(
+  settings: TableSettings,
+  rowIndex: number,
+  edge: "top" | "bottom"
+): string[] {
+  const columns = clampMatrixDimension(settings.columns, TABLE_MIN_COLUMNS, TABLE_MAX_COLUMNS);
+  const commands: string[] = [];
+  let segmentStart: number | null = null;
+  let segmentEnd: number | null = null;
+  let segmentBorder: TableCellBorder | null = null;
+  const flushSegment = () => {
+    if (segmentStart == null || segmentEnd == null || !segmentBorder) {
+      return;
+    }
+
+    commands.push(...getLatexHorizontalRuleForBorder(segmentBorder, segmentStart, segmentEnd));
+    segmentStart = null;
+    segmentEnd = null;
+    segmentBorder = null;
+  };
+
+  for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
+    const border = getTableFormatBorder(settings, rowIndex, columnIndex, edge);
+    const borderKey = border ? `${border.strokeStyle}:${border.strokeWeight}` : "none";
+    const segmentKey = segmentBorder ? `${segmentBorder.strokeStyle}:${segmentBorder.strokeWeight}` : "none";
+
+    if (!border || border.strokeStyle === "none") {
+      flushSegment();
+      continue;
+    }
+
+    if (segmentStart == null) {
+      segmentStart = columnIndex + 1;
+      segmentEnd = columnIndex + 1;
+      segmentBorder = border;
+      continue;
+    }
+
+    if (borderKey === segmentKey && segmentEnd === columnIndex) {
+      segmentEnd = columnIndex + 1;
+      continue;
+    }
+
+    flushSegment();
+    segmentStart = columnIndex + 1;
+    segmentEnd = columnIndex + 1;
+    segmentBorder = border;
+  }
+
+  flushSegment();
+  return commands;
+}
+
+function formatLatexCellContent(settings: TableSettings, rowIndex: number, columnIndex: number, cellIndex: { current: number }): string {
+  const cellValue = settings.cells[rowIndex]?.[columnIndex]?.trim() ?? "";
+
+  if (cellValue) {
+    return escapeLatexText(cellValue);
+  }
+
+  const placeholder = buildSnippetPlaceholder(
+    cellIndex.current,
+    getTableCellPlaceholder(rowIndex, columnIndex, settings)
+  );
+  cellIndex.current += 1;
+  return placeholder;
+}
+
+function buildLatexTableCell(settings: TableSettings, rowIndex: number, columnIndex: number, cellIndex: { current: number }): { cell: string; columnSpan: number } | null {
+  const merge = getTableMergeForCell(settings, rowIndex, columnIndex);
+
+  if (merge && !tableMergeIsAnchor(merge, rowIndex, columnIndex)) {
+    if (merge.row < rowIndex && merge.column === columnIndex) {
+      const format = resolveTableCellFormat(settings, merge.row, merge.column);
+      const emptyCell = merge.columnSpan > 1
+        ? `\\multicolumn{${merge.columnSpan}}{${getLatexCellMulticolumnSpec(settings, merge.row, merge.column, format)}}{}`
+        : "";
+
+      return { cell: emptyCell, columnSpan: merge.columnSpan };
+    }
+
+    return null;
+  }
+
+  const columnFormat = resolveTableColumnFormat(settings, columnIndex);
+  const cellFormat = resolveTableCellFormat(settings, rowIndex, columnIndex);
+  const columnSpan = merge?.columnSpan ?? 1;
+  const rowSpan = merge?.rowSpan ?? 1;
+  let content = formatLatexCellContent(settings, rowIndex, columnIndex, cellIndex);
+  const backgroundColor = getLatexHtmlColor(cellFormat.backgroundColor);
+
+  if (backgroundColor) {
+    content = `\\cellcolor[HTML]{${backgroundColor}}${content}`;
+  }
+
+  if (rowSpan > 1) {
+    content = `\\multirow{${rowSpan}}{*}{${content}}`;
+  }
+
+  if (
+    columnSpan > 1 ||
+    cellFormat.align !== columnFormat.align ||
+    hasExplicitLatexVerticalBorders(settings, rowIndex, columnIndex)
+  ) {
+    content = `\\multicolumn{${columnSpan}}{${getLatexCellMulticolumnSpec(settings, rowIndex, columnIndex, cellFormat)}}{${content}}`;
+  }
+
+  return { cell: content, columnSpan };
+}
+
+function getLatexTableSetupLines(settings: TableSettings): string[] {
+  const baseFormat = resolveTableBaseFormat(settings);
+  const padding = getTablePaddingOption(baseFormat.padding);
+  const weight = getTableStrokeWeightOption(baseFormat.strokeWeight);
+  const lines: string[] = [];
+
+  if (baseFormat.padding !== "small") {
+    lines.push(`\\setlength{\\tabcolsep}{${padding.latexTabcolsep}}`);
+    lines.push(`\\renewcommand{\\arraystretch}{${padding.latexArrayStretch}}`);
+  }
+
+  if (baseFormat.strokeStyle !== "none") {
+    lines.push(`\\setlength{\\arrayrulewidth}{${weight.latexValue}}`);
+  }
+
+  if (baseFormat.strokeStyle === "dashed") {
+    lines.push("\\setlength{\\dashlinedash}{3pt}");
+    lines.push("\\setlength{\\dashlinegap}{2pt}");
+  }
+
+  if (baseFormat.strokeStyle === "dotted") {
+    lines.push("\\setlength{\\dashlinedash}{0.6pt}");
+    lines.push("\\setlength{\\dashlinegap}{1.4pt}");
+  }
+
+  return lines;
+}
+
+function buildLatexTableTemplate(settings: TableSettings): string {
+  const rows = clampMatrixDimension(settings.rows, TABLE_MIN_ROWS, TABLE_MAX_ROWS);
+  const columns = clampMatrixDimension(settings.columns, TABLE_MIN_COLUMNS, TABLE_MAX_COLUMNS);
+  const baseFormat = resolveTableBaseFormat(settings);
+  const rowRule = getLatexRowRule(baseFormat);
+  const cellIndex = { current: 1 };
+  const lines: string[] = [];
+
+  if (rowRule) {
+    lines.push(`  ${rowRule}`);
+  }
+
+  for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+    const rowCells: string[] = [];
+    const topBorderCommands = getLatexHorizontalBorderCommands(settings, rowIndex, "top");
+
+    for (const command of topBorderCommands) {
+      lines.push(`  ${command}`);
+    }
+
+    for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
+      const builtCell = buildLatexTableCell(settings, rowIndex, columnIndex, cellIndex);
+
+      if (!builtCell) {
+        continue;
+      }
+
+      rowCells.push(builtCell.cell);
+      columnIndex += Math.max(0, builtCell.columnSpan - 1);
+    }
+
+    lines.push(`  ${rowCells.join(" & ")} \\\\`);
+
+    for (const command of getLatexHorizontalBorderCommands(settings, rowIndex, "bottom")) {
+      lines.push(`  ${command}`);
+    }
+
+    if (
+      rowRule &&
+      (rowIndex === rows - 1 || (settings.header && rowIndex === 0) || isTableFooterRow(settings, rowIndex))
+    ) {
+      lines.push(`  ${rowRule}`);
+    }
+  }
+
+  const setup = getLatexTableSetupLines(settings);
+  const tabular = `${setup.length > 0 ? `${setup.join("\n")}\n` : ""}\\begin{tabular}{${getLatexColumnSpec(settings)}}\n${lines.join("\n")}\n\\end{tabular}`;
+  const caption = settings.caption.trim();
+
+  if (!caption) {
+    return tabular;
+  }
+
+  return `\\begin{table}[htbp]\n\\centering\n\\caption{${escapeLatexText(caption)}}\n${tabular}\n\\end{table}`;
+}
+
+function tableHasExplicitBorderStyle(settings: TableSettings, styles: TableStrokeStyle[]): boolean {
+  return settings.cellFormats.some((row) =>
+    row.some((format) =>
+      TABLE_BORDER_EDGES.some((edge) => {
+        const border = format.borders?.[edge];
+        return Boolean(border && styles.includes(border.strokeStyle));
+      })
+    )
+  );
+}
+
+function getLatexTableRequiredPackages(settings: TableSettings): string[] {
+  const packages: string[] = [];
+  const baseFormat = resolveTableBaseFormat(settings);
+
+  if (settings.merges.some((merge) => merge.rowSpan > 1)) {
+    packages.push("multirow");
+  }
+
+  if (
+    baseFormat.strokeStyle === "dashed" ||
+    baseFormat.strokeStyle === "dotted" ||
+    tableHasExplicitBorderStyle(settings, ["dashed", "dotted"])
+  ) {
+    packages.push("arydshln");
+  }
+
+  if (tableHasBackgroundColor(settings)) {
+    packages.push("xcolor", "colortbl");
+  }
+
+  return packages;
+}
+
+function buildMarkdownTableTemplate(settings: TableSettings): string {
+  const rows = clampMatrixDimension(settings.rows, TABLE_MIN_ROWS, TABLE_MAX_ROWS);
+  const columns = clampMatrixDimension(settings.columns, TABLE_MIN_COLUMNS, TABLE_MAX_COLUMNS);
+  const cellIndex = { current: 1 };
+  const buildCell = (rowIndex: number, columnIndex: number) => {
+    const merge = getTableMergeForCell(settings, rowIndex, columnIndex);
+
+    if (merge && !tableMergeIsAnchor(merge, rowIndex, columnIndex)) {
+      return "";
+    }
+
+    const cellValue = settings.cells[rowIndex]?.[columnIndex]?.trim() ?? "";
+
+    if (cellValue) {
+      return escapeMarkdownTableCell(cellValue);
+    }
+
+    const placeholder = buildSnippetPlaceholder(
+      cellIndex.current,
+      getTableCellPlaceholder(rowIndex, columnIndex, settings)
+    );
+    cellIndex.current += 1;
+    return placeholder;
+  };
+  const lines: string[] = [];
+  const caption = settings.caption.trim();
+
+  if (caption) {
+    lines.push(`Table: ${escapeSnippetText(caption).replace(/\r?\n/g, " ")}`);
+    lines.push("");
+  }
+
+  lines.push(`| ${Array.from({ length: columns }, (_unused, columnIndex) => buildCell(0, columnIndex)).join(" | ")} |`);
+  lines.push(`| ${Array.from({ length: columns }, (_unused, columnIndex) => {
+    const align = resolveTableColumnFormat(settings, columnIndex).align;
+
+    if (align === "right") {
+      return "---:";
+    }
+
+    if (align === "center") {
+      return ":---:";
+    }
+
+    return ":---";
+  }).join(" | ")} |`);
+
+  for (let rowIndex = 1; rowIndex < rows; rowIndex += 1) {
+    lines.push(`| ${Array.from({ length: columns }, (_unused, columnIndex) => buildCell(rowIndex, columnIndex)).join(" | ")} |`);
+  }
+
+  return lines.join("\n");
+}
+
+
+interface ParsedTableSettingsOptions {
+  caption?: string;
+  header?: boolean;
+  footer?: boolean;
+  striped?: boolean;
+  align?: TableHorizontalAlignment;
+  gutter?: TableGutter;
+  tableFormat?: TableCellFormat;
+  columnFormats?: TableCellFormat[];
+  rowFormats?: TableCellFormat[];
+  cellFormats?: TableCellFormat[][];
+  merges?: TableMerge[];
+}
+
+interface SourceLineRange {
+  from: number;
+  to: number;
+  lineBreakTo: number;
+  text: string;
+}
+
+interface TypstTableCellToken {
+  content: string;
+  rowSpan: number;
+  columnSpan: number;
+  hasBackgroundColor?: boolean;
+  backgroundColor?: string;
+}
+
+function findEditableTableAtCursor(
+  source: string,
+  language: SourceLanguage,
+  cursorOffset: number
+): EditableSourceTable | null {
+  const cursor = clampSourceOffset(cursorOffset, source);
+
+  if (language === "typst") {
+    return findTypstTableAtCursor(source, cursor);
+  }
+
+  if (language === "latex") {
+    return findLatexTableAtCursor(source, cursor);
+  }
+
+  if (isMarkdownTableLanguage(language)) {
+    return findMarkdownTableAtCursor(source, cursor, language);
+  }
+
+  return null;
+}
+
+function clampSourceOffset(offset: number, source: string): number {
+  if (!Number.isFinite(offset)) {
+    return 0;
+  }
+
+  return Math.min(source.length, Math.max(0, Math.floor(offset)));
+}
+
+function createParsedTableSettings(cells: string[][], options: ParsedTableSettingsOptions = {}): TableSettings {
+  const rowCount = clampMatrixDimension(Math.max(TABLE_MIN_ROWS, cells.length || 1), TABLE_MIN_ROWS, TABLE_MAX_ROWS);
+  const columnCount = clampMatrixDimension(
+    Math.max(TABLE_MIN_COLUMNS, ...cells.map((row) => row.length), 1),
+    TABLE_MIN_COLUMNS,
+    TABLE_MAX_COLUMNS
+  );
+  const normalizedCells = createTableCells(
+    rowCount,
+    columnCount,
+    cells.slice(0, rowCount).map((row) => row.slice(0, columnCount))
+  );
+  const tableFormat = {
+    ...DEFAULT_TABLE_FORMAT,
+    ...(options.tableFormat ?? {})
+  };
+  const base = resizeTableSettings(createInitialTableSettings(), rowCount, columnCount);
+
+  return {
+    ...base,
+    rows: rowCount,
+    columns: columnCount,
+    header: options.header ?? false,
+    footer: rowCount > 1 ? options.footer ?? false : false,
+    striped: options.striped ?? false,
+    align: options.align ?? tableFormat.align ?? "left",
+    gutter: options.gutter ?? base.gutter,
+    inset: tableFormat.padding === "none" ? "none" : tableFormat.padding === "small" ? "small" : "medium",
+    stroke: tableFormat.strokeStyle === "none" ? "none" : "default",
+    caption: options.caption ?? "",
+    cells: normalizedCells,
+    tableFormat,
+    columnFormats: createTableFormatList(columnCount, options.columnFormats),
+    rowFormats: createTableFormatList(rowCount, options.rowFormats),
+    cellFormats: createTableFormatGrid(rowCount, columnCount, options.cellFormats),
+    merges: normalizeTableMergesForSize(options.merges ?? [], rowCount, columnCount)
+  };
+}
+
+function stripGeneratedSnippetSyntax(value: string): string {
+  return value
+    .replace(/\$\{\d+:([^}]*)\}/g, "$1")
+    .replace(/\$\{\d+\}/g, "")
+    .replace(/\\([\\$}])/g, "$1")
+    .trim();
+}
+
+function cleanParsedCellContent(value: string, language: SourceLanguage): string {
+  let cleaned = stripGeneratedSnippetSyntax(value);
+
+  if (language === "latex") {
+    cleaned = cleaned
+      .replace(/\\textbackslash\{\}/g, "\\")
+      .replace(/\\textasciicircum\{\}/g, "^")
+      .replace(/\\textasciitilde\{\}/g, "~")
+      .replace(/\\([#$%&_{}])/g, "$1");
+  } else if (language === "typst") {
+    cleaned = cleaned.replace(/\\]/g, "]");
+  } else if (isMarkdownTableLanguage(language)) {
+    cleaned = cleaned.replace(/\\\|/g, "|");
+  }
+
+  return cleaned;
+}
+
+function getSourceLineRanges(source: string): SourceLineRange[] {
+  const lines: SourceLineRange[] = [];
+  let from = 0;
+
+  while (from <= source.length) {
+    let to = from;
+
+    while (to < source.length && source[to] !== "\n" && source[to] !== "\r") {
+      to += 1;
+    }
+
+    let lineBreakTo = to;
+
+    if (source[to] === "\r" && source[to + 1] === "\n") {
+      lineBreakTo = to + 2;
+    } else if (source[to] === "\n" || source[to] === "\r") {
+      lineBreakTo = to + 1;
+    }
+
+    lines.push({
+      from,
+      to,
+      lineBreakTo,
+      text: source.slice(from, to)
+    });
+
+    if (lineBreakTo >= source.length) {
+      break;
+    }
+
+    from = lineBreakTo;
+  }
+
+  if (lines.length === 0) {
+    lines.push({ from: 0, to: 0, lineBreakTo: 0, text: "" });
+  }
+
+  return lines;
+}
+
+function isMarkdownPipeRow(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.includes("|") && (trimmed.startsWith("|") || trimmed.endsWith("|"));
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim();
+  const content = trimmed.startsWith("|") ? trimmed.slice(1) : trimmed;
+  const row = content.endsWith("|") ? content.slice(0, -1) : content;
+  const cells: string[] = [];
+  let current = "";
+  let escaped = false;
+
+  for (const char of row) {
+    if (escaped) {
+      current += `\\${char}`;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push((escaped ? `${current}\\` : current).trim());
+  return cells;
+}
+
+function isMarkdownAlignmentRow(line: string): boolean {
+  const cells = splitMarkdownTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function getMarkdownColumnFormat(alignmentCell: string): TableCellFormat {
+  const trimmed = alignmentCell.trim();
+
+  if (trimmed.startsWith(":") && trimmed.endsWith(":")) {
+    return { align: "center" };
+  }
+
+  if (trimmed.endsWith(":")) {
+    return { align: "right" };
+  }
+
+  return { align: "left" };
+}
+
+function findMarkdownTableAtCursor(
+  source: string,
+  cursor: number,
+  language: SourceLanguage
+): EditableSourceTable | null {
+  const lines = getSourceLineRanges(source);
+
+  for (let alignIndex = 1; alignIndex < lines.length; alignIndex += 1) {
+    if (!isMarkdownAlignmentRow(lines[alignIndex].text) || !isMarkdownPipeRow(lines[alignIndex - 1].text)) {
+      continue;
+    }
+
+    let tableStartIndex = alignIndex - 1;
+    let replacementStartIndex = tableStartIndex;
+    let tableEndIndex = alignIndex;
+    let caption = "";
+
+    while (
+      tableEndIndex + 1 < lines.length &&
+      isMarkdownPipeRow(lines[tableEndIndex + 1].text) &&
+      !isMarkdownAlignmentRow(lines[tableEndIndex + 1].text)
+    ) {
+      tableEndIndex += 1;
+    }
+
+    if (
+      replacementStartIndex >= 2 &&
+      lines[replacementStartIndex - 1].text.trim() === "" &&
+      /^Table:\s*/.test(lines[replacementStartIndex - 2].text.trim())
+    ) {
+      caption = lines[replacementStartIndex - 2].text.trim().replace(/^Table:\s*/, "");
+      replacementStartIndex -= 2;
+    }
+
+    const from = lines[replacementStartIndex].from;
+    const to = lines[tableEndIndex].to;
+
+    if (cursor < from || cursor > to) {
+      continue;
+    }
+
+    const alignmentCells = splitMarkdownTableRow(lines[alignIndex].text);
+    const rows = [
+      splitMarkdownTableRow(lines[tableStartIndex].text),
+      ...lines
+        .slice(alignIndex + 1, tableEndIndex + 1)
+        .filter((line) => isMarkdownPipeRow(line.text))
+        .map((line) => splitMarkdownTableRow(line.text))
+    ].map((row) => row.map((cell) => cleanParsedCellContent(cell, language)));
+
+    return {
+      from,
+      to,
+      language,
+      settings: createParsedTableSettings(rows, {
+        caption: cleanParsedCellContent(caption, language),
+        header: true,
+        columnFormats: alignmentCells.map(getMarkdownColumnFormat)
+      })
+    };
+  }
+
+  return null;
+}
+
+function findLatexEnvironmentRangeAtCursor(
+  source: string,
+  cursor: number,
+  environment: string
+): { from: number; to: number } | null {
+  const beginToken = `\\begin{${environment}}`;
+  const endToken = `\\end{${environment}}`;
+  let beginIndex = source.lastIndexOf(beginToken, cursor);
+
+  while (beginIndex >= 0) {
+    const endIndex = source.indexOf(endToken, beginIndex + beginToken.length);
+
+    if (endIndex >= 0) {
+      const to = endIndex + endToken.length;
+
+      if (cursor >= beginIndex && cursor <= to) {
+        return { from: beginIndex, to };
+      }
+    }
+
+    beginIndex = source.lastIndexOf(beginToken, beginIndex - 1);
+  }
+
+  return null;
+}
+
+function findLatexTableAtCursor(source: string, cursor: number): EditableSourceTable | null {
+  const outerRange = findLatexEnvironmentRangeAtCursor(source, cursor, "table");
+  const tabularRange = findLatexEnvironmentRangeAtCursor(source, cursor, "tabular");
+  const range = outerRange ?? tabularRange;
+
+  if (!range) {
+    return null;
+  }
+
+  const block = source.slice(range.from, range.to);
+  const settings = parseLatexTableSettings(block);
+
+  return settings ? { ...range, language: "latex", settings } : null;
+}
+
+function parseLatexTableSettings(block: string): TableSettings | null {
+  const tabularMatch = /\\begin\{tabular\}\{([^}]*)\}([\s\S]*?)\\end\{tabular\}/.exec(block);
+
+  if (!tabularMatch) {
+    return null;
+  }
+
+  const columnSpec = tabularMatch[1];
+  const body = tabularMatch[2];
+  const rawRows = splitLatexTableRows(body);
+  const rows: string[][] = [];
+  const dataRowRawIndexes: number[] = [];
+  const cellFormats: TableCellFormat[][] = [];
+  const merges: TableMerge[] = [];
+
+  rawRows.forEach((rawRow, rawIndex) => {
+    const cleanedRow = cleanLatexTableRow(rawRow);
+
+    if (!cleanedRow) {
+      return;
+    }
+
+    const parsedRow = parseLatexTableRow(cleanedRow, rows.length, merges, cellFormats);
+
+    if (parsedRow.length === 0 || parsedRow.every((cell) => cell.trim() === "")) {
+      return;
+    }
+
+    rows.push(parsedRow);
+    dataRowRawIndexes.push(rawIndex);
+  });
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const columnFormats = parseLatexColumnFormats(columnSpec);
+  const columnCount = Math.max(columnFormats.length, ...rows.map((row) => row.length), 1);
+  const normalizedRows = rows.map((row) => Array.from({ length: columnCount }, (_unused, index) => row[index] ?? ""));
+  const header = dataRowRawIndexes.length > 1 && latexRowStartsWithRule(rawRows[dataRowRawIndexes[1]] ?? "");
+
+  return createParsedTableSettings(normalizedRows, {
+    caption: extractLatexCommandArgument(block, "caption") ?? "",
+    header,
+    columnFormats,
+    tableFormat: parseLatexTableFormat(block, columnSpec),
+    cellFormats,
+    merges
+  });
+}
+
+function splitLatexTableRows(body: string): string[] {
+  const rows: string[] = [];
+  let current = "";
+  let braceDepth = 0;
+
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    const nextChar = body[index + 1];
+
+    if (char === "\\" && nextChar === "\\" && braceDepth === 0) {
+      rows.push(current);
+      current = "";
+      index += 1;
+      continue;
+    }
+
+    current += char;
+
+    if (char === "{" && !isEscapedAt(body, index)) {
+      braceDepth += 1;
+    } else if (char === "}" && !isEscapedAt(body, index)) {
+      braceDepth = Math.max(0, braceDepth - 1);
+    }
+  }
+
+  if (current.trim()) {
+    rows.push(current);
+  }
+
+  return rows;
+}
+
+function cleanLatexTableRow(row: string): string {
+  return row
+    .replace(/%[^\n\r]*/g, "")
+    .replace(/\\(?:hline|hdashline)\b/g, "")
+    .replace(/\\c(?:dash)?line\{[^}]*\}/g, "")
+    .replace(/\\setlength\{[^}]*\}\{[^}]*\}/g, "")
+    .replace(/\\renewcommand\{[^}]*\}\{[^}]*\}/g, "")
+    .trim();
+}
+
+function latexRowStartsWithRule(row: string): boolean {
+  return /^\s*\\(?:hline|hdashline)\b/.test(row.replace(/%[^\n\r]*/g, ""));
+}
+
+function parseLatexTableRow(
+  row: string,
+  rowIndex: number,
+  merges: TableMerge[],
+  cellFormats: TableCellFormat[][]
+): string[] {
+  const cells: string[] = [];
+  let columnIndex = 0;
+
+  for (const rawCell of splitLatexCells(row)) {
+    const parsedCell = parseLatexCell(rawCell);
+
+    cells[columnIndex] = cleanParsedCellContent(parsedCell.content, "latex");
+
+    if (parsedCell.backgroundColor) {
+      cellFormats[rowIndex] ??= [];
+      cellFormats[rowIndex][columnIndex] = { backgroundColor: parsedCell.backgroundColor };
+    }
+
+    if (parsedCell.columnSpan > 1 || parsedCell.rowSpan > 1) {
+      merges.push({
+        row: rowIndex,
+        column: columnIndex,
+        rowSpan: parsedCell.rowSpan,
+        columnSpan: parsedCell.columnSpan
+      });
+    }
+
+    for (let spanOffset = 1; spanOffset < parsedCell.columnSpan; spanOffset += 1) {
+      cells[columnIndex + spanOffset] = "";
+    }
+
+    columnIndex += parsedCell.columnSpan;
+  }
+
+  return cells;
+}
+
+function splitLatexCells(row: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let braceDepth = 0;
+
+  for (let index = 0; index < row.length; index += 1) {
+    const char = row[index];
+
+    if (char === "&" && braceDepth === 0 && !isEscapedAt(row, index)) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+
+    if (char === "{" && !isEscapedAt(row, index)) {
+      braceDepth += 1;
+    } else if (char === "}" && !isEscapedAt(row, index)) {
+      braceDepth = Math.max(0, braceDepth - 1);
+    }
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseLatexCell(rawCell: string): { content: string; columnSpan: number; rowSpan: number; backgroundColor?: string } {
+  let content = rawCell.trim();
+  let columnSpan = 1;
+  let rowSpan = 1;
+  let backgroundColor: string | undefined;
+  const multicolumn = readLatexCommandArguments(content, "multicolumn", 3);
+
+  if (multicolumn && multicolumn.start === 0) {
+    columnSpan = Math.max(1, Number.parseInt(multicolumn.args[0], 10) || 1);
+    content = multicolumn.args[2].trim();
+  }
+
+  const multirow = readLatexCommandArguments(content, "multirow", 3);
+
+  if (multirow && multirow.start === 0) {
+    rowSpan = Math.max(1, Number.parseInt(multirow.args[0], 10) || 1);
+    content = multirow.args[2].trim();
+  }
+
+  const colorMatch = /\\cellcolor(?:\[HTML])?\{([0-9a-fA-F]{6})\}/.exec(content);
+
+  if (colorMatch) {
+    backgroundColor = `#${colorMatch[1].toLowerCase()}`;
+    content = content.replace(colorMatch[0], "").trim();
+  }
+
+  return { content, columnSpan, rowSpan, backgroundColor };
+}
+
+function readLatexCommandArguments(
+  source: string,
+  command: string,
+  expectedCount: number
+): { args: string[]; start: number; end: number } | null {
+  const commandStart = source.indexOf(`\\${command}`);
+
+  if (commandStart < 0) {
+    return null;
+  }
+
+  let index = commandStart + command.length + 1;
+  const args: string[] = [];
+
+  while (args.length < expectedCount) {
+    while (/\s/.test(source[index] ?? "")) {
+      index += 1;
+    }
+
+    if (source[index] !== "{") {
+      return null;
+    }
+
+    const argument = readBalancedBrace(source, index);
+
+    if (!argument) {
+      return null;
+    }
+
+    args.push(argument.content);
+    index = argument.end;
+  }
+
+  return { args, start: commandStart, end: index };
+}
+
+function readBalancedBrace(source: string, openIndex: number): { content: string; end: number } | null {
+  let depth = 0;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (char === "{" && !isEscapedAt(source, index)) {
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}" && !isEscapedAt(source, index)) {
+      depth -= 1;
+
+      if (depth === 0) {
+        return {
+          content: source.slice(openIndex + 1, index),
+          end: index + 1
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractLatexCommandArgument(source: string, command: string): string | null {
+  const argument = readLatexCommandArguments(source, command, 1);
+  return argument ? cleanParsedCellContent(argument.args[0], "latex") : null;
+}
+
+function parseLatexColumnFormats(columnSpec: string): TableCellFormat[] {
+  const formats: TableCellFormat[] = [];
+
+  for (const char of columnSpec) {
+    if (char === "l") {
+      formats.push({ align: "left" });
+    } else if (char === "c") {
+      formats.push({ align: "center" });
+    } else if (char === "r") {
+      formats.push({ align: "right" });
+    }
+  }
+
+  return formats;
+}
+
+function parseLatexTableFormat(block: string, columnSpec: string): TableCellFormat {
+  const padding = block.includes("\\tabcolsep}{0pt}")
+    ? "none"
+    : block.includes("\\tabcolsep}{10pt}")
+      ? "large"
+      : block.includes("\\tabcolsep}{6pt}")
+        ? "medium"
+        : "small";
+  const strokeStyle: TableStrokeStyle = columnSpec.includes(":")
+    ? "dashed"
+    : columnSpec.includes("||")
+      ? "double"
+      : columnSpec.includes("|")
+        ? "solid"
+        : "none";
+  const strokeWeight: TableStrokeWeight = block.includes("\\arrayrulewidth}{1.2pt}")
+    ? "thick"
+    : block.includes("\\arrayrulewidth}{0.8pt}")
+      ? "medium"
+      : "thin";
+
+  return {
+    padding,
+    strokeStyle,
+    strokeWeight
+  };
+}
+
+function findTypstTableAtCursor(source: string, cursor: number): EditableSourceTable | null {
+  const starts: number[] = [];
+
+  for (const token of ["#table(", "#figure("]) {
+    let index = source.indexOf(token);
+
+    while (index >= 0 && index <= cursor) {
+      starts.push(index);
+      index = source.indexOf(token, index + token.length);
+    }
+  }
+
+  starts.sort((left, right) => right - left);
+
+  for (const start of starts) {
+    const openIndex = source.indexOf("(", start);
+    const end = findBalancedParenEnd(source, openIndex);
+
+    if (end == null || cursor > end) {
+      continue;
+    }
+
+    const block = source.slice(start, end);
+    const settings = parseTypstTableSettings(block);
+
+    if (settings) {
+      return {
+        from: start,
+        to: end,
+        language: "typst",
+        settings
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseTypstTableSettings(block: string): TableSettings | null {
+  const tableStart = block.indexOf("table(");
+
+  if (tableStart < 0) {
+    return null;
+  }
+
+  const tableOpen = tableStart + "table".length;
+  const tableEnd = findBalancedParenEnd(block, tableOpen);
+
+  if (tableEnd == null) {
+    return null;
+  }
+
+  const tableText = block.slice(tableStart, tableEnd);
+  const columns = Number.parseInt(/columns:\s*(\d+)/.exec(tableText)?.[1] ?? "", 10);
+  const columnCount = clampMatrixDimension(
+    Number.isFinite(columns) && columns > 0 ? columns : 1,
+    TABLE_MIN_COLUMNS,
+    TABLE_MAX_COLUMNS
+  );
+  const tokens = parseTypstTableCellTokens(tableText);
+
+  if (tokens.length === 0) {
+    return null;
+  }
+
+  const { cells, merges, cellFormats } = buildTypstRowsFromTokens(tokens, columnCount);
+
+  if (cells.length === 0) {
+    return null;
+  }
+
+  return createParsedTableSettings(cells, {
+    caption: parseTypstCaption(block),
+    header: /table\.header\s*\(/.test(tableText),
+    footer: /table\.footer\s*\(/.test(tableText),
+    striped: /\bfill\s*:/.test(getTypstTablePreamble(tableText)),
+    gutter: parseTypstGutter(tableText),
+    tableFormat: parseTypstTableFormat(tableText),
+    cellFormats,
+    merges
+  });
+}
+
+function parseTypstTableCellTokens(tableText: string): TypstTableCellToken[] {
+  const tokens: TypstTableCellToken[] = [];
+
+  for (let index = 0; index < tableText.length; index += 1) {
+    if (tableText.startsWith("table.cell(", index)) {
+      const openIndex = index + "table.cell".length;
+      const end = findBalancedParenEnd(tableText, openIndex);
+
+      if (end == null) {
+        continue;
+      }
+
+      const args = tableText.slice(openIndex + 1, end - 1);
+      let contentBlock = getLastTypstContentBlock(args);
+      let contentEnd = end;
+
+      if (!contentBlock) {
+        let nextIndex = end;
+
+        while (/\s/.test(tableText[nextIndex] ?? "")) {
+          nextIndex += 1;
+        }
+
+        if (tableText[nextIndex] === "[") {
+          contentBlock = readTypstContentBlock(tableText, nextIndex);
+          contentEnd = contentBlock?.end ?? contentEnd;
+        }
+      }
+
+      if (contentBlock) {
+        const parsedFill = parseTypstFillArgument(args);
+
+        tokens.push({
+          content: contentBlock.content,
+          rowSpan: Math.max(1, Number.parseInt(/rowspan:\s*(\d+)/.exec(args)?.[1] ?? "", 10) || 1),
+          columnSpan: Math.max(1, Number.parseInt(/colspan:\s*(\d+)/.exec(args)?.[1] ?? "", 10) || 1),
+          ...(parsedFill ? {
+            hasBackgroundColor: true,
+            backgroundColor: parsedFill === "none" ? "" : parsedFill
+          } : {})
+        });
+      }
+
+      index = Math.max(index, contentEnd - 1);
+      continue;
+    }
+
+    if (tableText[index] === "[") {
+      const contentBlock = readTypstContentBlock(tableText, index);
+
+      if (contentBlock) {
+        tokens.push({ content: contentBlock.content, rowSpan: 1, columnSpan: 1 });
+        index = contentBlock.end - 1;
+      }
+    }
+  }
+
+  return tokens;
+}
+
+function buildTypstRowsFromTokens(
+  tokens: TypstTableCellToken[],
+  columns: number
+): { cells: string[][]; merges: TableMerge[]; cellFormats: TableCellFormat[][] } {
+  const cells: string[][] = [];
+  const cellFormats: TableCellFormat[][] = [];
+  const merges: TableMerge[] = [];
+  let rowIndex = 0;
+  let columnIndex = 0;
+  const ensureRow = (index: number) => {
+    cells[index] ??= Array.from({ length: columns }, () => "");
+  };
+  const isCovered = (row: number, column: number) => merges.some((merge) => tableMergeContainsCell(merge, row, column));
+
+  for (const token of tokens) {
+    while (true) {
+      ensureRow(rowIndex);
+
+      if (columnIndex >= columns) {
+        rowIndex += 1;
+        columnIndex = 0;
+        continue;
+      }
+
+      if (isCovered(rowIndex, columnIndex)) {
+        columnIndex += 1;
+        continue;
+      }
+
+      break;
+    }
+
+    const columnSpan = Math.min(columns - columnIndex, Math.max(1, token.columnSpan));
+    const rowSpan = Math.max(1, token.rowSpan);
+    cells[rowIndex][columnIndex] = cleanParsedCellContent(token.content, "typst");
+
+    if (token.hasBackgroundColor) {
+      cellFormats[rowIndex] ??= [];
+      cellFormats[rowIndex][columnIndex] = { backgroundColor: token.backgroundColor ?? "" };
+    }
+
+    for (let spanOffset = 1; spanOffset < columnSpan; spanOffset += 1) {
+      cells[rowIndex][columnIndex + spanOffset] = "";
+    }
+
+    if (rowSpan > 1 || columnSpan > 1) {
+      merges.push({
+        row: rowIndex,
+        column: columnIndex,
+        rowSpan,
+        columnSpan
+      });
+    }
+
+    columnIndex += columnSpan;
+  }
+
+  return { cells, merges, cellFormats };
+}
+
+function parseTypstFillArgument(source: string): string | "none" | null {
+  if (/\bfill:\s*none\b/.test(source)) {
+    return "none";
+  }
+
+  const color = /\bfill:\s*rgb\("(#[0-9a-fA-F]{6})"\)/.exec(source)?.[1];
+  return color ? color.toLowerCase() : null;
+}
+
+function findBalancedParenEnd(source: string, openIndex: number): number | null {
+  if (openIndex < 0 || source[openIndex] !== "(") {
+    return null;
+  }
+
+  let depth = 0;
+  let squareDepth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === "[") {
+      squareDepth += 1;
+      continue;
+    }
+
+    if (char === "]" && squareDepth > 0) {
+      squareDepth -= 1;
+      continue;
+    }
+
+    if (squareDepth > 0) {
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return index + 1;
+      }
+    }
+  }
+
+  return null;
+}
+
+function readTypstContentBlock(source: string, openIndex: number): { content: string; end: number } | null {
+  if (source[openIndex] !== "[") {
+    return null;
+  }
+
+  let depth = 0;
+  let escaped = false;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === "[") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === "]") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return {
+          content: source.slice(openIndex + 1, index),
+          end: index + 1
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function getLastTypstContentBlock(source: string): { content: string; end: number } | null {
+  let lastBlock: { content: string; end: number } | null = null;
+
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "[") {
+      continue;
+    }
+
+    const block = readTypstContentBlock(source, index);
+
+    if (!block) {
+      continue;
+    }
+
+    lastBlock = block;
+    index = block.end - 1;
+  }
+
+  return lastBlock;
+}
+
+function getTypstTablePreamble(tableText: string): string {
+  const bodyStarts = ["table.header(", "table.footer(", "table.cell(", "[" ]
+    .map((token) => tableText.indexOf(token))
+    .filter((index) => index > 0);
+  const end = bodyStarts.length > 0 ? Math.min(...bodyStarts) : tableText.length;
+
+  return tableText.slice(0, end);
+}
+
+function parseTypstCaption(block: string): string {
+  const captionIndex = block.indexOf("caption:");
+
+  if (captionIndex < 0) {
+    return "";
+  }
+
+  const openIndex = block.indexOf("[", captionIndex);
+  const contentBlock = openIndex >= 0 ? readTypstContentBlock(block, openIndex) : null;
+
+  return contentBlock ? cleanParsedCellContent(contentBlock.content, "typst") : "";
+}
+
+function parseTypstGutter(tableText: string): TableGutter | undefined {
+  const preamble = getTypstTablePreamble(tableText);
+  const gutterValue = /gutter:\s*([^,\n]+)/.exec(preamble)?.[1]?.trim();
+
+  return TABLE_GUTTER_OPTIONS.find((option) => option.value === gutterValue)?.id;
+}
+
+function parseTypstTableFormat(tableText: string): TableCellFormat {
+  const preamble = getTypstTablePreamble(tableText);
+  const alignMatch = /align:\s*(left|center|right)\s*\+\s*(top|horizon|bottom)/.exec(preamble);
+  const insetValue = /inset:\s*([^,\n]+)/.exec(preamble)?.[1]?.trim();
+  const fillColor = parseTypstTableFillColor(preamble);
+  const padding = TABLE_PADDING_OPTIONS.find((option) => option.typstValue === insetValue)?.id ?? "small";
+  const strokeStyle: TableStrokeStyle = /stroke:\s*none/.test(preamble)
+    ? "none"
+    : /dash:\s*"dotted"/.test(preamble)
+      ? "dotted"
+      : /dash:\s*"dashed"/.test(preamble)
+        ? "dashed"
+        : "solid";
+  const strokeWeight: TableStrokeWeight = /1\.3pt/.test(preamble)
+    ? "thick"
+    : /0\.9pt/.test(preamble)
+      ? "medium"
+      : "thin";
+  const verticalAlign = alignMatch?.[2] === "top"
+    ? "top"
+    : alignMatch?.[2] === "bottom"
+      ? "bottom"
+      : "middle";
+
+  return {
+    align: alignMatch?.[1] as TableHorizontalAlignment | undefined,
+    verticalAlign,
+    padding,
+    strokeStyle,
+    strokeWeight,
+    ...(fillColor ? { backgroundColor: fillColor } : {})
+  };
+}
+
+function parseTypstTableFillColor(preamble: string): string | null {
+  const directFill = /\bfill:\s*rgb\("(#[0-9a-fA-F]{6})"\)/.exec(preamble)?.[1];
+
+  if (directFill) {
+    return directFill.toLowerCase();
+  }
+
+  const stripedFill = /else\s*\{\s*rgb\("(#[0-9a-fA-F]{6})"\)\s*}/.exec(preamble)?.[1];
+  return stripedFill ? stripedFill.toLowerCase() : null;
+}
+
+function isEscapedAt(source: string, index: number): boolean {
+  let slashCount = 0;
+
+  for (let current = index - 1; current >= 0 && source[current] === "\\"; current -= 1) {
+    slashCount += 1;
+  }
+
+  return slashCount % 2 === 1;
 }
 
 function collectOutlineEntries(content: string, language: SourceLanguage): OutlineEntry[] {
@@ -20734,344 +18697,6 @@ function createExternalDiagnosticPreferencesSignature(
     preferences.remoteLsp.url,
     preferences.remoteLsp.allowDocumentUpload ? "1" : "0"
   ].join("\x1f");
-}
-
-function createTypstPreviewCacheSignature({
-  diagramAssetsRevision,
-  graphAssetsRevision,
-  isPaperView,
-  projectUpdatedAt,
-  source,
-  sourcePath,
-  theme
-}: {
-  diagramAssetsRevision: string;
-  graphAssetsRevision: string;
-  isPaperView: boolean;
-  projectUpdatedAt: string;
-  source: string;
-  sourcePath: string;
-  theme: ThemeDefinition;
-}): string {
-  return [
-    normalizeWorkspacePath(sourcePath) || sourcePath,
-    hashText(source),
-    theme.id,
-    hashText(JSON.stringify(theme.palette)),
-    isPaperView ? "paper" : "screen",
-    projectUpdatedAt,
-    diagramAssetsRevision,
-    graphAssetsRevision
-  ].join("\x1f");
-}
-
-function saveTypstPreviewCacheResult({
-  projectKey,
-  result,
-  signature,
-  sourcePath
-}: {
-  projectKey: string;
-  result: Extract<CompileResult, { ok: true }>;
-  signature: string;
-  sourcePath: string;
-}): void {
-  if (typeof window === "undefined" || !isCachedTypstPreviewOutputKind(result.output.kind)) {
-    return;
-  }
-
-  if (result.output.content.length > TYPST_PREVIEW_CACHE_MAX_CONTENT_LENGTH) {
-    return;
-  }
-
-  const entry: TypstPreviewCacheEntry = {
-    version: 1,
-    signature,
-    updatedAt: new Date().toISOString(),
-    result: {
-      ok: true,
-      engine: result.engine,
-      diagnostics: result.diagnostics,
-      output: {
-        kind: result.output.kind,
-        content: result.output.content
-      },
-      metadata: result.metadata
-    }
-  };
-
-  try {
-    window.localStorage.setItem(
-      getTypstPreviewCacheStorageKey(projectKey, sourcePath),
-      JSON.stringify(entry)
-    );
-  } catch {
-    // Preview restoration is best effort; failed cache writes should not affect editing.
-  }
-}
-
-function loadTypstPreviewCacheResult({
-  projectKey,
-  signature,
-  sourcePath
-}: {
-  projectKey: string;
-  signature: string;
-  sourcePath: string;
-}): Extract<CompileResult, { ok: true }> | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  try {
-    const stored = window.localStorage.getItem(
-      getTypstPreviewCacheStorageKey(projectKey, sourcePath)
-    );
-
-    if (!stored) {
-      return null;
-    }
-
-    const parsed = JSON.parse(stored);
-
-    if (!isTypstPreviewCacheEntry(parsed) || parsed.signature !== signature) {
-      return null;
-    }
-
-    return {
-      ok: true,
-      engine: parsed.result.engine,
-      diagnostics: parsed.result.diagnostics,
-      output: {
-        kind: parsed.result.output.kind,
-        content: parsed.result.output.content
-      },
-      metadata: parsed.result.metadata
-    };
-  } catch {
-    return null;
-  }
-}
-
-function getTypstPreviewCacheStorageKey(projectKey: string, sourcePath: string): string {
-  return `${TYPST_PREVIEW_CACHE_STORAGE_KEY}:${encodeURIComponent(projectKey)}:${encodeURIComponent(
-    normalizeWorkspacePath(sourcePath) || sourcePath
-  )}`;
-}
-
-function isTypstPreviewCacheEntry(value: unknown): value is TypstPreviewCacheEntry {
-  const entry = value as Partial<TypstPreviewCacheEntry> | null;
-  const result = entry?.result as Partial<TypstPreviewCacheEntry["result"]> | undefined;
-  const output = result?.output as Partial<TypstPreviewCacheEntry["result"]["output"]> | undefined;
-
-  return Boolean(
-    entry &&
-      entry.version === 1 &&
-      typeof entry.signature === "string" &&
-      typeof entry.updatedAt === "string" &&
-      result?.ok === true &&
-      typeof result.engine === "string" &&
-      Array.isArray(result.diagnostics) &&
-      output &&
-      isCachedTypstPreviewOutputKind(output.kind) &&
-      typeof output.content === "string"
-  );
-}
-
-function isCachedTypstPreviewOutputKind(kind: unknown): kind is CachedTypstPreviewOutputKind {
-  return kind === "svg" || kind === "html" || kind === "placeholder";
-}
-
-function hashText(value: string): string {
-  let hash = 0x811c9dc5;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  return `${value.length}:${(hash >>> 0).toString(16)}`;
-}
-
-function loadPersistedBuildLogEntries(storageKey: string): BuildLogEntry[] {
-  if (typeof window === "undefined") {
-    return [];
-  }
-
-  try {
-    const stored = window.localStorage.getItem(storageKey);
-    if (!stored) {
-      return [];
-    }
-
-    const parsed = JSON.parse(stored);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed.filter(isBuildLogEntry).map(normalizeBuildLogEntry).slice(0, 20);
-  } catch {
-    return [];
-  }
-}
-
-
-function normalizeBuildLogEntry(entry: BuildLogEntry): BuildLogEntry {
-  return {
-    ...entry,
-    diagnostics: entry.diagnostics ?? [],
-    trigger: entry.trigger ?? "manual",
-    compileMode: entry.compileMode ?? (entry.language === "latex" ? "quick" : "none"),
-    cached: entry.cached ?? false,
-    outputChanged: entry.outputChanged ?? false,
-    rawLog: entry.rawLog,
-    packageDetails: entry.packageDetails ?? [],
-    shellEscapeUnavailable: entry.shellEscapeUnavailable ?? false
-  };
-}
-
-function persistBuildLogEntries(storageKey: string, entries: BuildLogEntry[]): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    window.localStorage.setItem(storageKey, JSON.stringify(entries.slice(0, 20)));
-  } catch {
-    // Build logs are useful but non-critical; ignore quota/private-mode failures.
-  }
-}
-
-function isBuildLogEntry(value: unknown): value is BuildLogEntry {
-  const entry = value as Partial<BuildLogEntry> | null;
-  return Boolean(
-    entry &&
-      typeof entry.id === "string" &&
-      typeof entry.sourcePath === "string" &&
-      typeof entry.language === "string" &&
-      typeof entry.engine === "string" &&
-      typeof entry.ok === "boolean" &&
-      typeof entry.startedAt === "string" &&
-      typeof entry.durationMs === "number" &&
-      Array.isArray(entry.diagnostics)
-  );
-}
-
-function extractBuildLogPackageDetails(log: string): string[] {
-  return log
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) =>
-      /^(TeX packages|TeX packages local|TeX packages unresolved|Data packages used|Because of unresolved TeX packages)/i.test(line)
-    )
-    .slice(0, 12);
-}
-
-function hasShellEscapeConstraint(log: string): boolean {
-  return /shell escape|write18|minted|biber|makeglossaries|external tool/i.test(log);
-}
-
-function filterBuildLogEntries(
-  entries: BuildLogEntry[],
-  filter: BuildLogFilter,
-  currentPath: string,
-  searchQuery: string
-): BuildLogEntry[] {
-  const normalizedCurrentPath = normalizeWorkspacePath(currentPath);
-  const query = searchQuery.trim().toLowerCase();
-
-  return entries.filter((entry) => {
-    if (filter === "errors" && entry.ok && !entry.diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
-      return false;
-    }
-
-    if (filter === "warnings" && !entry.diagnostics.some((diagnostic) => diagnostic.severity === "warning")) {
-      return false;
-    }
-
-    if (filter === "current-file" && normalizeWorkspacePath(entry.sourcePath) !== normalizedCurrentPath) {
-      return false;
-    }
-
-    if (filter === "latex" && entry.language !== "latex") {
-      return false;
-    }
-
-    if (!query) {
-      return true;
-    }
-
-    return formatBuildLogEntryText(entry).toLowerCase().includes(query);
-  });
-}
-
-function groupDiagnosticsByFile(diagnostics: CompileDiagnostic[]): Array<{ file: string; diagnostics: CompileDiagnostic[] }> {
-  const groups = new Map<string, CompileDiagnostic[]>();
-
-  for (const diagnostic of diagnostics) {
-    const key = diagnostic.path || "Current file";
-    groups.set(key, [...(groups.get(key) ?? []), diagnostic]);
-  }
-
-  return [...groups.entries()].map(([file, groupedDiagnostics]) => ({
-    file,
-    diagnostics: groupedDiagnostics
-  }));
-}
-
-function formatBuildLogEntryText(entry: BuildLogEntry): string {
-  const diagnostics = entry.diagnostics
-    .map((diagnostic) => `${diagnostic.severity} ${formatDiagnosticRange(diagnostic) ?? ""} ${diagnostic.message}`)
-    .join("\n");
-  const packages = entry.packageDetails.length > 0 ? `\nPackages:\n${entry.packageDetails.join("\n")}` : "";
-  const rawLog = entry.rawLog ? `\nRaw log:\n${entry.rawLog}` : "";
-
-  return [
-    `${entry.ok ? "OK" : "ERROR"} ${entry.sourcePath}`,
-    `Started: ${new Date(entry.startedAt).toLocaleString()}`,
-    `Language: ${formatSourceLanguageLabel(entry.language)}`,
-    `Engine: ${entry.engine}`,
-    `Trigger: ${entry.trigger}`,
-    `Compile mode: ${entry.compileMode}`,
-    `Duration: ${formatDurationMs(entry.durationMs)}`,
-    `Cached: ${entry.cached ? "yes" : "no"}`,
-    `Output changed: ${entry.outputChanged ? "yes" : "no"}`,
-    `Shell escape unavailable: ${entry.shellEscapeUnavailable ? "yes" : "no"}`,
-    `Diagnostics: ${entry.diagnostics.length}`,
-    diagnostics,
-    packages,
-    rawLog
-  ].filter(Boolean).join("\n");
-}
-
-function formatBuildLogEntriesText(entries: BuildLogEntry[]): string {
-  return entries.map(formatBuildLogEntryText).join("\n\n---\n\n");
-}
-
-function getPreviousBuildLogEntry(entries: BuildLogEntry[], index: number): BuildLogEntry | null {
-  return entries.slice(index + 1).find((entry) => entry.sourcePath === entries[index]?.sourcePath) ?? null;
-}
-
-function dedupeRepeatedWarnings(diagnostics: CompileDiagnostic[]): CompileDiagnostic[] {
-  const seenWarnings = new Set<string>();
-  const visible: CompileDiagnostic[] = [];
-
-  for (const diagnostic of diagnostics) {
-    if (diagnostic.severity !== "warning") {
-      visible.push(diagnostic);
-      continue;
-    }
-
-    const key = `${diagnostic.path ?? ""}:${diagnostic.message}`;
-    if (seenWarnings.has(key)) {
-      continue;
-    }
-
-    seenWarnings.add(key);
-    visible.push(diagnostic);
-  }
-
-  return visible;
 }
 
 function formatDebugOutputExcerpt(output: string): string {

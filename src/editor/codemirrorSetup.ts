@@ -250,7 +250,13 @@ function createEditorTheme(
         overflow: "auto",
         fontFamily:
           '"Iosevka Term", "JetBrains Mono", "SFMono-Regular", monospace',
+        fontFeatureSettings: '"liga" 0, "calt" 0, "clig" 0, "dlig" 0',
+        fontVariantLigatures: "none",
         lineHeight: "1.6"
+      },
+      ".cm-content, .cm-line": {
+        fontFeatureSettings: '"liga" 0, "calt" 0, "clig" 0, "dlig" 0',
+        fontVariantLigatures: "none"
       },
       ".cm-content": {
         minHeight: "100%",

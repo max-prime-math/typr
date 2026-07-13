@@ -48,12 +48,25 @@ const DATABASE_NAME = "typr-typst-packages";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "packages";
 
+interface PackageLoadGeneration {
+  cache: number;
+  package: number;
+}
+
+interface PendingPackageLoad {
+  generation: PackageLoadGeneration;
+  promise: Promise<Uint8Array>;
+}
+
 const packageMemoryCache = new Map<string, Uint8Array>();
-const pendingPackageLoads = new Map<string, Promise<Uint8Array>>();
+const pendingPackageLoads = new Map<string, PendingPackageLoad>();
 const packageDependencyCache = new Map<string, TypstPackageReference[]>();
+const packageGenerations = new Map<string, number>();
 const packageAccessModel = new MemoryAccessModel();
 const packageRegistryRoot = "/@memory/typst-packages";
 const textDecoder = new TextDecoder();
+let cacheGeneration = 0;
+let cacheMutationTail = Promise.resolve();
 
 async function getDatabase() {
   return openDB(DATABASE_NAME, DATABASE_VERSION, {
@@ -66,16 +79,25 @@ async function getDatabase() {
 }
 
 async function readPackageFromCache(key: string): Promise<Uint8Array | null> {
+  await cacheMutationTail;
   const database = await getDatabase();
   return (await database.get(STORE_NAME, key)) ?? null;
 }
 
-async function savePackageToCache(key: string, data: Uint8Array): Promise<void> {
-  const database = await getDatabase();
-  await database.put(STORE_NAME, data, key);
+async function savePackageToCache(
+  reference: TypstPackageReference,
+  data: Uint8Array,
+  generation: PackageLoadGeneration
+): Promise<void> {
+  await enqueueCacheMutation(async () => {
+    assertPackageLoadCurrent(reference, generation);
+    const database = await getDatabase();
+    await database.put(STORE_NAME, data, reference.key);
+  });
 }
 
 export async function getTypstPackageCacheSummary(): Promise<TypstPackageCacheSummary> {
+  await cacheMutationTail;
   const database = await getDatabase();
   const keys = await database.getAllKeys(STORE_NAME);
   const packages: TypstPackageCacheEntry[] = [];
@@ -110,17 +132,25 @@ export async function getTypstPackageCacheSummary(): Promise<TypstPackageCacheSu
 }
 
 export async function removeTypstPackageFromCache(reference: TypstPackageReference): Promise<void> {
-  const database = await getDatabase();
-  await database.delete(STORE_NAME, reference.key);
+  invalidatePackageLoad(reference.key);
   packageMemoryCache.delete(reference.key);
   packageDependencyCache.delete(reference.key);
+  await enqueueCacheMutation(async () => {
+    const database = await getDatabase();
+    await database.delete(STORE_NAME, reference.key);
+  });
 }
 
 export async function clearTypstPackageCache(): Promise<void> {
-  const database = await getDatabase();
-  await database.clear(STORE_NAME);
+  cacheGeneration += 1;
+  packageGenerations.clear();
+  pendingPackageLoads.clear();
   packageMemoryCache.clear();
   packageDependencyCache.clear();
+  await enqueueCacheMutation(async () => {
+    const database = await getDatabase();
+    await database.clear(STORE_NAME);
+  });
 }
 
 export async function ensureTypstPackageReferences(
@@ -178,20 +208,21 @@ async function ensureTypstPackage(
   }
 
   seen.add(key);
+  const generation = getPackageLoadGeneration(key);
   const cached = packageMemoryCache.get(key);
 
   if (cached) {
     emitPackageLoadStatus(reference, "cached", options);
-    await ensurePackageDependencies(reference, cached, seen, options);
+    await ensurePackageDependencies(reference, cached, seen, options, generation);
     return cached;
   }
 
   const inFlight = pendingPackageLoads.get(key);
 
-  if (inFlight) {
+  if (inFlight && isPackageLoadCurrent(key, inFlight.generation)) {
     emitPackageLoadStatus(reference, "downloading", options);
     try {
-      return await inFlight;
+      return await inFlight.promise;
     } catch (error) {
       emitPackageLoadStatus(reference, "failed", options, formatUnknownPackageError(reference, error));
       throw error;
@@ -200,31 +231,39 @@ async function ensureTypstPackage(
 
   const loadPromise = (async () => {
     const diskCached = await readPackageFromCache(key);
+    assertPackageLoadCurrent(reference, generation);
 
     if (diskCached) {
       packageMemoryCache.set(key, diskCached);
       emitPackageLoadStatus(reference, "cached", options);
-      await ensurePackageDependencies(reference, diskCached, seen, options);
+      await ensurePackageDependencies(reference, diskCached, seen, options, generation);
       return diskCached;
     }
 
     emitPackageLoadStatus(reference, "downloading", options);
 
     const response = await fetch(getTypstPackageUrl(reference));
+    assertPackageLoadCurrent(reference, generation);
 
     if (!response.ok) {
       throw new Error(`Failed to download Typst package ${key}: ${response.status} ${response.statusText}`);
     }
 
     const data = new Uint8Array(await response.arrayBuffer());
+    assertPackageLoadCurrent(reference, generation);
     packageMemoryCache.set(key, data);
-    await savePackageToCache(key, data);
-    await ensurePackageDependencies(reference, data, seen, options);
+    await savePackageToCache(reference, data, generation);
+    assertPackageLoadCurrent(reference, generation);
+    await ensurePackageDependencies(reference, data, seen, options, generation);
     emitPackageLoadStatus(reference, "cached", options, `Downloaded package ${formatTypstPackageReference(reference)}`);
     return data;
   })();
 
-  pendingPackageLoads.set(key, loadPromise);
+  const pendingLoad: PendingPackageLoad = {
+    generation,
+    promise: loadPromise
+  };
+  pendingPackageLoads.set(key, pendingLoad);
 
   try {
     return await loadPromise;
@@ -232,7 +271,9 @@ async function ensureTypstPackage(
     emitPackageLoadStatus(reference, "failed", options, formatUnknownPackageError(reference, error));
     throw error;
   } finally {
-    pendingPackageLoads.delete(key);
+    if (pendingPackageLoads.get(key) === pendingLoad) {
+      pendingPackageLoads.delete(key);
+    }
   }
 }
 
@@ -240,13 +281,17 @@ async function ensurePackageDependencies(
   reference: TypstPackageReference,
   data: Uint8Array,
   seen: Set<string>,
-  options: EnsureTypstPackageReferencesOptions
+  options: EnsureTypstPackageReferencesOptions,
+  generation: PackageLoadGeneration
 ): Promise<void> {
-  const dependencies = await getPackageDependencies(reference, data);
+  assertPackageLoadCurrent(reference, generation);
+  const dependencies = await getPackageDependencies(reference, data, generation);
+  assertPackageLoadCurrent(reference, generation);
 
   await Promise.all(
     dependencies.map((dependency) => ensureTypstPackage(dependency, seen, options))
   );
+  assertPackageLoadCurrent(reference, generation);
 }
 
 function emitPackageLoadStatus(
@@ -287,7 +332,8 @@ function formatUnknownPackageError(reference: TypstPackageReference, error: unkn
 
 async function getPackageDependencies(
   reference: TypstPackageReference,
-  data: Uint8Array
+  data: Uint8Array,
+  generation: PackageLoadGeneration
 ): Promise<TypstPackageReference[]> {
   const cached = packageDependencyCache.get(reference.key);
 
@@ -314,8 +360,43 @@ async function getPackageDependencies(
   }
 
   const resolvedDependencies = [...dependencies.values()];
+  assertPackageLoadCurrent(reference, generation);
   packageDependencyCache.set(reference.key, resolvedDependencies);
   return resolvedDependencies;
+}
+
+function getPackageLoadGeneration(key: string): PackageLoadGeneration {
+  return {
+    cache: cacheGeneration,
+    package: packageGenerations.get(key) ?? 0
+  };
+}
+
+function isPackageLoadCurrent(key: string, generation: PackageLoadGeneration): boolean {
+  return (
+    generation.cache === cacheGeneration &&
+    generation.package === (packageGenerations.get(key) ?? 0)
+  );
+}
+
+function assertPackageLoadCurrent(
+  reference: TypstPackageReference,
+  generation: PackageLoadGeneration
+): void {
+  if (!isPackageLoadCurrent(reference.key, generation)) {
+    throw new Error(`Typst package ${formatTypstPackageReference(reference)} load was invalidated.`);
+  }
+}
+
+function invalidatePackageLoad(key: string): void {
+  packageGenerations.set(key, (packageGenerations.get(key) ?? 0) + 1);
+  pendingPackageLoads.delete(key);
+}
+
+function enqueueCacheMutation(mutation: () => Promise<void>): Promise<void> {
+  const result = cacheMutationTail.then(mutation);
+  cacheMutationTail = result.catch(() => undefined);
+  return result;
 }
 
 async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {

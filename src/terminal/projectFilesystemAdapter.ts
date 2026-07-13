@@ -214,7 +214,6 @@ class ProjectFsAdapter implements IFileSystem {
       for (const entry of listProjectEntries(project)) {
         if (
           entry.source.kind === "diagram" ||
-          entry.source.kind === "graph" ||
           entry.path === "figures" ||
           entry.path.startsWith(FIGURES_PREFIX)
         ) {

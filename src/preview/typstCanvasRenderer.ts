@@ -1,39 +1,17 @@
-import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
-
-interface TypstRendererModule {
-  createTypstRenderer(): {
-    init(options: { getModule: () => string }): Promise<void>;
-    renderToCanvas(options: {
-      container: HTMLElement;
-      artifactContent: Uint8Array;
-      format: "vector";
-      pixelPerPt?: number;
-      backgroundColor?: string;
-      dataSelection?: {
-        body?: boolean;
-        semantics?: boolean;
-      };
-    }): Promise<void>;
-  };
-}
-
-let rendererPromise:
-  | Promise<ReturnType<TypstRendererModule["createTypstRenderer"]>>
-  | null = null;
+import { getTypstRenderer } from "./typstRendererSession";
 
 export async function renderTypstArtifactToCanvas(
   container: HTMLElement,
-  artifactContent: Uint8Array,
-  paperView = false
+  artifactContent: Uint8Array
 ): Promise<void> {
-  const renderer = await getRenderer();
+  const renderer = await getTypstRenderer();
   container.innerHTML = "";
   await renderer.renderToCanvas({
     container,
     artifactContent,
     format: "vector",
     pixelPerPt: getPreviewPixelPerPt(),
-    backgroundColor: paperView ? "#fffef9" : "#ffffff",
+    backgroundColor: "#ffffff",
     dataSelection: {
       body: true,
       semantics: false
@@ -42,20 +20,54 @@ export async function renderTypstArtifactToCanvas(
   normalizeCanvasPreview(container);
 }
 
-async function getRenderer() {
-  if (!rendererPromise) {
-    rendererPromise = import("@myriaddreamin/typst.ts/renderer")
-      .then((module) => module as unknown as TypstRendererModule)
-      .then(async (module) => {
-        const renderer = module.createTypstRenderer();
-        await renderer.init({
-          getModule: () => typstRendererWasmUrl
-        });
-        return renderer;
-      });
-  }
+export interface TypstCanvasZoomState {
+  mode: "fit-width" | "fit-height" | "fit-page" | "percent";
+  percent: number;
+}
 
-  return rendererPromise;
+export function applyTypstCanvasZoom(
+  container: HTMLElement,
+  zoom: TypstCanvasZoomState = { mode: "fit-width", percent: 100 }
+): void {
+  const style = getComputedStyle(container);
+  const availableWidth = Math.max(
+    1,
+    container.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0")
+  );
+  const availableHeight = Math.max(
+    1,
+    container.clientHeight - parseFloat(style.paddingTop || "0") - parseFloat(style.paddingBottom || "0")
+  );
+
+  for (const page of Array.from(container.querySelectorAll<HTMLElement>(".typst-page.canvas"))) {
+    const naturalWidth = Number.parseFloat(page.dataset.typstNaturalWidth ?? "");
+    const naturalHeight = Number.parseFloat(page.dataset.typstNaturalHeight ?? "");
+
+    if (!(naturalWidth > 0) || !(naturalHeight > 0)) {
+      continue;
+    }
+
+    const fitWidthScale = availableWidth / naturalWidth;
+    const fitHeightScale = availableHeight / naturalHeight;
+    const scale = zoom.mode === "fit-height"
+      ? fitHeightScale
+      : zoom.mode === "fit-page"
+        ? Math.min(fitWidthScale, fitHeightScale)
+        : zoom.mode === "percent"
+          ? fitWidthScale * (zoom.percent / 100)
+          : fitWidthScale;
+    const width = Math.max(1, naturalWidth * scale);
+    const height = Math.max(1, naturalHeight * scale);
+    const canvas = page.querySelector<HTMLCanvasElement>("canvas");
+
+    page.style.width = `${width}px`;
+    page.style.height = `${height}px`;
+
+    if (canvas) {
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+    }
+  }
 }
 
 function getPreviewPixelPerPt(): number {
@@ -96,6 +108,8 @@ function normalizeCanvasPreview(container: HTMLElement): void {
     const containerWidth = container.clientWidth || page.clientWidth || 600;
     const canvasNaturalWidth = canvas.width || 600;
     const canvasNaturalHeight = canvas.height || 842;
+    page.dataset.typstNaturalWidth = String(canvasNaturalWidth);
+    page.dataset.typstNaturalHeight = String(canvasNaturalHeight);
 
     if (canvasNaturalWidth <= 0) {
       continue;

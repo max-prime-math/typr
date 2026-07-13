@@ -101,14 +101,24 @@ describe("repoBackend", () => {
   });
 
   it("ignores untracked files matched by project .gitignore", async () => {
-    const projectWithIgnore = writeProjectFile(createProject(), ".gitignore", "*.pdf\n");
+    const projectWithIgnore = writeProjectFile(
+      createProject(),
+      ".gitignore",
+      "*.pdf\n!keep.pdf\n/build/\n"
+    );
     let { backend, project } = await initAndCommitDefault(projectWithIgnore);
 
-    project = writeProjectFile(project, "main.pdf", new Uint8Array([1, 2, 3]));
+    project = writeProjectFile(project, "chapters/generated.pdf", new Uint8Array([1]));
+    project = writeProjectFile(project, "build/output.log", new Uint8Array([2]));
+    project = writeProjectFile(project, "chapters/build/keep.log", new Uint8Array([3]));
+    project = writeProjectFile(project, "output/keep.pdf", new Uint8Array([4]));
 
     const status = await backend.status(project);
 
-    expect(status.ok && status.value.entries).toEqual([]);
+    expect(status.ok && status.value.entries).toEqual([
+      { path: "chapters/build/keep.log", staged: null, worktree: "untracked" },
+      { path: "output/keep.pdf", staged: null, worktree: "untracked" }
+    ]);
   });
 
   it("blocks unsafe branch switches with local changes", async () => {

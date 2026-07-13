@@ -1,5 +1,5 @@
 import { fileURLToPath, URL } from "node:url";
-import { defineConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
@@ -10,6 +10,7 @@ export default defineConfig(({ command }) => {
 
   return {
     base,
+    cacheDir: process.env.TYPR_VITE_CACHE_DIR,
     plugins: [
       VitePWA({
         registerType: "autoUpdate",
@@ -48,7 +49,12 @@ export default defineConfig(({ command }) => {
             "assets/**/*.svg",
             "svgedit/images/**/*"
           ],
-          globIgnores: ["core/busytex/**", "**/*.otf", "**/*.ttf"],
+          globIgnores: [
+            "assets/binaryInlined-*.js",
+            "core/busytex/**",
+            "**/*.otf",
+            "**/*.ttf"
+          ],
           maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
           runtimeCaching: [
             {
@@ -59,7 +65,7 @@ export default defineConfig(({ command }) => {
               }
             },
             {
-              urlPattern: /\/core\/busytex\/.*\.(?:js|wasm|data)$/,
+              urlPattern: /\/core\/busytex\/.*\.(?:js|wasm)$/,
               handler: "CacheFirst",
               options: {
                 cacheName: "typr-busytex-assets"
@@ -70,7 +76,11 @@ export default defineConfig(({ command }) => {
       })
     ],
     optimizeDeps: {
-      exclude: ["ratex-wasm"]
+      exclude: ["ratex-wasm"],
+      include: ["pdfjs-dist/build/pdf.worker.mjs"]
+    },
+    test: {
+      exclude: [...configDefaults.exclude, "tests/e2e/**"]
     },
     worker: {
       format: "es"

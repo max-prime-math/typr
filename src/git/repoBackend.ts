@@ -1,4 +1,4 @@
-import { unzlib, unzlibSync, zlib, zlibSync } from "fflate";
+import { unzlib, unzlibSync, zlib } from "fflate";
 import {
   deleteProjectPath,
   DEFAULT_PROJECT_GITIGNORE_PATH,
@@ -19,7 +19,8 @@ import {
   readProjectGitFile,
   writeProjectGitFile
 } from "../storage/indexedDbStorage";
-import { sha1Hex } from "../utils/hash";
+import { bytesToHex } from "../utils/bytes";
+import { sha1Hex } from "../utils/contentHash";
 import { shouldIgnorePath } from "./pathFilters";
 
 const DEFAULT_BRANCH = "main";
@@ -564,7 +565,7 @@ function readProjectGitignorePatterns(project: TyprProjectRepository): string[] 
   return decodeUtf8(bytes)
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#") && !line.startsWith("!"));
+    .filter((line) => line && !line.startsWith("#"));
 }
 
 async function stagePaths(
@@ -2095,9 +2096,6 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-function bytesToHex(bytes: Uint8Array): string {
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 function encodeUtf8(value: string): Uint8Array {
   return new TextEncoder().encode(value);

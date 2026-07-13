@@ -1,3 +1,5 @@
+import typstCompilerWasmUrl from "@myriaddreamin/typst-ts-web-compiler/wasm?url";
+import typstRendererWasmUrl from "@myriaddreamin/typst-ts-renderer/wasm?url";
 import dejaVuSansMonoBoldUrl from "./fonts/DejaVuSansMono-Bold.ttf?url";
 import dejaVuSansMonoBoldObliqueUrl from "./fonts/DejaVuSansMono-BoldOblique.ttf?url";
 import dejaVuSansMonoObliqueUrl from "./fonts/DejaVuSansMono-Oblique.ttf?url";
@@ -18,7 +20,8 @@ import newCmMathRegularUrl from "./fonts/NewCMMath-Regular.otf?url";
 export const MAIN_FILE_PATH = "/main.typ";
 export const TYPST_PROJECT_ROOT = "/";
 export const TYPST_DEFAULT_MAIN_FILE_PATH = MAIN_FILE_PATH;
-export const TYPST_FONT_CACHE_NAME = "typst-font-assets";
+export const TYPST_OFFLINE_CACHE_NAME = "typr-compiler-assets";
+export const TYPST_FONT_CACHE_NAME = TYPST_OFFLINE_CACHE_NAME;
 const CORE_FONT_LOAD_CONCURRENCY = 4;
 
 const CORE_FONT_ASSETS = [
@@ -38,6 +41,12 @@ const CORE_FONT_ASSETS = [
   { name: "DejaVuSansMono-Bold.ttf", url: dejaVuSansMonoBoldUrl },
   { name: "DejaVuSansMono-Oblique.ttf", url: dejaVuSansMonoObliqueUrl },
   { name: "DejaVuSansMono-BoldOblique.ttf", url: dejaVuSansMonoBoldObliqueUrl },
+];
+
+const REQUIRED_TYPST_OFFLINE_ASSETS = [
+  { name: "Typst compiler WASM", url: typstCompilerWasmUrl },
+  { name: "Typst renderer WASM", url: typstRendererWasmUrl },
+  ...CORE_FONT_ASSETS
 ];
 
 export const CORE_FONT_URLS = CORE_FONT_ASSETS.map((font) => font.url);
@@ -214,37 +223,34 @@ function formatFontLoadError(error: unknown): string {
 }
 
 export async function warmTypstOfflineAssets(): Promise<void> {
-  if (
-    typeof window === "undefined" ||
-    !window.navigator.onLine ||
-    typeof caches === "undefined"
-  ) {
-    return;
+  if (typeof window === "undefined" || typeof caches === "undefined") {
+    throw new Error("Browser cache storage is unavailable.");
   }
 
-  try {
-    const cache = await caches.open(TYPST_FONT_CACHE_NAME);
+  if (!window.navigator.onLine) {
+    throw new Error("Compiler assets cannot be prepared while offline.");
+  }
 
-    for (const font of CORE_FONT_ASSETS) {
-      const existingResponse = await cache.match(font.url);
+  const cache = await caches.open(TYPST_OFFLINE_CACHE_NAME);
 
-      if (existingResponse) {
-        continue;
-      }
+  for (const asset of REQUIRED_TYPST_OFFLINE_ASSETS) {
+    const existingResponse = await cache.match(asset.url);
 
-      const response = await fetch(font.url, {
-        cache: "force-cache",
-        credentials: "same-origin"
-      });
-
-      if (!response.ok) {
-        throw new Error(`Unable to cache ${font.name}.`);
-      }
-
-      await cache.put(font.url, response.clone());
+    if (existingResponse?.ok) {
+      continue;
     }
-  } catch {
-    // Offline font priming is best-effort. The compiler still attempts to load
-    // the same assets lazily during preview compilation.
+
+    const response = await fetch(asset.url, {
+      cache: "force-cache",
+      credentials: "same-origin"
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Unable to cache ${asset.name}: ${response.status} ${response.statusText}`.trim()
+      );
+    }
+
+    await cache.put(asset.url, response.clone());
   }
 }

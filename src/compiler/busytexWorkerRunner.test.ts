@@ -49,6 +49,58 @@ describe("BusyTexWorkerRunner", () => {
     expect(fakeWorkers).toHaveLength(0);
   });
 
+  it("skips the heap reset snapshot only for configured single-pass compiles", async () => {
+    installBrowserStubs(async () => ({ ok: true }));
+
+    const runner = createRunner({ skipSinglePassMemoryRestore: true });
+    const initialization = runner.initialize();
+
+    for (let attempt = 0; attempt < 10 && fakeWorkers.length === 0; attempt += 1) {
+      await Promise.resolve();
+    }
+
+    const worker = fakeWorkers[0];
+    expect(worker.messages[0]).toMatchObject({
+      busytex_pipeline_js: "/core/busytex/busytex_pipeline.js?v=2"
+    });
+    worker.onmessage?.({ data: { initialized: {} } } as MessageEvent);
+    await initialization;
+
+    const quickCompile = runner.compile(
+      [],
+      "main.tex",
+      false,
+      false,
+      false,
+      "silent",
+      "pdftex_bibtex8",
+      null,
+      ""
+    );
+    expect(worker.messages.at(-1)).toMatchObject({ skip_memory_restore: true });
+    worker.onmessage?.({
+      data: { pdf: new Uint8Array(), exit_code: 0 }
+    } as MessageEvent);
+    await quickCompile;
+
+    const fullCompile = runner.compile(
+      [],
+      "main.tex",
+      null,
+      null,
+      true,
+      "silent",
+      "pdftex_bibtex8",
+      null,
+      ""
+    );
+    expect(worker.messages.at(-1)).toMatchObject({ skip_memory_restore: false });
+    worker.onmessage?.({
+      data: { pdf: new Uint8Array(), exit_code: 0 }
+    } as MessageEvent);
+    await fullCompile;
+  });
+
   it("rejects initialization promptly when terminated after worker creation", async () => {
     installBrowserStubs(async () => ({ ok: true }));
 
@@ -67,11 +119,14 @@ describe("BusyTexWorkerRunner", () => {
   });
 });
 
-function createRunner(): BusyTexWorkerRunner {
+function createRunner(
+  overrides: Partial<ConstructorParameters<typeof BusyTexWorkerRunner>[0]> = {}
+): BusyTexWorkerRunner {
   return new BusyTexWorkerRunner({
     busytexBasePath: "/core/busytex",
     preloadDataPackages: [],
-    catalogDataPackages: []
+    catalogDataPackages: [],
+    ...overrides
   });
 }
 
