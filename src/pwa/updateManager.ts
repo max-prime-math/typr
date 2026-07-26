@@ -33,6 +33,9 @@ export function initializePwaUpdates() {
     onRegisteredSW(_serviceWorkerUrl, serviceWorkerRegistration) {
       registration = serviceWorkerRegistration;
     },
+    onOfflineReady() {
+      window.dispatchEvent(new Event("typr:pwa-offline-ready"));
+    },
     onNeedRefresh() {
       publish({
         status: "available",
