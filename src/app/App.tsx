@@ -529,6 +529,7 @@ const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
 
 const MOBILE_SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   ...SIDEBAR_TOOLS,
+  { id: "docs", label: "Docs" },
   { id: "settings", label: "Settings" }
 ];
 
@@ -14324,6 +14325,16 @@ ${nextLine}` : nextLine;
             ) : null}
           </div>
           <div className="activity-bar__section activity-bar__section--bottom">
+            <button
+              aria-label="Docs"
+              className="activity-bar__button"
+              onClick={handleOpenTyprDocs}
+              title="Docs"
+              type="button"
+            >
+              <span aria-hidden="true" className="activity-icon activity-icon--docs" />
+              <span className="visually-hidden">Docs</span>
+            </button>
             <ApplicationInfoButton />
             <button
               aria-label="Settings"
@@ -14398,7 +14409,9 @@ ${nextLine}` : nextLine;
                         : ""
                     }`}
                     onClick={() => {
-                      if (tool.id === "settings") {
+                      if (tool.id === "docs") {
+                        handleOpenTyprDocs();
+                      } else if (tool.id === "settings") {
                         handleOpenSettings();
                       } else {
                         handleOpenSidebarTool(tool.id);

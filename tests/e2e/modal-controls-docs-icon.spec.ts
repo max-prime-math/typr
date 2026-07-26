@@ -28,6 +28,13 @@ async function expectMaskedInfoButton(button: Locator) {
   ).toMatch(/info(?:-[\w-]+)?\.svg/);
 }
 
+async function expectDocsButton(button: Locator) {
+  await expect(button).toBeVisible();
+  const icon = button.locator(".activity-icon");
+  await expect(icon).toHaveAttribute("aria-hidden", "true");
+  await expect(icon).toHaveClass(/activity-icon--docs/);
+}
+
 async function openSettings(page: Page) {
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   const sheet = page.getByRole("region", { name: "Typr settings" });
@@ -72,6 +79,8 @@ for (const viewport of [
     const infoButton = page
       .getByRole("button", { name: "Application info", exact: true })
       .first();
+    const docsButton = page.getByRole("button", { name: "Docs", exact: true }).first();
+    await expectDocsButton(docsButton);
     await expectMaskedInfoButton(infoButton);
     await infoButton.click();
 
