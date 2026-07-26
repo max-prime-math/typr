@@ -75,6 +75,7 @@ import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
+import { useLocalFolderSync } from "./useLocalFolderSync";
 import {
   areWorkspacePathListsEqual,
   insertWorkspacePathAfterActive,
@@ -242,6 +243,7 @@ import {
   type SourcePosition
 } from "../preview/sourceLinks";
 import {
+  deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
   loadGitWorkspace,
@@ -3484,6 +3486,14 @@ ${nextLine}` : nextLine;
     setSyncFeedback,
     setSyncStatusSnapshot
   });
+  const localFolderSync = useLocalFolderSync({
+    gitRefreshToken,
+    isHydrated,
+    projectStorage,
+    setGitRefreshToken,
+    setProjectStorage,
+    setRawSnapshot
+  });
   const [repoStorageStats, setRepoStorageStats] = useState<RepoStorageStats | null>(null);
   const [isRepoStorageLoading, setIsRepoStorageLoading] = useState(false);
   const [repoStorageFeedback, setRepoStorageFeedback] = useState<SyncFeedback>({
@@ -5219,6 +5229,7 @@ ${nextLine}` : nextLine;
           const recovery = await retryProjectDeletions({
             dependencies: {
               deleteBrowserGitFiles: deleteProjectGitFiles,
+              deleteLocalFolderBinding,
               deleteTombstone: deleteProjectDeletionTombstone,
               removeOpfsProject: removeProjectFromOpfs,
               saveProjectStorage
@@ -8922,6 +8933,12 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    try {
+      await localFolderSync.disconnect(projectToDelete.id);
+    } catch (error) {
+      console.warn("Local folder binding cleanup will retry with project deletion.", error);
+    }
+
     const fallbackProject =
       projectStorage.projects.length <= 1
         ? createEmptyProjectRepository({
@@ -8957,6 +8974,7 @@ ${nextLine}` : nextLine;
       deletionResult = await deleteProjectDurably({
         dependencies: {
           deleteBrowserGitFiles: deleteProjectGitFiles,
+          deleteLocalFolderBinding,
           deleteTombstone: deleteProjectDeletionTombstone,
           removeOpfsProject: removeProjectFromOpfs,
           saveProjectStorage,
@@ -9090,6 +9108,7 @@ ${nextLine}` : nextLine;
     );
   }, [
     gitWorkspace.projects,
+    localFolderSync,
     projectStorage,
     selectedProjectRepository,
     snapshot
@@ -14534,6 +14553,13 @@ ${nextLine}` : nextLine;
                         const projectFileCount = listProjectEntries(project).filter(
                           (entry) => entry.kind === "file"
                         ).length;
+                        const localFolderState = localFolderSync.states[project.id];
+                        const localFolderStatus =
+                          localFolderState?.status ??
+                          (localFolderSync.supported ? "disconnected" : "unsupported");
+                        const localFolderConnected = Boolean(
+                          localFolderState?.directoryName
+                        );
 
                         return (
                           <article
@@ -14562,6 +14588,74 @@ ${nextLine}` : nextLine;
                               <strong>{project.displayName}</strong>
                               <span>{projectFileCount} {projectFileCount === 1 ? "file" : "files"}</span>
                             </button>
+                            <div
+                              className={`project-manager__folder-sync project-manager__folder-sync--${localFolderStatus}`}
+                            >
+                              <div className="project-manager__folder-status">
+                                <span
+                                  aria-hidden="true"
+                                  className="project-manager__folder-status-dot"
+                                />
+                                <span>
+                                  {localFolderState?.directoryName ?? "Local folder"} ·{" "}
+                                  {localFolderState?.message ??
+                                    (localFolderSync.supported
+                                      ? "Not linked"
+                                      : "Available in Chromium browsers")}
+                                </span>
+                              </div>
+                              <div className="project-manager__folder-actions">
+                                {localFolderStatus === "permission-needed" ? (
+                                  <button
+                                    className="pane__button pane__button--compact"
+                                    onClick={() => {
+                                      void localFolderSync.reconnect(project.id);
+                                    }}
+                                    type="button"
+                                  >
+                                    Reconnect
+                                  </button>
+                                ) : localFolderConnected ? (
+                                  <button
+                                    className="pane__button pane__button--compact"
+                                    disabled={localFolderStatus === "syncing"}
+                                    onClick={() => {
+                                      void localFolderSync.syncNow(project.id);
+                                    }}
+                                    type="button"
+                                  >
+                                    {localFolderStatus === "syncing" ? "Syncing…" : "Sync now"}
+                                  </button>
+                                ) : (
+                                  <button
+                                    className="pane__button pane__button--compact"
+                                    disabled={!localFolderSync.supported}
+                                    onClick={() => {
+                                      void localFolderSync.connect(project.id);
+                                    }}
+                                    title={
+                                      localFolderSync.supported
+                                        ? "Keep this project synchronized with a local folder"
+                                        : "Local folder sync requires a Chromium browser"
+                                    }
+                                    type="button"
+                                  >
+                                    Link folder
+                                  </button>
+                                )}
+                                {localFolderConnected ? (
+                                  <button
+                                    className="pane__button pane__button--compact"
+                                    onClick={() => {
+                                      void localFolderSync.disconnect(project.id);
+                                    }}
+                                    type="button"
+                                  >
+                                    Unlink
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
                             <div className="project-manager__row-actions">
                               <button
                                 className="pane__button pane__button--compact"

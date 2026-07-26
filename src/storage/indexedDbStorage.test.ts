@@ -33,12 +33,15 @@ vi.mock("idb", () => ({
 }));
 
 import {
+  deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
   listProjectGitFiles,
+  loadLocalFolderBinding,
   loadProjectDeletionTombstones,
   readProjectGitFile,
   saveProjectDeletionTombstone,
+  saveLocalFolderBinding,
   writeProjectGitFile
 } from "./indexedDbStorage";
 
@@ -79,5 +82,31 @@ describe("IndexedDB project deletion storage", () => {
     expect(await listProjectGitFiles("project-a")).toEqual([]);
     expect(await listProjectGitFiles("project-b")).toEqual([".git/HEAD"]);
     expect(await readProjectGitFile("project-b", ".git/HEAD")).toEqual(new Uint8Array([3]));
+  });
+
+  it("persists local folder handles independently for each project", async () => {
+    const directoryHandle = {
+      kind: "directory",
+      name: "writing"
+    } as FileSystemDirectoryHandle;
+    await saveLocalFolderBinding({
+      version: 1,
+      projectId: "project-a",
+      directoryHandle,
+      directoryName: "writing",
+      connectedAt: "2026-07-10T12:00:00.000Z",
+      lastSyncedAt: null,
+      directoryFingerprint: null,
+      worktreeSignatures: {},
+      gitSignatures: {}
+    });
+
+    expect((await loadLocalFolderBinding("project-a"))?.directoryHandle).toBe(
+      directoryHandle
+    );
+    expect(await loadLocalFolderBinding("project-b")).toBeNull();
+
+    await deleteLocalFolderBinding("project-a");
+    expect(await loadLocalFolderBinding("project-a")).toBeNull();
   });
 });

@@ -17,6 +17,7 @@ const SNAPSHOT_KEY = "snapshot";
 const PROJECT_STORAGE_KEY = "project-storage";
 const PROJECT_STORAGE_METADATA_KEY = "project-storage-metadata";
 const PROJECT_DELETION_TOMBSTONE_PREFIX = "project-deletion-tombstone:";
+const LOCAL_FOLDER_BINDING_PREFIX = "local-folder-binding:";
 const GITHUB_CONFIG_KEY = "github-config";
 const GIT_WORKSPACE_KEY = "git-workspace";
 const GIT_CREDENTIALS_KEY = "git-credentials";
@@ -29,6 +30,18 @@ export interface LegacyGitHubRemoteConfig {
   branch: string;
   directory: string;
   token: string;
+}
+
+export interface LocalFolderBindingRecord {
+  version: 1;
+  projectId: string;
+  directoryHandle: FileSystemDirectoryHandle;
+  directoryName: string;
+  connectedAt: string;
+  lastSyncedAt: string | null;
+  directoryFingerprint?: string | null;
+  worktreeSignatures: Record<string, string>;
+  gitSignatures: Record<string, string>;
 }
 
 async function getDatabase() {
@@ -75,6 +88,31 @@ export async function saveProjectStorage(storage: TyprProjectStorageState): Prom
       PROJECT_STORAGE_METADATA_KEY
     )
   ]);
+}
+
+export async function loadLocalFolderBinding(
+  projectId: string
+): Promise<LocalFolderBindingRecord | null> {
+  const database = await getDatabase();
+  return (
+    (await database.get(STORE_NAME, getLocalFolderBindingKey(projectId))) ?? null
+  );
+}
+
+export async function saveLocalFolderBinding(
+  binding: LocalFolderBindingRecord
+): Promise<void> {
+  const database = await getDatabase();
+  await database.put(
+    STORE_NAME,
+    binding,
+    getLocalFolderBindingKey(binding.projectId)
+  );
+}
+
+export async function deleteLocalFolderBinding(projectId: string): Promise<void> {
+  const database = await getDatabase();
+  await database.delete(STORE_NAME, getLocalFolderBindingKey(projectId));
 }
 
 export async function saveProjectDeletionTombstone(
@@ -203,6 +241,10 @@ function normalizeGitFilePath(path: string): string {
 
 function getProjectDeletionTombstoneKey(projectId: string): string {
   return `${PROJECT_DELETION_TOMBSTONE_PREFIX}${encodeURIComponent(projectId)}`;
+}
+
+function getLocalFolderBindingKey(projectId: string): string {
+  return `${LOCAL_FOLDER_BINDING_PREFIX}${encodeURIComponent(projectId)}`;
 }
 
 function isProjectDeletionTombstone(value: unknown): value is ProjectDeletionTombstone {
