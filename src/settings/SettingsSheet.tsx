@@ -1,4 +1,9 @@
 import type { ReactNode } from "react";
+import {
+  checkForPwaUpdate,
+  restartToApplyPwaUpdate,
+  usePwaUpdateSnapshot
+} from "../pwa/updateManager";
 import { SETTINGS_TABS, getSettingsTabTitle, type SettingsTab } from "./settingsSheetState";
 import type { SettingsSheetController } from "./useSettingsSheetController";
 
@@ -9,6 +14,8 @@ export function SettingsSheet(props: {
   onClose: (embedded: boolean) => void;
 }) {
   const { controller, embedded } = props;
+  const updateSnapshot = usePwaUpdateSnapshot();
+  const isUpdateBusy = updateSnapshot.status === "checking" || updateSnapshot.status === "updating";
   const renderSearch = () => (
     <div className="modal-search-field settings-search-field">
       <input
@@ -90,6 +97,34 @@ export function SettingsSheet(props: {
         onScroll={controller.handleBodyScroll}
         ref={controller.bodyRef}
       >
+        <section className="package-cache-card" aria-label="Application update">
+          <div className="package-cache-card__copy">
+            <h4>Application update</h4>
+            <p>{updateSnapshot.message}</p>
+          </div>
+          <div className="package-cache-card__actions">
+            <button
+              className="pane__button"
+              disabled={isUpdateBusy}
+              onClick={() => {
+                if (updateSnapshot.status === "available") {
+                  void restartToApplyPwaUpdate();
+                  return;
+                }
+                void checkForPwaUpdate();
+              }}
+              type="button"
+            >
+              {updateSnapshot.status === "available"
+                ? "Restart to update"
+                : updateSnapshot.status === "checking"
+                  ? "Checking..."
+                  : updateSnapshot.status === "updating"
+                    ? "Updating..."
+                    : "Check for updates"}
+            </button>
+          </div>
+        </section>
         {controller.searchQuery.trim() && controller.matchingTabs.length === 0 ? (
           <div className="settings-search-empty">No matching settings.</div>
         ) : null}
