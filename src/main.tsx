@@ -4,13 +4,14 @@
 import { warmTypstOfflineAssets } from "./compiler/typstAssets";
 import { ensureTypstQueueMicrotask } from "./compiler/typstPolyfills";
 import { warmTypstCompilerForOffline } from "./compiler/typstCompiler";
-import { initializePwaUpdates } from "./pwa/updateManager";
 import { shouldUseLowMemoryCompilerMode } from "./utils/browserDetection";
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { registerSW } from "virtual:pwa-register";
 import { App } from "./app/App";
 import { AuthGate } from "./auth/AuthGate";
 import { ThemeProvider } from "./theme/ThemeProvider";
+import { updateManager } from "./update/updateManager";
 import "./styles/global.css";
 
 ensureTypstQueueMicrotask();
@@ -52,17 +53,18 @@ async function prepareOfflineCompilerAssets() {
   console.info("typr is ready for offline use.");
 }
 
-initializePwaUpdates();
-
 if (import.meta.env.PROD) {
-  window.addEventListener("typr:pwa-offline-ready", () => {
-    void prepareOfflineCompilerAssets().catch((error) => {
-      console.error(
-        "typr could not prepare the compiler for offline use.",
-        error
-      );
-    });
-  }, { once: true });
+  updateManager.initialize(
+    registerSW,
+    () => {
+      void prepareOfflineCompilerAssets().catch((error) => {
+        console.error(
+          "typr could not prepare the compiler for offline use.",
+          error
+        );
+      });
+    }
+  );
 }
 
 function TyprApp() {

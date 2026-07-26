@@ -350,6 +350,8 @@ import {
   getRelativePathParent as getWorkspaceParentPath,
   joinRelativePaths as joinWorkspacePath
 } from "../utils/relativePath";
+import { ApplicationInfoButton } from "../update/ApplicationInfoButton";
+import { updateManager } from "../update/updateManager";
 
 const COMPILE_DEBOUNCE_MS = 60;
 const SAVE_DEBOUNCE_MS = 250;
@@ -4446,6 +4448,50 @@ ${nextLine}` : nextLine;
     compileInFlightSourcePathRef.current || pendingSourcePathRef.current
   );
   const hasActiveCompileWork = hasScheduledCompileWork();
+  const hasModalUpdateBlocker =
+    isSettingsOpen ||
+    isDocsOpen ||
+    isPreviewPopupOpen ||
+    pendingKeybindingConflict !== null ||
+    recordingKeybindingId !== null ||
+    workspaceContextMenu !== null ||
+    renamingWorkspacePath !== null ||
+    pendingWorkspaceDeletePath !== null ||
+    openToolbarMenu !== null ||
+    isTableSizePickerOpen ||
+    isTableBorderMenuOpen ||
+    isCompileOptionsMenuOpen ||
+    isPreviewDownloadMenuOpen ||
+    gitHubClone.isOpen ||
+    activeMergeState !== null;
+  const hasGitOperationInFlight =
+    isSyncing ||
+    isGitStatusLoading ||
+    isMergeFilePreviewLoading ||
+    gitHubDiscovery.status === "loading" ||
+    gitHubClone.status === "loading";
+  const hasPendingWorkspaceChanges =
+    storageStatus !== "saved" ||
+    (lifecyclePersistenceRef.current?.hasPendingChanges() ?? true);
+  const isSafeToRestart =
+    isHydrated &&
+    !hasHydrationError &&
+    !hasPendingWorkspaceChanges &&
+    !isCompiling &&
+    !hasActiveCompileWork &&
+    !hasGitOperationInFlight &&
+    !hasModalUpdateBlocker;
+  const prepareWorkspaceForUpdate = useCallback(async () => {
+    await lifecyclePersistenceRef.current?.persistNow();
+  }, [lifecyclePersistenceRef]);
+
+  useEffect(() => {
+    updateManager.setRestartSafety({
+      safe: isSafeToRestart,
+      prepare: prepareWorkspaceForUpdate
+    });
+  }, [isSafeToRestart, prepareWorkspaceForUpdate]);
+
   const activePreviewIsCompileTarget = Boolean(
     activePreviewCompilePath &&
       activeCompileTargetPath &&
@@ -14289,6 +14335,7 @@ ${nextLine}` : nextLine;
               <span aria-hidden="true" className="activity-icon activity-icon--docs" />
               <span className="visually-hidden">Docs</span>
             </button>
+            <ApplicationInfoButton />
             <button
               aria-label="Settings"
               className="activity-bar__button"
@@ -14350,6 +14397,7 @@ ${nextLine}` : nextLine;
             </div>
             {mobileWorkspaceTab === "files" ? (
               <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
+                <ApplicationInfoButton mobile />
                 {MOBILE_SIDEBAR_TOOLS.map((tool) => (
                   <button
                     key={tool.id}

@@ -15,6 +15,7 @@ interface VisibilityEventTarget extends LifecycleEventTarget {
 export interface LifecyclePersistence<Snapshot, ProjectStorage> {
   update(payload: PersistencePayload<Snapshot, ProjectStorage>): void;
   persistNow(): Promise<void>;
+  hasPendingChanges(): boolean;
   dispose(): void;
 }
 
@@ -156,6 +157,13 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
       debounceHandle = setTimeout(persistNow, debounceMs);
     },
     persistNow,
+    hasPendingChanges() {
+      const payload = readLatestPayload();
+      return (
+        lastPersistRequest !== null ||
+        (payload !== null && !isSamePayload(payload, lastPersistedPayload))
+      );
+    },
     dispose() {
       if (disposed) {
         return;
