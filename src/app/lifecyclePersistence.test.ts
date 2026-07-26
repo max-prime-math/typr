@@ -150,4 +150,19 @@ describe("lifecycle persistence", () => {
 
     expect(didFlush).toBe(true);
   });
+
+  it("reports pending changes through the debounce and active save", async () => {
+    const harness = createHarness();
+
+    expect(harness.persistence.hasPendingChanges()).toBe(false);
+
+    harness.persistence.update({
+      projectStorage: { revision: "latest" },
+      snapshot: { revision: "latest" }
+    });
+    expect(harness.persistence.hasPendingChanges()).toBe(true);
+
+    await harness.persistence.persistNow();
+    expect(harness.persistence.hasPendingChanges()).toBe(false);
+  });
 });

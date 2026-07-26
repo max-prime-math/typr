@@ -8,7 +8,7 @@ GitHub Pages deployment: <https://max-prime-math.github.io/typr/>
 
 ## Documentation
 
-The detailed documentation lives in [docs/](docs/index.md). The app renders these Markdown files from the `?` button above Settings.
+The detailed documentation lives in [docs/](docs/index.md). Application, build, link, and update information is available from the Info button above Settings.
 
 ## Quick Start
 

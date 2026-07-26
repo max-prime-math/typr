@@ -11,6 +11,7 @@ import { registerSW } from "virtual:pwa-register";
 import { App } from "./app/App";
 import { AuthGate } from "./auth/AuthGate";
 import { ThemeProvider } from "./theme/ThemeProvider";
+import { updateManager } from "./update/updateManager";
 import "./styles/global.css";
 
 ensureTypstQueueMicrotask();
@@ -53,9 +54,9 @@ async function prepareOfflineCompilerAssets() {
 }
 
 if (import.meta.env.PROD) {
-  registerSW({
-    immediate: true,
-    onOfflineReady() {
+  updateManager.initialize(
+    registerSW,
+    () => {
       void prepareOfflineCompilerAssets().catch((error) => {
         console.error(
           "typr could not prepare the compiler for offline use.",
@@ -63,7 +64,7 @@ if (import.meta.env.PROD) {
         );
       });
     }
-  });
+  );
 }
 
 function TyprApp() {

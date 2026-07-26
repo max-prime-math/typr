@@ -1,9 +1,53 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
 const INLINE_ASSET_LIMIT = 8 * 1024;
+const packageMetadata = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8")
+) as { version: string };
+const releaseMetadata = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./release-metadata.json", import.meta.url)), "utf8")
+) as {
+  backupRecommended?: boolean;
+  breaking?: boolean;
+  notes?: string[];
+};
+
+function resolveBuildSha(): string {
+  const environmentSha =
+    process.env.GITHUB_SHA ??
+    process.env.VERCEL_GIT_COMMIT_SHA ??
+    process.env.CF_PAGES_COMMIT_SHA;
+
+  if (environmentSha) {
+    return environmentSha.slice(0, 7);
+  }
+
+  try {
+    return execFileSync("git", ["rev-parse", "--short=7", "HEAD"], {
+      encoding: "utf8"
+    }).trim();
+  } catch (error) {
+    const capturedStdout = (error as { stdout?: Buffer | string }).stdout;
+    const recoveredSha =
+      typeof capturedStdout === "string"
+        ? capturedStdout.trim()
+        : capturedStdout?.toString("utf8").trim();
+
+    if (recoveredSha) {
+      return recoveredSha.slice(0, 7);
+    }
+
+    return "unknown";
+  }
+}
+
+const appVersion = packageMetadata.version;
+const buildSha = resolveBuildSha();
 
 export default defineConfig(({ command }) => {
   const base = command === "build" ? DEPLOYED_BASE : "/";
@@ -11,9 +55,35 @@ export default defineConfig(({ command }) => {
   return {
     base,
     cacheDir: process.env.TYPR_VITE_CACHE_DIR,
+    define: {
+      __TYPR_APP_VERSION__: JSON.stringify(appVersion),
+      __TYPR_BUILD_SHA__: JSON.stringify(buildSha)
+    },
     plugins: [
+      {
+        name: "typr-release-metadata",
+        generateBundle() {
+          this.emitFile({
+            type: "asset",
+            fileName: "release.json",
+            source: JSON.stringify(
+              {
+                version: appVersion,
+                build: buildSha,
+                breaking: Boolean(releaseMetadata.breaking),
+                backupRecommended: Boolean(releaseMetadata.backupRecommended),
+                notes: Array.isArray(releaseMetadata.notes)
+                  ? releaseMetadata.notes.filter((note) => typeof note === "string")
+                  : []
+              },
+              null,
+              2
+            )
+          });
+        }
+      },
       VitePWA({
-        registerType: "autoUpdate",
+        registerType: "prompt",
         injectRegister: false,
         includeAssets: [
           "favicon.svg",
@@ -44,6 +114,8 @@ export default defineConfig(({ command }) => {
           ]
         },
         workbox: {
+          clientsClaim: true,
+          skipWaiting: false,
           globPatterns: [
             "**/*.{js,css,html}",
             "assets/**/*.svg",

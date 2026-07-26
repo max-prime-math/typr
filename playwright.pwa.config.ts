@@ -1,11 +1,13 @@
 import { defineConfig } from "@playwright/test";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:4199/";
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: /offline-first-compile\.spec\.ts/,
+  testMatch: /(application-update|offline-first-compile)\.spec\.ts/,
   fullyParallel: false,
+  workers: 1,
   reporter: [["line"]],
   timeout: 120_000,
   expect: {
@@ -16,6 +18,9 @@ export default defineConfig({
     browserName: "chromium",
     deviceScaleFactor: 1,
     headless: true,
+    launchOptions: chromiumExecutablePath
+      ? { executablePath: chromiumExecutablePath }
+      : undefined,
     serviceWorkers: "allow",
     viewport: { width: 1440, height: 1000 }
   },
