@@ -13,7 +13,7 @@ export default defineConfig(({ command }) => {
     cacheDir: process.env.TYPR_VITE_CACHE_DIR,
     plugins: [
       VitePWA({
-        registerType: "autoUpdate",
+        registerType: "prompt",
         injectRegister: false,
         includeAssets: [
           "favicon.svg",
