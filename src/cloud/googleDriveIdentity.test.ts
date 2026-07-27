@@ -20,12 +20,24 @@ interface TokenClientConfig {
 
 function createGoogleIdentityHarness() {
   let config: TokenClientConfig | null = null;
+  let visibilityState: DocumentVisibilityState = "visible";
+  const documentTarget = new EventTarget();
+  const windowTarget = new EventTarget();
   const requestAccessToken = vi.fn();
   const initTokenClient = vi.fn((nextConfig: TokenClientConfig) => {
     config = nextConfig;
     return { requestAccessToken };
   });
+  vi.stubGlobal("document", {
+    addEventListener: documentTarget.addEventListener.bind(documentTarget),
+    get visibilityState() {
+      return visibilityState;
+    },
+    removeEventListener:
+      documentTarget.removeEventListener.bind(documentTarget)
+  });
   vi.stubGlobal("window", {
+    addEventListener: windowTarget.addEventListener.bind(windowTarget),
     clearTimeout,
     google: {
       accounts: {
@@ -35,10 +47,15 @@ function createGoogleIdentityHarness() {
         }
       }
     },
+    location: {
+      origin: "https://typr.test"
+    },
+    removeEventListener: windowTarget.removeEventListener.bind(windowTarget),
     setTimeout
   });
 
   return {
+    documentTarget,
     getConfig() {
       if (!config) {
         throw new Error("Google token client was not initialized.");
@@ -46,7 +63,12 @@ function createGoogleIdentityHarness() {
       return config;
     },
     initTokenClient,
-    requestAccessToken
+    requestAccessToken,
+    setVisibility(nextVisibilityState: DocumentVisibilityState) {
+      visibilityState = nextVisibilityState;
+      documentTarget.dispatchEvent(new Event("visibilitychange"));
+    },
+    windowTarget
   };
 }
 
@@ -121,5 +143,39 @@ describe("Google Drive identity", () => {
 
     await vi.advanceTimersByTimeAsync(1_000);
     await rejection;
+  });
+
+  it("reports lifecycle diagnostics when the popup closes without a callback", async () => {
+    const { harness, request } = await startRequest();
+    const rejection = expect(request).rejects.toThrow(
+      /origin=https:\/\/typr\.test; window-blurred=yes; document-hidden=no; window-refocused=yes; document-visible=no; google-messages=1/
+    );
+
+    harness.windowTarget.dispatchEvent(new Event("blur"));
+    const googleMessage = new Event("message");
+    Object.defineProperty(googleMessage, "origin", {
+      value: "https://accounts.google.com"
+    });
+    harness.windowTarget.dispatchEvent(googleMessage);
+    harness.windowTarget.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await rejection;
+  });
+
+  it("waits for the callback grace period after returning from a hidden tab", async () => {
+    const { harness, request } = await startRequest();
+
+    harness.setVisibility("hidden");
+    harness.setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(4_999);
+    harness.getConfig().callback({
+      access_token: "returned-token",
+      expires_in: 60
+    });
+
+    await expect(request).resolves.toMatchObject({
+      accessToken: "returned-token"
+    });
   });
 });

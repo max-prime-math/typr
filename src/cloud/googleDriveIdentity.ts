@@ -2,6 +2,7 @@ const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const SCRIPT_ELEMENT_ID = "typr-google-identity-services";
 const GOOGLE_AUTHORIZATION_TIMEOUT_MS = 120_000;
+const GOOGLE_AUTHORIZATION_RETURN_GRACE_MS = 5_000;
 
 interface GoogleTokenResponse {
   access_token?: string;
@@ -66,25 +67,107 @@ export function requestGoogleDriveAccessToken(
         }
 
         let settled = false;
-        const timeoutId = window.setTimeout(() => {
-          if (settled) {
-            return;
+        let sawWindowBlur = false;
+        let sawDocumentHidden = false;
+        let sawWindowFocusAfterDeparture = false;
+        let sawDocumentVisibleAfterDeparture = false;
+        let googleMessageCount = 0;
+        let returnTimeoutId: number | null = null;
+        const formatDiagnostics = () =>
+          [
+            `origin=${window.location?.origin ?? "unknown"}`,
+            `window-blurred=${sawWindowBlur ? "yes" : "no"}`,
+            `document-hidden=${sawDocumentHidden ? "yes" : "no"}`,
+            `window-refocused=${sawWindowFocusAfterDeparture ? "yes" : "no"}`,
+            `document-visible=${sawDocumentVisibleAfterDeparture ? "yes" : "no"}`,
+            `google-messages=${googleMessageCount}`
+          ].join("; ");
+        const cleanup = () => {
+          window.clearTimeout(timeoutId);
+          if (returnTimeoutId !== null) {
+            window.clearTimeout(returnTimeoutId);
           }
-          settled = true;
-          reject(
-            new Error(
-              "Google authorization did not return to Typr. Close the Google window and try again."
-            )
+          window.removeEventListener("blur", handleWindowBlur);
+          window.removeEventListener("focus", handleWindowFocus);
+          window.removeEventListener("message", handleWindowMessage);
+          document.removeEventListener(
+            "visibilitychange",
+            handleVisibilityChange
           );
-        }, options.timeoutMs ?? GOOGLE_AUTHORIZATION_TIMEOUT_MS);
+        };
         const beginSettling = () => {
           if (settled) {
             return false;
           }
           settled = true;
-          window.clearTimeout(timeoutId);
+          cleanup();
           return true;
         };
+        const rejectWithDiagnostics = (message: string) => {
+          if (!beginSettling()) {
+            return;
+          }
+          reject(new Error(`${message} Diagnostics: ${formatDiagnostics()}.`));
+        };
+        const scheduleMissingCallbackFailure = () => {
+          if (
+            settled ||
+            returnTimeoutId !== null ||
+            (!sawWindowBlur && !sawDocumentHidden)
+          ) {
+            return;
+          }
+          returnTimeoutId = window.setTimeout(
+            () =>
+              rejectWithDiagnostics(
+                "Google authorization closed without returning credentials to Typr."
+              ),
+            GOOGLE_AUTHORIZATION_RETURN_GRACE_MS
+          );
+        };
+        function handleWindowBlur() {
+          sawWindowBlur = true;
+        }
+        function handleWindowFocus() {
+          if (!sawWindowBlur && !sawDocumentHidden) {
+            return;
+          }
+          sawWindowFocusAfterDeparture = true;
+          scheduleMissingCallbackFailure();
+        }
+        function handleWindowMessage(event: MessageEvent) {
+          if (
+            event.origin === "https://accounts.google.com" ||
+            event.origin.endsWith(".google.com")
+          ) {
+            googleMessageCount += 1;
+          }
+        }
+        function handleVisibilityChange() {
+          if (document.visibilityState === "hidden") {
+            sawDocumentHidden = true;
+            return;
+          }
+          if (!sawWindowBlur && !sawDocumentHidden) {
+            return;
+          }
+          sawDocumentVisibleAfterDeparture = true;
+          scheduleMissingCallbackFailure();
+        }
+        window.addEventListener("blur", handleWindowBlur);
+        window.addEventListener("focus", handleWindowFocus);
+        window.addEventListener("message", handleWindowMessage);
+        document.addEventListener(
+          "visibilitychange",
+          handleVisibilityChange
+        );
+        const timeoutId = window.setTimeout(
+          () =>
+            rejectWithDiagnostics(
+              "Google authorization did not return to Typr."
+            ),
+          options.timeoutMs ?? GOOGLE_AUTHORIZATION_TIMEOUT_MS
+        );
         const client = oauth2.initTokenClient({
           client_id: clientId,
           scope: GOOGLE_DRIVE_SCOPE,
