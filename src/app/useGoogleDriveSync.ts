@@ -22,8 +22,9 @@ import {
   GoogleDriveProjectRemote
 } from "../cloud/googleDriveApi";
 import {
+  beginGoogleDriveRedirectAuthorization,
+  claimGoogleDriveRedirectResult,
   isGoogleDriveAccessTokenFresh,
-  requestGoogleDriveAccessToken,
   type GoogleDriveAccessToken
 } from "../cloud/googleDriveIdentity";
 import {
@@ -82,6 +83,7 @@ export function useGoogleDriveSync(options: {
   );
   const projectStorageRef = useRef(projectStorage);
   const accessTokenRef = useRef<GoogleDriveAccessToken | null>(null);
+  const redirectResumeStartedRef = useRef(false);
   const bindingsRef = useRef(
     new Map<string, CloudProjectBindingRecord>()
   );
@@ -138,7 +140,7 @@ export function useGoogleDriveSync(options: {
   );
 
   const getRemote = useCallback(
-    async (interactive: boolean): Promise<GoogleDriveProjectRemote> => {
+    async (): Promise<GoogleDriveProjectRemote> => {
       if (!configured) {
         throw new Error(
           "Google Drive sync is not configured on this deployment."
@@ -151,18 +153,32 @@ export function useGoogleDriveSync(options: {
           accessTokenRef.current.accessToken
         );
       }
-      if (!interactive) {
-        throw new GoogleDriveAuthorizationRequiredError();
-      }
-
-      accessTokenRef.current = await requestGoogleDriveAccessToken(clientId, {
-        prompt: accessTokenRef.current ? "" : "consent"
-      });
-      return new GoogleDriveProjectRemote(
-        accessTokenRef.current.accessToken
-      );
+      throw new GoogleDriveAuthorizationRequiredError();
     },
-    [clientId, configured]
+    [configured]
+  );
+
+  const startRedirectAuthorization = useCallback(
+    (projectId: string) => {
+      updateState(projectId, (current) => ({
+        ...current,
+        status: "authorizing",
+        message: "Redirecting to Google for authorization…"
+      }));
+      try {
+        beginGoogleDriveRedirectAuthorization(clientId, projectId);
+      } catch (error) {
+        updateState(projectId, (current) => ({
+          ...current,
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to start Google authorization."
+        }));
+      }
+    },
+    [clientId, updateState]
   );
 
   const applySyncedProject = useCallback(
@@ -210,6 +226,13 @@ export function useGoogleDriveSync(options: {
       if (!binding) {
         return;
       }
+      if (
+        interactive &&
+        !isGoogleDriveAccessTokenFresh(accessTokenRef.current)
+      ) {
+        startRedirectAuthorization(projectId);
+        return;
+      }
       if (runningProjectIdsRef.current.has(projectId)) {
         queuedProjectIdsRef.current.add(projectId);
         return;
@@ -225,7 +248,7 @@ export function useGoogleDriveSync(options: {
       }));
 
       try {
-        const remote = await getRemote(interactive);
+        const remote = await getRemote();
         updateState(projectId, (current) => ({
           ...current,
           status: "syncing",
@@ -284,7 +307,13 @@ export function useGoogleDriveSync(options: {
         }
       }
     },
-    [applySyncedProject, getRemote, scheduleSync, updateState]
+    [
+      applySyncedProject,
+      getRemote,
+      scheduleSync,
+      startRedirectAuthorization,
+      updateState
+    ]
   );
   runProjectSyncRef.current = runProjectSync;
 
@@ -307,6 +336,10 @@ export function useGoogleDriveSync(options: {
         );
         return;
       }
+      if (!isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+        startRedirectAuthorization(projectId);
+        return;
+      }
 
       updateState(projectId, {
         ...createDisconnectedGoogleDriveState(true),
@@ -314,7 +347,7 @@ export function useGoogleDriveSync(options: {
         message: "Connecting to Google Drive…"
       });
       try {
-        const remote = await getRemote(true);
+        const remote = await getRemote();
         const folder = await remote.findOrCreateProjectFolder({
           projectId,
           projectName: project.displayName
@@ -370,8 +403,78 @@ export function useGoogleDriveSync(options: {
         });
       }
     },
-    [applySyncedProject, configured, getRemote, updateState]
+    [
+      applySyncedProject,
+      configured,
+      getRemote,
+      startRedirectAuthorization,
+      updateState
+    ]
   );
+
+  useEffect(() => {
+    if (!isHydrated || redirectResumeStartedRef.current) {
+      return;
+    }
+    const result = claimGoogleDriveRedirectResult();
+    if (!result) {
+      return;
+    }
+    redirectResumeStartedRef.current = true;
+    if (!result.projectId) {
+      console.error(
+        result.error ??
+          "Google authorization returned without a Typr project."
+      );
+      return;
+    }
+    const projectId = result.projectId;
+    if (result.error || !result.token) {
+      updateState(projectId, {
+        ...createDisconnectedGoogleDriveState(configured),
+        status: "error",
+        message:
+          result.error ??
+          "Google authorization did not return an access token."
+      });
+      return;
+    }
+
+    accessTokenRef.current = result.token;
+    updateState(projectId, {
+      ...createDisconnectedGoogleDriveState(configured),
+      status: "authorizing",
+      message: "Google authorized. Connecting Drive…"
+    });
+    const resumeConnection = async () => {
+      const binding = await loadCloudProjectBinding(
+        GOOGLE_DRIVE_PROVIDER_ID,
+        projectId
+      );
+      if (
+        binding?.version === 1 &&
+        binding.providerId === GOOGLE_DRIVE_PROVIDER_ID
+      ) {
+        const policy = getBindingPolicy(binding);
+        bindingsRef.current.set(projectId, {
+          ...binding,
+          syncMode: policy.mode,
+          syncIntervalMinutes: policy.intervalMinutes
+        });
+      }
+      await connect(projectId);
+    };
+    void resumeConnection().catch((error) => {
+      updateState(projectId, {
+        ...createDisconnectedGoogleDriveState(configured),
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unable to resume Google Drive connection."
+      });
+    });
+  }, [configured, connect, isHydrated, updateState]);
 
   const disconnect = useCallback(
     async (projectId: string) => {

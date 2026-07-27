@@ -1,204 +1,212 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  requestGoogleDriveAccessToken,
-  type GoogleDriveAccessTokenRequestOptions
+  beginGoogleDriveRedirectAuthorization,
+  captureGoogleDriveRedirectResult,
+  isGoogleDriveAccessTokenFresh,
+  parseGoogleDriveRedirectResponse
 } from "./googleDriveIdentity";
 
-interface TokenResponse {
-  access_token?: string;
-  error?: string;
-  error_description?: string;
-  expires_in?: number;
-}
+const NOW = Date.parse("2026-07-27T12:00:00.000Z");
+const REDIRECT_PENDING = JSON.stringify({
+  createdAt: Date.parse("2026-07-27T11:59:00.000Z"),
+  projectId: "project-1",
+  redirectUri: "https://typr.ca/",
+  state: "oauth-state",
+  version: 1
+});
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
-interface TokenClientConfig {
-  callback: (response: TokenResponse) => void;
-  client_id: string;
-  error_callback?: (error: { type?: string; message?: string }) => void;
-  scope: string;
-}
-
-function createGoogleIdentityHarness() {
-  let config: TokenClientConfig | null = null;
-  let documentHasFocus = true;
-  let visibilityState: DocumentVisibilityState = "visible";
-  const documentTarget = new EventTarget();
-  const windowTarget = new EventTarget();
-  const requestAccessToken = vi.fn();
-  const initTokenClient = vi.fn((nextConfig: TokenClientConfig) => {
-    config = nextConfig;
-    return { requestAccessToken };
-  });
-  vi.stubGlobal("document", {
-    addEventListener: documentTarget.addEventListener.bind(documentTarget),
-    hasFocus() {
-      return documentHasFocus;
-    },
-    get visibilityState() {
-      return visibilityState;
-    },
-    removeEventListener:
-      documentTarget.removeEventListener.bind(documentTarget)
-  });
-  vi.stubGlobal("window", {
-    addEventListener: windowTarget.addEventListener.bind(windowTarget),
-    clearTimeout,
-    google: {
-      accounts: {
-        oauth2: {
-          initTokenClient,
-          revoke: vi.fn()
-        }
-      }
-    },
-    location: {
-      origin: "https://typr.test"
-    },
-    removeEventListener: windowTarget.removeEventListener.bind(windowTarget),
-    clearInterval,
-    setInterval,
-    setTimeout
-  });
-
-  return {
-    documentTarget,
-    getConfig() {
-      if (!config) {
-        throw new Error("Google token client was not initialized.");
-      }
-      return config;
-    },
-    initTokenClient,
-    requestAccessToken,
-    setDocumentFocus(hasFocus: boolean) {
-      documentHasFocus = hasFocus;
-    },
-    setVisibility(nextVisibilityState: DocumentVisibilityState) {
-      visibilityState = nextVisibilityState;
-      documentTarget.dispatchEvent(new Event("visibilitychange"));
-    },
-    windowTarget
-  };
-}
-
-async function startRequest(
-  options?: GoogleDriveAccessTokenRequestOptions
-) {
-  const harness = createGoogleIdentityHarness();
-  const request = requestGoogleDriveAccessToken("client-id", options);
-  await Promise.resolve();
-  return { harness, request };
-}
-
-describe("Google Drive identity", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-27T12:00:00.000Z"));
-  });
-
+describe("Google Drive redirect identity", () => {
   afterEach(() => {
-    vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it("requests consent when establishing a new token session", async () => {
-    const { harness, request } = await startRequest();
-
-    expect(harness.requestAccessToken).toHaveBeenCalledWith({
-      prompt: "consent"
+  it("starts authorization with an exact root redirect, project, and state", () => {
+    const assign = vi.fn();
+    const setItem = vi.fn();
+    vi.stubGlobal("crypto", {
+      randomUUID: () => "oauth-state"
     });
-    harness.getConfig().callback({
-      access_token: "access-token",
-      expires_in: 3600
-    });
-
-    await expect(request).resolves.toEqual({
-      accessToken: "access-token",
-      expiresAt: Date.now() + 3_600_000
-    });
-  });
-
-  it("can skip repeated consent when renewing an existing session", async () => {
-    const { harness, request } = await startRequest({ prompt: "" });
-
-    expect(harness.requestAccessToken).toHaveBeenCalledWith({ prompt: "" });
-    harness.getConfig().callback({
-      access_token: "renewed-token",
-      expires_in: 60
+    vi.stubGlobal("window", {
+      location: {
+        assign,
+        origin: "https://typr.ca"
+      },
+      sessionStorage: {
+        setItem
+      }
     });
 
-    await expect(request).resolves.toMatchObject({
-      accessToken: "renewed-token"
-    });
-  });
+    beginGoogleDriveRedirectAuthorization("client-id", "project-1");
 
-  it("surfaces popup failures with a retryable message", async () => {
-    const { harness, request } = await startRequest();
-
-    harness.getConfig().error_callback?.({
-      type: "popup_failed_to_open"
-    });
-
-    await expect(request).rejects.toThrow(
-      "Allow popups and try again."
+    const authorizationUrl = new URL(assign.mock.calls[0][0] as string);
+    expect(authorizationUrl.origin).toBe("https://accounts.google.com");
+    expect(authorizationUrl.pathname).toBe("/o/oauth2/v2/auth");
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("client-id");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+      "https://typr.ca/"
+    );
+    expect(authorizationUrl.searchParams.get("response_type")).toBe("token");
+    expect(authorizationUrl.searchParams.get("scope")).toBe(DRIVE_SCOPE);
+    expect(authorizationUrl.searchParams.get("state")).toBe("oauth-state");
+    expect(setItem).toHaveBeenCalledWith(
+      "typr.google-drive.redirect.v1",
+      expect.stringContaining('"projectId":"project-1"')
     );
   });
 
-  it("times out when Google never invokes either callback", async () => {
-    const { request } = await startRequest({ timeoutMs: 1_000 });
-    const rejection = expect(request).rejects.toThrow(
-      "Google authorization did not return to Typr."
-    );
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    await rejection;
-  });
-
-  it("reports lifecycle diagnostics when the popup closes without a callback", async () => {
-    const { harness, request } = await startRequest();
-    const rejection = expect(request).rejects.toThrow(
-      /origin=https:\/\/typr\.test; window-blurred=yes; document-hidden=no; window-refocused=yes; document-visible=no; focus-poll-left=no; focus-poll-returned=no; google-messages=1/
-    );
-
-    harness.windowTarget.dispatchEvent(new Event("blur"));
-    const googleMessage = new Event("message");
-    Object.defineProperty(googleMessage, "origin", {
-      value: "https://accounts.google.com"
-    });
-    harness.windowTarget.dispatchEvent(googleMessage);
-    harness.windowTarget.dispatchEvent(new Event("focus"));
-    await vi.advanceTimersByTimeAsync(5_000);
-
-    await rejection;
-  });
-
-  it("detects popup return by polling focus when browsers omit focus events", async () => {
-    const { harness, request } = await startRequest();
-    const rejection = expect(request).rejects.toThrow(
-      /focus-poll-left=yes; focus-poll-returned=yes/
-    );
-
-    harness.setDocumentFocus(false);
-    await vi.advanceTimersByTimeAsync(250);
-    harness.setDocumentFocus(true);
-    await vi.advanceTimersByTimeAsync(5_250);
-
-    await rejection;
-  });
-
-  it("waits for the callback grace period after returning from a hidden tab", async () => {
-    const { harness, request } = await startRequest();
-
-    harness.setVisibility("hidden");
-    harness.setVisibility("visible");
-    await vi.advanceTimersByTimeAsync(4_999);
-    harness.getConfig().callback({
-      access_token: "returned-token",
-      expires_in: 60
+  it("captures a redirect token and removes it from the address bar and storage", () => {
+    const removeItem = vi.fn();
+    const replaceState = vi.fn();
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+    vi.stubGlobal("window", {
+      history: {
+        replaceState,
+        state: { existing: true }
+      },
+      location: {
+        hash: `#access_token=redirect-token&expires_in=3600&scope=${encodeURIComponent(
+          DRIVE_SCOPE
+        )}&state=oauth-state`,
+        pathname: "/",
+        search: ""
+      },
+      sessionStorage: {
+        getItem: () => REDIRECT_PENDING,
+        removeItem
+      }
     });
 
-    await expect(request).resolves.toMatchObject({
-      accessToken: "returned-token"
+    expect(captureGoogleDriveRedirectResult()).toMatchObject({
+      error: null,
+      projectId: "project-1",
+      token: {
+        accessToken: "redirect-token"
+      }
     });
+    expect(replaceState).toHaveBeenCalledWith(
+      { existing: true },
+      "",
+      "/"
+    );
+    expect(removeItem).toHaveBeenCalledWith(
+      "typr.google-drive.redirect.v1"
+    );
+  });
+
+  it("accepts a verified token with Drive file access", () => {
+    const result = parseGoogleDriveRedirectResponse(
+      new URLSearchParams({
+        access_token: "redirect-token",
+        expires_in: "3600",
+        scope: `openid ${DRIVE_SCOPE}`,
+        state: "oauth-state",
+        token_type: "Bearer"
+      }),
+      REDIRECT_PENDING,
+      NOW
+    );
+
+    expect(result).toEqual({
+      error: null,
+      projectId: "project-1",
+      token: {
+        accessToken: "redirect-token",
+        expiresAt: Date.parse("2026-07-27T13:00:00.000Z")
+      }
+    });
+  });
+
+  it("rejects a response whose state does not match", () => {
+    const result = parseGoogleDriveRedirectResponse(
+      new URLSearchParams({
+        access_token: "redirect-token",
+        expires_in: "3600",
+        scope: DRIVE_SCOPE,
+        state: "different-state"
+      }),
+      REDIRECT_PENDING,
+      NOW
+    );
+
+    expect(result).toMatchObject({
+      error: "Google authorization could not be verified. Try connecting again.",
+      projectId: "project-1",
+      token: null
+    });
+  });
+
+  it("surfaces errors returned by Google's authorization server", () => {
+    const result = parseGoogleDriveRedirectResponse(
+      new URLSearchParams({
+        error: "access_denied",
+        error_description: "The user declined Drive access.",
+        state: "oauth-state"
+      }),
+      REDIRECT_PENDING,
+      NOW
+    );
+
+    expect(result).toMatchObject({
+      error: "The user declined Drive access.",
+      projectId: "project-1",
+      token: null
+    });
+  });
+
+  it("rejects stale authorization responses", () => {
+    const result = parseGoogleDriveRedirectResponse(
+      new URLSearchParams({
+        access_token: "redirect-token",
+        expires_in: "3600",
+        scope: DRIVE_SCOPE,
+        state: "oauth-state"
+      }),
+      REDIRECT_PENDING,
+      Date.parse("2026-07-27T12:15:01.000Z")
+    );
+
+    expect(result.error).toBe(
+      "Google authorization took too long. Try connecting again."
+    );
+    expect(result.token).toBeNull();
+  });
+
+  it("requires the Drive file scope in the response", () => {
+    const result = parseGoogleDriveRedirectResponse(
+      new URLSearchParams({
+        access_token: "redirect-token",
+        expires_in: "3600",
+        scope: "openid",
+        state: "oauth-state"
+      }),
+      REDIRECT_PENDING,
+      NOW
+    );
+
+    expect(result.error).toBe("Google Drive file access was not granted.");
+    expect(result.token).toBeNull();
+  });
+
+  it("treats tokens with more than one minute remaining as fresh", () => {
+    expect(
+      isGoogleDriveAccessTokenFresh(
+        {
+          accessToken: "access-token",
+          expiresAt: NOW + 60_001
+        },
+        NOW
+      )
+    ).toBe(true);
+    expect(
+      isGoogleDriveAccessTokenFresh(
+        {
+          accessToken: "access-token",
+          expiresAt: NOW + 60_000
+        },
+        NOW
+      )
+    ).toBe(false);
   });
 });

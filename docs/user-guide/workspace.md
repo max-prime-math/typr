@@ -18,7 +18,7 @@ Project names are local Typr labels. Deleting a project removes local Typr data 
 
 ### Google Drive sync
 
-Choose **Connect Google Drive** in a project's expanded card. Typr asks Google for access to files created or connected through Typr, then creates or reuses an app-managed Drive folder for that project. The first sync is additive: files unique to either location are retained, and Drive wins a same-path conflict on the first connection.
+Choose **Connect Google Drive** in a project's expanded card. Typr redirects to Google for authorization, returns to the editor, then creates or reuses an app-managed Drive folder for that project. The first sync is additive: files unique to either location are retained, and Drive wins a same-path conflict on the first connection.
 
 Use **Settings → Sync** to choose an independent Drive policy:
 

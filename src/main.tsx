@@ -3,6 +3,7 @@
 
 import { warmTypstOfflineAssets } from "./compiler/typstAssets";
 import { ensureTypstQueueMicrotask } from "./compiler/typstPolyfills";
+import { captureGoogleDriveRedirectResult } from "./cloud/googleDriveIdentity";
 import { shouldUseLowMemoryCompilerMode } from "./utils/browserDetection";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -14,6 +15,7 @@ import { updateManager } from "./update/updateManager";
 import "./styles/global.css";
 
 ensureTypstQueueMicrotask();
+captureGoogleDriveRedirectResult();
 
 const APP_READY_EVENT = "typr:app-ready";
 const BOOT_PROGRESS_EVENT = "typr:boot-progress";

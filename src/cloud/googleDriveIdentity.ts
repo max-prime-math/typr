@@ -1,252 +1,189 @@
-const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
-const SCRIPT_ELEMENT_ID = "typr-google-identity-services";
-const GOOGLE_AUTHORIZATION_TIMEOUT_MS = 120_000;
-const GOOGLE_AUTHORIZATION_RETURN_GRACE_MS = 5_000;
-const GOOGLE_AUTHORIZATION_FOCUS_POLL_MS = 250;
-
-interface GoogleTokenResponse {
-  access_token?: string;
-  error?: string;
-  error_description?: string;
-  expires_in?: number;
-}
-
-interface GoogleTokenClient {
-  requestAccessToken(options?: { prompt?: string }): void;
-}
-
-interface GoogleOAuth2Api {
-  initTokenClient(options: {
-    client_id: string;
-    scope: string;
-    callback: (response: GoogleTokenResponse) => void;
-    error_callback?: (error: { type?: string; message?: string }) => void;
-  }): GoogleTokenClient;
-  revoke(accessToken: string, callback?: () => void): void;
-}
-
-declare global {
-  interface Window {
-    google?: {
-      accounts?: {
-        oauth2?: GoogleOAuth2Api;
-      };
-    };
-  }
-}
+const GOOGLE_OAUTH_AUTHORIZATION_URL =
+  "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_DRIVE_REDIRECT_STORAGE_KEY =
+  "typr.google-drive.redirect.v1";
+const GOOGLE_DRIVE_REDIRECT_MAX_AGE_MS = 15 * 60_000;
 
 export interface GoogleDriveAccessToken {
   accessToken: string;
   expiresAt: number;
 }
 
-export interface GoogleDriveAccessTokenRequestOptions {
-  prompt?: "" | "consent";
-  timeoutMs?: number;
+interface PendingGoogleDriveRedirect {
+  createdAt: number;
+  projectId: string;
+  redirectUri: string;
+  state: string;
+  version: 1;
 }
 
-let identityScriptPromise: Promise<void> | null = null;
+export interface GoogleDriveRedirectResult {
+  error: string | null;
+  projectId: string | null;
+  token: GoogleDriveAccessToken | null;
+}
 
-export function requestGoogleDriveAccessToken(
+let capturedRedirectResult: GoogleDriveRedirectResult | null | undefined;
+let redirectResultClaimed = false;
+
+export function beginGoogleDriveRedirectAuthorization(
   clientId: string,
-  options: GoogleDriveAccessTokenRequestOptions = {}
-): Promise<GoogleDriveAccessToken> {
+  projectId: string
+): void {
   if (!clientId.trim()) {
-    return Promise.reject(
-      new Error("Google Drive sync is not configured on this deployment.")
+    throw new Error(
+      "Google Drive sync is not configured on this deployment."
     );
   }
+  if (!projectId.trim()) {
+    throw new Error("No Typr project was selected for Google Drive sync.");
+  }
 
-  return loadGoogleIdentityServices().then(
-    () =>
-      new Promise<GoogleDriveAccessToken>((resolve, reject) => {
-        const oauth2 = window.google?.accounts?.oauth2;
-        if (!oauth2) {
-          reject(new Error("Google authorization did not finish loading."));
-          return;
-        }
-
-        let settled = false;
-        let sawWindowBlur = false;
-        let sawDocumentHidden = false;
-        let sawWindowFocusAfterDeparture = false;
-        let sawDocumentVisibleAfterDeparture = false;
-        let sawFocusPollingDeparture = false;
-        let sawFocusPollingReturn = false;
-        let googleMessageCount = 0;
-        let returnTimeoutId: number | null = null;
-        let focusPollId: number | null = null;
-        const formatDiagnostics = () =>
-          [
-            `origin=${window.location?.origin ?? "unknown"}`,
-            `window-blurred=${sawWindowBlur ? "yes" : "no"}`,
-            `document-hidden=${sawDocumentHidden ? "yes" : "no"}`,
-            `window-refocused=${sawWindowFocusAfterDeparture ? "yes" : "no"}`,
-            `document-visible=${sawDocumentVisibleAfterDeparture ? "yes" : "no"}`,
-            `focus-poll-left=${sawFocusPollingDeparture ? "yes" : "no"}`,
-            `focus-poll-returned=${sawFocusPollingReturn ? "yes" : "no"}`,
-            `google-messages=${googleMessageCount}`
-          ].join("; ");
-        const cleanup = () => {
-          window.clearTimeout(timeoutId);
-          if (returnTimeoutId !== null) {
-            window.clearTimeout(returnTimeoutId);
-          }
-          if (focusPollId !== null) {
-            window.clearInterval(focusPollId);
-          }
-          window.removeEventListener("blur", handleWindowBlur);
-          window.removeEventListener("focus", handleWindowFocus);
-          window.removeEventListener("message", handleWindowMessage);
-          document.removeEventListener(
-            "visibilitychange",
-            handleVisibilityChange
-          );
-        };
-        const beginSettling = () => {
-          if (settled) {
-            return false;
-          }
-          settled = true;
-          cleanup();
-          return true;
-        };
-        const rejectWithDiagnostics = (message: string) => {
-          if (!beginSettling()) {
-            return;
-          }
-          reject(new Error(`${message} Diagnostics: ${formatDiagnostics()}.`));
-        };
-        const scheduleMissingCallbackFailure = () => {
-          if (
-            settled ||
-            returnTimeoutId !== null ||
-            (!sawWindowBlur &&
-              !sawDocumentHidden &&
-              !sawFocusPollingDeparture)
-          ) {
-            return;
-          }
-          returnTimeoutId = window.setTimeout(
-            () =>
-              rejectWithDiagnostics(
-                "Google authorization closed without returning credentials to Typr."
-              ),
-            GOOGLE_AUTHORIZATION_RETURN_GRACE_MS
-          );
-        };
-        function handleWindowBlur() {
-          sawWindowBlur = true;
-        }
-        function handleWindowFocus() {
-          if (!sawWindowBlur && !sawDocumentHidden) {
-            return;
-          }
-          sawWindowFocusAfterDeparture = true;
-          scheduleMissingCallbackFailure();
-        }
-        function handleWindowMessage(event: MessageEvent) {
-          if (
-            event.origin === "https://accounts.google.com" ||
-            event.origin.endsWith(".google.com")
-          ) {
-            googleMessageCount += 1;
-          }
-        }
-        function handleVisibilityChange() {
-          if (document.visibilityState === "hidden") {
-            sawDocumentHidden = true;
-            return;
-          }
-          if (!sawWindowBlur && !sawDocumentHidden) {
-            return;
-          }
-          sawDocumentVisibleAfterDeparture = true;
-          scheduleMissingCallbackFailure();
-        }
-        function pollDocumentFocus() {
-          if (typeof document.hasFocus !== "function") {
-            return;
-          }
-          if (!document.hasFocus()) {
-            sawFocusPollingDeparture = true;
-            return;
-          }
-          if (!sawFocusPollingDeparture) {
-            return;
-          }
-          sawFocusPollingReturn = true;
-          scheduleMissingCallbackFailure();
-        }
-        window.addEventListener("blur", handleWindowBlur);
-        window.addEventListener("focus", handleWindowFocus);
-        window.addEventListener("message", handleWindowMessage);
-        document.addEventListener(
-          "visibilitychange",
-          handleVisibilityChange
-        );
-        focusPollId = window.setInterval(
-          pollDocumentFocus,
-          GOOGLE_AUTHORIZATION_FOCUS_POLL_MS
-        );
-        const timeoutId = window.setTimeout(
-          () =>
-            rejectWithDiagnostics(
-              "Google authorization did not return to Typr."
-            ),
-          options.timeoutMs ?? GOOGLE_AUTHORIZATION_TIMEOUT_MS
-        );
-        const client = oauth2.initTokenClient({
-          client_id: clientId,
-          scope: GOOGLE_DRIVE_SCOPE,
-          callback: (response) => {
-            if (!beginSettling()) {
-              return;
-            }
-            if (!response.access_token || response.error) {
-              reject(
-                new Error(
-                  response.error_description ||
-                    response.error ||
-                    "Google Drive access was not granted."
-                )
-              );
-              return;
-            }
-            const lifetimeSeconds =
-              typeof response.expires_in === "number"
-                ? response.expires_in
-                : 3600;
-            resolve({
-              accessToken: response.access_token,
-              expiresAt: Date.now() + lifetimeSeconds * 1000
-            });
-          },
-          error_callback: (error) => {
-            if (!beginSettling()) {
-              return;
-            }
-            reject(
-              new Error(
-                error.message ||
-                  (error.type === "popup_closed"
-                    ? "Google authorization was cancelled."
-                    : error.type === "popup_failed_to_open"
-                      ? "Unable to open Google authorization. Allow popups and try again."
-                    : "Unable to open Google authorization.")
-              )
-            );
-          }
-        });
-
-        client.requestAccessToken({ prompt: options.prompt ?? "consent" });
-      })
+  const redirectUri = new URL("/", window.location.origin).href;
+  const pending: PendingGoogleDriveRedirect = {
+    createdAt: Date.now(),
+    projectId,
+    redirectUri,
+    state: crypto.randomUUID(),
+    version: 1
+  };
+  window.sessionStorage.setItem(
+    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY,
+    JSON.stringify(pending)
   );
+
+  const authorizationUrl = new URL(GOOGLE_OAUTH_AUTHORIZATION_URL);
+  authorizationUrl.searchParams.set("client_id", clientId);
+  authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizationUrl.searchParams.set("response_type", "token");
+  authorizationUrl.searchParams.set("scope", GOOGLE_DRIVE_SCOPE);
+  authorizationUrl.searchParams.set("include_granted_scopes", "true");
+  authorizationUrl.searchParams.set("state", pending.state);
+  window.location.assign(authorizationUrl.href);
 }
 
-export function revokeGoogleDriveAccessToken(accessToken: string): void {
-  window.google?.accounts?.oauth2?.revoke(accessToken);
+export function captureGoogleDriveRedirectResult(): GoogleDriveRedirectResult | null {
+  if (capturedRedirectResult !== undefined) {
+    return capturedRedirectResult;
+  }
+
+  const response = new URLSearchParams(
+    window.location.hash.startsWith("#")
+      ? window.location.hash.slice(1)
+      : window.location.hash
+  );
+  if (!response.has("access_token") && !response.has("error")) {
+    capturedRedirectResult = null;
+    return null;
+  }
+
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${window.location.search}`
+  );
+  const serializedPending = window.sessionStorage.getItem(
+    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
+  );
+  window.sessionStorage.removeItem(GOOGLE_DRIVE_REDIRECT_STORAGE_KEY);
+  capturedRedirectResult = parseGoogleDriveRedirectResponse(
+    response,
+    serializedPending,
+    Date.now()
+  );
+  return capturedRedirectResult;
+}
+
+export function claimGoogleDriveRedirectResult(): GoogleDriveRedirectResult | null {
+  if (redirectResultClaimed) {
+    return null;
+  }
+  redirectResultClaimed = true;
+  const result =
+    capturedRedirectResult === undefined
+      ? captureGoogleDriveRedirectResult()
+      : capturedRedirectResult;
+  capturedRedirectResult = null;
+  return result;
+}
+
+export function parseGoogleDriveRedirectResponse(
+  response: URLSearchParams,
+  serializedPending: string | null,
+  now = Date.now()
+): GoogleDriveRedirectResult {
+  const pending = parsePendingGoogleDriveRedirect(serializedPending);
+  if (!pending) {
+    return {
+      error:
+        "Google authorization returned without a matching Typr connection request. Try connecting again.",
+      projectId: null,
+      token: null
+    };
+  }
+  if (now - pending.createdAt > GOOGLE_DRIVE_REDIRECT_MAX_AGE_MS) {
+    return {
+      error: "Google authorization took too long. Try connecting again.",
+      projectId: pending.projectId,
+      token: null
+    };
+  }
+  if (response.get("state") !== pending.state) {
+    return {
+      error:
+        "Google authorization could not be verified. Try connecting again.",
+      projectId: pending.projectId,
+      token: null
+    };
+  }
+
+  const oauthError = response.get("error");
+  if (oauthError) {
+    return {
+      error:
+        response.get("error_description") ||
+        `Google authorization failed: ${oauthError}.`,
+      projectId: pending.projectId,
+      token: null
+    };
+  }
+
+  const accessToken = response.get("access_token");
+  const grantedScopes = new Set(
+    (response.get("scope") ?? "").split(/\s+/).filter(Boolean)
+  );
+  const lifetimeSeconds = Number(response.get("expires_in"));
+  if (!accessToken) {
+    return {
+      error: "Google authorization did not return an access token.",
+      projectId: pending.projectId,
+      token: null
+    };
+  }
+  if (!grantedScopes.has(GOOGLE_DRIVE_SCOPE)) {
+    return {
+      error: "Google Drive file access was not granted.",
+      projectId: pending.projectId,
+      token: null
+    };
+  }
+  if (!Number.isFinite(lifetimeSeconds) || lifetimeSeconds <= 0) {
+    return {
+      error: "Google returned an invalid authorization lifetime.",
+      projectId: pending.projectId,
+      token: null
+    };
+  }
+
+  return {
+    error: null,
+    projectId: pending.projectId,
+    token: {
+      accessToken,
+      expiresAt: now + lifetimeSeconds * 1000
+    }
+  };
 }
 
 export function isGoogleDriveAccessTokenFresh(
@@ -256,42 +193,31 @@ export function isGoogleDriveAccessTokenFresh(
   return Boolean(token && token.expiresAt - now > 60_000);
 }
 
-function loadGoogleIdentityServices(): Promise<void> {
-  if (window.google?.accounts?.oauth2) {
-    return Promise.resolve();
+function parsePendingGoogleDriveRedirect(
+  serializedPending: string | null
+): PendingGoogleDriveRedirect | null {
+  if (!serializedPending) {
+    return null;
   }
-  if (identityScriptPromise) {
-    return identityScriptPromise;
-  }
-
-  identityScriptPromise = new Promise<void>((resolve, reject) => {
-    const existingScript = document.getElementById(
-      SCRIPT_ELEMENT_ID
-    ) as HTMLScriptElement | null;
-    const script = existingScript ?? document.createElement("script");
-    const handleLoad = () => {
-      if (window.google?.accounts?.oauth2) {
-        resolve();
-      } else {
-        identityScriptPromise = null;
-        reject(new Error("Google authorization did not finish loading."));
-      }
-    };
-    const handleError = () => {
-      identityScriptPromise = null;
-      reject(new Error("Unable to load Google authorization."));
-    };
-
-    script.addEventListener("load", handleLoad, { once: true });
-    script.addEventListener("error", handleError, { once: true });
-    if (!existingScript) {
-      script.id = SCRIPT_ELEMENT_ID;
-      script.async = true;
-      script.defer = true;
-      script.src = GOOGLE_IDENTITY_SCRIPT_URL;
-      document.head.append(script);
+  try {
+    const pending = JSON.parse(serializedPending) as Partial<
+      PendingGoogleDriveRedirect
+    >;
+    if (
+      pending.version !== 1 ||
+      typeof pending.createdAt !== "number" ||
+      !Number.isFinite(pending.createdAt) ||
+      typeof pending.projectId !== "string" ||
+      !pending.projectId ||
+      typeof pending.redirectUri !== "string" ||
+      !pending.redirectUri ||
+      typeof pending.state !== "string" ||
+      !pending.state
+    ) {
+      return null;
     }
-  });
-
-  return identityScriptPromise;
+    return pending as PendingGoogleDriveRedirect;
+  } catch {
+    return null;
+  }
 }
