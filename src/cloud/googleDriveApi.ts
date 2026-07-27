@@ -33,6 +33,9 @@ type GoogleDriveFetch = (
   init?: RequestInit
 ) => Promise<Response>;
 
+const defaultGoogleDriveFetch: GoogleDriveFetch = (input, init) =>
+  fetch(input, init);
+
 export interface GoogleDriveProjectFolder {
   id: string;
   name: string;
@@ -57,7 +60,7 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
 
   constructor(
     private readonly accessToken: string,
-    private readonly request: GoogleDriveFetch = fetch
+    private readonly request: GoogleDriveFetch = defaultGoogleDriveFetch
   ) {}
 
   async findOrCreateProjectFolder(options: {

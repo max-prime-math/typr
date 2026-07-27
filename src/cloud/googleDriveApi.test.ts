@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LocalFolderSyncTree } from "../workspace/localFolderSync";
 import { GoogleDriveProjectRemote } from "./googleDriveApi";
 
@@ -24,6 +24,44 @@ function textFile(path: string, content: string): LocalFolderSyncTree {
 }
 
 describe("Google Drive project adapter", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not bind the browser fetch function to the Drive adapter", async () => {
+    const request = vi.fn(
+      async function (
+        this: unknown,
+        _input: RequestInfo | URL,
+        _init?: RequestInit
+      ) {
+        expect(this).not.toBeInstanceOf(GoogleDriveProjectRemote);
+        return jsonResponse({
+          files: [
+            {
+              id: "folder-existing",
+              name: "Existing writing",
+              mimeType: "application/vnd.google-apps.folder"
+            }
+          ]
+        });
+      }
+    );
+    vi.stubGlobal("fetch", request);
+    const remote = new GoogleDriveProjectRemote("token");
+
+    await expect(
+      remote.findOrCreateProjectFolder({
+        projectId: "project-a",
+        projectName: "Writing"
+      })
+    ).resolves.toEqual({
+      id: "folder-existing",
+      name: "Existing writing"
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("reuses an app-managed project folder before creating a new one", async () => {
     let capturedInput: RequestInfo | URL | null = null;
     let capturedInit: RequestInit | undefined;
