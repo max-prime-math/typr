@@ -249,4 +249,24 @@ describe("projectState", () => {
     expect(nextStorage.projects[0]?.id).toBe(fallbackProject.id);
     expect(nextStorage.selectedProjectId).toBe(fallbackProject.id);
   });
+
+  it("restores an empty project without inheriting state from the previous project", () => {
+    const previousSnapshot = createDefaultSnapshot();
+    const emptyProject = createEmptyProjectRepository({
+      displayName: "Empty project",
+      defaultFileName: null
+    });
+
+    const restoredProject = projectRepositoryToLegacyProject(
+      emptyProject,
+      previousSnapshot.project
+    );
+
+    expect(restoredProject.documents).toEqual([]);
+    expect(restoredProject.activeDocumentId).toBe("");
+    expect(restoredProject.diagram?.id).toBe(emptyProject.legacyRecovery.project.diagram?.id);
+    expect(restoredProject.diagram?.id).not.toBe(previousSnapshot.project.diagram?.id);
+    expect(restoredProject.trash).toEqual([]);
+    expect(restoredProject.createdAt).toBe(emptyProject.createdAt);
+  });
 });

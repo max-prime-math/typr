@@ -517,6 +517,38 @@ function rememberWorkspacePreviewFile(
   }
 }
 
+function getProjectLastEditedAt(project: TyprProjectRepository): string {
+  const candidates = [
+    project.updatedAt,
+    project.filesystem.updatedAt,
+    ...Object.values(project.filesystem.entries).map((entry) => entry.updatedAt)
+  ];
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+  let latestValue = project.updatedAt;
+
+  for (const candidate of candidates) {
+    const timestamp = Date.parse(candidate);
+    if (Number.isFinite(timestamp) && timestamp > latestTimestamp) {
+      latestTimestamp = timestamp;
+      latestValue = candidate;
+    }
+  }
+
+  return latestValue;
+}
+
+function formatProjectLastEditedAt(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  });
+}
+
 const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
   { id: "projects", label: "Projects" },
   { id: "files", label: "Files" },
@@ -3403,6 +3435,7 @@ ${nextLine}` : nextLine;
   });
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
   const [projectDragOverId, setProjectDragOverId] = useState<string | null>(null);
+  const [managedProjectId, setManagedProjectId] = useState<string | null>(null);
   const previewZoomRef = useRef(previewZoom);
   const editorFontSizeRef = useRef(snapshot.preferences.editorFontSize);
   previewZoomRef.current = previewZoom;
@@ -3478,6 +3511,7 @@ ${nextLine}` : nextLine;
     updateSelectedGitProject,
     upstreamTracking
   } = useGitPanelController({
+    isGitPanelActive: activeSidebarTool === "sync",
     isHydrated,
     selectedProjectRepository,
     fallbackProjectId: snapshot.project.id,
@@ -3494,6 +3528,9 @@ ${nextLine}` : nextLine;
     setProjectStorage,
     setRawSnapshot
   });
+  const selectedLocalFolderSyncState = selectedProjectRepository
+    ? localFolderSync.states[selectedProjectRepository.id]
+    : undefined;
   const [repoStorageStats, setRepoStorageStats] = useState<RepoStorageStats | null>(null);
   const [isRepoStorageLoading, setIsRepoStorageLoading] = useState(false);
   const [repoStorageFeedback, setRepoStorageFeedback] = useState<SyncFeedback>({
@@ -3998,7 +4035,7 @@ ${nextLine}` : nextLine;
 
   const activeDocument = getActiveDocument(snapshot.project);
   const activeDocumentTextContent =
-    typeof activeDocument.content === "string" ? activeDocument.content : "";
+    typeof activeDocument?.content === "string" ? activeDocument.content : "";
   useEffect(() => {
     if (!isHydrated || !selectedGitProject || !selectedProjectRepository || !selectedGitProject.connected) {
       return;
@@ -4068,7 +4105,7 @@ ${nextLine}` : nextLine;
     workspaceSelectionAnchorPath,
     setWorkspaceSelectionAnchorPath
   } = useWorkspaceSelection({
-    activeDocumentPath: activeDocument.name,
+    activeDocumentPath: activeDocument?.name ?? "",
     isTrashViewOpen,
     tree: visibleWorkspaceTree
   });
@@ -4182,9 +4219,10 @@ ${nextLine}` : nextLine;
     };
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
-    sourceWorkspaceNode === null ||
-    (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path));
-  const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument.name;
+    activeDocument !== null &&
+    (sourceWorkspaceNode === null ||
+      (sourceWorkspaceNode.source.kind === "document" && isTextWorkspaceFile(sourceWorkspaceNode.path)));
+  const activeSourcePath = sourceWorkspaceNode?.path ?? activeDocument?.name ?? "";
   const activeSourceLanguage = getSourceLanguage(activeSourcePath);
   const activeEditableTableMatch = useMemo(
     () => isSourceFileEditable
@@ -5065,13 +5103,18 @@ ${nextLine}` : nextLine;
   }, [refreshRepoStorageStats, repoBackend, selectedProjectRepository]);
 
   useEffect(() => {
-    if (!isHydrated || !selectedProjectRepository) {
+    if (
+      !isHydrated ||
+      !selectedProjectRepository ||
+      activeSidebarTool !== "sync"
+    ) {
       setRepoStorageStats(null);
       return;
     }
 
     void refreshRepoStorageStats(selectedProjectRepository);
   }, [
+    activeSidebarTool,
     gitRefreshToken,
     isHydrated,
     refreshRepoStorageStats,
@@ -6705,7 +6748,7 @@ ${nextLine}` : nextLine;
     handleFormatDocumentRef.current = handleFormatDocument;
   }, [handleFormatDocument]);
 
-  const handleCompile = useCallback((profileId: LatexCompileProfileId = selectedLatexCompileProfileId) => {
+  const performManualCompile = useCallback((profileId: LatexCompileProfileId = selectedLatexCompileProfileId) => {
     const sourcePath = activeSourcePathRef.current;
     const sourceLanguage = getSourceLanguage(sourcePath);
     const selectedProfile = getLatexCompileProfile(profileId);
@@ -6832,6 +6875,25 @@ ${nextLine}` : nextLine;
     selectedLatexCompileProfileId,
     selectedProjectRepository
   ]);
+
+  const handleCompile = useCallback(
+    (profileId: LatexCompileProfileId = selectedLatexCompileProfileId) => {
+      const projectId = selectedProjectRepositoryRef.current?.id;
+      if (!projectId) {
+        performManualCompile(profileId);
+        return;
+      }
+
+      void localFolderSync.syncOnCompile(projectId).then(() =>
+        performManualCompile(profileId)
+      );
+    },
+    [
+      localFolderSync.syncOnCompile,
+      performManualCompile,
+      selectedLatexCompileProfileId
+    ]
+  );
 
   useEffect(() => {
     handleCompileRef.current = handleCompile;
@@ -8506,39 +8568,42 @@ ${nextLine}` : nextLine;
     selectedGitToken
   ]);
 
-  const handleToggleGitHubCreateFlow = useCallback(() => {
-    setGitHubClone((current) => {
-      if (current.isOpen && current.mode === "create") {
-        return {
-          ...current,
-          isOpen: false
-        };
-      }
+  const handleToggleGitHubCreateFlow = useCallback(
+    (project: TyprProjectRepository | null = selectedProjectRepository) => {
+      setGitHubClone((current) => {
+        if (current.isOpen && current.mode === "create") {
+          return {
+            ...current,
+            isOpen: false
+          };
+        }
 
-      return {
-        ...createInitialGitHubCloneState(),
-        isOpen: true,
-        mode: "create",
-        status: gitHubDiscovery.status === "connected" ? "connected" : "idle",
-        token: selectedGitToken,
-        accountLogin: gitHubDiscovery.accountLogin,
-        owners: gitHubDiscovery.owners,
-        owner: gitHubDiscovery.accountLogin ?? "",
-        repos: gitHubDiscovery.repos,
-        isLoadingRepos: gitHubDiscovery.isLoadingRepos,
-        branch: "main",
-        projectName: selectedProjectRepository?.displayName ?? ""
-      };
-    });
-  }, [
-    gitHubDiscovery.accountLogin,
-    gitHubDiscovery.owners,
-    gitHubDiscovery.repos,
-    gitHubDiscovery.isLoadingRepos,
-    gitHubDiscovery.status,
-    selectedGitToken,
-    selectedProjectRepository?.displayName
-  ]);
+        return {
+          ...createInitialGitHubCloneState(),
+          isOpen: true,
+          mode: "create",
+          status: gitHubDiscovery.status === "connected" ? "connected" : "idle",
+          token: selectedGitToken,
+          accountLogin: gitHubDiscovery.accountLogin,
+          owners: gitHubDiscovery.owners,
+          owner: gitHubDiscovery.accountLogin ?? "",
+          repos: gitHubDiscovery.repos,
+          isLoadingRepos: gitHubDiscovery.isLoadingRepos,
+          branch: "main",
+          projectName: project?.displayName ?? ""
+        };
+      });
+    },
+    [
+      gitHubDiscovery.accountLogin,
+      gitHubDiscovery.owners,
+      gitHubDiscovery.repos,
+      gitHubDiscovery.isLoadingRepos,
+      gitHubDiscovery.status,
+      selectedGitToken,
+      selectedProjectRepository
+    ]
+  );
 
   useEffect(() => {
     if (!gitHubClone.isOpen || gitHubDiscovery.status !== "connected") {
@@ -8774,10 +8839,21 @@ ${nextLine}` : nextLine;
         setSelectedWorkspacePaths(nextProject.selection.activeFilePath ? [nextProject.selection.activeFilePath] : []);
         setWorkspaceSelectionAnchorPath(nextProject.selection.activeFilePath);
         setWorkspaceContextMenu(null);
-        setGitRefreshToken((token) => token + 1);
       }
     },
     [addDefaultGitManagedProject, projectStorage.projects, selectStoredProjectRepository]
+  );
+
+  const handleToggleManageProject = useCallback(
+    (projectId: string) => {
+      setGitHubClone((current) =>
+        current.mode === "create" ? { ...current, isOpen: false } : current
+      );
+      setManagedProjectId((currentProjectId) =>
+        currentProjectId === projectId ? null : projectId
+      );
+    },
+    []
   );
 
   const handleProjectDragStart = useCallback((event: ReactDragEvent<HTMLElement>, projectId: string) => {
@@ -8860,6 +8936,47 @@ ${nextLine}` : nextLine;
     });
   }, [addDefaultGitManagedProject, selectProjectRepository]);
 
+  const handleOpenLocalFolder = useCallback(async () => {
+    const pendingProject = createEmptyProjectRepository({
+      displayName: "Local folder",
+      defaultFileName: null
+    });
+    const connectResult = await localFolderSync.connect(pendingProject.id, {
+      initialProject: pendingProject,
+      pickerId: "typr-open-local-folder"
+    });
+
+    if (!connectResult.ok) {
+      if (!connectResult.cancelled) {
+        setSyncFeedback({
+          tone: "error",
+          text: connectResult.message
+        });
+      }
+      return;
+    }
+
+    const openedProject = renameProjectRepositoryDisplayName(
+      connectResult.project ?? pendingProject,
+      connectResult.directoryName
+    );
+    selectProjectRepository(openedProject);
+    addDefaultGitManagedProject(openedProject);
+    setIsTrashViewOpen(false);
+    setSelectedWorkspacePath(null);
+    setSelectedWorkspacePaths([]);
+    setWorkspaceSelectionAnchorPath(null);
+    setGitRefreshToken((token) => token + 1);
+    setSyncFeedback({
+      tone: "success",
+      text: `Opened and linked local folder “${connectResult.directoryName}”.`
+    });
+  }, [
+    addDefaultGitManagedProject,
+    localFolderSync,
+    selectProjectRepository
+  ]);
+
   const handleRenameLocalProject = useCallback(
     (projectId: string) => {
       const projectToRename = projectStorage.projects.find((project) => project.id === projectId);
@@ -8914,7 +9031,7 @@ ${nextLine}` : nextLine;
       [
         `Delete local Typr project "${projectToDelete.displayName}"?`,
         "This removes its local files, browser git repo, managed repo entries, and stored tokens.",
-        "It does not delete any GitHub repository.",
+        "It does not delete any linked local folder or GitHub repository.",
         "",
         `Type ${projectToDelete.displayName} to confirm.`
       ].join("\n"),
@@ -10809,7 +10926,7 @@ ${nextLine}` : nextLine;
             };
           }
 
-          const fileName = `${baseName || activeDocument.name}.pdf`;
+          const fileName = `${baseName || activeDocument?.name || "document"}.pdf`;
           downloadBlob(
             fileName,
             new Blob([Uint8Array.from(pdfBytes).buffer], {
@@ -11188,7 +11305,7 @@ ${nextLine}` : nextLine;
       }
     }),
     [
-      activeDocument.name,
+      activeDocument?.name,
       activeDocumentTextContent,
       compileProjectFile,
       compilerStatus,
@@ -14229,6 +14346,8 @@ ${nextLine}` : nextLine;
     latexPackageSearchQuery,
     latexPackageSearchResults,
     lightThemes,
+    localFolderSync,
+    localFolderSyncState: selectedLocalFolderSyncState,
     manualExtraLatexPackages,
     packageCacheEntries,
     packageCacheFeedback,
@@ -14519,6 +14638,21 @@ ${nextLine}` : nextLine;
                       </button>
                       <button
                         className="pane__button"
+                        disabled={!localFolderSync.supported}
+                        onClick={() => {
+                          void handleOpenLocalFolder();
+                        }}
+                        title={
+                          localFolderSync.supported
+                            ? "Open an existing local folder as a synchronized Typr project"
+                            : "Opening local folders requires a Chromium browser"
+                        }
+                        type="button"
+                      >
+                        Open local folder
+                      </button>
+                      <button
+                        className="pane__button"
                         onClick={() => projectImportInputRef.current?.click()}
                         type="button"
                       >
@@ -14536,16 +14670,6 @@ ${nextLine}` : nextLine;
                         {gitHubClone.isOpen && gitHubClone.mode === "clone" ? "Hide clone" : "Clone GitHub repo"}
                       </button>
                       {gitHubClone.isOpen && gitHubClone.mode === "clone" ? projectGitHubPanel : null}
-                      <button
-                        className={`pane__button project-github-action ${
-                          gitHubClone.isOpen && gitHubClone.mode === "create" ? "project-github-action--active" : ""
-                        }`}
-                        onClick={handleToggleGitHubCreateFlow}
-                        type="button"
-                      >
-                        {gitHubClone.isOpen && gitHubClone.mode === "create" ? "Hide create" : "Create GitHub repo"}
-                      </button>
-                      {gitHubClone.isOpen && gitHubClone.mode === "create" ? projectGitHubPanel : null}
                     </div>
                     <div className="project-manager__list" role="list" aria-label="Projects">
                       {projectStorage.projects.map((project) => {
@@ -14560,6 +14684,19 @@ ${nextLine}` : nextLine;
                         const localFolderConnected = Boolean(
                           localFolderState?.directoryName
                         );
+                        const connectedGitProject = gitWorkspace.projects.find(
+                          (managedProject) =>
+                            managedProject.projectId === project.id &&
+                            managedProject.connected &&
+                            managedProject.owner.trim() &&
+                            managedProject.repo.trim()
+                        );
+                        const isManagedProject = managedProjectId === project.id;
+                        const projectLastEditedAt = getProjectLastEditedAt(project);
+                        const projectLastEditedLabel =
+                          formatProjectLastEditedAt(projectLastEditedAt);
+                        const hasInitializedGit =
+                          project.git.status === "ready" && !connectedGitProject;
 
                         return (
                           <article
@@ -14581,99 +14718,274 @@ ${nextLine}` : nextLine;
                             role="listitem"
                           >
                             <button
-                              className="project-manager__select"
-                              onClick={() => handleSelectLocalProject(project.id)}
+                              aria-controls={`project-management-${project.id}`}
+                              aria-expanded={isManagedProject}
+                              className="project-manager__summary"
+                              onClick={() => handleToggleManageProject(project.id)}
                               type="button"
                             >
-                              <strong>{project.displayName}</strong>
-                              <span>{projectFileCount} {projectFileCount === 1 ? "file" : "files"}</span>
-                            </button>
-                            <div
-                              className={`project-manager__folder-sync project-manager__folder-sync--${localFolderStatus}`}
-                            >
-                              <div className="project-manager__folder-status">
+                              <span className="project-manager__summary-heading">
+                                <strong>{project.displayName}</strong>
                                 <span
                                   aria-hidden="true"
-                                  className="project-manager__folder-status-dot"
+                                  className="project-manager__summary-chevron"
                                 />
+                              </span>
+                              <span className="project-manager__summary-stats">
                                 <span>
-                                  {localFolderState?.directoryName ?? "Local folder"} ·{" "}
-                                  {localFolderState?.message ??
-                                    (localFolderSync.supported
-                                      ? "Not linked"
-                                      : "Available in Chromium browsers")}
+                                  {projectFileCount} {projectFileCount === 1 ? "file" : "files"}
                                 </span>
-                              </div>
-                              <div className="project-manager__folder-actions">
-                                {localFolderStatus === "permission-needed" ? (
-                                  <button
-                                    className="pane__button pane__button--compact"
-                                    onClick={() => {
-                                      void localFolderSync.reconnect(project.id);
-                                    }}
-                                    type="button"
-                                  >
-                                    Reconnect
-                                  </button>
-                                ) : localFolderConnected ? (
-                                  <button
-                                    className="pane__button pane__button--compact"
-                                    disabled={localFolderStatus === "syncing"}
-                                    onClick={() => {
-                                      void localFolderSync.syncNow(project.id);
-                                    }}
-                                    type="button"
-                                  >
-                                    {localFolderStatus === "syncing" ? "Syncing…" : "Sync now"}
-                                  </button>
-                                ) : (
-                                  <button
-                                    className="pane__button pane__button--compact"
-                                    disabled={!localFolderSync.supported}
-                                    onClick={() => {
-                                      void localFolderSync.connect(project.id);
-                                    }}
-                                    title={
-                                      localFolderSync.supported
-                                        ? "Keep this project synchronized with a local folder"
-                                        : "Local folder sync requires a Chromium browser"
-                                    }
-                                    type="button"
-                                  >
-                                    Link folder
-                                  </button>
-                                )}
-                                {localFolderConnected ? (
-                                  <button
-                                    className="pane__button pane__button--compact"
-                                    onClick={() => {
-                                      void localFolderSync.disconnect(project.id);
-                                    }}
-                                    type="button"
-                                  >
-                                    Unlink
-                                  </button>
+                                <span aria-hidden="true">·</span>
+                                <time dateTime={projectLastEditedAt}>
+                                  Edited {projectLastEditedLabel}
+                                </time>
+                              </span>
+                              <span
+                                aria-label="Project status and connections"
+                                className="project-manager__summary-connections"
+                              >
+                                {isActiveProject ? (
+                                  <span className="project-manager__summary-badge project-manager__summary-badge--active">
+                                    Open
+                                  </span>
                                 ) : null}
+                                {localFolderConnected ? (
+                                  <span
+                                    className={`project-manager__summary-badge project-manager__summary-badge--connected ${
+                                      localFolderStatus === "permission-needed"
+                                        ? "project-manager__summary-badge--warning"
+                                        : ""
+                                    }`}
+                                    title={`${localFolderState?.directoryName} · ${localFolderState?.message}`}
+                                  >
+                                    Folder · {localFolderState?.directoryName}
+                                  </span>
+                                ) : null}
+                                {connectedGitProject ? (
+                                  <span
+                                    className="project-manager__summary-badge project-manager__summary-badge--connected"
+                                    title={`${connectedGitProject.owner}/${connectedGitProject.repo} · ${connectedGitProject.branch}`}
+                                  >
+                                    GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
+                                  </span>
+                                ) : null}
+                                {hasInitializedGit ? (
+                                  <span
+                                    className="project-manager__summary-badge"
+                                    title={project.git.headRef ?? "Browser Git repository initialized"}
+                                  >
+                                    Git initialized
+                                  </span>
+                                ) : null}
+                                {!localFolderConnected &&
+                                !connectedGitProject &&
+                                !hasInitializedGit ? (
+                                  <span className="project-manager__summary-badge">
+                                    Local only
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                            {isManagedProject ? (
+                              <div
+                                className="project-manager__manage"
+                                id={`project-management-${project.id}`}
+                              >
+                                <section className="project-manager__connection">
+                                  <div className="project-manager__connection-header">
+                                    <div>
+                                      <strong>Project</strong>
+                                      <small>
+                                        {isActiveProject
+                                          ? "This project is open in the workspace."
+                                          : "Open this project only when you are ready to load its workspace."}
+                                      </small>
+                                    </div>
+                                    <span
+                                      className={`project-manager__connection-badge ${
+                                        isActiveProject
+                                          ? "project-manager__connection-badge--connected"
+                                          : ""
+                                      }`}
+                                    >
+                                      {isActiveProject ? "Open" : "Not open"}
+                                    </span>
+                                  </div>
+                                  <div className="project-manager__connection-actions">
+                                    <button
+                                      className="pane__button pane__button--compact"
+                                      disabled={isActiveProject}
+                                      onClick={() => handleSelectLocalProject(project.id)}
+                                      type="button"
+                                    >
+                                      {isActiveProject ? "Currently open" : "Open project"}
+                                    </button>
+                                    <button
+                                      className="pane__button pane__button--compact"
+                                      onClick={() => handleRenameLocalProject(project.id)}
+                                      type="button"
+                                    >
+                                      Rename project
+                                    </button>
+                                    <button
+                                      className="pane__button pane__button--compact pane__button--danger"
+                                      onClick={() => {
+                                        void handleDeleteSelectedProject(project.id);
+                                      }}
+                                      type="button"
+                                    >
+                                      Delete project
+                                    </button>
+                                  </div>
+                                </section>
+                                <section className="project-manager__connection">
+                                  <div className="project-manager__connection-header">
+                                    <div>
+                                      <strong>Local folder</strong>
+                                      <small>
+                                        {localFolderConnected
+                                          ? `${localFolderState?.directoryName} · ${localFolderState?.message}`
+                                          : "Store and synchronize this project in a Chromium-accessible folder."}
+                                      </small>
+                                    </div>
+                                    <span
+                                      className={`project-manager__connection-badge ${
+                                        localFolderConnected
+                                          ? "project-manager__connection-badge--connected"
+                                          : ""
+                                      }`}
+                                    >
+                                      {localFolderConnected ? "Linked" : "Not linked"}
+                                    </span>
+                                  </div>
+                                  <div className="project-manager__connection-actions">
+                                    {localFolderStatus === "permission-needed" ? (
+                                      <button
+                                        className="pane__button pane__button--compact"
+                                        onClick={() => {
+                                          void localFolderSync.reconnect(project.id);
+                                        }}
+                                        type="button"
+                                      >
+                                        Reconnect
+                                      </button>
+                                    ) : localFolderConnected ? (
+                                      <>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          disabled={localFolderStatus === "syncing"}
+                                          onClick={() => {
+                                            void localFolderSync.syncNow(project.id);
+                                          }}
+                                          type="button"
+                                        >
+                                          {localFolderStatus === "syncing" ? "Syncing…" : "Sync now"}
+                                        </button>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          onClick={() => {
+                                            if (!isActiveProject) {
+                                              handleSelectLocalProject(project.id);
+                                            }
+                                            handleOpenSettingsTab("sync");
+                                          }}
+                                          type="button"
+                                        >
+                                          Sync settings
+                                        </button>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          onClick={() => {
+                                            void localFolderSync.disconnect(project.id);
+                                          }}
+                                          type="button"
+                                        >
+                                          Unlink
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        className="pane__button pane__button--compact"
+                                        disabled={!localFolderSync.supported}
+                                        onClick={() => {
+                                          void localFolderSync.connect(project.id);
+                                        }}
+                                        title={
+                                          localFolderSync.supported
+                                            ? "Keep this project synchronized with a local folder"
+                                            : "Local folder sync requires a Chromium browser"
+                                        }
+                                        type="button"
+                                      >
+                                        Link local folder
+                                      </button>
+                                    )}
+                                  </div>
+                                </section>
+
+                                <section className="project-manager__connection">
+                                  <div className="project-manager__connection-header">
+                                    <div>
+                                      <strong>GitHub</strong>
+                                      <small>
+                                        {connectedGitProject
+                                          ? `${connectedGitProject.owner}/${connectedGitProject.repo} · ${connectedGitProject.branch}`
+                                          : "Create a GitHub repository from this project and push its files."}
+                                      </small>
+                                    </div>
+                                    <span
+                                      className={`project-manager__connection-badge ${
+                                        connectedGitProject
+                                          ? "project-manager__connection-badge--connected"
+                                          : ""
+                                      }`}
+                                    >
+                                      {connectedGitProject ? "Connected" : "Local only"}
+                                    </span>
+                                  </div>
+                                  <div className="project-manager__connection-actions">
+                                    {connectedGitProject ? (
+                                      <button
+                                        className="pane__button pane__button--compact"
+                                        onClick={() => {
+                                          if (!isActiveProject) {
+                                            handleSelectLocalProject(project.id);
+                                          }
+                                          handleOpenSidebarTool("sync");
+                                        }}
+                                        type="button"
+                                      >
+                                        Open Git tools
+                                      </button>
+                                    ) : (
+                                      <button
+                                        className={`pane__button pane__button--compact ${
+                                          gitHubClone.isOpen && gitHubClone.mode === "create"
+                                            ? "pane__button--active"
+                                            : ""
+                                        }`}
+                                        onClick={() => {
+                                          if (!isActiveProject) {
+                                            handleSelectLocalProject(project.id);
+                                          }
+                                          handleToggleGitHubCreateFlow(project);
+                                        }}
+                                        type="button"
+                                      >
+                                        {gitHubClone.isOpen && gitHubClone.mode === "create"
+                                          ? "Hide GitHub setup"
+                                          : "Create GitHub repo"}
+                                      </button>
+                                    )}
+                                  </div>
+                                  {!connectedGitProject &&
+                                  gitHubClone.isOpen &&
+                                  gitHubClone.mode === "create"
+                                    ? projectGitHubPanel
+                                    : null}
+                                </section>
                               </div>
-                            </div>
-                            <div className="project-manager__row-actions">
-                              <button
-                                className="pane__button pane__button--compact"
-                                onClick={() => handleRenameLocalProject(project.id)}
-                                type="button"
-                              >
-                                Rename
-                              </button>
-                              <button
-                                className="pane__button pane__button--compact pane__button--danger"
-                                onClick={() => {
-                                  void handleDeleteSelectedProject(project.id);
-                                }}
-                                type="button"
-                              >
-                                Delete
-                              </button>
-                            </div>
+                            ) : null}
                           </article>
                         );
                       })}
@@ -15037,7 +15349,7 @@ ${nextLine}` : nextLine;
                     <div className="outline-list" role="list">
                       {renderOutlineEntries(
                         outlineEntries,
-                        activeDocument.id,
+                        activeDocument?.id ?? "",
                         activeOutlineEntryId,
                         collapsedOutlineEntries,
                         setCollapsedOutlineEntries,

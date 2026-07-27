@@ -97,13 +97,16 @@ describe("IndexedDB project deletion storage", () => {
       connectedAt: "2026-07-10T12:00:00.000Z",
       lastSyncedAt: null,
       directoryFingerprint: null,
+      syncMode: "interval",
+      syncIntervalMinutes: 10,
       worktreeSignatures: {},
       gitSignatures: {}
     });
 
-    expect((await loadLocalFolderBinding("project-a"))?.directoryHandle).toBe(
-      directoryHandle
-    );
+    const storedBinding = await loadLocalFolderBinding("project-a");
+    expect(storedBinding?.directoryHandle).toBe(directoryHandle);
+    expect(storedBinding?.syncMode).toBe("interval");
+    expect(storedBinding?.syncIntervalMinutes).toBe(10);
     expect(await loadLocalFolderBinding("project-b")).toBeNull();
 
     await deleteLocalFolderBinding("project-a");

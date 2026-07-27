@@ -47,8 +47,10 @@ describe("settings sheet state", () => {
 
   it("uses the current settings search vocabulary and falls back safely", () => {
     expect(findMatchingSettingsTabs("github")).toEqual(["git"]);
+    expect(findMatchingSettingsTabs("constant")).toEqual(["sync"]);
     expect(findMatchingSettingsTabs("formatter")).toContain("editor");
     expect(findMatchingSettingsTabs("")).toEqual([
+      "sync",
       "git",
       "themes",
       "editor",

@@ -1028,10 +1028,11 @@ function clampSidebarFontSize(value: unknown): number {
     : DEFAULT_SIDEBAR_FONT_SIZE;
 }
 
-export function getActiveDocument(project: TypstProject): TypstDocumentFile {
+export function getActiveDocument(project: TypstProject): TypstDocumentFile | null {
   return (
     project.documents.find((document) => document.id === project.activeDocumentId) ??
-    project.documents[0]
+    project.documents[0] ??
+    null
   );
 }
 
@@ -1041,7 +1042,7 @@ export function updateActiveDocument(
 ): AppSnapshot {
   const activeDocument = getActiveDocument(snapshot.project);
 
-  if (activeDocument.content === content) {
+  if (!activeDocument || activeDocument.content === content) {
     return snapshot;
   }
 
@@ -1051,9 +1052,10 @@ export function updateActiveDocument(
     ...snapshot,
     project: {
       ...snapshot.project,
+      activeDocumentId: activeDocument.id,
       updatedAt: now,
       documents: snapshot.project.documents.map((document) =>
-        document.id === snapshot.project.activeDocumentId
+        document.id === activeDocument.id
           ? { ...document, content, updatedAt: now }
           : document
       )
@@ -1680,7 +1682,7 @@ export function renameActiveDocument(
   const nextName = name.trim();
   const activeDocument = getActiveDocument(snapshot.project);
 
-  if (!nextName || nextName === activeDocument.name) {
+  if (!activeDocument || !nextName || nextName === activeDocument.name) {
     return snapshot;
   }
 

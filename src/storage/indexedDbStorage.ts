@@ -4,6 +4,7 @@ import type { GitWorkspaceState } from "../git/gitState";
 import type { ProjectDeletionTombstone } from "../project/projectDeletion";
 import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
+import type { LocalFolderSyncMode } from "../workspace/localFolderSyncPolicy";
 import {
   normalizeSnippetCollections,
   type SnippetCollections
@@ -40,6 +41,8 @@ export interface LocalFolderBindingRecord {
   connectedAt: string;
   lastSyncedAt: string | null;
   directoryFingerprint?: string | null;
+  syncMode?: LocalFolderSyncMode;
+  syncIntervalMinutes?: number;
   worktreeSignatures: Record<string, string>;
   gitSignatures: Record<string, string>;
 }

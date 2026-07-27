@@ -10,10 +10,12 @@ import {
 import type { AppSnapshot } from "./appState";
 import {
   projectRepositoryToLegacyProject,
+  type TyprProjectRepository,
   type TyprProjectStorageState
 } from "../project/projectState";
 import {
   deleteLocalFolderBinding,
+  deleteProjectGitFiles,
   loadLocalFolderBinding,
   saveLocalFolderBinding,
   type LocalFolderBindingRecord
@@ -31,8 +33,17 @@ import {
   updateProjectGitMetadataFromTree,
   writeLocalFolderDirectory
 } from "../workspace/localFolderSync";
+import {
+  DEFAULT_LOCAL_FOLDER_SYNC_POLICY,
+  getLocalFolderSyncPolicyMessage,
+  isLocalFolderIntervalSyncDue,
+  normalizeLocalFolderSyncPolicy,
+  type LocalFolderSyncMode,
+  type LocalFolderSyncPolicy
+} from "../workspace/localFolderSyncPolicy";
 
 const LOCAL_FOLDER_POLL_INTERVAL_MS = 1500;
+const LOCAL_FOLDER_INTERVAL_CHECK_MS = 15_000;
 const LOCAL_FOLDER_BROWSER_CHANGE_DEBOUNCE_MS = 180;
 const LOCAL_FOLDER_OBSERVER_DEBOUNCE_MS = 60;
 
@@ -70,7 +81,21 @@ export interface LocalFolderProjectState {
   directoryName: string | null;
   lastSyncedAt: string | null;
   message: string;
+  syncMode?: LocalFolderSyncMode;
+  syncIntervalMinutes?: number;
 }
+
+export type LocalFolderConnectResult =
+  | {
+      ok: true;
+      directoryName: string;
+      project?: TyprProjectRepository;
+    }
+  | {
+      ok: false;
+      cancelled: boolean;
+      message: string;
+    };
 
 export function useLocalFolderSync(options: {
   gitRefreshToken: number;
@@ -153,6 +178,9 @@ export function useLocalFolderSync(options: {
   const startObserver = useCallback(
     async (binding: LocalFolderBindingRecord) => {
       stopObserver(binding.projectId);
+      if (getBindingSyncPolicy(binding).mode !== "constant") {
+        return;
+      }
       const Observer = (
         globalThis as typeof globalThis & {
           FileSystemObserver?: LocalFileSystemObserverConstructor;
@@ -163,6 +191,13 @@ export function useLocalFolderSync(options: {
       }
 
       const observer = new Observer(() => {
+        const currentBinding = bindingsRef.current.get(binding.projectId);
+        if (
+          !currentBinding ||
+          getBindingSyncPolicy(currentBinding).mode !== "constant"
+        ) {
+          return;
+        }
         scheduleSync(
           binding.projectId,
           LOCAL_FOLDER_OBSERVER_DEBOUNCE_MS
@@ -326,7 +361,11 @@ export function useLocalFolderSync(options: {
           status: "synced",
           directoryName: binding.directoryName,
           lastSyncedAt,
-          message: "Watching for changes"
+          message: getLocalFolderSyncPolicyMessage(
+            getBindingSyncPolicy(nextBinding)
+          ),
+          syncMode: nextBinding.syncMode,
+          syncIntervalMinutes: nextBinding.syncIntervalMinutes
         });
       } catch (error) {
         const permissionError = isPermissionError(error);
@@ -365,6 +404,7 @@ export function useLocalFolderSync(options: {
       const binding = bindingsRef.current.get(projectId);
       if (
         !binding ||
+        getBindingSyncPolicy(binding).mode !== "constant" ||
         runningProjectIdsRef.current.has(projectId) ||
         pollingProjectIdsRef.current.has(projectId)
       ) {
@@ -414,10 +454,20 @@ export function useLocalFolderSync(options: {
   );
 
   const connect = useCallback(
-    async (projectId: string) => {
+    async (
+      projectId: string,
+      connectOptions: {
+        initialProject?: TyprProjectRepository;
+        pickerId?: string;
+      } = {}
+    ): Promise<LocalFolderConnectResult> => {
       if (!supported) {
         updateState(projectId, createDisconnectedLocalFolderState(false));
-        return;
+        return {
+          ok: false,
+          cancelled: false,
+          message: "Local folder sync requires a Chromium browser."
+        };
       }
 
       try {
@@ -430,7 +480,7 @@ export function useLocalFolderSync(options: {
           }
         ).showDirectoryPicker;
         const directoryHandle = await picker({
-          id: `typr-project-${projectId}`,
+          id: connectOptions.pickerId ?? `typr-project-${projectId}`,
           mode: "readwrite"
         });
         const duplicate = await findBindingForSameDirectory(
@@ -445,7 +495,11 @@ export function useLocalFolderSync(options: {
             lastSyncedAt: null,
             message: `Already linked to “${duplicate.directoryName}”.`
           });
-          return;
+          return {
+            ok: false,
+            cancelled: false,
+            message: `That folder is already linked to “${duplicate.directoryName}”.`
+          };
         }
 
         const now = new Date().toISOString();
@@ -457,6 +511,9 @@ export function useLocalFolderSync(options: {
           connectedAt: now,
           lastSyncedAt: null,
           directoryFingerprint: null,
+          syncMode: DEFAULT_LOCAL_FOLDER_SYNC_POLICY.mode,
+          syncIntervalMinutes:
+            DEFAULT_LOCAL_FOLDER_SYNC_POLICY.intervalMinutes,
           worktreeSignatures: {},
           gitSignatures: {}
         };
@@ -468,26 +525,113 @@ export function useLocalFolderSync(options: {
           lastSyncedAt: null,
           message: "Preparing initial sync…"
         });
+
+        if (connectOptions.initialProject) {
+          const initialProject = connectOptions.initialProject;
+          const [localSnapshot, browserGitTree] = await Promise.all([
+            readLocalFolderDirectory(directoryHandle),
+            createBrowserGitSyncTree(projectId)
+          ]);
+          const browserWorktree = createProjectSyncTree(initialProject);
+          const worktreeResolution = resolveSyncTrees({
+            baseline: {},
+            browser: browserWorktree,
+            local: localSnapshot.worktree
+          });
+          const gitResolution = resolveSyncTrees({
+            baseline: {},
+            browser: browserGitTree,
+            local: localSnapshot.git
+          });
+
+          await writeLocalFolderDirectory(
+            directoryHandle,
+            localSnapshot,
+            worktreeResolution.desired,
+            gitResolution.desired
+          );
+          await applySyncTreeToBrowserGit(
+            projectId,
+            browserGitTree,
+            gitResolution.desired
+          );
+          const connectedProject = updateProjectGitMetadataFromTree(
+            applySyncTreeToProject(
+              initialProject,
+              browserWorktree,
+              worktreeResolution.desired
+            ),
+            gitResolution.desired
+          );
+          const lastSyncedAt = new Date().toISOString();
+          const completedBinding: LocalFolderBindingRecord = {
+            ...binding,
+            lastSyncedAt,
+            directoryFingerprint:
+              getLocalFolderSnapshotFingerprint(localSnapshot),
+            worktreeSignatures: worktreeResolution.signatures,
+            gitSignatures: gitResolution.signatures
+          };
+          bindingsRef.current.set(projectId, completedBinding);
+          await saveLocalFolderBinding(completedBinding);
+          updateState(projectId, {
+            status: "synced",
+            directoryName: directoryHandle.name,
+            lastSyncedAt,
+            message: getLocalFolderSyncPolicyMessage(
+              getBindingSyncPolicy(completedBinding)
+            ),
+            syncMode: completedBinding.syncMode,
+            syncIntervalMinutes: completedBinding.syncIntervalMinutes
+          });
+          await startObserver(completedBinding);
+          return {
+            ok: true,
+            directoryName: directoryHandle.name,
+            project: connectedProject
+          };
+        }
+
         await startObserver(binding);
-        await runProjectSyncRef.current(projectId);
+        scheduleSync(projectId, 0);
+        return {
+          ok: true,
+          directoryName: directoryHandle.name
+        };
       } catch (error) {
         if (isAbortError(error)) {
-          return;
+          return {
+            ok: false,
+            cancelled: true,
+            message: "Folder selection was cancelled."
+          };
         }
         stopObserver(projectId);
         bindingsRef.current.delete(projectId);
+        await Promise.allSettled([
+          deleteLocalFolderBinding(projectId),
+          ...(connectOptions.initialProject
+            ? [deleteProjectGitFiles(projectId)]
+            : [])
+        ]);
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unable to connect the local folder.";
         updateState(projectId, {
           status: isPermissionError(error) ? "permission-needed" : "error",
           directoryName: null,
           lastSyncedAt: null,
-          message:
-            error instanceof Error
-              ? error.message
-              : "Unable to connect the local folder."
+          message
         });
+        return {
+          ok: false,
+          cancelled: false,
+          message
+        };
       }
     },
-    [startObserver, stopObserver, supported, updateState]
+    [scheduleSync, startObserver, stopObserver, supported, updateState]
   );
 
   const reconnect = useCallback(
@@ -553,6 +697,83 @@ export function useLocalFolderSync(options: {
     [clearScheduledSync, stopObserver, supported, updateState]
   );
 
+  const setSyncPolicy = useCallback(
+    async (
+      projectId: string,
+      nextPolicy: {
+        mode: LocalFolderSyncMode;
+        intervalMinutes?: number;
+      }
+    ) => {
+      const binding = bindingsRef.current.get(projectId);
+      if (!binding) {
+        return;
+      }
+
+      const currentPolicy = getBindingSyncPolicy(binding);
+      const policy = normalizeLocalFolderSyncPolicy({
+        mode: nextPolicy.mode,
+        intervalMinutes:
+          nextPolicy.intervalMinutes ?? currentPolicy.intervalMinutes
+      });
+      const nextBinding: LocalFolderBindingRecord = {
+        ...binding,
+        syncMode: policy.mode,
+        syncIntervalMinutes: policy.intervalMinutes
+      };
+      bindingsRef.current.set(projectId, nextBinding);
+      updateState(projectId, (current) => ({
+        ...current,
+        syncMode: policy.mode,
+        syncIntervalMinutes: policy.intervalMinutes,
+        message:
+          current.status === "synced"
+            ? getLocalFolderSyncPolicyMessage(policy)
+            : current.message
+      }));
+
+      try {
+        await saveLocalFolderBinding(nextBinding);
+      } catch (error) {
+        bindingsRef.current.set(projectId, binding);
+        updateState(projectId, (current) => ({
+          ...current,
+          status: "error",
+          syncMode: currentPolicy.mode,
+          syncIntervalMinutes: currentPolicy.intervalMinutes,
+          message:
+            error instanceof Error
+              ? `Unable to save sync settings: ${error.message}`
+              : "Unable to save sync settings."
+        }));
+        return;
+      }
+
+      clearScheduledSync(projectId);
+      if (policy.mode === "constant") {
+        await startObserver(nextBinding);
+        scheduleSync(projectId, 0);
+      } else {
+        stopObserver(projectId);
+      }
+
+    },
+    [
+      clearScheduledSync,
+      scheduleSync,
+      startObserver,
+      stopObserver,
+      updateState
+    ]
+  );
+
+  const syncOnCompile = useCallback(async (projectId: string) => {
+    const binding = bindingsRef.current.get(projectId);
+    if (binding && getBindingSyncPolicy(binding).mode === "compile") {
+      await runProjectSyncRef.current(projectId);
+    }
+  }, []);
+
   const projectIdsKey = useMemo(
     () => projectStorage.projects.map((project) => project.id).sort().join("|"),
     [projectStorage.projects]
@@ -598,11 +819,17 @@ export function useLocalFolderSync(options: {
         if (!binding || binding.version !== 1) {
           continue;
         }
-        bindingsRef.current.set(binding.projectId, binding);
+        const policy = getBindingSyncPolicy(binding);
+        const normalizedBinding: LocalFolderBindingRecord = {
+          ...binding,
+          syncMode: policy.mode,
+          syncIntervalMinutes: policy.intervalMinutes
+        };
+        bindingsRef.current.set(binding.projectId, normalizedBinding);
         let permission: LocalFolderPermissionState;
         try {
           permission = await getLocalFolderPermission(
-            binding.directoryHandle,
+            normalizedBinding.directoryHandle,
             false
           );
         } catch (error) {
@@ -625,10 +852,14 @@ export function useLocalFolderSync(options: {
             status: "synced",
             directoryName: binding.directoryName,
             lastSyncedAt: binding.lastSyncedAt,
-            message: "Watching for changes"
+            message: getLocalFolderSyncPolicyMessage(policy),
+            syncMode: policy.mode,
+            syncIntervalMinutes: policy.intervalMinutes
           });
-          await startObserver(binding);
-          scheduleSync(binding.projectId, 0);
+          await startObserver(normalizedBinding);
+          if (policy.mode === "constant") {
+            scheduleSync(binding.projectId, 0);
+          }
         } else {
           updateState(binding.projectId, {
             status: "permission-needed",
@@ -661,8 +892,10 @@ export function useLocalFolderSync(options: {
     if (!isHydrated) {
       return;
     }
-    for (const projectId of bindingsRef.current.keys()) {
-      scheduleSync(projectId);
+    for (const [projectId, binding] of bindingsRef.current) {
+      if (getBindingSyncPolicy(binding).mode === "constant") {
+        scheduleSync(projectId);
+      }
     }
   }, [browserWorktreeKey, isHydrated, scheduleSync]);
 
@@ -670,8 +903,10 @@ export function useLocalFolderSync(options: {
     if (!isHydrated) {
       return;
     }
-    for (const projectId of bindingsRef.current.keys()) {
-      scheduleSync(projectId);
+    for (const [projectId, binding] of bindingsRef.current) {
+      if (getBindingSyncPolicy(binding).mode === "constant") {
+        scheduleSync(projectId);
+      }
     }
   }, [gitRefreshToken, isHydrated, scheduleSync]);
 
@@ -680,14 +915,44 @@ export function useLocalFolderSync(options: {
       return;
     }
     const interval = window.setInterval(() => {
-      for (const projectId of bindingsRef.current.keys()) {
-        if (!observersRef.current.has(projectId)) {
+      for (const [projectId, binding] of bindingsRef.current) {
+        if (
+          getBindingSyncPolicy(binding).mode === "constant" &&
+          !observersRef.current.has(projectId)
+        ) {
           void pollLocalFolder(projectId);
         }
       }
     }, LOCAL_FOLDER_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [isHydrated, pollLocalFolder, supported]);
+
+  useEffect(() => {
+    if (!isHydrated || !supported) {
+      return;
+    }
+
+    const runDueIntervalSyncs = () => {
+      const now = Date.now();
+      for (const [projectId, binding] of bindingsRef.current) {
+        if (
+          isLocalFolderIntervalSyncDue(
+            getBindingSyncPolicy(binding),
+            binding.lastSyncedAt,
+            now
+          )
+        ) {
+          void runProjectSyncRef.current(projectId);
+        }
+      }
+    };
+    const interval = window.setInterval(
+      runDueIntervalSyncs,
+      LOCAL_FOLDER_INTERVAL_CHECK_MS
+    );
+    runDueIntervalSyncs();
+    return () => window.clearInterval(interval);
+  }, [isHydrated, supported]);
 
   useEffect(
     () => () => {
@@ -707,8 +972,10 @@ export function useLocalFolderSync(options: {
     connect,
     disconnect,
     reconnect,
+    setSyncPolicy,
     states,
     supported,
+    syncOnCompile,
     syncNow: runProjectSync
   };
 }
@@ -721,14 +988,29 @@ function createDisconnectedLocalFolderState(
         status: "disconnected",
         directoryName: null,
         lastSyncedAt: null,
-        message: "Not linked"
+        message: "Not linked",
+        syncMode: DEFAULT_LOCAL_FOLDER_SYNC_POLICY.mode,
+        syncIntervalMinutes:
+          DEFAULT_LOCAL_FOLDER_SYNC_POLICY.intervalMinutes
       }
     : {
         status: "unsupported",
         directoryName: null,
         lastSyncedAt: null,
-        message: "Available in Chromium browsers"
+        message: "Available in Chromium browsers",
+        syncMode: DEFAULT_LOCAL_FOLDER_SYNC_POLICY.mode,
+        syncIntervalMinutes:
+          DEFAULT_LOCAL_FOLDER_SYNC_POLICY.intervalMinutes
       };
+}
+
+function getBindingSyncPolicy(
+  binding: LocalFolderBindingRecord
+): LocalFolderSyncPolicy {
+  return normalizeLocalFolderSyncPolicy({
+    mode: binding.syncMode,
+    intervalMinutes: binding.syncIntervalMinutes
+  });
 }
 
 async function getLocalFolderPermission(

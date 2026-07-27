@@ -744,17 +744,18 @@ export function projectRepositoryToLegacyProject(
   project: TyprProjectRepository,
   previousProject: TypstProject
 ): TypstProject {
+  const recoveredProject = project.legacyRecovery?.project ?? previousProject;
   const entries = Object.values(project.filesystem.entries);
   const documents: TypstDocumentFile[] = [];
   const folders: FileFolder[] = [];
-  const figuresById = new Map((previousProject.figures ?? []).map((figure) => [figure.id, figure]));
-  const previousDocumentsById = new Map(previousProject.documents.map((document) => [document.id, document]));
+  const figuresById = new Map((recoveredProject.figures ?? []).map((figure) => [figure.id, figure]));
+  const previousDocumentsById = new Map(recoveredProject.documents.map((document) => [document.id, document]));
   const previousDocumentsByPath = new Map(
-    previousProject.documents.map((document) => [normalizeProjectPath(document.name), document])
+    recoveredProject.documents.map((document) => [normalizeProjectPath(document.name), document])
   );
-  const previousFoldersById = new Map((previousProject.folders ?? []).map((folder) => [folder.id, folder]));
+  const previousFoldersById = new Map((recoveredProject.folders ?? []).map((folder) => [folder.id, folder]));
   const previousFoldersByPath = new Map(
-    (previousProject.folders ?? []).map((folder) => [normalizeProjectPath(folder.name), folder])
+    (recoveredProject.folders ?? []).map((folder) => [normalizeProjectPath(folder.name), folder])
   );
 
   for (const entry of entries) {
@@ -791,17 +792,18 @@ export function projectRepositoryToLegacyProject(
     .filter((figure): figure is DiagramAsset => Boolean(figure));
   const activeDocument =
     documents.find((document) => normalizeProjectPath(document.name) === project.selection.activeFilePath) ??
-    documents.find((document) => document.id === previousProject.activeDocumentId) ??
+    documents.find((document) => document.id === recoveredProject.activeDocumentId) ??
     documents[0];
 
   return {
-    ...previousProject,
+    ...recoveredProject,
     id: project.id,
     name: project.displayName,
     documents: documents.sort((left, right) => left.name.localeCompare(right.name)),
     folders: folders.sort((left, right) => left.name.localeCompare(right.name)),
     figures,
-    activeDocumentId: activeDocument?.id ?? previousProject.activeDocumentId,
+    activeDocumentId: activeDocument?.id ?? "",
+    createdAt: project.createdAt,
     updatedAt: project.updatedAt
   };
 }
