@@ -155,7 +155,9 @@ export function useGoogleDriveSync(options: {
         throw new GoogleDriveAuthorizationRequiredError();
       }
 
-      accessTokenRef.current = await requestGoogleDriveAccessToken(clientId);
+      accessTokenRef.current = await requestGoogleDriveAccessToken(clientId, {
+        prompt: accessTokenRef.current ? "" : "consent"
+      });
       return new GoogleDriveProjectRemote(
         accessTokenRef.current.accessToken
       );

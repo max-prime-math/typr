@@ -1,6 +1,7 @@
 const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const SCRIPT_ELEMENT_ID = "typr-google-identity-services";
+const GOOGLE_AUTHORIZATION_TIMEOUT_MS = 120_000;
 
 interface GoogleTokenResponse {
   access_token?: string;
@@ -38,10 +39,16 @@ export interface GoogleDriveAccessToken {
   expiresAt: number;
 }
 
+export interface GoogleDriveAccessTokenRequestOptions {
+  prompt?: "" | "consent";
+  timeoutMs?: number;
+}
+
 let identityScriptPromise: Promise<void> | null = null;
 
 export function requestGoogleDriveAccessToken(
-  clientId: string
+  clientId: string,
+  options: GoogleDriveAccessTokenRequestOptions = {}
 ): Promise<GoogleDriveAccessToken> {
   if (!clientId.trim()) {
     return Promise.reject(
@@ -59,14 +66,32 @@ export function requestGoogleDriveAccessToken(
         }
 
         let settled = false;
+        const timeoutId = window.setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          reject(
+            new Error(
+              "Google authorization did not return to Typr. Close the Google window and try again."
+            )
+          );
+        }, options.timeoutMs ?? GOOGLE_AUTHORIZATION_TIMEOUT_MS);
+        const beginSettling = () => {
+          if (settled) {
+            return false;
+          }
+          settled = true;
+          window.clearTimeout(timeoutId);
+          return true;
+        };
         const client = oauth2.initTokenClient({
           client_id: clientId,
           scope: GOOGLE_DRIVE_SCOPE,
           callback: (response) => {
-            if (settled) {
+            if (!beginSettling()) {
               return;
             }
-            settled = true;
             if (!response.access_token || response.error) {
               reject(
                 new Error(
@@ -87,22 +112,23 @@ export function requestGoogleDriveAccessToken(
             });
           },
           error_callback: (error) => {
-            if (settled) {
+            if (!beginSettling()) {
               return;
             }
-            settled = true;
             reject(
               new Error(
                 error.message ||
                   (error.type === "popup_closed"
                     ? "Google authorization was cancelled."
+                    : error.type === "popup_failed_to_open"
+                      ? "Unable to open Google authorization. Allow popups and try again."
                     : "Unable to open Google authorization.")
               )
             );
           }
         });
 
-        client.requestAccessToken({ prompt: "" });
+        client.requestAccessToken({ prompt: options.prompt ?? "consent" });
       })
   );
 }
