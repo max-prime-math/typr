@@ -69,6 +69,7 @@ describe("Google Drive redirect identity", () => {
   it("captures a redirect token and removes it from the address bar and storage", () => {
     const removeItem = vi.fn();
     const replaceState = vi.fn();
+    const setItem = vi.fn();
     vi.spyOn(Date, "now").mockReturnValue(NOW);
     vi.stubGlobal("window", {
       history: {
@@ -84,7 +85,12 @@ describe("Google Drive redirect identity", () => {
       },
       sessionStorage: {
         getItem: () => REDIRECT_PENDING,
-        removeItem
+        removeItem,
+        setItem
+      },
+      localStorage: {
+        getItem: () => null,
+        removeItem: vi.fn()
       }
     });
 
@@ -103,6 +109,74 @@ describe("Google Drive redirect identity", () => {
     expect(removeItem).toHaveBeenCalledWith(
       "typr.google-drive.redirect.v1"
     );
+    expect(setItem).toHaveBeenCalledWith(
+      "typr.google-drive.redirect-result.v1",
+      expect.stringContaining('"accessToken":"redirect-token"')
+    );
+  });
+
+  it("restores a captured token after an additional app reload", async () => {
+    const storedValues = new Map([
+      [
+        "typr.google-drive.redirect-result.v1",
+        JSON.stringify({
+          capturedAt: NOW,
+          result: {
+            error: null,
+            projectId: "project-1",
+            token: {
+              accessToken: "redirect-token",
+              expiresAt: NOW + 3_600_000
+            }
+          },
+          version: 1
+        })
+      ]
+    ]);
+    vi.spyOn(Date, "now").mockReturnValue(NOW + 1_000);
+    vi.stubGlobal("window", {
+      location: {
+        hash: ""
+      },
+      sessionStorage: {
+        getItem: (key: string) => storedValues.get(key) ?? null,
+        removeItem: (key: string) => storedValues.delete(key),
+        setItem: (key: string, value: string) =>
+          storedValues.set(key, value)
+      },
+      localStorage: {
+        getItem: () => null
+      }
+    });
+    vi.resetModules();
+    const reloadedIdentity = await import("./googleDriveIdentity");
+
+    expect(
+      reloadedIdentity.captureGoogleDriveRedirectResult()
+    ).toMatchObject({
+      error: null,
+      projectId: "project-1",
+      token: {
+        accessToken: "redirect-token"
+      }
+    });
+    expect(
+      reloadedIdentity.claimGoogleDriveRedirectResult()
+    ).toMatchObject({
+      projectId: "project-1",
+      token: {
+        accessToken: "redirect-token"
+      }
+    });
+    expect(
+      storedValues.has("typr.google-drive.redirect-result.v1")
+    ).toBe(true);
+
+    reloadedIdentity.clearGoogleDriveRedirectResult();
+
+    expect(
+      storedValues.has("typr.google-drive.redirect-result.v1")
+    ).toBe(false);
   });
 
   it("accepts a verified token with Drive file access", () => {

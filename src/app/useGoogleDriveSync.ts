@@ -24,6 +24,7 @@ import {
 import {
   beginGoogleDriveRedirectAuthorization,
   claimGoogleDriveRedirectResult,
+  clearGoogleDriveRedirectResult,
   isGoogleDriveAccessTokenFresh,
   type GoogleDriveAccessToken
 } from "../cloud/googleDriveIdentity";
@@ -423,6 +424,7 @@ export function useGoogleDriveSync(options: {
     }
     redirectResumeStartedRef.current = true;
     if (!result.projectId) {
+      clearGoogleDriveRedirectResult();
       console.error(
         result.error ??
           "Google authorization returned without a Typr project."
@@ -431,6 +433,7 @@ export function useGoogleDriveSync(options: {
     }
     const projectId = result.projectId;
     if (result.error || !result.token) {
+      clearGoogleDriveRedirectResult();
       updateState(projectId, {
         ...createDisconnectedGoogleDriveState(configured),
         status: "error",
@@ -465,16 +468,20 @@ export function useGoogleDriveSync(options: {
       }
       await connect(projectId);
     };
-    void resumeConnection().catch((error) => {
-      updateState(projectId, {
-        ...createDisconnectedGoogleDriveState(configured),
-        status: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Unable to resume Google Drive connection."
+    void resumeConnection()
+      .catch((error) => {
+        updateState(projectId, {
+          ...createDisconnectedGoogleDriveState(configured),
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to resume Google Drive connection."
+        });
+      })
+      .finally(() => {
+        clearGoogleDriveRedirectResult();
       });
-    });
   }, [configured, connect, isHydrated, updateState]);
 
   const disconnect = useCallback(

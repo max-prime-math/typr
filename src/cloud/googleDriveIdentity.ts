@@ -3,6 +3,8 @@ const GOOGLE_OAUTH_AUTHORIZATION_URL =
   "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_DRIVE_REDIRECT_STORAGE_KEY =
   "typr.google-drive.redirect.v1";
+const GOOGLE_DRIVE_REDIRECT_RESULT_STORAGE_KEY =
+  "typr.google-drive.redirect-result.v1";
 const GOOGLE_DRIVE_REDIRECT_MAX_AGE_MS = 15 * 60_000;
 
 export interface GoogleDriveAccessToken {
@@ -22,6 +24,12 @@ export interface GoogleDriveRedirectResult {
   error: string | null;
   projectId: string | null;
   token: GoogleDriveAccessToken | null;
+}
+
+interface StoredGoogleDriveRedirectResult {
+  capturedAt: number;
+  result: GoogleDriveRedirectResult;
+  version: 1;
 }
 
 let capturedRedirectResult: GoogleDriveRedirectResult | null | undefined;
@@ -48,10 +56,23 @@ export async function beginGoogleDriveRedirectAuthorization(
     state: crypto.randomUUID(),
     version: 1
   };
-  window.sessionStorage.setItem(
+  const serializedPending = JSON.stringify(pending);
+  clearStoredRedirectResult();
+  const pendingStoredInSession = setStorageItem(
+    window.sessionStorage,
     GOOGLE_DRIVE_REDIRECT_STORAGE_KEY,
-    JSON.stringify(pending)
+    serializedPending
   );
+  const pendingStoredInLocal = setStorageItem(
+    window.localStorage,
+    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY,
+    serializedPending
+  );
+  if (!pendingStoredInSession && !pendingStoredInLocal) {
+    throw new Error(
+      "Typr could not save the Google authorization request in this browser."
+    );
+  }
 
   const authorizationUrl = new URL(GOOGLE_OAUTH_AUTHORIZATION_URL);
   authorizationUrl.searchParams.set("client_id", clientId);
@@ -74,16 +95,22 @@ export function captureGoogleDriveRedirectResult(): GoogleDriveRedirectResult | 
       ? window.location.hash.slice(1)
       : window.location.hash
   );
-  const serializedPending = window.sessionStorage.getItem(
-    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
-  );
+  const serializedPending =
+    getStorageItem(
+      window.sessionStorage,
+      GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
+    ) ??
+    getStorageItem(
+      window.localStorage,
+      GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
+    );
   if (
     !response.has("access_token") &&
     !response.has("error") &&
     !serializedPending
   ) {
-    capturedRedirectResult = null;
-    return null;
+    capturedRedirectResult = restoreStoredRedirectResult(Date.now());
+    return capturedRedirectResult;
   }
 
   if (window.location.hash) {
@@ -93,12 +120,20 @@ export function captureGoogleDriveRedirectResult(): GoogleDriveRedirectResult | 
       `${window.location.pathname}${window.location.search}`
     );
   }
-  window.sessionStorage.removeItem(GOOGLE_DRIVE_REDIRECT_STORAGE_KEY);
+  removeStorageItem(
+    window.sessionStorage,
+    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
+  );
+  removeStorageItem(
+    window.localStorage,
+    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
+  );
   capturedRedirectResult = parseGoogleDriveRedirectResponse(
     response,
     serializedPending,
     Date.now()
   );
+  storeRedirectResult(capturedRedirectResult);
   return capturedRedirectResult;
 }
 
@@ -113,6 +148,10 @@ export function claimGoogleDriveRedirectResult(): GoogleDriveRedirectResult | nu
       : capturedRedirectResult;
   capturedRedirectResult = null;
   return result;
+}
+
+export function clearGoogleDriveRedirectResult(): void {
+  clearStoredRedirectResult();
 }
 
 export function parseGoogleDriveRedirectResponse(
@@ -234,6 +273,107 @@ function parsePendingGoogleDriveRedirect(
     return pending as PendingGoogleDriveRedirect;
   } catch {
     return null;
+  }
+}
+
+function storeRedirectResult(result: GoogleDriveRedirectResult): void {
+  setStorageItem(
+    window.sessionStorage,
+    GOOGLE_DRIVE_REDIRECT_RESULT_STORAGE_KEY,
+    JSON.stringify({
+      capturedAt: Date.now(),
+      result,
+      version: 1
+    } satisfies StoredGoogleDriveRedirectResult)
+  );
+}
+
+function restoreStoredRedirectResult(
+  now: number
+): GoogleDriveRedirectResult | null {
+  const serialized = getStorageItem(
+    window.sessionStorage,
+    GOOGLE_DRIVE_REDIRECT_RESULT_STORAGE_KEY
+  );
+  if (!serialized) {
+    return null;
+  }
+
+  try {
+    const stored = JSON.parse(serialized) as Partial<
+      StoredGoogleDriveRedirectResult
+    >;
+    if (
+      stored.version !== 1 ||
+      typeof stored.capturedAt !== "number" ||
+      !Number.isFinite(stored.capturedAt) ||
+      now - stored.capturedAt > GOOGLE_DRIVE_REDIRECT_MAX_AGE_MS ||
+      !isGoogleDriveRedirectResult(stored.result)
+    ) {
+      clearStoredRedirectResult();
+      return null;
+    }
+    return stored.result;
+  } catch {
+    clearStoredRedirectResult();
+    return null;
+  }
+}
+
+function isGoogleDriveRedirectResult(
+  value: unknown
+): value is GoogleDriveRedirectResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const result = value as Partial<GoogleDriveRedirectResult>;
+  const projectIdIsValid =
+    result.projectId === null || typeof result.projectId === "string";
+  const errorIsValid =
+    result.error === null || typeof result.error === "string";
+  const tokenIsValid =
+    result.token === null ||
+    (typeof result.token === "object" &&
+      typeof result.token.accessToken === "string" &&
+      Boolean(result.token.accessToken) &&
+      typeof result.token.expiresAt === "number" &&
+      Number.isFinite(result.token.expiresAt));
+  return projectIdIsValid && errorIsValid && tokenIsValid;
+}
+
+function clearStoredRedirectResult(): void {
+  removeStorageItem(
+    window.sessionStorage,
+    GOOGLE_DRIVE_REDIRECT_RESULT_STORAGE_KEY
+  );
+}
+
+function getStorageItem(storage: Storage, key: string): string | null {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function setStorageItem(
+  storage: Storage,
+  key: string,
+  value: string
+): boolean {
+  try {
+    storage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeStorageItem(storage: Storage, key: string): void {
+  try {
+    storage.removeItem(key);
+  } catch {
+    // Storage cleanup is best effort when browser privacy settings block it.
   }
 }
 
