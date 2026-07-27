@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DiagramAsset } from "../app/appState";
 import "svgedit/dist/editor/svgedit.css";
+import { DiagramActionBar } from "./DiagramActionBar";
 import { normalizeDiagramFileName } from "./diagramFiles";
 import { serializeDiagramSvg } from "./diagramSvgSerializer";
 import { svgEditLifecycle } from "./svgEditLifecycle";
@@ -149,16 +150,27 @@ export function DiagramEditor({
             }
           }}
         />
-        <div className="diagram-editor__actions">
-          <button type="button" onClick={handleNew}>New</button>
-          <button type="button" onClick={handleSave}>Save</button>
-          <button type="button" onClick={handleInsert}>Insert</button>
+        <DiagramActionBar
+          onInsert={handleInsert}
+          onNew={handleNew}
+          onSave={handleSave}
+        >
           <button type="button" onClick={handleDownload}>Download</button>
           <button type="button" onClick={handleClear}>Clear</button>
-        </div>
+        </DiagramActionBar>
       </div>
       {editorError ? <div className="diagram-editor__error">{editorError}</div> : null}
       <div className="diagram-editor__svgedit-host" ref={hostRef} />
+      <div className="diagram-editor__credit">
+        Powered by{" "}
+        <a
+          href="https://github.com/SVG-Edit/svgedit"
+          rel="noreferrer"
+          target="_blank"
+        >
+          SVG-Edit
+        </a>
+      </div>
     </div>
   );
 }

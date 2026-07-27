@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getWorkspaceNodeBadge, type WorkspaceTreeNode } from "./workspaceTree";
+import {
+  getWorkspaceNodeBadge,
+  isTextWorkspaceFile,
+  type WorkspaceTreeNode
+} from "./workspaceTree";
 
 function fileNode(path: string): WorkspaceTreeNode {
   return {
@@ -15,6 +19,7 @@ describe("workspace tree file icons", () => {
   it("resolves document icons by filename and extension", () => {
     expect(getWorkspaceNodeBadge(fileNode("main.typ"))).toBe("typ");
     expect(getWorkspaceNodeBadge(fileNode("paper.tex"))).toBe("tex");
+    expect(getWorkspaceNodeBadge(fileNode("figures/orbit.tikz"))).toBe("tex");
     expect(getWorkspaceNodeBadge(fileNode("references.bib"))).toBe("bib");
     expect(getWorkspaceNodeBadge(fileNode("README.md"))).toBe("info");
     expect(getWorkspaceNodeBadge(fileNode("paper.pdf"))).toBe("pdf");
@@ -29,5 +34,10 @@ describe("workspace tree file icons", () => {
     expect(getWorkspaceNodeBadge(fileNode("notes.txt"))).toBe("txt");
     expect(getWorkspaceNodeBadge(fileNode("archive.zip"))).toBe("archive");
     expect(getWorkspaceNodeBadge(fileNode("3.0.intro.synctex.gz"))).toBe("archive");
+  });
+
+  it("treats TikZ source as editable text", () => {
+    expect(isTextWorkspaceFile("figures/orbit.tikz")).toBe(true);
+    expect(isTextWorkspaceFile("figures/orbit.pgf")).toBe(true);
   });
 });

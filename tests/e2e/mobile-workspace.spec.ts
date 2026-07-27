@@ -65,6 +65,19 @@ test("mobile first load releases controls without a reload", async ({
       .some((entry) => entry.name.includes("binaryInlined"))
   );
   expect(loadedHarperOnMainThread).toBe(false);
+  expect(
+    page.workers().some((worker) => worker.url().includes("harperDiagnostics.worker"))
+  ).toBe(false);
+
+  await sourceTab.click();
+  const editor = page.locator(".cm-content");
+  await editor.click();
+  await page.keyboard.type(" ");
+  await expect
+    .poll(() =>
+      page.workers().some((worker) => worker.url().includes("harperDiagnostics.worker"))
+    )
+    .toBe(true);
 });
 
 test("mobile source scrolling keeps pane controls fixed", async ({ browserName, page }) => {

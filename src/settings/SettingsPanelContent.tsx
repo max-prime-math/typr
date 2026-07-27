@@ -40,6 +40,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     getKeybindingLabel,
     getSnippetImportTemplate,
     gitHubDiscovery,
+    googleDriveSync,
+    googleDriveSyncState,
     handleCacheLatexBundle,
     handleCancelPendingKeybindingConflict,
     handleClearCustomSnippets,
@@ -324,6 +326,194 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   <span>minutes</span>
                 </span>
               </label>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Google Drive sync</h3>
+                <p>
+                  Keep an independent copy of the selected project in an
+                  app-managed Google Drive folder. GitHub and local-folder
+                  connections remain active.
+                </p>
+              </div>
+
+              <div className="sync-settings-project-card">
+                <div>
+                  <span className="sync-settings-project-card__label">
+                    Selected project
+                  </span>
+                  <strong>
+                    {selectedProjectRepository?.displayName ??
+                      "No project selected"}
+                  </strong>
+                  <small>
+                    {googleDriveSyncState?.remoteRootName
+                      ? `${googleDriveSyncState.remoteRootName} · ${googleDriveSyncState.message}`
+                      : googleDriveSync.configured
+                        ? googleDriveSyncState?.message ??
+                          "No Google Drive folder connected"
+                        : "Google Drive sync is not configured on this deployment"}
+                  </small>
+                </div>
+                {selectedProjectRepository ? (
+                  <div className="sync-settings-project-card__actions">
+                    {googleDriveSyncState?.remoteRootName ? (
+                      <>
+                        <button
+                          className="pane__button"
+                          disabled={
+                            googleDriveSyncState.status === "authorizing" ||
+                            googleDriveSyncState.status === "syncing"
+                          }
+                          onClick={() => {
+                            void googleDriveSync.syncNow(
+                              selectedProjectRepository.id
+                            );
+                          }}
+                          type="button"
+                        >
+                          {googleDriveSyncState.status === "authorizing"
+                            ? "Connecting…"
+                            : googleDriveSyncState.status === "syncing"
+                              ? "Syncing…"
+                              : googleDriveSyncState.status ===
+                                  "authorization-needed"
+                                ? "Reconnect"
+                                : "Sync now"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          onClick={() => {
+                            void googleDriveSync.disconnect(
+                              selectedProjectRepository.id
+                            );
+                          }}
+                          type="button"
+                        >
+                          Unlink
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={
+                          !googleDriveSync.configured ||
+                          googleDriveSyncState?.status === "authorizing"
+                        }
+                        onClick={() => {
+                          void googleDriveSync.connect(
+                            selectedProjectRepository.id
+                          );
+                        }}
+                        type="button"
+                      >
+                        {googleDriveSyncState?.status === "authorizing"
+                          ? "Connecting…"
+                          : "Connect Google Drive"}
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <fieldset
+                className="sync-policy-options"
+                disabled={!googleDriveSyncState?.remoteRootName}
+              >
+                <legend>Sync mode</legend>
+                {[
+                  {
+                    mode: "constant",
+                    title: "Constant sync",
+                    description:
+                      "Sync browser edits after a short delay and check Drive periodically."
+                  },
+                  {
+                    mode: "compile",
+                    title: "Sync on compile",
+                    description:
+                      "Sync when you explicitly request a document compile."
+                  },
+                  {
+                    mode: "interval",
+                    title: "Scheduled sync",
+                    description:
+                      "Sync automatically while Google authorization remains active."
+                  },
+                  {
+                    mode: "manual",
+                    title: "Manual sync",
+                    description:
+                      "Only sync when you choose Sync now."
+                  }
+                ].map((option) => (
+                  <label
+                    className={`sync-policy-option ${
+                      googleDriveSyncState?.syncMode === option.mode
+                        ? "sync-policy-option--active"
+                        : ""
+                    }`}
+                    key={option.mode}
+                  >
+                    <input
+                      checked={
+                        googleDriveSyncState?.syncMode === option.mode
+                      }
+                      name="google-drive-sync-mode"
+                      onChange={() => {
+                        if (selectedProjectRepository) {
+                          void googleDriveSync.setSyncPolicy(
+                            selectedProjectRepository.id,
+                            { mode: option.mode }
+                          );
+                        }
+                      }}
+                      type="radio"
+                    />
+                    <span>
+                      <strong>{option.title}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+
+              <label className="sync-field sync-interval-field">
+                <span>Scheduled interval</span>
+                <span className="sync-interval-field__control">
+                  <input
+                    disabled={
+                      !googleDriveSyncState?.remoteRootName ||
+                      googleDriveSyncState.syncMode !== "interval"
+                    }
+                    max={1440}
+                    min={1}
+                    onChange={(event) => {
+                      if (selectedProjectRepository) {
+                        void googleDriveSync.setSyncPolicy(
+                          selectedProjectRepository.id,
+                          {
+                            mode: "interval",
+                            intervalMinutes: Number(event.target.value)
+                          }
+                        );
+                      }
+                    }}
+                    type="number"
+                    value={
+                      googleDriveSyncState?.syncIntervalMinutes ?? 15
+                    }
+                  />
+                  <span>minutes</span>
+                </span>
+              </label>
+
+              <p className="pane__meta">
+                Typr requests access only to Drive files it creates or that
+                you connect through Typr. Google access tokens remain in
+                memory and may need to be renewed after a reload or expiry.
+              </p>
             </div>
           </div>
         ) : settingsTab === "git" ? (

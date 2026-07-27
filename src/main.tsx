@@ -3,7 +3,6 @@
 
 import { warmTypstOfflineAssets } from "./compiler/typstAssets";
 import { ensureTypstQueueMicrotask } from "./compiler/typstPolyfills";
-import { warmTypstCompilerForOffline } from "./compiler/typstCompiler";
 import { shouldUseLowMemoryCompilerMode } from "./utils/browserDetection";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -45,7 +44,6 @@ updateBootProgress(0.18);
 async function prepareOfflineCompilerAssets() {
   if (!shouldUseLowMemoryCompilerMode()) {
     await warmTypstOfflineAssets();
-    await warmTypstCompilerForOffline();
   }
 
   document.documentElement.dataset.typrOfflineReady = "true";

@@ -3,6 +3,8 @@ export type KeybindingCommandId =
   | "formatDocument"
   | "toggleVim"
   | "openSearch"
+  | "newFile"
+  | "renameFile"
   | "multiCursorAbove"
   | "multiCursorBelow"
   | "multiCursorNextMatch"
@@ -45,7 +47,7 @@ export type KeybindingMap = Record<KeybindingCommandId, string>;
 export interface KeybindingDefinition {
   id: KeybindingCommandId;
   label: string;
-  group: "Editing" | "Multiple cursors" | "Layout" | "View" | "Preview Vim";
+  group: "Editing" | "Files" | "Multiple cursors" | "Layout" | "View" | "Preview Vim";
   defaultBinding: string;
 }
 
@@ -54,6 +56,8 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { id: "formatDocument", label: "Format document", group: "Editing", defaultBinding: "Shift-Alt-f" },
   { id: "toggleVim", label: "Toggle Vim mode", group: "Editing", defaultBinding: "Alt-v" },
   { id: "openSearch", label: "Open search", group: "Editing", defaultBinding: "Mod-f" },
+  { id: "newFile", label: "New file", group: "Files", defaultBinding: "Alt-n" },
+  { id: "renameFile", label: "Rename file", group: "Files", defaultBinding: "Alt-r" },
   {
     id: "multiCursorAbove",
     label: "Insert cursor above",

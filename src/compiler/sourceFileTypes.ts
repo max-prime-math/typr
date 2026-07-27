@@ -1,10 +1,13 @@
 import { normalizeWorkspacePath } from "../workspace/workspaceTree";
 
 export type SourceLanguage = "typst" | "latex" | "markdown" | "text";
+export type PreferredNewDocumentExtension = ".md" | ".tex" | ".typ";
+
+export const DEFAULT_NEW_DOCUMENT_EXTENSION: PreferredNewDocumentExtension = ".typ";
 
 const TYPST_EXTENSIONS = new Set(["typ", "typst"]);
 const LATEX_MAIN_EXTENSIONS = new Set(["tex", "ltx", "latex"]);
-const LATEX_SUPPORT_EXTENSIONS = new Set(["sty", "cls", "bib"]);
+const LATEX_SUPPORT_EXTENSIONS = new Set(["sty", "cls", "bib", "tikz", "pgf"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown"]);
 
 export function getSourceLanguage(path: string | null | undefined): SourceLanguage {
@@ -38,6 +41,18 @@ export function isTypstSourceFile(path: string | null | undefined): boolean {
 export function isLatexMainSourceFile(path: string | null | undefined): boolean {
   const extension = getPathExtension(path);
   return Boolean(extension && LATEX_MAIN_EXTENSIONS.has(extension));
+}
+
+export function getPreferredNewDocumentExtension(
+  path: string | null | undefined
+): PreferredNewDocumentExtension | null {
+  const extension = getPathExtension(path);
+
+  if (extension === "md" || extension === "tex" || extension === "typ") {
+    return `.${extension}`;
+  }
+
+  return null;
 }
 
 export function normalizeCompilerPath(path: string): string {

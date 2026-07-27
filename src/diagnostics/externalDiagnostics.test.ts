@@ -36,4 +36,23 @@ describe("maskLatexMarkupForHarper", () => {
 
     expect(result.diagnostics.map((diagnostic) => diagnostic.message).join("\n")).not.toMatch(/turing|church|mccarthy|space after a comma/i);
   });
+
+  it("keeps Harper enabled without starting it while diagnostics are deferred", async () => {
+    const result = await runExternalDiagnostics({
+      source: "Initial content should not allocate Harper.",
+      path: "main.typ",
+      language: "typst",
+      preferences: DEFAULT_EXTERNAL_DIAGNOSTIC_PREFERENCES,
+      deferHarper: true
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.statuses).toContainEqual({
+      id: "harper",
+      label: "Harper",
+      enabled: true,
+      phase: "idle",
+      detail: "Harper will start after the first editor change."
+    });
+  });
 });

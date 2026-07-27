@@ -2,6 +2,8 @@ node_modules
 dist
 public/core/busytex/
 public/core/busytex-assets.tar.gz
+public/core/tikz-editor/
+public/core/tylax/
 .assistant
 .DS_Store
 coverage

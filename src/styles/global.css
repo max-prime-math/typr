@@ -882,6 +882,7 @@ button {
 
 .application-info__checking {
   gap: 0.55rem;
+  min-height: 3.55rem;
   color: var(--text-muted);
 }
 
@@ -3110,6 +3111,11 @@ button {
   min-height: 0;
 }
 
+.sidebar-section--pane-editor .diagram-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .sidebar-section--pane-expanded {
   overflow: hidden;
 }
@@ -3176,6 +3182,14 @@ button {
   background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface-strong));
 }
 
+.project-manager__summary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.38rem;
+  min-width: 0;
+}
+
 .project-manager__summary {
   display: flex;
   min-width: 0;
@@ -3196,7 +3210,6 @@ button {
   width: 100%;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
 }
 
@@ -3210,18 +3223,45 @@ button {
 }
 
 .project-manager__summary-chevron {
-  width: 0.48rem;
-  height: 0.48rem;
+  display: block;
+  width: 0.9rem;
+  height: 0.9rem;
   flex: 0 0 auto;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  color: var(--text-muted);
-  transform: rotate(45deg) translate(-0.08rem, 0.08rem);
-  transition: transform 140ms ease;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
-.project-manager__summary[aria-expanded="true"] .project-manager__summary-chevron {
-  transform: rotate(225deg) translate(-0.08rem, 0.08rem);
+.project-manager__expand-button {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, var(--accent) 22%);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--surface-strong));
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.project-manager__expand-button:hover,
+.project-manager__expand-button:focus-visible,
+.project-manager__expand-button[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-strong));
+  color: var(--accent-strong);
+}
+
+.project-manager__expand-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: 2px;
 }
 
 .project-manager__summary-stats {
@@ -3717,6 +3757,28 @@ button {
   line-height: 1.35;
 }
 
+.file-tree--drag-active {
+  position: relative;
+}
+
+.file-tree--drop-target {
+  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.file-tree__root-drop-cue {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0.1rem 0.25rem 0.3rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px dashed color-mix(in srgb, var(--accent) 76%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface-strong) 82%, var(--accent-soft));
+  color: var(--accent-strong);
+  white-space: normal;
+}
+
 .file-tree * {
   cursor: default;
   font: inherit;
@@ -3768,7 +3830,32 @@ button {
 }
 
 .file-tree__branch-header--drop-target {
-  background: color-mix(in srgb, var(--accent-soft) 86%, transparent);
+  position: relative;
+  outline: 2px solid color-mix(in srgb, var(--accent) 82%, transparent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent-soft) 94%, var(--surface-strong));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.file-tree__branch-header--dragging,
+.file-tree .file-row--dragging {
+  opacity: 0.45;
+}
+
+.file-tree__drop-label {
+  display: inline-block;
+  max-width: 24ch;
+  margin-left: 0.75rem;
+  padding: 0 0.4rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-strong));
+  color: var(--accent-strong);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
 }
 
 .file-tree__branch-header--static {
@@ -7273,16 +7360,92 @@ button {
   margin-top: 0.25rem;
 }
 
+.preview-markdown li > ul,
+.preview-markdown li > ol {
+  margin: 0.25rem 0;
+}
+
+.preview-markdown li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+.preview-markdown li > input[type="checkbox"] {
+  width: 1em;
+  height: 1em;
+  margin: 0 0.45em 0 -1.35em;
+  accent-color: var(--accent);
+  vertical-align: -0.08em;
+}
+
 .preview-markdown a {
   color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 0.16em;
 }
 
+.preview-markdown img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.85rem auto;
+  border-radius: 6px;
+}
+
 .preview-markdown blockquote {
   padding: 0.05rem 0 0.05rem 1rem;
   border-left: 3px solid color-mix(in srgb, var(--accent) 52%, var(--border));
   color: var(--text-muted);
+}
+
+.preview-markdown__table-block {
+  max-width: 100%;
+  margin: 0.85rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.preview-markdown table {
+  width: 100%;
+  min-width: max-content;
+  border-spacing: 0;
+}
+
+.preview-markdown th,
+.preview-markdown td {
+  padding: 0.5rem 0.7rem;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.preview-markdown tr > :last-child {
+  border-right: 0;
+}
+
+.preview-markdown tbody tr:last-child > td {
+  border-bottom: 0;
+}
+
+.preview-markdown th {
+  background: color-mix(in srgb, var(--surface) 86%, var(--editor-background));
+  color: var(--text);
+  font-weight: 700;
+}
+
+.preview-markdown tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--surface) 42%, transparent);
+}
+
+.preview-markdown th[align="center"],
+.preview-markdown td[align="center"] {
+  text-align: center;
+}
+
+.preview-markdown th[align="right"],
+.preview-markdown td[align="right"] {
+  text-align: right;
 }
 
 .preview-markdown code {
@@ -7510,6 +7673,16 @@ button {
 .preview-document--canvas .typst-page.canvas {
   background: #ffffff;
   max-width: none;
+  outline: 1px solid color-mix(in srgb, var(--text) 24%, var(--border));
+  outline-offset: -1px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+:root[data-theme="dark"] .preview-document--canvas .typst-page.canvas {
+  outline-color: color-mix(in srgb, var(--text) 44%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--background) 68%, transparent),
+    0 3px 14px color-mix(in srgb, #000000 52%, transparent);
 }
 
 .preview-document--pdf-canvas .pdf-page.canvas {
@@ -9191,11 +9364,7 @@ button {
 .workspace-main,
 .workspace {
   overscroll-behavior: none;
-}
-
-.workspace-shell,
-.workspace-main {
-  overflow: hidden;
+  overflow: clip;
 }
 
 html,
@@ -9204,6 +9373,295 @@ body,
 .app-shell {
   position: relative;
   max-height: var(--app-viewport-height, 100dvh);
+}
+
+.diagram-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 640px;
+  height: 100%;
+  gap: 8px;
+}
+
+.sidebar-section--pane-expanded .diagram-pane {
+  min-height: 0;
+}
+
+.diagram-pane__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  min-height: 34px;
+  gap: 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-strong) 92%, var(--surface-muted));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow) 22%, transparent);
+}
+
+.diagram-pane__tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+}
+
+.diagram-pane__tab,
+.diagram-action-bar button {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.diagram-pane__tab:hover,
+.diagram-pane__tab:focus-visible,
+.diagram-action-bar button:hover:not(:disabled),
+.diagram-action-bar button:focus-visible:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-strong));
+  outline: none;
+}
+
+.diagram-pane__tab[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--accent-strong);
+  background: var(--surface-strong);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 28%, transparent);
+}
+
+.diagram-pane__content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.diagram-pane__panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.diagram-pane__panel[hidden] {
+  display: none;
+}
+
+.tikz-editor {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 6px;
+}
+
+.tikz-editor__filebar,
+.tikz-editor__namebar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 6px;
+}
+
+.tikz-editor__figure-select,
+.tikz-editor__filename {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 8px;
+  color: var(--text);
+  background: var(--editor-background);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.tikz-editor__figure-select {
+  flex: 1 1 auto;
+  text-overflow: ellipsis;
+}
+
+.tikz-editor__filename {
+  flex: 1 1 auto;
+  font-family: "Iosevka Term", "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+.tikz-editor__figure-select:focus,
+.tikz-editor__filename:focus {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.tikz-editor__status {
+  flex: 0 0 auto;
+  max-width: 7.5rem;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tikz-editor__status--saved {
+  color: var(--accent-strong);
+}
+
+.tikz-editor__status--error {
+  color: var(--danger);
+}
+
+.diagram-action-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 6px;
+}
+
+.diagram-action-bar button,
+.diagram-action-bar select {
+  min-width: 0;
+  min-height: 30px;
+  border-color: var(--border);
+  border-style: solid;
+  border-width: 1px;
+  border-radius: 5px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-strong) 84%, var(--surface-muted));
+  font: inherit;
+  font-size: 0.75rem;
+}
+
+.diagram-action-bar button {
+  font-weight: 650;
+}
+
+.diagram-action-bar select {
+  padding: 0 6px;
+}
+
+.diagram-action-bar__wide-control {
+  grid-column: 1 / -1;
+}
+
+.diagram-action-bar button:disabled,
+.diagram-action-bar select:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.diagram-action-bar button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.tikz-editor__credit,
+.diagram-editor__credit {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.tikz-editor__error {
+  flex: 0 0 auto;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--border));
+  border-radius: 6px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface-strong));
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.tikz-editor__frame-shell {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 560px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.tikz-editor__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  border: 0;
+  background: var(--surface-strong);
+}
+
+.tikz-editor__credit,
+.diagram-editor__credit {
+  text-align: right;
+}
+
+.diagram-editor__credit {
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-strong) 88%, var(--surface-muted));
+}
+
+.tikz-editor__credit a,
+.diagram-editor__credit a {
+  color: var(--accent-strong);
+}
+
+.tikz-editor--empty {
+  align-items: stretch;
+  justify-content: center;
+  min-height: 28rem;
+}
+
+.tikz-editor__empty-card {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 10px;
+  padding: 28px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+  background: color-mix(in srgb, var(--surface-strong) 84%, var(--surface-muted));
+}
+
+.tikz-editor__empty-card h3,
+.tikz-editor__empty-card p {
+  margin: 0;
+}
+
+.tikz-editor__empty-card p {
+  max-width: 28rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.tikz-editor__empty-mark {
+  color: var(--accent-strong);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2rem;
+  font-weight: 700;
 }
 
 .diagram-editor--svgedit {
@@ -9244,46 +9702,14 @@ body,
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.diagram-editor--svgedit .diagram-editor__actions {
-  position: static;
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  border-top: 0;
-  background: transparent;
-}
-
-.diagram-editor--svgedit .diagram-editor__actions button {
-  min-height: 32px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 10px;
-  color: var(--text);
-  background: color-mix(in srgb, var(--surface-strong) 82%, var(--surface-muted));
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.diagram-editor--svgedit .diagram-editor__actions button:hover,
-.diagram-editor--svgedit .diagram-editor__actions button:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-strong));
-  color: var(--accent-strong);
-  outline: none;
-}
-
-.diagram-editor--svgedit .diagram-editor__actions button:active {
-  transform: translateY(1px);
+.diagram-editor__topbar > .diagram-action-bar {
+  flex: 1 1 18rem;
 }
 
 .diagram-editor__svgedit-host {
-  min-height: 560px;
-  height: min(72vh, 760px);
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
   width: 100%;
   overflow: hidden;
   background: var(--surface-strong);

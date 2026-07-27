@@ -10,14 +10,16 @@
     "url": "https://github.com/max-prime-math/typr.git"
   },
   "scripts": {
-    "predev": "npm run icons:check && npm run busytex:assets",
+    "predev": "npm run icons:check && npm run busytex:assets && npm run tikz-editor:assets && npm run tylax:assets",
     "dev": "vite",
-    "prebuild": "npm run icons:check && npm run busytex:assets",
+    "prebuild": "npm run icons:check && npm run busytex:assets && npm run tikz-editor:assets && npm run tylax:assets",
     "build": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
     "busytex:assets": "node scripts/ensure-busytex-assets.cjs",
+    "tikz-editor:assets": "node scripts/ensure-tikz-editor-assets.cjs",
+    "tylax:assets": "node scripts/ensure-tylax-assets.cjs",
     "icons:check": "node scripts/verify-icon-assets.mjs",
     "test:e2e:diagram": "playwright test --config=playwright.config.ts",
     "test:e2e:pwa": "npm run build && playwright test --config=playwright.pwa.config.ts"

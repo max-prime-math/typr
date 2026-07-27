@@ -69,18 +69,24 @@ import {
   type MobileKeyboardLanguage,
   type ThemePreference
 } from "./appState";
-import { getWorkspaceRenameDraft, renameWorkspaceNode } from "./workspaceRename";
+import {
+  getWorkspaceRenameDraft,
+  renameWorkspaceNodeWithPath
+} from "./workspaceRename";
 import { selectWorkspaceRange } from "./workspaceSelection";
 import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
+import { useGoogleDriveSync } from "./useGoogleDriveSync";
 import { useLocalFolderSync } from "./useLocalFolderSync";
 import {
   areWorkspacePathListsEqual,
   insertWorkspacePathAfterActive,
   openWorkspacePreviewTab,
   normalizeUniqueWorkspacePaths,
+  remapWorkspacePath,
+  remapWorkspacePaths,
   reorderWorkspacePaths
 } from "./workspaceTabs";
 import {
@@ -176,11 +182,14 @@ import {
   type LatexPackageResolution
 } from "../compiler/latexPackages";
 import {
+  DEFAULT_NEW_DOCUMENT_EXTENSION,
+  getPreferredNewDocumentExtension,
   getSourceLanguage,
   isCompilableSourceFile,
   isLatexMainSourceFile,
   isTypstSourceFile,
   normalizeCompilerPath,
+  type PreferredNewDocumentExtension,
   type SourceLanguage
 } from "../compiler/sourceFileTypes";
 import type { CompileAssetFile, CompileDiagnostic, CompileMetadata } from "../compiler/types";
@@ -204,18 +213,24 @@ import {
   type TypstSearchQueryState
 } from "../editor/TypstEditor";
 import { TerminalDrawer } from "../terminal/TerminalDrawer";
-import { renderMarkdownHtml } from "../markdown/markdownParser";
+import {
+  collectMarkdownImageReferences,
+  renderMarkdownHtml
+} from "../markdown/markdownParser";
 import { isTerminalToggleShortcut } from "../terminal/terminalHotkey";
 import {
   PreviewPane,
   PreviewDebugPanel,
   PreviewStatusIcon,
+  type WorkspacePreviewAsset,
   type WorkspacePreviewFile
 } from "../preview/PreviewPane";
 import { MitexPanel } from "../mitex/MitexPanel";
 import { DiagramEditorErrorBoundary } from "../diagram/DiagramEditorErrorBoundary";
+import { DiagramPane, type DiagramPaneMode } from "../diagram/DiagramPane";
 import { serializeDiagramSvg } from "../diagram/diagramSvgSerializer";
 import { DiagramEditor } from "../diagram/SvgEditDiagramEditor";
+import { TikzDiagramEditor } from "../diagram/TikzDiagramEditor";
 import { exportSvgToVectorPdfBytes } from "../diagram/diagramPdfExport";
 import {
   DIAGRAM_DIRECTORY,
@@ -225,6 +240,30 @@ import {
   getDiagramPdfFilePath,
   normalizeDiagramFileName
 } from "../diagram/diagramFiles";
+import {
+  DEFAULT_TIKZ_SOURCE,
+  collectTikzFigureFiles,
+  createNextTikzPath,
+  getTikzCetzPath,
+  getTikzFileName,
+  getTikzPdfPath,
+  getTikzSvgPath,
+  renameTikzFigureFiles,
+  writeTikzFigureFiles
+} from "../diagram/tikzFiles";
+import {
+  buildTikzInsertion,
+  type TikzInsertMode
+} from "../diagram/tikzInsertion";
+import {
+  assessCetzConversion,
+  buildCetzValidationSource
+} from "../diagram/cetzConversion";
+import { compareDiagramSvgs } from "../diagram/cetzVisualValidation";
+import {
+  convertTikzToCetz,
+  releaseTylaxWorker
+} from "../diagram/tylaxWorkerClient";
 import {
   AUTO_THEME_ID,
   compareThemesByDisplayOrder,
@@ -243,6 +282,7 @@ import {
   type SourcePosition
 } from "../preview/sourceLinks";
 import {
+  deleteCloudProjectBindings,
   deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
@@ -352,6 +392,7 @@ import {
   getRelativePathParent as getWorkspaceParentPath,
   joinRelativePaths as joinWorkspacePath
 } from "../utils/relativePath";
+import { scrollElementWithin } from "../utils/domScroll";
 import { ApplicationInfoButton } from "../update/ApplicationInfoButton";
 import { updateManager } from "../update/updateManager";
 
@@ -379,6 +420,7 @@ const WORKSPACE_OPEN_FOLDERS_STORAGE_KEY = "typr.workspace-open-folders.v1";
 const LATEX_PACKAGE_SELECTIONS_STORAGE_KEY = "typr.latex-package-selections.v1";
 const RECENT_WORKSPACE_STORAGE_KEY = "typr.recent-workspace.v1";
 const LEFT_PANE_STORAGE_KEY = "typr.left-pane.v1";
+const FILE_KEYBINDING_COMMAND_IDS = ["newFile", "renameFile"] as const;
 const PROJECT_EXPORT_INPUT_ACCEPT = ".json,application/json";
 const WORKSPACE_UPLOAD_ACCEPT = [
   ".typ",
@@ -478,6 +520,35 @@ function getWorkspacePreviewMimeType(path: string): string | null {
     default:
       return null;
   }
+}
+
+function collectMarkdownPreviewAssets(
+  project: TyprProjectRepository | null,
+  sourcePath: string,
+  source: string
+): WorkspacePreviewAsset[] {
+  if (!project) {
+    return [];
+  }
+
+  const assets = new Map<string, WorkspacePreviewAsset>();
+
+  for (const reference of collectMarkdownImageReferences(source)) {
+    const path = normalizeWorkspaceReferencePath(reference, sourcePath);
+    const mimeType = path ? getWorkspacePreviewMimeType(path) : null;
+
+    if (!path || !mimeType?.startsWith("image/") || assets.has(path)) {
+      continue;
+    }
+
+    const content = readProjectFileBytes(project, path);
+
+    if (content) {
+      assets.set(path, { path, content, mimeType });
+    }
+  }
+
+  return [...assets.values()];
 }
 
 function isWorkspacePreviewFile(path: string): boolean {
@@ -2509,7 +2580,7 @@ function createRenderedMarkdownHtml(source: string, title: string): string {
     `<title>${escapeHtml(title)}</title>`,
     "<style>",
     "body{max-width:760px;margin:40px auto;padding:0 20px;font:16px/1.55 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2328;background:#fff}",
-    "img{max-width:100%;height:auto}pre{overflow:auto;padding:12px;background:#f6f8fa;border-radius:6px}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #d0d7de;color:#57606a}",
+    "img{max-width:100%;height:auto}pre{overflow:auto;padding:12px;background:#f6f8fa;border-radius:6px}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}blockquote{margin-left:0;padding-left:16px;border-left:3px solid #d0d7de;color:#57606a}table{display:block;width:100%;overflow-x:auto;border-collapse:collapse}th,td{padding:8px 11px;border:1px solid #d0d7de;text-align:left;vertical-align:top}th{background:#f6f8fa}th[align=center],td[align=center]{text-align:center}th[align=right],td[align=right]{text-align:right}li:has(>input[type=checkbox]){list-style:none}li>input[type=checkbox]{margin-left:-20px}",
     "</style>",
     "</head>",
     "<body>",
@@ -3099,6 +3170,38 @@ function writeDiagramPdfProjectFile(
   );
 }
 
+class TikzInsertionTargetChangedError extends Error {
+  constructor() {
+    super("The TikZ insertion target changed.");
+    this.name = "TikzInsertionTargetChangedError";
+  }
+}
+
+function waitForCompileIdle(
+  compileInFlightRef: { readonly current: boolean },
+  timeoutMs: number = 15_000
+): Promise<void> {
+  const startedAt = Date.now();
+
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (!compileInFlightRef.current) {
+        resolve();
+        return;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        reject(new Error("The active Typst preview did not finish in time."));
+        return;
+      }
+
+      window.setTimeout(check, 50);
+    };
+
+    check();
+  });
+}
+
 export function App() {
   const [storedPanelLayout] = useState(readStoredPanelLayout);
   const [storedLeftPane] = useState(readStoredLeftPaneState);
@@ -3142,6 +3245,8 @@ export function App() {
   const editedSourcePathRef = useRef<string | null>(null);
   const handleCompileRef = useRef<() => void>(() => {});
   const handleFormatDocumentRef = useRef<() => void>(() => {});
+  const handleNewFileShortcutRef = useRef<() => boolean>(() => false);
+  const handleRenameFileShortcutRef = useRef<() => boolean>(() => false);
   const pendingLatexCompileProfileRef = useRef<LatexCompileProfile>(getLatexCompileProfile("pdftex-quick"));
   const compileOptionsMenuRef = useRef<HTMLDivElement | null>(null);
   const previewDownloadMenuRef = useRef<HTMLDivElement | null>(null);
@@ -3160,6 +3265,8 @@ export function App() {
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>(
     storedLeftPane.activeSidebarTool
   );
+  const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("draw");
+  const [selectedTikzPath, setSelectedTikzPath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
     search: "",
     replace: "",
@@ -3249,6 +3356,7 @@ export function App() {
   const [externalDiagnosticsState, setExternalDiagnosticsState] = useState<ExternalDiagnosticsState | null>(null);
   const [diagnosticProviderStatuses, setDiagnosticProviderStatuses] =
     useState<DiagnosticProviderStatus[]>(createInitialExternalDiagnosticStatuses);
+  const [areHarperDiagnosticsActivated, setAreHarperDiagnosticsActivated] = useState(false);
   const [harperSelfTestResult, setHarperSelfTestResult] = useState("Not run yet.");
   const [outlineSourceContent, setOutlineSourceContent] = useState("");
   const [previewZoom, setPreviewZoom] = useState<PreviewZoomState>(DEFAULT_ZOOM);
@@ -3531,6 +3639,16 @@ ${nextLine}` : nextLine;
   const selectedLocalFolderSyncState = selectedProjectRepository
     ? localFolderSync.states[selectedProjectRepository.id]
     : undefined;
+  const googleDriveSync = useGoogleDriveSync({
+    clientId: import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID ?? "",
+    isHydrated,
+    projectStorage,
+    setProjectStorage,
+    setRawSnapshot
+  });
+  const selectedGoogleDriveSyncState = selectedProjectRepository
+    ? googleDriveSync.states[selectedProjectRepository.id]
+    : undefined;
   const [repoStorageStats, setRepoStorageStats] = useState<RepoStorageStats | null>(null);
   const [isRepoStorageLoading, setIsRepoStorageLoading] = useState(false);
   const [repoStorageFeedback, setRepoStorageFeedback] = useState<SyncFeedback>({
@@ -3544,6 +3662,10 @@ ${nextLine}` : nextLine;
   const keybindings = snapshot.preferences.keybindings;
   const compileShortcutLabel = formatKeybinding(
     keybindings.compile,
+    isAppleShortcutPlatform
+  );
+  const newFileShortcutLabel = formatKeybinding(
+    keybindings.newFile,
     isAppleShortcutPlatform
   );
   const handleVimToggle = useCallback(() => {
@@ -4036,6 +4158,50 @@ ${nextLine}` : nextLine;
   const activeDocument = getActiveDocument(snapshot.project);
   const activeDocumentTextContent =
     typeof activeDocument?.content === "string" ? activeDocument.content : "";
+  const initialNewDocumentExtension =
+    getPreferredNewDocumentExtension(activeDocument?.name) ?? DEFAULT_NEW_DOCUMENT_EXTENSION;
+  const newDocumentDefaultsRef = useRef<{
+    projectId: string;
+    extension: PreferredNewDocumentExtension;
+    parentPath: string | null;
+  }>({
+    projectId: snapshot.project.id,
+    extension: initialNewDocumentExtension,
+    parentPath: activeDocument ? getWorkspaceParentPath(activeDocument.name) : null
+  });
+
+  if (newDocumentDefaultsRef.current.projectId !== snapshot.project.id) {
+    newDocumentDefaultsRef.current = {
+      projectId: snapshot.project.id,
+      extension: initialNewDocumentExtension,
+      parentPath: activeDocument ? getWorkspaceParentPath(activeDocument.name) : null
+    };
+  }
+
+  const rememberNewDocumentFile = useCallback((path: string) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+    const preferredExtension = getPreferredNewDocumentExtension(normalizedPath);
+
+    newDocumentDefaultsRef.current = {
+      ...newDocumentDefaultsRef.current,
+      extension: preferredExtension ?? newDocumentDefaultsRef.current.extension,
+      parentPath: getWorkspaceParentPath(normalizedPath)
+    };
+  }, []);
+
+  const rememberNewDocumentFolder = useCallback((path: string) => {
+    newDocumentDefaultsRef.current = {
+      ...newDocumentDefaultsRef.current,
+      parentPath:
+        path === WORKSPACE_ROOT_PATH ? null : normalizeWorkspacePath(path) || null
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeDocument) {
+      rememberNewDocumentFile(activeDocument.name);
+    }
+  }, [activeDocument?.id, activeDocument?.name, rememberNewDocumentFile]);
   useEffect(() => {
     if (!isHydrated || !selectedGitProject || !selectedProjectRepository || !selectedGitProject.connected) {
       return;
@@ -4190,7 +4356,9 @@ ${nextLine}` : nextLine;
       sidebarPaneRef.current?.querySelectorAll<HTMLElement>("[data-workspace-path]") ?? []
     ).find((row) => row.dataset.workspacePath === workspaceTreeCursorPath);
 
-    selectedRow?.scrollIntoView({ block: "nearest" });
+    if (selectedRow && filesSectionRef.current) {
+      scrollElementWithin(filesSectionRef.current, selectedRow);
+    }
   }, [activeSidebarTool, workspaceTreeCursorPath]);
   const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
   const workspaceStructureKey = selectedProjectRepository
@@ -4395,7 +4563,12 @@ ${nextLine}` : nextLine;
           name: activePreviewWorkspaceNode.name,
           path: activePreviewWorkspaceNode.path,
           content: activePreviewTextContent,
-          mimeType
+          mimeType,
+          assets: collectMarkdownPreviewAssets(
+            selectedProjectRepository,
+            activePreviewWorkspaceNode.path,
+            activePreviewTextContent
+          )
         });
         return;
       }
@@ -4807,10 +4980,27 @@ ${nextLine}` : nextLine;
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
   );
+  const tikzFigures = useMemo(
+    () => collectTikzFigureFiles(selectedProjectRepository),
+    [selectedProjectRepository]
+  );
+  const selectedTikzFigure = useMemo(
+    () =>
+      tikzFigures.find((figure) => figure.path === selectedTikzPath) ??
+      tikzFigures[0] ??
+      null,
+    [selectedTikzPath, tikzFigures]
+  );
   const savedFigures = useMemo(
     () => snapshot.project.figures ?? [],
     [snapshot.project.figures]
   );
+  useEffect(() => {
+    const nextPath = selectedTikzFigure?.path ?? null;
+    if (nextPath !== selectedTikzPath) {
+      setSelectedTikzPath(nextPath);
+    }
+  }, [selectedTikzFigure?.path, selectedTikzPath]);
   useEffect(() => {
     if (!workspaceContextMenu) {
       return;
@@ -5272,6 +5462,7 @@ ${nextLine}` : nextLine;
           const recovery = await retryProjectDeletions({
             dependencies: {
               deleteBrowserGitFiles: deleteProjectGitFiles,
+              deleteCloudProjectBindings,
               deleteLocalFolderBinding,
               deleteTombstone: deleteProjectDeletionTombstone,
               removeOpfsProject: removeProjectFromOpfs,
@@ -5559,6 +5750,10 @@ ${nextLine}` : nextLine;
             setWorkspaceMode("split");
           }
           return true;
+        case "newFile":
+          return handleNewFileShortcutRef.current();
+        case "renameFile":
+          return handleRenameFileShortcutRef.current();
         case "toggleSidebar":
           handlePanelToggle("sidebar");
           return true;
@@ -5939,7 +6134,25 @@ ${nextLine}` : nextLine;
     }
 
     function handleVimShortcutCapture(event: KeyboardEvent) {
-      if (event.defaultPrevented || recordingKeybindingId || isTypingTarget(event.target)) {
+      if (event.defaultPrevented || recordingKeybindingId) {
+        return;
+      }
+
+      for (const commandId of FILE_KEYBINDING_COMMAND_IDS) {
+        if (
+          matchesKeybinding(
+            event,
+            snapshot.preferences.keybindings[commandId],
+            isAppleShortcutPlatform
+          ) &&
+          runAppKeybindingCommand(commandId)
+        ) {
+          event.preventDefault();
+          return;
+        }
+      }
+
+      if (isTypingTarget(event.target)) {
         return;
       }
 
@@ -6884,11 +7097,14 @@ ${nextLine}` : nextLine;
         return;
       }
 
-      void localFolderSync.syncOnCompile(projectId).then(() =>
-        performManualCompile(profileId)
-      );
+      void Promise.all([
+        localFolderSync.syncOnCompile(projectId),
+        googleDriveSync.syncOnCompile(projectId)
+      ])
+        .then(() => performManualCompile(profileId));
     },
     [
+      googleDriveSync.syncOnCompile,
       localFolderSync.syncOnCompile,
       performManualCompile,
       selectedLatexCompileProfileId
@@ -7058,6 +7274,7 @@ ${nextLine}` : nextLine;
   }, [compileResult]);
 
   const handleDocumentChange = useCallback((content: string) => {
+    setAreHarperDiagnosticsActivated(true);
     editedSourcePathRef.current = normalizeWorkspacePath(activeSourcePath);
     const pastedImageBinding = pastedImageRenameBindingRef.current;
 
@@ -7719,6 +7936,7 @@ ${nextLine}` : nextLine;
 
     if (nextDocument) {
       const nextPath = normalizeWorkspacePath(nextDocument.name);
+      rememberNewDocumentFile(nextPath);
 
       if (options.sourceTabMode === "pin") {
         openSourceTab(nextPath);
@@ -7732,7 +7950,7 @@ ${nextLine}` : nextLine;
     }
 
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
-  }, [openSourceTab, previewSourceTab, snapshot.project.documents]);
+  }, [openSourceTab, previewSourceTab, rememberNewDocumentFile, snapshot.project.documents]);
 
   const handleActivateSourceTab = useCallback(
     (path: string) => {
@@ -7973,6 +8191,11 @@ ${nextLine}` : nextLine;
       }
     ) => {
       const normalizedPath = normalizeWorkspacePath(node.path);
+      if (node.kind === "folder") {
+        rememberNewDocumentFolder(normalizedPath);
+      } else {
+        rememberNewDocumentFile(normalizedPath);
+      }
 
       if (modifiers.range) {
         const selectablePaths = visibleWorkspaceNodes.map((entry) => entry.path);
@@ -7999,7 +8222,13 @@ ${nextLine}` : nextLine;
       setSelectedWorkspacePaths([normalizedPath]);
       setWorkspaceSelectionAnchorPath(normalizedPath);
     },
-    [selectedWorkspacePath, visibleWorkspaceNodes, workspaceSelectionAnchorPath]
+    [
+      rememberNewDocumentFile,
+      rememberNewDocumentFolder,
+      selectedWorkspacePath,
+      visibleWorkspaceNodes,
+      workspaceSelectionAnchorPath
+    ]
   );
 
   const handleRequestWorkspaceRename = useCallback((node: WorkspaceTreeNode) => {
@@ -8034,11 +8263,90 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    setSnapshot((currentSnapshot) => renameWorkspaceNode(currentSnapshot, targetNode, nextName));
+    const renameTransition = renameWorkspaceNodeWithPath(snapshot, targetNode, nextName);
+    const { nextPath, previousPath } = renameTransition;
 
-    setSelectedWorkspacePath(null);
+    setSnapshot(renameTransition.snapshot);
+
+    if (nextPath !== previousPath) {
+      setSourceTabPaths((currentPaths) =>
+        remapWorkspacePaths(currentPaths, previousPath, nextPath)
+      );
+      setTransientSourceTabPath((currentPath) =>
+        currentPath ? remapWorkspacePath(currentPath, previousPath, nextPath) : null
+      );
+      setPreviewTabPaths((currentPaths) =>
+        remapWorkspacePaths(currentPaths, previousPath, nextPath)
+      );
+      setActivePreviewPath((currentPath) =>
+        currentPath ? remapWorkspacePath(currentPath, previousPath, nextPath) : null
+      );
+      setSelectedWorkspacePath((currentPath) =>
+        currentPath ? remapWorkspacePath(currentPath, previousPath, nextPath) : nextPath
+      );
+      setSelectedWorkspacePaths((currentPaths) =>
+        currentPaths.length > 0
+          ? remapWorkspacePaths(currentPaths, previousPath, nextPath)
+          : [nextPath]
+      );
+      setWorkspaceSelectionAnchorPath((currentPath) =>
+        currentPath ? remapWorkspacePath(currentPath, previousPath, nextPath) : nextPath
+      );
+      setWorkspaceOpenFoldersByProject((current) => {
+        const storedPaths = current[workspaceFolderStorageKey];
+
+        if (!storedPaths) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [workspaceFolderStorageKey]: remapWorkspacePaths(
+            storedPaths,
+            previousPath,
+            nextPath
+          )
+        };
+      });
+
+      activeSourcePathRef.current = remapWorkspacePath(
+        activeSourcePathRef.current,
+        previousPath,
+        nextPath
+      );
+      if (editedSourcePathRef.current) {
+        editedSourcePathRef.current = remapWorkspacePath(
+          editedSourcePathRef.current,
+          previousPath,
+          nextPath
+        );
+      }
+      if (pastedImageRenameBindingRef.current) {
+        pastedImageRenameBindingRef.current = {
+          ...pastedImageRenameBindingRef.current,
+          sourcePath: remapWorkspacePath(
+            pastedImageRenameBindingRef.current.sourcePath,
+            previousPath,
+            nextPath
+          )
+        };
+      }
+    }
+
     handleCancelWorkspaceRename();
-  }, [handleCancelWorkspaceRename, renamingWorkspacePath, setProjectRepository, visibleWorkspaceTree, workspaceRenameDraft]);
+  }, [
+    handleCancelWorkspaceRename,
+    renamingWorkspacePath,
+    setActivePreviewPath,
+    setPreviewTabPaths,
+    setProjectRepository,
+    setSourceTabPaths,
+    setTransientSourceTabPath,
+    snapshot,
+    visibleWorkspaceTree,
+    workspaceFolderStorageKey,
+    workspaceRenameDraft
+  ]);
 
   const handleRequestWorkspaceRootRename = useCallback(() => {
     if (isTrashViewOpen) {
@@ -8052,6 +8360,12 @@ ${nextLine}` : nextLine;
 
   const handleRequestWorkspaceContextMenu = useCallback(
     (node: WorkspaceTreeNode, x: number, y: number) => {
+      if (node.kind === "folder") {
+        rememberNewDocumentFolder(node.path);
+      } else {
+        rememberNewDocumentFile(node.path);
+      }
+
       setSelectedWorkspacePaths((currentPaths) =>
         currentPaths.includes(node.path) ? currentPaths : [node.path]
       );
@@ -8063,7 +8377,7 @@ ${nextLine}` : nextLine;
         y
       });
     },
-    []
+    [rememberNewDocumentFile, rememberNewDocumentFolder]
   );
 
   const handleRequestWorkspaceRootContextMenu = useCallback(
@@ -8072,13 +8386,14 @@ ${nextLine}` : nextLine;
         return;
       }
 
+      rememberNewDocumentFolder(WORKSPACE_ROOT_PATH);
       setWorkspaceContextMenu({
         kind: "project-root",
         x,
         y
       });
     },
-    [isTrashViewOpen]
+    [isTrashViewOpen, rememberNewDocumentFolder]
   );
 
   const handleDownloadWorkspaceNode = useCallback(
@@ -8316,20 +8631,41 @@ ${nextLine}` : nextLine;
   );
 
   const handleNewDocument = () => {
-    const targetNode = selectedWorkspacePath
-      ? findWorkspaceNodeByPath(workspaceTree, selectedWorkspacePath)
-      : null;
-    const targetFolderPath = targetNode?.kind === "folder"
-      ? targetNode.path
-      : selectedWorkspacePath
-        ? getWorkspaceParentPath(selectedWorkspacePath)
-        : null;
-    const requestedName = targetFolderPath ? joinWorkspacePath(targetFolderPath, "new-file-1") : undefined;
+    if (isTrashViewOpen) {
+      setSyncFeedback({ tone: "error", text: "Leave Trash before creating files." });
+      return;
+    }
 
-    setSnapshot((currentSnapshot) => createDocument(currentSnapshot, requestedName));
-    window.alert(
-      "Created an extensionless file. Typst and LaTeX compilation is only possible after .typ or .tex has been added to the filename."
-    );
+    const { extension, parentPath } = newDocumentDefaultsRef.current;
+    const requestedName = joinWorkspacePath(parentPath, `new-file-1${extension}`);
+    const nextSnapshot = createDocument(snapshot, requestedName);
+    const createdDocument = getActiveDocument(nextSnapshot.project);
+
+    if (!createdDocument) {
+      return;
+    }
+
+    const createdPath = normalizeWorkspacePath(createdDocument.name);
+    setSnapshot(nextSnapshot);
+    rememberNewDocumentFile(createdPath);
+    setWorkspaceContextMenu(null);
+    setSelectedWorkspacePath(createdPath);
+    setSelectedWorkspacePaths([createdPath]);
+    setWorkspaceSelectionAnchorPath(createdPath);
+    setRenamingWorkspacePath(createdPath);
+    setWorkspaceRenameDraft(getWorkspaceBaseName(createdPath));
+    updateWorkspaceOpenFolders((currentPaths) => {
+      const nextPaths = new Set(currentPaths);
+      let ancestorPath = getWorkspaceParentPath(createdPath);
+
+      nextPaths.add(WORKSPACE_ROOT_PATH);
+      while (ancestorPath) {
+        nextPaths.add(ancestorPath);
+        ancestorPath = getWorkspaceParentPath(ancestorPath);
+      }
+
+      return nextPaths;
+    });
   };
 
   const setThemeMode = (nextTheme: ThemePreference) => {
@@ -9031,7 +9367,7 @@ ${nextLine}` : nextLine;
       [
         `Delete local Typr project "${projectToDelete.displayName}"?`,
         "This removes its local files, browser git repo, managed repo entries, and stored tokens.",
-        "It does not delete any linked local folder or GitHub repository.",
+        "It does not delete any linked local folder, GitHub repository, or Google Drive folder.",
         "",
         `Type ${projectToDelete.displayName} to confirm.`
       ].join("\n"),
@@ -9054,6 +9390,11 @@ ${nextLine}` : nextLine;
       await localFolderSync.disconnect(projectToDelete.id);
     } catch (error) {
       console.warn("Local folder binding cleanup will retry with project deletion.", error);
+    }
+    try {
+      await googleDriveSync.disconnect(projectToDelete.id);
+    } catch (error) {
+      console.warn("Google Drive binding cleanup will retry with project deletion.", error);
     }
 
     const fallbackProject =
@@ -9091,6 +9432,7 @@ ${nextLine}` : nextLine;
       deletionResult = await deleteProjectDurably({
         dependencies: {
           deleteBrowserGitFiles: deleteProjectGitFiles,
+          deleteCloudProjectBindings,
           deleteLocalFolderBinding,
           deleteTombstone: deleteProjectDeletionTombstone,
           removeOpfsProject: removeProjectFromOpfs,
@@ -9225,6 +9567,7 @@ ${nextLine}` : nextLine;
     );
   }, [
     gitWorkspace.projects,
+    googleDriveSync,
     localFolderSync,
     projectStorage,
     selectedProjectRepository,
@@ -10317,6 +10660,8 @@ ${nextLine}` : nextLine;
     const normalizedFolderId =
       folderId === WORKSPACE_ROOT_PATH ? WORKSPACE_ROOT_PATH : normalizeWorkspacePath(folderId);
 
+    rememberNewDocumentFolder(normalizedFolderId);
+
     updateWorkspaceOpenFolders((currentPaths) => {
       const nextPaths = new Set(currentPaths);
 
@@ -10328,7 +10673,7 @@ ${nextLine}` : nextLine;
       nextPaths.add(normalizedFolderId);
       return nextPaths;
     });
-  }, [updateWorkspaceOpenFolders]);
+  }, [rememberNewDocumentFolder, updateWorkspaceOpenFolders]);
 
   const handleNewDiagram = useCallback(() => {
     setSnapshot((currentSnapshot) => createNextDiagramSnapshot(currentSnapshot));
@@ -10409,6 +10754,284 @@ ${nextLine}` : nextLine;
       })
     );
   }, [activeSourceLanguage, diagram.name]);
+
+  const handleCreateTikzFigure = useCallback(() => {
+    const project = selectedProjectRepositoryRef.current;
+
+    if (!project) {
+      setSyncFeedback({ tone: "error", text: "Open a project before creating a TikZ figure." });
+      return;
+    }
+
+    const path = createNextTikzPath(project);
+    setProjectRepository((currentProject) =>
+      currentProject.id === project.id
+        ? writeTikzFigureFiles(currentProject, path, DEFAULT_TIKZ_SOURCE)
+        : currentProject
+    );
+    setSelectedTikzPath(path);
+    updateWorkspaceOpenFolders((currentPaths) => new Set(currentPaths).add("figures"));
+  }, [setProjectRepository, updateWorkspaceOpenFolders]);
+
+  const handleUpdateTikzFigure = useCallback(
+    (path: string, source: string, svg?: string) => {
+      setProjectRepository((project) => writeTikzFigureFiles(project, path, source, svg));
+    },
+    [setProjectRepository]
+  );
+
+  const handleRenameTikzFigure = useCallback(
+    (path: string, name: string) => {
+      const project = selectedProjectRepositoryRef.current;
+
+      if (!project) {
+        return;
+      }
+
+      try {
+        const renamed = renameTikzFigureFiles(project, path, name);
+        setProjectRepository((currentProject) =>
+          currentProject.id === project.id ? renamed.project : currentProject
+        );
+        setSelectedTikzPath(renamed.path);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Unable to rename TikZ figure.");
+      }
+    },
+    [setProjectRepository]
+  );
+
+  const handleInsertTikzFigure = useCallback(
+    async (path: string, source: string, svg: string, mode: TikzInsertMode) => {
+      const projectId = selectedProjectRepositoryRef.current?.id;
+      const targetSourcePath = activeSourcePath;
+
+      if (!projectId) {
+        setSyncFeedback({
+          tone: "error",
+          text: "Open a project before inserting a TikZ figure."
+        });
+        return;
+      }
+
+      const tikzReference = getWorkspaceRelativeReference(activeSourcePath, path);
+      const svgReference = getWorkspaceRelativeReference(activeSourcePath, getTikzSvgPath(path));
+      const pdfReference = getWorkspaceRelativeReference(activeSourcePath, getTikzPdfPath(path));
+      const cetzPath = getTikzCetzPath(path);
+      const cetzReference = getWorkspaceRelativeReference(activeSourcePath, cetzPath);
+      const label = getTikzFileName(path).replace(/\.tikz$/i, "");
+      let resolvedMode = mode;
+      let convertedCetz: string | undefined;
+      let conversionFeedback: SyncFeedback | null = null;
+
+      if (activeSourceLanguage === "typst" && mode !== "rendered") {
+        setSyncFeedback({
+          tone: "neutral",
+          text: "Converting TikZ to CeTZ and verifying the result…"
+        });
+
+        try {
+          const converted = await convertTikzToCetz(source);
+          const assessment = assessCetzConversion(
+            source,
+            converted.cetz,
+            converted.diagnostics
+          );
+
+          if (assessment.blockers.length > 0) {
+            throw new Error(assessment.blockers.join(" "));
+          }
+          if (mode === "recommended" && assessment.warnings.length > 0) {
+            throw new Error(assessment.warnings.join(" "));
+          }
+          if (
+            selectedProjectRepositoryRef.current?.id !== projectId ||
+            activeSourcePathRef.current !== targetSourcePath
+          ) {
+            throw new TikzInsertionTargetChangedError();
+          }
+
+          clearScheduledCompile();
+          await waitForCompileIdle(compileInFlightRef);
+          const validationResult = await compiler.compileDocument(
+            buildCetzValidationSource(converted.cetz),
+            [],
+            { mainFilePath: cetzPath }
+          );
+
+          if (
+            !validationResult.ok ||
+            validationResult.engine !== "typst-ts" ||
+            validationResult.output.kind !== "svg"
+          ) {
+            throw new Error(
+              validationResult.ok
+                ? "The generated CeTZ did not produce a real Typst SVG preview."
+                : formatSourceError(validationResult)
+            );
+          }
+
+          let visualWarning: string | null = null;
+          try {
+            const comparison = await compareDiagramSvgs(
+              svg,
+              validationResult.output.content
+            );
+            if (!comparison.similar) {
+              visualWarning =
+                "The CeTZ rendering differs from the TikZ preview " +
+                `(mean difference ${(comparison.meanDifference * 100).toFixed(1)}%, ` +
+                `${(comparison.changedPixelRatio * 100).toFixed(1)}% changed pixels, ` +
+                `${(comparison.inkMismatchRatio * 100).toFixed(1)}% unmatched ink).`;
+            }
+          } catch (error) {
+            visualWarning =
+              error instanceof Error
+                ? `Visual comparison was unavailable: ${error.message}`
+                : "Visual comparison was unavailable.";
+          }
+
+          if (visualWarning && mode === "recommended") {
+            throw new Error(visualWarning);
+          }
+
+          convertedCetz = converted.cetz;
+          resolvedMode = "cetz";
+          const explicitWarnings = [
+            ...assessment.warnings,
+            ...(visualWarning ? [visualWarning] : [])
+          ];
+          conversionFeedback =
+            explicitWarnings.length > 0
+              ? {
+                  tone: "neutral",
+                  text: `Inserted compilable CeTZ with warnings: ${explicitWarnings.join(" ")}`
+                }
+              : {
+                  tone: "success",
+                  text: `Inserted verified CeTZ generated by Tylax ${converted.version}.`
+                };
+        } catch (error) {
+          if (error instanceof TikzInsertionTargetChangedError) {
+            setSyncFeedback({
+              tone: "neutral",
+              text: "The insertion target changed while CeTZ was being prepared. Nothing was inserted."
+            });
+            return;
+          }
+
+          const message =
+            error instanceof Error ? error.message : "CeTZ verification failed.";
+          if (mode === "cetz") {
+            setSyncFeedback({
+              tone: "error",
+              text: `Unable to insert editable CeTZ: ${message}`
+            });
+            return;
+          }
+
+          resolvedMode = "rendered";
+          conversionFeedback = {
+            tone: "neutral",
+            text: `CeTZ verification failed, so Typr inserted the SVG fallback: ${message}`
+          };
+        } finally {
+          releaseTylaxWorker();
+        }
+      }
+
+      const insertion = buildTikzInsertion({
+        cetzReference,
+        label,
+        language: activeSourceLanguage,
+        mode: resolvedMode,
+        pdfReference,
+        source,
+        sourceReference: tikzReference,
+        svgReference
+      });
+
+      if (!insertion) {
+        setSyncFeedback({
+          tone: "error",
+          text: "TikZ figures can only be inserted into LaTeX, Markdown, or Typst files."
+        });
+        return;
+      }
+
+      let pdfBytes: Uint8Array<ArrayBuffer> | undefined;
+      if (insertion.artifact === "pdf") {
+        try {
+          pdfBytes = await exportSvgToVectorPdfBytes(svg);
+        } catch (error) {
+          setSyncFeedback({
+            tone: "error",
+            text: error instanceof Error
+              ? `Unable to prepare the rendered TikZ PDF: ${error.message}`
+              : "Unable to prepare the rendered TikZ PDF."
+          });
+          return;
+        }
+      }
+
+      if (
+        selectedProjectRepositoryRef.current?.id !== projectId ||
+        activeSourcePathRef.current !== targetSourcePath
+      ) {
+        setSyncFeedback({
+          tone: "neutral",
+          text: "The insertion target changed while the TikZ figure was being prepared. Nothing was inserted."
+        });
+        return;
+      }
+
+      setProjectRepository((project) =>
+        project.id === projectId
+          ? writeTikzFigureFiles(
+              project,
+              path,
+              source,
+              svg,
+              pdfBytes,
+              convertedCetz
+            )
+          : project
+      );
+
+      if (activeSourceLanguage === "latex") {
+        if (insertion.artifact === "pdf") {
+          editorRef.current?.insertLatexGraphic(insertion.text);
+        } else {
+          editorRef.current?.insertLatexTemplateWithPackages(
+            insertion.text,
+            insertion.latexPackages
+          );
+        }
+      } else {
+        editorRef.current?.insertTextAndSelect(insertion.text);
+      }
+
+      if (conversionFeedback) {
+        setSyncFeedback(conversionFeedback);
+      } else if (mode === "recommended" && insertion.artifact === "pdf") {
+        setSyncFeedback({
+          tone: "neutral",
+          text: "Inserted a rendered PDF because this figure is a complete LaTeX document, not an input-safe TikZ fragment."
+        });
+      }
+
+      window.setTimeout(() => {
+        handleCompileRef.current();
+      }, 0);
+    },
+    [
+      activeSourceLanguage,
+      activeSourcePath,
+      clearScheduledCompile,
+      compiler,
+      setProjectRepository
+    ]
+  );
 
 
   const handleSourceImagePaste = useCallback(async (file: File): Promise<boolean> => {
@@ -11937,13 +12560,19 @@ ${nextLine}` : nextLine;
     const abortController = new AbortController();
     const requestSource = debouncedDiagnosticSourceSnapshot;
     const requestPreferencesSignature = externalDiagnosticPreferencesSignature;
-    setDiagnosticProviderStatuses(createCheckingExternalDiagnosticStatuses(snapshot.preferences.externalDiagnostics));
+    setDiagnosticProviderStatuses(
+      createCheckingExternalDiagnosticStatuses(
+        snapshot.preferences.externalDiagnostics,
+        !areHarperDiagnosticsActivated
+      )
+    );
 
     void runExternalDiagnostics({
       source: requestSource.source,
       path: requestSource.path,
       language: requestSource.language,
       preferences: snapshot.preferences.externalDiagnostics,
+      deferHarper: !areHarperDiagnosticsActivated,
       signal: abortController.signal,
       onStatus: (status) => {
         setDiagnosticProviderStatuses((currentStatuses) =>
@@ -11967,6 +12596,7 @@ ${nextLine}` : nextLine;
       abortController.abort();
     };
   }, [
+    areHarperDiagnosticsActivated,
     debouncedDiagnosticSourceSnapshot,
     externalDiagnosticPreferencesSignature,
     snapshot.preferences.externalDiagnostics
@@ -12177,7 +12807,6 @@ ${nextLine}` : nextLine;
     ? clampZenHeight(zenHeight, viewportHeight)
     : 0;
   const showDesktopSidebar = !isMobileWorkspace && !isZenMode && !isSidebarCollapsed;
-  const isDiagramInlineExpanded = false;
   const isGitMergeInlineExpanded =
     showDesktopSidebar &&
     workspaceMode === "split" &&
@@ -12446,6 +13075,8 @@ ${nextLine}` : nextLine;
         return;
       }
 
+      rememberNewDocumentFile(node.path);
+
       setWorkspaceContextMenu(null);
       const sourceDocument = snapshot.project.documents.find(
         (document) => typeof document.content === "string" && document.content.includes(node.path)
@@ -12498,7 +13129,7 @@ ${nextLine}` : nextLine;
         setMobileWorkspaceTab("files");
       }
     },
-    [isMobileWorkspace, snapshot.project.documents]
+    [isMobileWorkspace, rememberNewDocumentFile, snapshot.project.documents]
   );
 
   const handleOpenWorkspaceFile = useCallback(
@@ -12509,6 +13140,8 @@ ${nextLine}` : nextLine;
       if (isTrashViewOpen) {
         return;
       }
+
+      rememberNewDocumentFile(normalizedPath);
 
       if (isWorkspacePreviewFile(normalizedPath)) {
         openPreviewTab(normalizedPath);
@@ -12572,6 +13205,7 @@ ${nextLine}` : nextLine;
       isMobileWorkspace,
       isTrashViewOpen,
       openPreviewTab,
+      rememberNewDocumentFile,
       previewTabPaths.length,
       snapshot.project.documents,
       visibleWorkspaceTree
@@ -12595,11 +13229,58 @@ ${nextLine}` : nextLine;
     workspaceTreeCursorPath
   ]);
 
+  const revealFilesPaneForShortcut = useCallback(() => {
+    if (isSettingsOpen) {
+      saveCurrentSettingsScrollPosition();
+      setIsSettingsOpen(false);
+    }
+
+    setIsDocsOpen(false);
+    setActiveSidebarTool("files");
+    setIsSidebarCollapsed(false);
+
+    if (isMobileWorkspace) {
+      setMobileWorkspaceTab("files");
+    } else if (workspaceMode === "editor" || workspaceMode === "preview" || workspaceMode === "zen") {
+      setWorkspaceMode("split");
+    }
+  }, [isMobileWorkspace, isSettingsOpen, saveCurrentSettingsScrollPosition, workspaceMode]);
+
+  handleNewFileShortcutRef.current = () => {
+    revealFilesPaneForShortcut();
+    handleNewDocument();
+    return true;
+  };
+
+  handleRenameFileShortcutRef.current = () => {
+    revealFilesPaneForShortcut();
+
+    if (isTrashViewOpen) {
+      setSyncFeedback({ tone: "error", text: "Leave Trash before renaming files." });
+      return true;
+    }
+
+    const commandNode = getWorkspaceKeyboardNode();
+    if (!commandNode || !canRenameWorkspaceNode(commandNode)) {
+      setSyncFeedback({ tone: "neutral", text: "Select a renameable file or folder first." });
+      return true;
+    }
+
+    handleRequestWorkspaceRename(commandNode);
+    return true;
+  };
+
   const selectWorkspaceKeyboardNode = useCallback((node: WorkspaceTreeNode) => {
+    if (node.kind === "folder") {
+      rememberNewDocumentFolder(node.path);
+    } else {
+      rememberNewDocumentFile(node.path);
+    }
+
     setPendingWorkspaceDeletePath(null);
     setSelectedWorkspacePaths([node.path]);
     setWorkspaceSelectionAnchorPath(node.path);
-  }, []);
+  }, [rememberNewDocumentFile, rememberNewDocumentFolder]);
 
   const getWorkspaceKeyboardSelection = useCallback(
     (node: WorkspaceTreeNode) => {
@@ -13250,11 +13931,11 @@ ${nextLine}` : nextLine;
     visibleSourceTabPaths
   ]);
   useEffect(() => {
-    activeSourceTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    revealActiveWorkspaceTab(activeSourceTabRef.current);
   }, [normalizedActiveSourcePath, visibleSourceTabPaths]);
 
   useEffect(() => {
-    activePreviewTabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    revealActiveWorkspaceTab(activePreviewTabRef.current);
   }, [activePreviewPath, visiblePreviewTabPaths]);
 
   const renderWorkspaceTabStrip = ({
@@ -14277,6 +14958,8 @@ ${nextLine}` : nextLine;
     getKeybindingLabel,
     getSnippetImportTemplate,
     gitHubDiscovery,
+    googleDriveSync,
+    googleDriveSyncState: selectedGoogleDriveSyncState,
     handleCacheLatexBundle,
     handleCancelPendingKeybindingConflict,
     handleClearCustomSnippets,
@@ -14594,7 +15277,7 @@ ${nextLine}` : nextLine;
                         onClick={handleNewDocument}
                         type="button"
                         aria-label="New file"
-                        title="New file"
+                        title={`New file (${newFileShortcutLabel})`}
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--new-file" />
                       </button>
@@ -14684,6 +15367,16 @@ ${nextLine}` : nextLine;
                         const localFolderConnected = Boolean(
                           localFolderState?.directoryName
                         );
+                        const googleDriveState =
+                          googleDriveSync.states[project.id];
+                        const googleDriveStatus =
+                          googleDriveState?.status ??
+                          (googleDriveSync.configured
+                            ? "disconnected"
+                            : "unconfigured");
+                        const googleDriveConnected = Boolean(
+                          googleDriveState?.remoteRootName
+                        );
                         const connectedGitProject = gitWorkspace.projects.find(
                           (managedProject) =>
                             managedProject.projectId === project.id &&
@@ -14717,75 +15410,113 @@ ${nextLine}` : nextLine;
                             onDrop={(event) => handleProjectDrop(event, project.id)}
                             role="listitem"
                           >
-                            <button
-                              aria-controls={`project-management-${project.id}`}
-                              aria-expanded={isManagedProject}
-                              className="project-manager__summary"
-                              onClick={() => handleToggleManageProject(project.id)}
-                              type="button"
-                            >
-                              <span className="project-manager__summary-heading">
-                                <strong>{project.displayName}</strong>
+                            <div className="project-manager__summary-row">
+                              <button
+                                aria-label={`Open project ${project.displayName}`}
+                                className="project-manager__summary"
+                                onClick={() => handleSelectLocalProject(project.id)}
+                                type="button"
+                              >
+                                <span className="project-manager__summary-heading">
+                                  <strong>{project.displayName}</strong>
+                                </span>
+                                <span className="project-manager__summary-stats">
+                                  <span>
+                                    {projectFileCount} {projectFileCount === 1 ? "file" : "files"}
+                                  </span>
+                                  <span aria-hidden="true">·</span>
+                                  <time dateTime={projectLastEditedAt}>
+                                    Edited {projectLastEditedLabel}
+                                  </time>
+                                </span>
                                 <span
+                                  aria-label="Project status and connections"
+                                  className="project-manager__summary-connections"
+                                >
+                                  {isActiveProject ? (
+                                    <span className="project-manager__summary-badge project-manager__summary-badge--active">
+                                      Open
+                                    </span>
+                                  ) : null}
+                                  {localFolderConnected ? (
+                                    <span
+                                      className={`project-manager__summary-badge project-manager__summary-badge--connected ${
+                                        localFolderStatus === "permission-needed"
+                                          ? "project-manager__summary-badge--warning"
+                                          : ""
+                                      }`}
+                                      title={`${localFolderState?.directoryName} · ${localFolderState?.message}`}
+                                    >
+                                      Folder · {localFolderState?.directoryName}
+                                    </span>
+                                  ) : null}
+                                  {connectedGitProject ? (
+                                    <span
+                                      className="project-manager__summary-badge project-manager__summary-badge--connected"
+                                      title={`${connectedGitProject.owner}/${connectedGitProject.repo} · ${connectedGitProject.branch}`}
+                                    >
+                                      GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
+                                    </span>
+                                  ) : null}
+                                  {googleDriveConnected ? (
+                                    <span
+                                      className={`project-manager__summary-badge project-manager__summary-badge--connected ${
+                                        googleDriveStatus ===
+                                        "authorization-needed"
+                                          ? "project-manager__summary-badge--warning"
+                                          : ""
+                                      }`}
+                                      title={`${googleDriveState?.remoteRootName} · ${googleDriveState?.message}`}
+                                    >
+                                      Drive · {googleDriveState?.remoteRootName}
+                                    </span>
+                                  ) : null}
+                                  {hasInitializedGit ? (
+                                    <span
+                                      className="project-manager__summary-badge"
+                                      title={project.git.headRef ?? "Browser Git repository initialized"}
+                                    >
+                                      Git initialized
+                                    </span>
+                                  ) : null}
+                                  {!localFolderConnected &&
+                                  !connectedGitProject &&
+                                  !googleDriveConnected &&
+                                  !hasInitializedGit ? (
+                                    <span className="project-manager__summary-badge">
+                                      Local only
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </button>
+                              <button
+                                aria-controls={`project-management-${project.id}`}
+                                aria-expanded={isManagedProject}
+                                aria-label={`${
+                                  isManagedProject ? "Hide" : "Show"
+                                } options for ${project.displayName}`}
+                                className="project-manager__expand-button"
+                                onClick={() => handleToggleManageProject(project.id)}
+                                title={`${
+                                  isManagedProject ? "Hide" : "Show"
+                                } project options`}
+                                type="button"
+                              >
+                                <svg
                                   aria-hidden="true"
                                   className="project-manager__summary-chevron"
-                                />
-                              </span>
-                              <span className="project-manager__summary-stats">
-                                <span>
-                                  {projectFileCount} {projectFileCount === 1 ? "file" : "files"}
-                                </span>
-                                <span aria-hidden="true">·</span>
-                                <time dateTime={projectLastEditedAt}>
-                                  Edited {projectLastEditedLabel}
-                                </time>
-                              </span>
-                              <span
-                                aria-label="Project status and connections"
-                                className="project-manager__summary-connections"
-                              >
-                                {isActiveProject ? (
-                                  <span className="project-manager__summary-badge project-manager__summary-badge--active">
-                                    Open
-                                  </span>
-                                ) : null}
-                                {localFolderConnected ? (
-                                  <span
-                                    className={`project-manager__summary-badge project-manager__summary-badge--connected ${
-                                      localFolderStatus === "permission-needed"
-                                        ? "project-manager__summary-badge--warning"
-                                        : ""
-                                    }`}
-                                    title={`${localFolderState?.directoryName} · ${localFolderState?.message}`}
-                                  >
-                                    Folder · {localFolderState?.directoryName}
-                                  </span>
-                                ) : null}
-                                {connectedGitProject ? (
-                                  <span
-                                    className="project-manager__summary-badge project-manager__summary-badge--connected"
-                                    title={`${connectedGitProject.owner}/${connectedGitProject.repo} · ${connectedGitProject.branch}`}
-                                  >
-                                    GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
-                                  </span>
-                                ) : null}
-                                {hasInitializedGit ? (
-                                  <span
-                                    className="project-manager__summary-badge"
-                                    title={project.git.headRef ?? "Browser Git repository initialized"}
-                                  >
-                                    Git initialized
-                                  </span>
-                                ) : null}
-                                {!localFolderConnected &&
-                                !connectedGitProject &&
-                                !hasInitializedGit ? (
-                                  <span className="project-manager__summary-badge">
-                                    Local only
-                                  </span>
-                                ) : null}
-                              </span>
-                            </button>
+                                  viewBox="0 0 16 16"
+                                >
+                                  <path
+                                    d={
+                                      isManagedProject
+                                        ? "M3.5 10 L8 6 L12.5 10"
+                                        : "M3.5 6 L8 10 L12.5 6"
+                                    }
+                                  />
+                                </svg>
+                              </button>
+                            </div>
                             {isManagedProject ? (
                               <div
                                 className="project-manager__manage"
@@ -14798,7 +15529,7 @@ ${nextLine}` : nextLine;
                                       <small>
                                         {isActiveProject
                                           ? "This project is open in the workspace."
-                                          : "Open this project only when you are ready to load its workspace."}
+                                          : "This project is not currently open. Click its card to open it."}
                                       </small>
                                     </div>
                                     <span
@@ -14812,14 +15543,6 @@ ${nextLine}` : nextLine;
                                     </span>
                                   </div>
                                   <div className="project-manager__connection-actions">
-                                    <button
-                                      className="pane__button pane__button--compact"
-                                      disabled={isActiveProject}
-                                      onClick={() => handleSelectLocalProject(project.id)}
-                                      type="button"
-                                    >
-                                      {isActiveProject ? "Currently open" : "Open project"}
-                                    </button>
                                     <button
                                       className="pane__button pane__button--compact"
                                       onClick={() => handleRenameLocalProject(project.id)}
@@ -14918,6 +15641,108 @@ ${nextLine}` : nextLine;
                                         type="button"
                                       >
                                         Link local folder
+                                      </button>
+                                    )}
+                                  </div>
+                                </section>
+
+                                <section className="project-manager__connection">
+                                  <div className="project-manager__connection-header">
+                                    <div>
+                                      <strong>Google Drive</strong>
+                                      <small>
+                                        {googleDriveConnected
+                                          ? `${googleDriveState?.remoteRootName} · ${googleDriveState?.message}`
+                                          : googleDriveSync.configured
+                                            ? "Keep an independent synchronized copy of this project in Google Drive."
+                                            : "Google Drive sync is not configured on this deployment."}
+                                      </small>
+                                    </div>
+                                    <span
+                                      className={`project-manager__connection-badge ${
+                                        googleDriveConnected
+                                          ? "project-manager__connection-badge--connected"
+                                          : ""
+                                      }`}
+                                    >
+                                      {googleDriveConnected
+                                        ? googleDriveStatus ===
+                                          "authorization-needed"
+                                          ? "Reconnect"
+                                          : "Connected"
+                                        : "Not connected"}
+                                    </span>
+                                  </div>
+                                  <div className="project-manager__connection-actions">
+                                    {googleDriveConnected ? (
+                                      <>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          disabled={
+                                            googleDriveStatus ===
+                                              "authorizing" ||
+                                            googleDriveStatus === "syncing"
+                                          }
+                                          onClick={() => {
+                                            void googleDriveSync.syncNow(
+                                              project.id
+                                            );
+                                          }}
+                                          type="button"
+                                        >
+                                          {googleDriveStatus ===
+                                          "authorizing"
+                                            ? "Connecting…"
+                                            : googleDriveStatus === "syncing"
+                                              ? "Syncing…"
+                                              : googleDriveStatus ===
+                                                  "authorization-needed"
+                                                ? "Reconnect"
+                                                : "Sync now"}
+                                        </button>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          onClick={() => {
+                                            if (!isActiveProject) {
+                                              handleSelectLocalProject(
+                                                project.id
+                                              );
+                                            }
+                                            handleOpenSettingsTab("sync");
+                                          }}
+                                          type="button"
+                                        >
+                                          Sync settings
+                                        </button>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          onClick={() => {
+                                            void googleDriveSync.disconnect(
+                                              project.id
+                                            );
+                                          }}
+                                          type="button"
+                                        >
+                                          Unlink
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <button
+                                        className="pane__button pane__button--compact"
+                                        disabled={
+                                          !googleDriveSync.configured ||
+                                          googleDriveStatus === "authorizing"
+                                        }
+                                        onClick={() => {
+                                          void googleDriveSync.connect(
+                                            project.id
+                                          );
+                                        }}
+                                        type="button"
+                                      >
+                                        {googleDriveStatus === "authorizing"
+                                          ? "Connecting…"
+                                          : "Connect Google Drive"}
                                       </button>
                                     )}
                                   </div>
@@ -15045,6 +15870,7 @@ ${nextLine}` : nextLine;
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
                     colorfulIcons={snapshot.preferences.colorfulFileTreeIcons}
+                    draggedPath={draggedWorkspacePath}
                     dropTargetPath={workspaceDropTargetPath}
                     nodes={visibleWorkspaceTree}
                     gitStatusByPath={workspaceGitBadgeByPath}
@@ -15385,24 +16211,55 @@ ${nextLine}` : nextLine;
                 <section
                   ref={filesSectionRef}
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--pane-editor ${
-                    isDiagramInlineExpanded ? "sidebar-section--pane-expanded" : ""
-                  } ${isSidebarOnlyWorkspace ? "sidebar-section--pane-full" : ""}`}
+                    isSidebarOnlyWorkspace ? "sidebar-section--pane-full" : ""
+                  }`}
                   onScroll={handleLeftPaneScroll}
                 >
                   <DiagramEditorErrorBoundary>
-                    <DiagramEditor
-                      diagram={diagram}
-                      onSvgChange={handleUpdateDiagramSvg}
-                      onClear={handleClearDiagram}
-                      onNew={handleNewDiagram}
-                      onNewSvg={handleNewDiagramSvg}
-                      onSave={handleSaveDiagram}
-                      onSaveSvg={handleSaveDiagramSvg}
-                      onInsertIntoDocument={handleInsertDiagramIntoDocument}
-                      onInsertSvg={handleInsertDiagramSvgIntoDocument}
-                      onRename={handleRenameDiagram}
-                      onDownloadSvg={handleDownloadDiagramSvg}
-                    />
+                    <DiagramPane
+                      mode={diagramPaneMode}
+                      onModeChange={setDiagramPaneMode}
+                    >
+                      <div
+                        className="diagram-pane__panel"
+                        hidden={diagramPaneMode !== "draw"}
+                      >
+                        <DiagramEditor
+                          diagram={diagram}
+                          onSvgChange={handleUpdateDiagramSvg}
+                          onClear={handleClearDiagram}
+                          onNew={handleNewDiagram}
+                          onNewSvg={handleNewDiagramSvg}
+                          onSave={handleSaveDiagram}
+                          onSaveSvg={handleSaveDiagramSvg}
+                          onInsertIntoDocument={handleInsertDiagramIntoDocument}
+                          onInsertSvg={handleInsertDiagramSvgIntoDocument}
+                          onRename={handleRenameDiagram}
+                          onDownloadSvg={handleDownloadDiagramSvg}
+                        />
+                      </div>
+                      <div
+                        className="diagram-pane__panel"
+                        hidden={diagramPaneMode !== "tikz"}
+                      >
+                        <TikzDiagramEditor
+                          canInsert={
+                            isSourceFileEditable &&
+                            activeSourceLanguage !== "text" &&
+                            (isMobileWorkspace || !isSourcePaneHidden)
+                          }
+                          figure={selectedTikzFigure}
+                          figures={tikzFigures}
+                          onChange={handleUpdateTikzFigure}
+                          onCreate={handleCreateTikzFigure}
+                          onInsert={handleInsertTikzFigure}
+                          onRename={handleRenameTikzFigure}
+                          onSelect={setSelectedTikzPath}
+                          targetLanguage={activeSourceLanguage}
+                          theme={theme}
+                        />
+                      </div>
+                    </DiagramPane>
                   </DiagramEditorErrorBoundary>
                 </section>
               ) : null}
@@ -16933,12 +17790,15 @@ function createInitialExternalDiagnosticStatuses(): DiagnosticProviderStatus[] {
 }
 
 function createCheckingExternalDiagnosticStatuses(
-  preferences: ExternalDiagnosticProviderPreferences
+  preferences: ExternalDiagnosticProviderPreferences,
+  deferHarper = false
 ): DiagnosticProviderStatus[] {
   return createInitialExternalDiagnosticStatuses().map((status) => {
     if (status.id === "harper") {
       return preferences.harper.enabled
-        ? { ...status, enabled: true, phase: "checking", detail: "Checking prose offline in the browser." }
+        ? deferHarper
+          ? { ...status, enabled: true, phase: "idle", detail: "Harper will start after the first editor change." }
+          : { ...status, enabled: true, phase: "checking", detail: "Checking prose offline in the browser." }
         : { ...status, enabled: false, detail: "Offline Harper diagnostics disabled." };
     }
 
@@ -17003,6 +17863,14 @@ function resetDocumentScrollPosition(): void {
   window.scrollTo(0, 0);
   document.documentElement.scrollTop = 0;
   document.body.scrollTop = 0;
+}
+
+function revealActiveWorkspaceTab(tab: HTMLElement | null): void {
+  const tabList = tab?.closest<HTMLElement>(".pane-tabs");
+
+  if (tab && tabList) {
+    scrollElementWithin(tabList, tab);
+  }
 }
 
 function countSourceTextLines(source: string): number {

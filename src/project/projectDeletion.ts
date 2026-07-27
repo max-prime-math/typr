@@ -11,6 +11,7 @@ export interface ProjectDeletionTombstone {
 
 type ProjectDeletionOperation =
   | "browser-git"
+  | "cloud-bindings"
   | "local-folder"
   | "opfs"
   | "project-storage"
@@ -24,6 +25,7 @@ export interface ProjectDeletionError {
 
 interface ProjectDeletionCleanupDependencies {
   deleteBrowserGitFiles(projectId: string): Promise<void>;
+  deleteCloudProjectBindings(projectId: string): Promise<void>;
   deleteLocalFolderBinding(projectId: string): Promise<void>;
   deleteTombstone(projectId: string): Promise<void>;
   removeOpfsProject(projectId: string): Promise<void>;
@@ -134,6 +136,17 @@ export async function retryProjectDeletions({
       errors.push({
         projectId: tombstone.projectId,
         operation: "local-folder",
+        cause
+      });
+    }
+
+    try {
+      await dependencies.deleteCloudProjectBindings(tombstone.projectId);
+    } catch (cause) {
+      cleanupFailedProjectIds.add(tombstone.projectId);
+      errors.push({
+        projectId: tombstone.projectId,
+        operation: "cloud-bindings",
         cause
       });
     }

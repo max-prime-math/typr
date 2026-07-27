@@ -13,10 +13,6 @@ const TYPR_LINKS = [
     href: "https://github.com/max-prime-math/typr"
   },
   {
-    label: "Documentation",
-    href: "https://github.com/max-prime-math/typr/tree/main/docs"
-  },
-  {
     label: "Issue tracker",
     href: "https://github.com/max-prime-math/typr/issues"
   }

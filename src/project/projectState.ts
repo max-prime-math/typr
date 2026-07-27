@@ -1068,8 +1068,28 @@ function createRepositoryFromLegacyProject(
     (document) => document.id === snapshot.project.activeDocumentId
   );
   const activeFilePath = activeDocument ? normalizeProjectPath(activeDocument.name) : null;
+  const resolvePersistedPath = (path: string): string => {
+    const normalizedPath = normalizeProjectPath(path);
+
+    if (entries[normalizedPath]) {
+      return normalizedPath;
+    }
+
+    const previousSource = existingProject?.filesystem.entries[normalizedPath]?.source;
+    if (!previousSource) {
+      return normalizedPath;
+    }
+
+    return (
+      Object.values(entries).find(
+        (entry) =>
+          entry.source.kind === previousSource.kind &&
+          entry.source.id === previousSource.id
+      )?.path ?? normalizedPath
+    );
+  };
   const storedOpenFilePaths = existingProject
-    ? existingProject.selection.openFilePaths.map(normalizeProjectPath)
+    ? existingProject.selection.openFilePaths.map(resolvePersistedPath)
     : activeFilePath
       ? [activeFilePath]
       : [];
@@ -1083,6 +1103,28 @@ function createRepositoryFromLegacyProject(
     return entries[path]?.kind === "file";
   });
   const projectId = snapshot.project.id || createId("project");
+  const existingEditor = existingProject
+    ? normalizeProjectEditorState(existingProject.editor)
+    : null;
+  const previewTabPaths = existingEditor
+    ? Array.from(
+        new Set(
+          [
+            ...existingEditor.previewTabPaths,
+            existingEditor.previewPath ?? ""
+          ]
+            .filter(Boolean)
+            .map(resolvePersistedPath)
+        )
+      ).filter((path) => entries[path]?.kind === "file")
+    : [];
+  const resolvedPreviewPath = existingEditor?.previewPath
+    ? resolvePersistedPath(existingEditor.previewPath)
+    : null;
+  const previewPath =
+    resolvedPreviewPath && previewTabPaths.includes(resolvedPreviewPath)
+      ? resolvedPreviewPath
+      : null;
 
   return {
     id: projectId,
@@ -1105,8 +1147,11 @@ function createRepositoryFromLegacyProject(
       activeFilePath,
       openFilePaths
     },
-    editor: existingProject?.editor
-      ? normalizeProjectEditorState(existingProject.editor)
+    editor: existingEditor
+      ? {
+          previewPath,
+          previewTabPaths
+        }
       : {
           previewPath: null,
           previewTabPaths: []
@@ -1138,6 +1183,10 @@ function normalizeRepository(project: TyprProjectRepository): TyprProjectReposit
       const source =
         path === DEFAULT_PROJECT_GITIGNORE_PATH
           ? normalizeProjectGitignoreSource(entry)
+          : entry.kind === "file" &&
+              path.toLowerCase().endsWith(".cetz.typ") &&
+              persistedSource.kind === "virtual"
+            ? { kind: "document" as const, id: persistedSource.id }
           : persistedSource.kind === "graph"
             ? { kind: "document" as const, id: persistedSource.id }
             : persistedSource;

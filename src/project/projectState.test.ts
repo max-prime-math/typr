@@ -3,7 +3,8 @@ import {
   createDefaultSnapshot,
   DEFAULT_DOCUMENT_NAME,
   DEFAULT_LATEX_DOCUMENT_NAME,
-  DEFAULT_MARKDOWN_DOCUMENT_NAME
+  DEFAULT_MARKDOWN_DOCUMENT_NAME,
+  renameDocumentById
 } from "../app/appState";
 import {
   addProjectRepository,
@@ -126,6 +127,56 @@ describe("projectState", () => {
     });
   });
 
+  it("normalizes generated CeTZ sidecars to editable Typst documents", () => {
+    const snapshot = createDefaultSnapshot();
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const project = getSelectedProjectRepository(storage);
+    expect(project).not.toBeNull();
+    if (!project) return;
+
+    const normalized = normalizeProjectStorageState(
+      {
+        ...storage,
+        projects: [
+          {
+            ...project,
+            filesystem: {
+              ...project.filesystem,
+              entries: {
+                ...project.filesystem.entries,
+                "figures/orbit.cetz.typ": {
+                  id: "virtual:tikz-cetz:orbit",
+                  path: "figures/orbit.cetz.typ",
+                  kind: "file",
+                  content: "#canvas({})",
+                  source: { kind: "virtual", id: "tikz-cetz:orbit" },
+                  updatedAt: new Date().toISOString()
+                }
+              }
+            }
+          }
+        ]
+      },
+      snapshot
+    );
+    const normalizedProject = getSelectedProjectRepository(normalized);
+    const cetzEntry =
+      normalizedProject?.filesystem.entries["figures/orbit.cetz.typ"];
+
+    expect(cetzEntry?.source).toEqual({
+      kind: "document",
+      id: "tikz-cetz:orbit"
+    });
+    const hydratedProject = normalizedProject
+      ? projectRepositoryToLegacyProject(normalizedProject, snapshot.project)
+      : null;
+    expect(
+      hydratedProject?.documents.some(
+        (document) => document.name === "figures/orbit.cetz.typ"
+      )
+    ).toBe(true);
+  });
+
   it("preserves virtual generated files when rebuilding from the legacy snapshot", () => {
     const snapshot = createDefaultSnapshot();
     const storage = createProjectStorageFromSnapshot(snapshot);
@@ -187,6 +238,58 @@ describe("projectState", () => {
 
     expect(normalizedProject?.editor.previewPath).toBe("build/main.pdf");
     expect(normalizedProject?.editor.previewTabPaths).toEqual(["build/main.pdf"]);
+  });
+
+  it("moves persisted source and preview paths when a document is renamed", () => {
+    const snapshot = createDefaultSnapshot();
+    const mainDocument = snapshot.project.documents.find(
+      (document) => document.name === DEFAULT_DOCUMENT_NAME
+    );
+    expect(mainDocument).toBeDefined();
+    if (!mainDocument) return;
+
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const project = getSelectedProjectRepository(storage);
+    expect(project).not.toBeNull();
+    if (!project) return;
+
+    const storageWithOpenMain = {
+      ...storage,
+      projects: storage.projects.map((candidate) =>
+        candidate.id === project.id
+          ? {
+              ...candidate,
+              selection: {
+                activeFilePath: DEFAULT_DOCUMENT_NAME,
+                openFilePaths: [DEFAULT_DOCUMENT_NAME]
+              },
+              editor: {
+                previewPath: DEFAULT_DOCUMENT_NAME,
+                previewTabPaths: [DEFAULT_DOCUMENT_NAME]
+              }
+            }
+          : candidate
+      )
+    };
+    const renamedSnapshot = renameDocumentById(
+      snapshot,
+      mainDocument.id,
+      "article.typ"
+    );
+    const rebuilt = createProjectStorageFromSnapshot(
+      renamedSnapshot,
+      storageWithOpenMain
+    );
+    const rebuiltProject = getSelectedProjectRepository(rebuilt);
+
+    expect(rebuiltProject?.selection).toEqual({
+      activeFilePath: DEFAULT_MARKDOWN_DOCUMENT_NAME,
+      openFilePaths: ["article.typ"]
+    });
+    expect(rebuiltProject?.editor).toEqual({
+      previewPath: "article.typ",
+      previewTabPaths: ["article.typ"]
+    });
   });
 
   it("exposes project .gitignore as an editable legacy document", () => {

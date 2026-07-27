@@ -30,6 +30,38 @@ export function normalizeUniqueWorkspacePaths(paths: readonly string[]): string[
   return normalizedPaths;
 }
 
+export function remapWorkspacePath(
+  path: string,
+  previousPath: string,
+  nextPath: string
+): string {
+  const normalizedPath = normalizeWorkspacePath(path);
+  const normalizedPreviousPath = normalizeWorkspacePath(previousPath);
+  const normalizedNextPath = normalizeWorkspacePath(nextPath);
+
+  if (!normalizedPreviousPath || !normalizedNextPath) {
+    return normalizedPath;
+  }
+
+  if (normalizedPath === normalizedPreviousPath) {
+    return normalizedNextPath;
+  }
+
+  return normalizedPath.startsWith(`${normalizedPreviousPath}/`)
+    ? `${normalizedNextPath}${normalizedPath.slice(normalizedPreviousPath.length)}`
+    : normalizedPath;
+}
+
+export function remapWorkspacePaths(
+  paths: readonly string[],
+  previousPath: string,
+  nextPath: string
+): string[] {
+  return normalizeUniqueWorkspacePaths(
+    paths.map((path) => remapWorkspacePath(path, previousPath, nextPath))
+  );
+}
+
 export function appendUniqueWorkspacePath(paths: string[], path: string): string[] {
   const normalizedPaths = normalizeUniqueWorkspacePaths(paths);
   const normalizedPath = normalizeWorkspacePath(path);

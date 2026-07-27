@@ -33,13 +33,17 @@ vi.mock("idb", () => ({
 }));
 
 import {
+  deleteCloudProjectBinding,
+  deleteCloudProjectBindings,
   deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
   listProjectGitFiles,
+  loadCloudProjectBinding,
   loadLocalFolderBinding,
   loadProjectDeletionTombstones,
   readProjectGitFile,
+  saveCloudProjectBinding,
   saveProjectDeletionTombstone,
   saveLocalFolderBinding,
   writeProjectGitFile
@@ -111,5 +115,77 @@ describe("IndexedDB project deletion storage", () => {
 
     await deleteLocalFolderBinding("project-a");
     expect(await loadLocalFolderBinding("project-a")).toBeNull();
+  });
+
+  it("persists cloud bindings independently by provider and project", async () => {
+    await saveCloudProjectBinding({
+      version: 1,
+      projectId: "project-a",
+      providerId: "google-drive",
+      remoteRootId: "drive-folder-1",
+      remoteRootName: "Writing",
+      connectedAt: "2026-07-10T12:00:00.000Z",
+      lastSyncedAt: null,
+      syncMode: "manual",
+      syncIntervalMinutes: 15,
+      worktreeSignatures: {}
+    });
+
+    expect(
+      await loadCloudProjectBinding("google-drive", "project-a")
+    ).toMatchObject({
+      remoteRootId: "drive-folder-1",
+      remoteRootName: "Writing"
+    });
+    expect(
+      await loadCloudProjectBinding("dropbox", "project-a")
+    ).toBeNull();
+    expect(
+      await loadCloudProjectBinding("google-drive", "project-b")
+    ).toBeNull();
+
+    await deleteCloudProjectBinding("google-drive", "project-a");
+    expect(
+      await loadCloudProjectBinding("google-drive", "project-a")
+    ).toBeNull();
+  });
+
+  it("clears every cloud provider binding for one deleted project", async () => {
+    const createBinding = (
+      providerId: "google-drive" | "dropbox",
+      projectId: string
+    ) => ({
+      version: 1 as const,
+      projectId,
+      providerId,
+      remoteRootId: `${providerId}-${projectId}`,
+      remoteRootName: "Writing",
+      connectedAt: "2026-07-10T12:00:00.000Z",
+      lastSyncedAt: null,
+      syncMode: "manual" as const,
+      syncIntervalMinutes: 15,
+      worktreeSignatures: {}
+    });
+    await saveCloudProjectBinding(
+      createBinding("google-drive", "project-a")
+    );
+    await saveCloudProjectBinding(
+      createBinding("dropbox", "project-a")
+    );
+    await saveCloudProjectBinding(
+      createBinding("google-drive", "project-b")
+    );
+
+    await deleteCloudProjectBindings("project-a");
+
+    expect(
+      await loadCloudProjectBinding("google-drive", "project-a")
+    ).toBeNull();
+    expect(
+      await loadCloudProjectBinding("dropbox", "project-a")
+    ).toBeNull();
+    expect(
+      await loadCloudProjectBinding("google-drive", "project-b")
+    ).not.toBeNull();
   });
 });

@@ -10,11 +10,26 @@ Typr opens into the working app, not a landing page. The left sidebar contains p
 
 Each project is its own local workspace. Use the Projects pane to create a local project, import a project backup, or clone from GitHub. Drag project rows to rearrange the order they appear.
 
-Each project appears as a compact card showing its file count, last edit time, and active local-folder and GitHub connections. Select the card to expand its management controls without loading that project's workspace. Choose **Open project** only when you want to switch the editor and preview. Rename and delete also live inside the expanded card. A project can connect to a local folder and GitHub repository at the same time. Creating a GitHub repository includes the visibility choice, including Private.
+Each project appears as a compact card showing its file count, last edit time, and active local-folder, GitHub, or Google Drive connections. Select the main card to open that project's workspace. Use the arrow button at the right to expand management controls without opening the project. Rename and delete live inside the expanded card. A project can connect to a local folder, GitHub repository, and Google Drive folder independently and at the same time. Creating a GitHub repository includes the visibility choice, including Private.
 
 Git status, history, branches, upstream information, and repository storage measurements are loaded when you open the Git pane instead of during every project switch.
 
 Project names are local Typr labels. Deleting a project removes local Typr data for that project and its managed browser git data. It does not delete a GitHub repository.
+
+### Google Drive sync
+
+Choose **Connect Google Drive** in a project's expanded card. Typr asks Google for access to files created or connected through Typr, then creates or reuses an app-managed Drive folder for that project. The first sync is additive: files unique to either location are retained, and Drive wins a same-path conflict on the first connection.
+
+Use **Settings → Sync** to choose an independent Drive policy:
+
+- **Constant sync** pushes browser edits after a short delay and checks Drive periodically.
+- **Sync on compile** synchronizes before an explicitly requested compile.
+- **Scheduled sync** runs at the selected interval while the tab is open.
+- **Manual sync** runs only when you choose **Sync now**.
+
+Google access tokens are kept in memory rather than browser storage. Google may therefore ask you to reconnect after a page reload or token expiry. The Drive folder and merge baseline remain linked locally, so reconnecting resumes the existing relationship rather than creating a second folder.
+
+Drive synchronization covers visible project files and folders. Browser-managed `.git` data remains in Typr and can continue to sync through GitHub or a linked local folder. **Unlink** removes Typr's saved connection without deleting the Drive folder. Deleting the local Typr project also leaves its Drive folder untouched.
 
 ### Local folder sync in Chromium
 

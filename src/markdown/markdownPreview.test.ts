@@ -4,9 +4,11 @@ import {
   SHARED_MARKDOWN_SOURCE
 } from "./__fixtures__/sharedMarkdownFixtures";
 import {
+  collectMarkdownImageReferences,
   findMarkdownBlockKeyAtLine,
   parseMarkdownBlocks,
-  renderMarkdownBlocksHtml
+  renderMarkdownBlocksHtml,
+  renderMarkdownHtml
 } from "./markdownParser";
 
 describe("preview Markdown rendering", () => {
@@ -45,5 +47,60 @@ describe("preview Markdown rendering", () => {
     expect(findMarkdownBlockKeyAtLine(blocks, 19)).toBe("code-6");
     expect(findMarkdownBlockKeyAtLine(blocks, 25)).toBeNull();
   });
-});
 
+  it("renders the complete built-in GFM feature set used by the preview", () => {
+    const source = [
+      "| Left | Center | Right |",
+      "| :--- | :----: | ----: |",
+      "| alpha | **ready** | 12 |",
+      "",
+      "- [x] shipped",
+      "- [ ] pending",
+      "",
+      "~~removed~~, www.example.com, and [guide](guide.md).",
+      "",
+      "hard break  ",
+      "continues"
+    ].join("\n");
+    const html = renderMarkdownHtml(source, "preview");
+
+    expect(html).toContain('<th align="left">Left</th>');
+    expect(html).toContain('<th align="center">Center</th>');
+    expect(html).toContain('<td align="right">12</td>');
+    expect(html).toContain('<input checked="" disabled="" type="checkbox">');
+    expect(html).toContain('<input disabled="" type="checkbox">');
+    expect(html).toContain("<del>removed</del>");
+    expect(html).toContain('<a href="http://www.example.com"');
+    expect(html).toContain('<a href="guide.md" rel="noreferrer">guide</a>');
+    expect(html).toContain("hard break<br>continues");
+  });
+
+  it("renders safe remote and resolved workspace images without enabling unsafe targets", () => {
+    const source = [
+      "![local](figures/chart.png \"Chart\")",
+      "",
+      "![remote](https://example.com/image.png)",
+      "",
+      "![unsafe](javascript:alert(1))"
+    ].join("\n");
+    const references = collectMarkdownImageReferences(source);
+    const html = renderMarkdownHtml(source, "preview", {
+      resolveImageHref: (href) =>
+        href === "figures/chart.png" ? "blob:https://typr.test/chart" : null
+    });
+
+    expect(references).toEqual([
+      "figures/chart.png",
+      "https://example.com/image.png",
+      "javascript:alert(1)"
+    ]);
+    expect(html).toContain(
+      '<img src="blob:https://typr.test/chart" alt="local" title="Chart" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
+    );
+    expect(html).toContain(
+      '<img src="https://example.com/image.png" alt="remote" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
+    );
+    expect(html).toContain("![unsafe](javascript:alert(1))");
+    expect(html).not.toContain('src="javascript:');
+  });
+});

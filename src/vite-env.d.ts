@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_GOOGLE_DRIVE_CLIENT_ID?: string;
   readonly VITE_TYPR_AUTH_USERS_SHA256?: string;
 }
 

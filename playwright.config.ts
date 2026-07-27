@@ -1,10 +1,11 @@
 import { defineConfig } from "@playwright/test";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:5174/";
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: /(diagram-lifecycle|firefox-latex-first-compile|git-panel|icon-button-layout|mobile-workspace|modal-controls-docs-icon|preview-zoom|settings-build-log)\.spec\.ts/,
+  testMatch: /(cetz-conversion|diagram-lifecycle|firefox-latex-first-compile|git-panel|icon-button-layout|markdown-cursor-scroll|markdown-preview|mobile-workspace|modal-controls-docs-icon|preview-zoom|project-creation|settings-build-log)\.spec\.ts/,
   fullyParallel: true,
   reporter: [["line"]],
   timeout: 90_000,
@@ -26,7 +27,15 @@ export default defineConfig({
         url: baseURL
       },
   projects: [
-    { name: "chromium", use: { browserName: "chromium" } },
+    {
+      name: "chromium",
+      use: {
+        browserName: "chromium",
+        ...(chromiumExecutablePath
+          ? { launchOptions: { executablePath: chromiumExecutablePath } }
+          : {})
+      }
+    },
     { name: "firefox", use: { browserName: "firefox" } }
   ]
 });

@@ -38,6 +38,9 @@ describe("durable project deletion", () => {
       deleteBrowserGitFiles: vi.fn(async () => {
         events.push("delete-git");
       }),
+      deleteCloudProjectBindings: vi.fn(async () => {
+        events.push("delete-cloud-bindings");
+      }),
       deleteLocalFolderBinding: vi.fn(async () => {
         events.push("delete-folder-binding");
       }),
@@ -66,6 +69,7 @@ describe("durable project deletion", () => {
       "save-tombstone",
       "delete-git",
       "delete-folder-binding",
+      "delete-cloud-bindings",
       "delete-opfs",
       "save-projects:1",
       "delete-tombstone"
@@ -88,6 +92,7 @@ describe("durable project deletion", () => {
     const deletion = deleteProjectDurably({
       dependencies: {
         deleteBrowserGitFiles: vi.fn(async () => {}),
+        deleteCloudProjectBindings: vi.fn(async () => {}),
         deleteLocalFolderBinding: vi.fn(async () => {}),
         deleteTombstone,
         removeOpfsProject: vi.fn(() => opfsCleanup),
@@ -127,6 +132,9 @@ describe("durable project deletion", () => {
     const deleteLocalFolderBinding = vi.fn(async () => {
       events.push("retry-folder-binding");
     });
+    const deleteCloudProjectBindings = vi.fn(async () => {
+      events.push("retry-cloud-bindings");
+    });
     const deleteTombstone = vi.fn(async () => {
       events.push("clear-tombstone");
     });
@@ -134,6 +142,7 @@ describe("durable project deletion", () => {
     const result = await retryProjectDeletions({
       dependencies: {
         deleteBrowserGitFiles,
+        deleteCloudProjectBindings,
         deleteLocalFolderBinding,
         deleteTombstone,
         removeOpfsProject,
@@ -148,12 +157,16 @@ describe("durable project deletion", () => {
     expect(events).toEqual([
       "retry-git",
       "retry-folder-binding",
+      "retry-cloud-bindings",
       "retry-opfs",
       "save-projects",
       "clear-tombstone"
     ]);
     expect(deleteBrowserGitFiles).toHaveBeenCalledWith(projectToDelete.id);
     expect(deleteLocalFolderBinding).toHaveBeenCalledWith(projectToDelete.id);
+    expect(deleteCloudProjectBindings).toHaveBeenCalledWith(
+      projectToDelete.id
+    );
     expect(removeOpfsProject).toHaveBeenCalledWith(projectToDelete.id);
     expect(result.storage.projects.some((project) => project.id === projectToDelete.id)).toBe(false);
     expect(result.pendingProjectIds).toEqual([]);

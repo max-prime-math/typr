@@ -119,14 +119,17 @@ export default defineConfig(({ command }) => {
           globPatterns: [
             "**/*.{js,css,html}",
             "assets/**/*.svg",
+            "core/tylax/**/*.{js,wasm,json,txt}",
             "svgedit/images/**/*"
           ],
           globIgnores: [
             "assets/binaryInlined-*.js",
             "core/busytex/**",
+            "core/tikz-editor/**",
             "**/*.otf",
             "**/*.ttf"
           ],
+          navigateFallbackDenylist: [/\/core\/tikz-editor\//],
           maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
           runtimeCaching: [
             {
@@ -141,6 +144,20 @@ export default defineConfig(({ command }) => {
               handler: "CacheFirst",
               options: {
                 cacheName: "typr-busytex-assets"
+              }
+            },
+            {
+              urlPattern: /\/core\/tikz-editor\//,
+              handler: "CacheFirst",
+              options: {
+                cacheName: "typr-tikz-editor-assets"
+              }
+            },
+            {
+              urlPattern: /\/core\/tylax\//,
+              handler: "CacheFirst",
+              options: {
+                cacheName: "typr-tylax-assets"
               }
             }
           ]

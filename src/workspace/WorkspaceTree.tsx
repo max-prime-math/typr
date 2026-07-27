@@ -14,6 +14,11 @@ const TOUCH_CONTEXT_MENU_MOVE_TOLERANCE_PX = 10;
 const WORKSPACE_TREE_COLLAPSED_CARET = "";
 const WORKSPACE_TREE_EXPANDED_CARET = "";
 
+function selectWorkspaceFileNameStem(input: HTMLInputElement): void {
+  const extensionIndex = input.value.lastIndexOf(".");
+  input.setSelectionRange(0, extensionIndex > 0 ? extensionIndex : input.value.length);
+}
+
 export type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
 
 function getWorkspaceIconGlyph(badge: WorkspaceFileBadge, options: { open?: boolean } = {}): string {
@@ -200,6 +205,7 @@ interface WorkspaceTreeProps {
   onRequestRename: (node: WorkspaceTreeNode) => void;
   onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
   onDropIntoFolder: (targetNode: WorkspaceTreeNode) => void;
+  draggedPath: string | null;
   dropTargetPath: string | null;
 }
 
@@ -229,11 +235,17 @@ export function WorkspaceTree({
   onRequestRename,
   onRequestContextMenu,
   onDropIntoFolder,
+  draggedPath,
   dropTargetPath
 }: WorkspaceTreeProps) {
+  const draggedName = draggedPath?.split("/").at(-1) ?? "item";
+  const isRootDropTarget = draggedPath !== null && dropTargetPath === WORKSPACE_ROOT_PATH;
+
   return (
     <div
-      className={`file-tree ${dropTargetPath === WORKSPACE_ROOT_PATH ? "file-tree--drop-target" : ""}`}
+      className={`file-tree ${draggedPath ? "file-tree--drag-active" : ""} ${
+        isRootDropTarget ? "file-tree--drop-target" : ""
+      }`}
       role="tree"
       aria-label={rootLabel}
       onDragOver={(event) => {
@@ -261,6 +273,11 @@ export function WorkspaceTree({
         onRequestRootContextMenu(event.clientX, event.clientY);
       }}
     >
+      {isRootDropTarget ? (
+        <div className="file-tree__root-drop-cue" role="status">
+          Move <strong>{draggedName}</strong> to project root
+        </div>
+      ) : null}
       {nodes.length > 0 ? (
         nodes.map((node) => (
           <WorkspaceTreeBranch
@@ -287,6 +304,7 @@ export function WorkspaceTree({
             onRequestRename={onRequestRename}
             onRequestContextMenu={onRequestContextMenu}
             onDropIntoFolder={onDropIntoFolder}
+            draggedPath={draggedPath}
             dropTargetPath={dropTargetPath}
           />
         ))
@@ -323,6 +341,7 @@ interface WorkspaceTreeBranchProps {
   onRequestRename: (node: WorkspaceTreeNode) => void;
   onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
   onDropIntoFolder: (targetNode: WorkspaceTreeNode) => void;
+  draggedPath: string | null;
   dropTargetPath: string | null;
 }
 
@@ -349,10 +368,14 @@ function WorkspaceTreeBranch({
   onRequestRename,
   onRequestContextMenu,
   onDropIntoFolder,
+  draggedPath,
   dropTargetPath
 }: WorkspaceTreeBranchProps) {
   const isRenaming = renamingPath === node.path;
   const isSelected = selectedPaths.includes(node.path);
+  const isDragging = draggedPath === node.path;
+  const isDropTarget = draggedPath !== null && dropTargetPath === node.path;
+  const draggedName = draggedPath?.split("/").at(-1) ?? "item";
   const gitStatus = getWorkspaceNodeGitStatus(node, gitStatusByPath);
   const indent = " ".repeat(depth * 2);
   const longPressTimerRef = useRef<number | null>(null);
@@ -453,8 +476,11 @@ function WorkspaceTreeBranch({
           className={`file-tree__branch-header ${isEmpty ? "file-tree__branch-header--static" : ""} ${
             isSelected ? "file-tree__branch-header--selected" : ""
           } ${
-            dropTargetPath === node.path ? "file-tree__branch-header--drop-target" : ""
+            isDropTarget ? "file-tree__branch-header--drop-target" : ""
+          } ${
+            isDragging ? "file-tree__branch-header--dragging" : ""
           }`}
+          data-drop-target={isDropTarget ? "true" : undefined}
           data-workspace-path={node.path}
           draggable={canMove}
           title={node.path}
@@ -519,6 +545,11 @@ function WorkspaceTreeBranch({
               <span aria-hidden="true" className="file-tree__caret">{folderCaret}</span>
               <span aria-hidden="true" className={folderIconClassName}>{folderIcon}</span>
               <span>{node.name}</span>
+              {isDropTarget ? (
+                <span className="file-tree__drop-label" role="status">
+                  Move {draggedName} here
+                </span>
+              ) : null}
             </span>
           )}
           {gitStatus ? (
@@ -558,6 +589,7 @@ function WorkspaceTreeBranch({
                 onRequestRename={onRequestRename}
                 onRequestContextMenu={onRequestContextMenu}
                 onDropIntoFolder={onDropIntoFolder}
+                draggedPath={draggedPath}
                 dropTargetPath={dropTargetPath}
               />
             ))}
@@ -577,6 +609,8 @@ function WorkspaceTreeBranch({
       <div
         className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
           isSelected ? "file-row--selected" : ""
+        } ${
+          isDragging ? "file-row--dragging" : ""
         }`}
         data-workspace-path={node.path}
         onPointerCancel={endTouchGesture}
@@ -594,10 +628,12 @@ function WorkspaceTreeBranch({
         <span aria-hidden="true" className={fileIconClassName}>{fileIcon}</span>
         <input
           autoFocus
+          aria-label={`Rename ${node.name}`}
           className="file-tree__rename-input"
           onBlur={onRenameCommit}
           onChange={(event) => onRenameDraftChange(event.target.value)}
           onClick={(event) => event.stopPropagation()}
+          onFocus={(event) => selectWorkspaceFileNameStem(event.currentTarget)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
@@ -620,6 +656,8 @@ function WorkspaceTreeBranch({
     <button
       className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
         isSelected ? "file-row--selected" : ""
+      } ${
+        isDragging ? "file-row--dragging" : ""
       }`}
       data-workspace-path={node.path}
       draggable={canMove}

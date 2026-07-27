@@ -7,6 +7,13 @@ import {
 } from "./keybindings";
 
 describe("keybindings", () => {
+  it("defaults file creation and rename to Alt/Option shortcuts", () => {
+    expect(DEFAULT_KEYBINDINGS.newFile).toBe("Alt-n");
+    expect(DEFAULT_KEYBINDINGS.renameFile).toBe("Alt-r");
+    expect(formatKeybinding(DEFAULT_KEYBINDINGS.newFile, true)).toBe("Option+N");
+    expect(formatKeybinding(DEFAULT_KEYBINDINGS.renameFile, false)).toBe("Alt+R");
+  });
+
   it("defaults manual formatting to Shift+Alt+F", () => {
     expect(DEFAULT_KEYBINDINGS.formatDocument).toBe("Shift-Alt-f");
     expect(formatKeybinding(DEFAULT_KEYBINDINGS.formatDocument, false)).toBe("Shift+Alt+F");
