@@ -1,9 +1,14 @@
 import { openDB } from "idb";
 import type { AppSnapshot } from "../app/appState";
+import type {
+  CloudProjectBindingRecord,
+  CloudStorageProviderId
+} from "../cloud/cloudSync";
 import type { GitWorkspaceState } from "../git/gitState";
 import type { ProjectDeletionTombstone } from "../project/projectDeletion";
 import type { TyprProjectStorageState } from "../project/projectState";
 import type { ThemeDefinition } from "../theme/themes";
+import type { LocalFolderSyncMode } from "../workspace/localFolderSyncPolicy";
 import {
   normalizeSnippetCollections,
   type SnippetCollections
@@ -17,6 +22,8 @@ const SNAPSHOT_KEY = "snapshot";
 const PROJECT_STORAGE_KEY = "project-storage";
 const PROJECT_STORAGE_METADATA_KEY = "project-storage-metadata";
 const PROJECT_DELETION_TOMBSTONE_PREFIX = "project-deletion-tombstone:";
+const LOCAL_FOLDER_BINDING_PREFIX = "local-folder-binding:";
+const CLOUD_PROJECT_BINDING_PREFIX = "cloud-project-binding:";
 const GITHUB_CONFIG_KEY = "github-config";
 const GIT_WORKSPACE_KEY = "git-workspace";
 const GIT_CREDENTIALS_KEY = "git-credentials";
@@ -29,6 +36,20 @@ export interface LegacyGitHubRemoteConfig {
   branch: string;
   directory: string;
   token: string;
+}
+
+export interface LocalFolderBindingRecord {
+  version: 1;
+  projectId: string;
+  directoryHandle: FileSystemDirectoryHandle;
+  directoryName: string;
+  connectedAt: string;
+  lastSyncedAt: string | null;
+  directoryFingerprint?: string | null;
+  syncMode?: LocalFolderSyncMode;
+  syncIntervalMinutes?: number;
+  worktreeSignatures: Record<string, string>;
+  gitSignatures: Record<string, string>;
 }
 
 async function getDatabase() {
@@ -75,6 +96,82 @@ export async function saveProjectStorage(storage: TyprProjectStorageState): Prom
       PROJECT_STORAGE_METADATA_KEY
     )
   ]);
+}
+
+export async function loadLocalFolderBinding(
+  projectId: string
+): Promise<LocalFolderBindingRecord | null> {
+  const database = await getDatabase();
+  return (
+    (await database.get(STORE_NAME, getLocalFolderBindingKey(projectId))) ?? null
+  );
+}
+
+export async function saveLocalFolderBinding(
+  binding: LocalFolderBindingRecord
+): Promise<void> {
+  const database = await getDatabase();
+  await database.put(
+    STORE_NAME,
+    binding,
+    getLocalFolderBindingKey(binding.projectId)
+  );
+}
+
+export async function deleteLocalFolderBinding(projectId: string): Promise<void> {
+  const database = await getDatabase();
+  await database.delete(STORE_NAME, getLocalFolderBindingKey(projectId));
+}
+
+export async function loadCloudProjectBinding(
+  providerId: CloudStorageProviderId,
+  projectId: string
+): Promise<CloudProjectBindingRecord | null> {
+  const database = await getDatabase();
+  return (
+    (await database.get(
+      STORE_NAME,
+      getCloudProjectBindingKey(providerId, projectId)
+    )) ?? null
+  );
+}
+
+export async function saveCloudProjectBinding(
+  binding: CloudProjectBindingRecord
+): Promise<void> {
+  const database = await getDatabase();
+  await database.put(
+    STORE_NAME,
+    binding,
+    getCloudProjectBindingKey(binding.providerId, binding.projectId)
+  );
+}
+
+export async function deleteCloudProjectBinding(
+  providerId: CloudStorageProviderId,
+  projectId: string
+): Promise<void> {
+  const database = await getDatabase();
+  await database.delete(
+    STORE_NAME,
+    getCloudProjectBindingKey(providerId, projectId)
+  );
+}
+
+export async function deleteCloudProjectBindings(
+  projectId: string
+): Promise<void> {
+  const database = await getDatabase();
+  const projectKeySuffix = `:${encodeURIComponent(projectId)}`;
+  const keys = (await database.getAllKeys(STORE_NAME)).filter(
+    (key): key is string =>
+      typeof key === "string" &&
+      key.startsWith(CLOUD_PROJECT_BINDING_PREFIX) &&
+      key.endsWith(projectKeySuffix)
+  );
+  await Promise.all(
+    keys.map((key) => database.delete(STORE_NAME, key))
+  );
 }
 
 export async function saveProjectDeletionTombstone(
@@ -203,6 +300,19 @@ function normalizeGitFilePath(path: string): string {
 
 function getProjectDeletionTombstoneKey(projectId: string): string {
   return `${PROJECT_DELETION_TOMBSTONE_PREFIX}${encodeURIComponent(projectId)}`;
+}
+
+function getLocalFolderBindingKey(projectId: string): string {
+  return `${LOCAL_FOLDER_BINDING_PREFIX}${encodeURIComponent(projectId)}`;
+}
+
+function getCloudProjectBindingKey(
+  providerId: CloudStorageProviderId,
+  projectId: string
+): string {
+  return `${CLOUD_PROJECT_BINDING_PREFIX}${encodeURIComponent(
+    providerId
+  )}:${encodeURIComponent(projectId)}`;
 }
 
 function isProjectDeletionTombstone(value: unknown): value is ProjectDeletionTombstone {

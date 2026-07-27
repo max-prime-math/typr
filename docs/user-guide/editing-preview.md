@@ -17,3 +17,5 @@ Use source tools for common insertions such as matrices and tables. Typst refere
 Preview can run inline, side-by-side, or in a popup. Live compilation can be toggled when you want manual control. Build logs and diagnostics show compiler output, and source jumps connect preview diagnostics back to source lines when location data is available.
 
 Typst preview uses the bundled Typst WebAssembly compiler and renderer. LaTeX preview uses the browser LaTeX path included with Typr. Markdown preview is local to the app.
+
+Markdown uses GitHub-Flavored Markdown (GFM), including tables with column alignment, task lists, strikethrough, autolinks, fenced code blocks, and standard inline formatting. Local workspace images referenced with Markdown image syntax are resolved inside the project; remote HTTP(S) images use a no-referrer request. Raw HTML and unsafe URL schemes remain escaped in the live preview.

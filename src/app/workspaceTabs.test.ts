@@ -5,6 +5,8 @@ import {
   normalizeUniqueWorkspacePaths,
   openWorkspacePreviewTab,
   reconcileWorkspaceTabs,
+  remapWorkspacePath,
+  remapWorkspacePaths,
   reorderWorkspacePaths
 } from "./workspaceTabs";
 
@@ -37,6 +39,22 @@ describe("workspace tabs", () => {
     expect(
       reorderWorkspacePaths(["a.typ", "b.typ", "c.typ"], "c.typ", "a.typ", false)
     ).toEqual(["c.typ", "a.typ", "b.typ"]);
+  });
+
+  it("moves exact and descendant paths with a renamed workspace entry", () => {
+    expect(remapWorkspacePath("chapters/intro.typ", "chapters/intro.typ", "chapters/start.typ"))
+      .toBe("chapters/start.typ");
+    expect(remapWorkspacePath("chapters/drafts/one.typ", "chapters", "writing"))
+      .toBe("writing/drafts/one.typ");
+    expect(remapWorkspacePath("chapters-old/one.typ", "chapters", "writing"))
+      .toBe("chapters-old/one.typ");
+    expect(
+      remapWorkspacePaths(
+        ["chapters/one.typ", "notes.typ", "./chapters/one.typ"],
+        "chapters",
+        "writing"
+      )
+    ).toEqual(["writing/one.typ", "notes.typ"]);
   });
 
   it("reconciles stored and live tabs against currently available workspace files", () => {

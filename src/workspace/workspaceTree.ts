@@ -57,6 +57,8 @@ const TEXT_FILE_EXTENSIONS = new Set([
   "tex",
   "ltx",
   "latex",
+  "tikz",
+  "pgf",
   "sty",
   "cls",
   "bib",
@@ -79,7 +81,7 @@ const README_FILE_NAMES = new Set([
   "readme.txt"
 ]);
 const IMAGE_FILE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"]);
-const TEX_FILE_EXTENSIONS = new Set(["tex", "ltx", "latex", "sty", "cls"]);
+const TEX_FILE_EXTENSIONS = new Set(["tex", "ltx", "latex", "tikz", "pgf", "sty", "cls"]);
 const MARKDOWN_FILE_EXTENSIONS = new Set(["md", "markdown"]);
 const JSON_FILE_EXTENSIONS = new Set(["json", "jsonc"]);
 const YAML_FILE_EXTENSIONS = new Set(["yaml", "yml"]);

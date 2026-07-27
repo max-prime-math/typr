@@ -36,6 +36,7 @@ export interface ExternalDiagnosticRequest {
   path: string;
   language: SourceLanguage;
   preferences: ExternalDiagnosticProviderPreferences;
+  deferHarper?: boolean;
   signal?: AbortSignal;
   onStatus?: (status: DiagnosticProviderStatus) => void;
 }
@@ -129,6 +130,7 @@ export async function runExternalDiagnostics({
   path,
   language,
   preferences,
+  deferHarper = false,
   signal,
   onStatus
 }: ExternalDiagnosticRequest): Promise<ExternalDiagnosticResult> {
@@ -143,11 +145,20 @@ export async function runExternalDiagnostics({
 
   const tasks: Array<Promise<void>> = [];
 
-  if (normalizedPreferences.harper.enabled) {
+  if (normalizedPreferences.harper.enabled && !deferHarper) {
     tasks.push(
       runHarperDiagnostics(source, path, language, signal, updateStatus).then((result) => {
         diagnostics.push(...result);
       })
+    );
+  } else if (normalizedPreferences.harper.enabled) {
+    updateStatus(
+      createStatus(
+        "harper",
+        true,
+        "idle",
+        "Harper will start after the first editor change."
+      )
     );
   } else {
     updateStatus(createStatus("harper", false, "idle", "Offline Harper diagnostics disabled."));

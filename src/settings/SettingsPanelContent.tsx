@@ -40,6 +40,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     getKeybindingLabel,
     getSnippetImportTemplate,
     gitHubDiscovery,
+    googleDriveSync,
+    googleDriveSyncState,
     handleCacheLatexBundle,
     handleCancelPendingKeybindingConflict,
     handleClearCustomSnippets,
@@ -109,6 +111,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     latexPackageSearchQuery,
     latexPackageSearchResults,
     lightThemes,
+    localFolderSync,
+    localFolderSyncState,
     manualExtraLatexPackages,
     packageCacheEntries,
     packageCacheFeedback,
@@ -148,7 +152,371 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 
   return (
     <>
-        {settingsTab === "git" ? (
+        {settingsTab === "sync" ? (
+          <div className="settings-panel settings-panel--sync" role="tabpanel">
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Local folder sync</h3>
+                <p>
+                  Choose how the selected project exchanges files and Git data
+                  with its linked folder.
+                </p>
+              </div>
+
+              <div className="sync-settings-project-card">
+                <div>
+                  <span className="sync-settings-project-card__label">
+                    Selected project
+                  </span>
+                  <strong>
+                    {selectedProjectRepository?.displayName ?? "No project selected"}
+                  </strong>
+                  <small>
+                    {localFolderSyncState?.directoryName
+                      ? `${localFolderSyncState.directoryName} · ${localFolderSyncState.message}`
+                      : localFolderSync.supported
+                        ? "No local folder linked"
+                        : "Local folder sync requires a Chromium browser"}
+                  </small>
+                </div>
+                {selectedProjectRepository ? (
+                  <div className="sync-settings-project-card__actions">
+                    {localFolderSyncState?.status === "permission-needed" ? (
+                      <button
+                        className="pane__button"
+                        onClick={() => {
+                          void localFolderSync.reconnect(
+                            selectedProjectRepository.id
+                          );
+                        }}
+                        type="button"
+                      >
+                        Reconnect
+                      </button>
+                    ) : localFolderSyncState?.directoryName ? (
+                      <>
+                        <button
+                          className="pane__button"
+                          disabled={localFolderSyncState.status === "syncing"}
+                          onClick={() => {
+                            void localFolderSync.syncNow(
+                              selectedProjectRepository.id
+                            );
+                          }}
+                          type="button"
+                        >
+                          {localFolderSyncState.status === "syncing"
+                            ? "Syncing…"
+                            : "Sync now"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          onClick={() => {
+                            void localFolderSync.disconnect(
+                              selectedProjectRepository.id
+                            );
+                          }}
+                          type="button"
+                        >
+                          Unlink
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={!localFolderSync.supported}
+                        onClick={() => {
+                          void localFolderSync.connect(
+                            selectedProjectRepository.id
+                          );
+                        }}
+                        type="button"
+                      >
+                        Link local folder
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <fieldset
+                className="sync-policy-options"
+                disabled={!localFolderSyncState?.directoryName}
+              >
+                <legend>Sync mode</legend>
+                {[
+                  {
+                    mode: "constant",
+                    title: "Constant sync",
+                    description:
+                      "Watch both Typr and the folder and apply changes in real time."
+                  },
+                  {
+                    mode: "compile",
+                    title: "Sync on compile",
+                    description:
+                      "Sync when you explicitly request a document compile."
+                  },
+                  {
+                    mode: "interval",
+                    title: "Scheduled sync",
+                    description:
+                      "Sync automatically after the selected number of minutes."
+                  },
+                  {
+                    mode: "manual",
+                    title: "Manual sync",
+                    description:
+                      "Only sync when you choose Sync now."
+                  }
+                ].map((option) => (
+                  <label
+                    className={`sync-policy-option ${
+                      localFolderSyncState?.syncMode === option.mode
+                        ? "sync-policy-option--active"
+                        : ""
+                    }`}
+                    key={option.mode}
+                  >
+                    <input
+                      checked={localFolderSyncState?.syncMode === option.mode}
+                      name="local-folder-sync-mode"
+                      onChange={() => {
+                        if (selectedProjectRepository) {
+                          void localFolderSync.setSyncPolicy(
+                            selectedProjectRepository.id,
+                            { mode: option.mode }
+                          );
+                        }
+                      }}
+                      type="radio"
+                    />
+                    <span>
+                      <strong>{option.title}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+
+              <label className="sync-field sync-interval-field">
+                <span>Scheduled interval</span>
+                <span className="sync-interval-field__control">
+                  <input
+                    disabled={
+                      !localFolderSyncState?.directoryName ||
+                      localFolderSyncState.syncMode !== "interval"
+                    }
+                    max={1440}
+                    min={1}
+                    onChange={(event) => {
+                      if (selectedProjectRepository) {
+                        void localFolderSync.setSyncPolicy(
+                          selectedProjectRepository.id,
+                          {
+                            mode: "interval",
+                            intervalMinutes: Number(event.target.value)
+                          }
+                        );
+                      }
+                    }}
+                    type="number"
+                    value={localFolderSyncState?.syncIntervalMinutes ?? 5}
+                  />
+                  <span>minutes</span>
+                </span>
+              </label>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Google Drive sync</h3>
+                <p>
+                  Keep an independent copy of the selected project in an
+                  app-managed Google Drive folder. GitHub and local-folder
+                  connections remain active.
+                </p>
+              </div>
+
+              <div className="sync-settings-project-card">
+                <div>
+                  <span className="sync-settings-project-card__label">
+                    Selected project
+                  </span>
+                  <strong>
+                    {selectedProjectRepository?.displayName ??
+                      "No project selected"}
+                  </strong>
+                  <small>
+                    {googleDriveSyncState?.remoteRootName
+                      ? `${googleDriveSyncState.remoteRootName} · ${googleDriveSyncState.message}`
+                      : googleDriveSync.configured
+                        ? googleDriveSyncState?.message ??
+                          "No Google Drive folder connected"
+                        : "Google Drive sync is not configured on this deployment"}
+                  </small>
+                </div>
+                {selectedProjectRepository ? (
+                  <div className="sync-settings-project-card__actions">
+                    {googleDriveSyncState?.remoteRootName ? (
+                      <>
+                        <button
+                          className="pane__button"
+                          disabled={
+                            googleDriveSyncState.status === "authorizing" ||
+                            googleDriveSyncState.status === "syncing"
+                          }
+                          onClick={() => {
+                            void googleDriveSync.syncNow(
+                              selectedProjectRepository.id
+                            );
+                          }}
+                          type="button"
+                        >
+                          {googleDriveSyncState.status === "authorizing"
+                            ? "Connecting…"
+                            : googleDriveSyncState.status === "syncing"
+                              ? "Syncing…"
+                              : googleDriveSyncState.status ===
+                                  "authorization-needed"
+                                ? "Reconnect"
+                                : "Sync now"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          onClick={() => {
+                            void googleDriveSync.disconnect(
+                              selectedProjectRepository.id
+                            );
+                          }}
+                          type="button"
+                        >
+                          Unlink
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={
+                          !googleDriveSync.configured ||
+                          googleDriveSyncState?.status === "authorizing"
+                        }
+                        onClick={() => {
+                          void googleDriveSync.connect(
+                            selectedProjectRepository.id
+                          );
+                        }}
+                        type="button"
+                      >
+                        {googleDriveSyncState?.status === "authorizing"
+                          ? "Connecting…"
+                          : "Connect Google Drive"}
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <fieldset
+                className="sync-policy-options"
+                disabled={!googleDriveSyncState?.remoteRootName}
+              >
+                <legend>Sync mode</legend>
+                {[
+                  {
+                    mode: "constant",
+                    title: "Constant sync",
+                    description:
+                      "Sync browser edits after a short delay and check Drive periodically."
+                  },
+                  {
+                    mode: "compile",
+                    title: "Sync on compile",
+                    description:
+                      "Sync when you explicitly request a document compile."
+                  },
+                  {
+                    mode: "interval",
+                    title: "Scheduled sync",
+                    description:
+                      "Sync automatically while Google authorization remains active."
+                  },
+                  {
+                    mode: "manual",
+                    title: "Manual sync",
+                    description:
+                      "Only sync when you choose Sync now."
+                  }
+                ].map((option) => (
+                  <label
+                    className={`sync-policy-option ${
+                      googleDriveSyncState?.syncMode === option.mode
+                        ? "sync-policy-option--active"
+                        : ""
+                    }`}
+                    key={option.mode}
+                  >
+                    <input
+                      checked={
+                        googleDriveSyncState?.syncMode === option.mode
+                      }
+                      name="google-drive-sync-mode"
+                      onChange={() => {
+                        if (selectedProjectRepository) {
+                          void googleDriveSync.setSyncPolicy(
+                            selectedProjectRepository.id,
+                            { mode: option.mode }
+                          );
+                        }
+                      }}
+                      type="radio"
+                    />
+                    <span>
+                      <strong>{option.title}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+
+              <label className="sync-field sync-interval-field">
+                <span>Scheduled interval</span>
+                <span className="sync-interval-field__control">
+                  <input
+                    disabled={
+                      !googleDriveSyncState?.remoteRootName ||
+                      googleDriveSyncState.syncMode !== "interval"
+                    }
+                    max={1440}
+                    min={1}
+                    onChange={(event) => {
+                      if (selectedProjectRepository) {
+                        void googleDriveSync.setSyncPolicy(
+                          selectedProjectRepository.id,
+                          {
+                            mode: "interval",
+                            intervalMinutes: Number(event.target.value)
+                          }
+                        );
+                      }
+                    }}
+                    type="number"
+                    value={
+                      googleDriveSyncState?.syncIntervalMinutes ?? 15
+                    }
+                  />
+                  <span>minutes</span>
+                </span>
+              </label>
+
+              <p className="pane__meta">
+                Typr requests access only to Drive files it creates or that
+                you connect through Typr. Google access tokens remain in
+                memory and may need to be renewed after a reload or expiry.
+              </p>
+            </div>
+          </div>
+        ) : settingsTab === "git" ? (
           <div className="settings-panel settings-panel--git" role="tabpanel">
             <div className="git-setup-strip git-setup-strip--token-only">
               <a

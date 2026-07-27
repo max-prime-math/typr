@@ -53,6 +53,12 @@ test("the installed PWA can perform its first Typst compile offline", async ({
   await expect
     .poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller)))
     .toBe(true);
+  expect(
+    page.workers().some((worker) => worker.url().includes("typstCompiler.worker"))
+  ).toBe(false);
+  expect(
+    page.workers().some((worker) => worker.url().includes("harperDiagnostics.worker"))
+  ).toBe(false);
   const cachedAssetUrls = await page.evaluate(async () => {
     const cacheNames = await caches.keys();
     const entries = await Promise.all(
@@ -146,6 +152,9 @@ test("the installed PWA can perform its first Typst compile offline", async ({
     })
     .toBe("preview");
   await expect(renderedPreview).toBeVisible();
+  expect(
+    page.workers().some((worker) => worker.url().includes("typstCompiler.worker"))
+  ).toBe(true);
   expect(failedRequests).toEqual([]);
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

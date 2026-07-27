@@ -711,8 +711,8 @@ export const DEFAULT_PASTED_IMAGE_PREFERENCES: PastedImagePreferences = {
   typstSuffix: '", width: 80%))',
   latexPrefix: "\\includegraphics[width=0.8\\linewidth]{",
   latexSuffix: "}",
-  markdownPrefix: '<img src="',
-  markdownSuffix: '" alt="" width="80%">'
+  markdownPrefix: "![](",
+  markdownSuffix: ")"
 };
 
 function normalizePastedImagePreferences(
@@ -720,6 +720,11 @@ function normalizePastedImagePreferences(
 ): PastedImagePreferences {
   const fileNamePrefix = sanitizePastedImagePrefix(preferences?.fileNamePrefix);
   const figuresDirectory = sanitizePastedImageDirectory(preferences?.figuresDirectory);
+  const savedMarkdownPrefix = preferences?.markdownPrefix;
+  const savedMarkdownSuffix = preferences?.markdownSuffix;
+  const usesLegacyMarkdownImageWrapper =
+    savedMarkdownPrefix === '<img src="' &&
+    savedMarkdownSuffix === '" alt="" width="80%">';
 
   return {
     enabled: preferences?.enabled ?? true,
@@ -731,8 +736,12 @@ function normalizePastedImagePreferences(
     typstSuffix: normalizePastedImageWrapperSetting(preferences?.typstSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.typstSuffix),
     latexPrefix: normalizePastedImageWrapperSetting(preferences?.latexPrefix, DEFAULT_PASTED_IMAGE_PREFERENCES.latexPrefix),
     latexSuffix: normalizePastedImageWrapperSetting(preferences?.latexSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.latexSuffix),
-    markdownPrefix: normalizePastedImageWrapperSetting(preferences?.markdownPrefix, DEFAULT_PASTED_IMAGE_PREFERENCES.markdownPrefix),
-    markdownSuffix: normalizePastedImageWrapperSetting(preferences?.markdownSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.markdownSuffix)
+    markdownPrefix: usesLegacyMarkdownImageWrapper
+      ? DEFAULT_PASTED_IMAGE_PREFERENCES.markdownPrefix
+      : normalizePastedImageWrapperSetting(savedMarkdownPrefix, DEFAULT_PASTED_IMAGE_PREFERENCES.markdownPrefix),
+    markdownSuffix: usesLegacyMarkdownImageWrapper
+      ? DEFAULT_PASTED_IMAGE_PREFERENCES.markdownSuffix
+      : normalizePastedImageWrapperSetting(savedMarkdownSuffix, DEFAULT_PASTED_IMAGE_PREFERENCES.markdownSuffix)
   };
 }
 
@@ -1028,10 +1037,11 @@ function clampSidebarFontSize(value: unknown): number {
     : DEFAULT_SIDEBAR_FONT_SIZE;
 }
 
-export function getActiveDocument(project: TypstProject): TypstDocumentFile {
+export function getActiveDocument(project: TypstProject): TypstDocumentFile | null {
   return (
     project.documents.find((document) => document.id === project.activeDocumentId) ??
-    project.documents[0]
+    project.documents[0] ??
+    null
   );
 }
 
@@ -1041,7 +1051,7 @@ export function updateActiveDocument(
 ): AppSnapshot {
   const activeDocument = getActiveDocument(snapshot.project);
 
-  if (activeDocument.content === content) {
+  if (!activeDocument || activeDocument.content === content) {
     return snapshot;
   }
 
@@ -1051,9 +1061,10 @@ export function updateActiveDocument(
     ...snapshot,
     project: {
       ...snapshot.project,
+      activeDocumentId: activeDocument.id,
       updatedAt: now,
       documents: snapshot.project.documents.map((document) =>
-        document.id === snapshot.project.activeDocumentId
+        document.id === activeDocument.id
           ? { ...document, content, updatedAt: now }
           : document
       )
@@ -1680,7 +1691,7 @@ export function renameActiveDocument(
   const nextName = name.trim();
   const activeDocument = getActiveDocument(snapshot.project);
 
-  if (!nextName || nextName === activeDocument.name) {
+  if (!activeDocument || !nextName || nextName === activeDocument.name) {
     return snapshot;
   }
 
@@ -1951,23 +1962,29 @@ function createUniqueDocumentName(
     const parentPath = getWorkspaceParentPath(normalizedRequestedName);
     const baseName = getWorkspaceBaseName(normalizedRequestedName);
 
-    if (/^new-file-\d+$/i.test(baseName)) {
-      return createUniqueNewFileName(existingNames, parentPath);
+    const newFileNameMatch = /^new-file-\d+(\.(?:md|tex|typ))?$/i.exec(baseName);
+
+    if (newFileNameMatch) {
+      return createUniqueNewFileName(existingNames, parentPath, newFileNameMatch[1] ?? "");
     }
 
     return createUniqueWorkspacePath(normalizedRequestedName, existingNames);
   }
 
-  return createUniqueNewFileName(existingNames, null);
+  return createUniqueNewFileName(existingNames, null, ".typ");
 }
 
-function createUniqueNewFileName(existingNames: Set<string>, parentPath: string | null): string {
+function createUniqueNewFileName(
+  existingNames: Set<string>,
+  parentPath: string | null,
+  extension: string
+): string {
   let nextIndex = 1;
-  let nextName = joinWorkspacePath(parentPath, `new-file-${nextIndex}`);
+  let nextName = joinWorkspacePath(parentPath, `new-file-${nextIndex}${extension}`);
 
   while (existingNames.has(nextName)) {
     nextIndex += 1;
-    nextName = joinWorkspacePath(parentPath, `new-file-${nextIndex}`);
+    nextName = joinWorkspacePath(parentPath, `new-file-${nextIndex}${extension}`);
   }
 
   return nextName;

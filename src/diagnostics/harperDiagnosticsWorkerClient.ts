@@ -15,8 +15,12 @@ interface PendingRequest {
 let worker: Worker | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingRequest>();
+let idleReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+export const HARPER_DIAGNOSTICS_IDLE_RELEASE_MS = 30_000;
 
 export function releaseHarperDiagnosticsMemory(): void {
+  clearIdleReleaseTimer();
   worker?.terminate();
   worker = null;
 
@@ -45,6 +49,7 @@ export function lintWithHarperWorker(
       pending.handleAbort = () => {
         pendingRequests.delete(id);
         reject(createAbortError());
+        scheduleIdleMemoryRelease();
       };
       signal.addEventListener("abort", pending.handleAbort, { once: true });
     }
@@ -63,6 +68,8 @@ export function lintWithHarperWorker(
 }
 
 function getWorker(): Worker {
+  clearIdleReleaseTimer();
+
   if (worker) {
     return worker;
   }
@@ -80,9 +87,11 @@ function getWorker(): Worker {
         pending.reject(new Error(response.error));
       }
     });
+    scheduleIdleMemoryRelease();
   });
   worker.addEventListener("error", (event) => {
     const error = new Error(event.message || "Harper diagnostics worker failed.");
+    clearIdleReleaseTimer();
     worker?.terminate();
     worker = null;
     for (const id of [...pendingRequests.keys()]) {
@@ -91,6 +100,29 @@ function getWorker(): Worker {
   });
 
   return worker;
+}
+
+function clearIdleReleaseTimer(): void {
+  if (idleReleaseTimer === null) {
+    return;
+  }
+
+  clearTimeout(idleReleaseTimer);
+  idleReleaseTimer = null;
+}
+
+function scheduleIdleMemoryRelease(): void {
+  if (!worker || pendingRequests.size > 0) {
+    return;
+  }
+
+  clearIdleReleaseTimer();
+  idleReleaseTimer = setTimeout(() => {
+    idleReleaseTimer = null;
+    if (pendingRequests.size === 0) {
+      releaseHarperDiagnosticsMemory();
+    }
+  }, HARPER_DIAGNOSTICS_IDLE_RELEASE_MS);
 }
 
 function settleRequest(

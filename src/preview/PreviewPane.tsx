@@ -5,6 +5,12 @@ import { findActiveMarkdownBlockKey, renderMarkdownPreviewBlocks } from "../mark
 import { shouldShowCompileActivity } from "../app/compilePreviewState";
 import { useTheme } from "../theme/ThemeProvider";
 import type { ThemeDefinition } from "../theme/themes";
+import { scrollElementWithin } from "../utils/domScroll";
+import {
+  getRelativePathParent,
+  joinRelativePaths,
+  normalizeRelativePath
+} from "../utils/relativePath";
 import { createPdfPreviewCacheKey } from "./pdfPreviewCacheKey";
 import {
   applyPdfCanvasZoom,
@@ -55,6 +61,13 @@ export interface PreviewZoomState {
 
 export interface WorkspacePreviewFile {
   name: string;
+  path: string;
+  content: string | Uint8Array;
+  mimeType: string;
+  assets?: readonly WorkspacePreviewAsset[];
+}
+
+export interface WorkspacePreviewAsset {
   path: string;
   content: string | Uint8Array;
   mimeType: string;
@@ -811,12 +824,16 @@ function PreviewDocument({
     ? createPreviewSourcePositionKey(forwardSearchSource)
     : null;
   const handleTypstForwardSearch = useCallback((element: HTMLElement, source: SourcePosition) => {
-    if (!canvasRef.current) {
+    if (!canvasRef.current || !viewportRef.current) {
       return;
     }
 
     semanticForwardSearchKeyRef.current = createPreviewSourcePositionKey(source);
-    scrollPreviewElementIntoView(viewportRef.current, element);
+    scrollElementWithin(viewportRef.current, element, {
+      behavior: "smooth",
+      block: "center",
+      inline: "center"
+    });
     setTypstSyncMarker(getLocalPreviewRect(canvasRef.current, element));
   }, []);
 
@@ -1081,6 +1098,77 @@ function WorkspaceBinaryFilePreview({
   );
 }
 
+function createMarkdownAssetUrlMap(
+  assets: readonly WorkspacePreviewAsset[] | undefined
+): ReadonlyMap<string, string> {
+  const urls = new Map<string, string>();
+
+  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+    return urls;
+  }
+
+  for (const asset of assets ?? []) {
+    const path = normalizeRelativePath(asset.path);
+
+    if (!path || urls.has(path)) {
+      continue;
+    }
+
+    urls.set(
+      path,
+      URL.createObjectURL(
+        new Blob([encodeWorkspacePreviewBlobPart(asset.content)], {
+          type: asset.mimeType
+        })
+      )
+    );
+  }
+
+  return urls;
+}
+
+function resolveMarkdownAssetHref(
+  sourcePath: string,
+  href: string,
+  assetUrls: ReadonlyMap<string, string>
+): string | null {
+  const trimmedHref = href.trim();
+
+  if (
+    !trimmedHref ||
+    trimmedHref.startsWith("//") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(trimmedHref)
+  ) {
+    return null;
+  }
+
+  const pathWithoutSuffix = trimmedHref.split(/[?#]/, 1)[0];
+  let decodedPath: string;
+
+  try {
+    decodedPath = decodeURIComponent(pathWithoutSuffix);
+  } catch {
+    return null;
+  }
+
+  const sourceDirectory = getRelativePathParent(sourcePath);
+  const resolvedPath = normalizeRelativePath(
+    decodedPath.startsWith("/")
+      ? decodedPath.slice(1)
+      : joinRelativePaths(sourceDirectory, decodedPath)
+  );
+
+  if (
+    !resolvedPath ||
+    resolvedPath === ".." ||
+    resolvedPath.startsWith("../")
+  ) {
+    return null;
+  }
+
+  return assetUrls.get(resolvedPath) ?? null;
+}
+
 function MarkdownFilePreview({
   activeSource,
   forwardSearchSource,
@@ -1106,13 +1194,19 @@ function MarkdownFilePreview({
     forwardSearchSource && normalizeSourcePathForPreview(forwardSearchSource.path) === normalizeSourcePathForPreview(sourcePath)
       ? forwardSearchSource
       : null;
+  const assetUrls = useMemo(() => createMarkdownAssetUrlMap(file.assets), [file.assets]);
+  const resolveImageHref = useCallback(
+    (href: string) => resolveMarkdownAssetHref(file.path, href, assetUrls),
+    [assetUrls, file.path]
+  );
   const blocks = useMemo(
     () => renderMarkdownPreviewBlocks(source, {
       activeSource: activeMarkdownSource,
       onSourceJump,
+      resolveImageHref,
       sourcePath
     }),
-    [activeMarkdownSource, onSourceJump, source, sourcePath]
+    [activeMarkdownSource, onSourceJump, resolveImageHref, source, sourcePath]
   );
   const activeBlockKey = useMemo(
     () => findActiveMarkdownBlockKey(source, activeMarkdownSource),
@@ -1127,6 +1221,14 @@ function MarkdownFilePreview({
   const markdownZoomScale = zoom.mode === "percent" ? zoom.percent / 100 : 1;
   useCursorAnchoredZoom(documentRef, articleRef, markdownZoomScale);
   const [markdownSyncMarker, setMarkdownSyncMarker] = useState<PreviewRect | null>(null);
+
+  useEffect(() => {
+    return () => {
+      for (const url of assetUrls.values()) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [assetUrls]);
 
   useEffect(() => {
     if (!markdownSyncMarker) {
@@ -1150,7 +1252,11 @@ function MarkdownFilePreview({
       return;
     }
 
-    scrollPreviewElementIntoView(documentRef.current, forwardBlock);
+    scrollElementWithin(documentRef.current, forwardBlock, {
+      behavior: "smooth",
+      block: "center",
+      inline: "center"
+    });
     setMarkdownSyncMarker(getLocalPreviewRect(documentRef.current, forwardBlock));
   }, [forwardBlockKey]);
 
@@ -1167,10 +1273,12 @@ function MarkdownFilePreview({
       return;
     }
 
-    activeBlock.scrollIntoView({
-      block: "center",
-      inline: "nearest"
-    });
+    if (documentRef.current) {
+      scrollElementWithin(documentRef.current, activeBlock, {
+        block: "center",
+        inline: "center"
+      });
+    }
   }, [activeBlockKey]);
 
   return (
@@ -1868,19 +1976,6 @@ function PdfPreview({
   );
 }
 
-function scrollPreviewElementIntoView(container: HTMLElement | null, element: HTMLElement): void {
-  if (!container) {
-    return;
-  }
-
-  const rect = getLocalPreviewRect(container, element);
-  container.scrollTo({
-    left: Math.max(0, rect.left + rect.width / 2 - container.clientWidth / 2),
-    top: Math.max(0, rect.top + rect.height / 2 - container.clientHeight / 2),
-    behavior: "smooth"
-  });
-}
-
 function getLocalPreviewRect(container: HTMLElement, element: HTMLElement): PreviewRect {
   const containerRect = container.getBoundingClientRect();
   const elementRect = element.getBoundingClientRect();
@@ -2428,9 +2523,48 @@ function normalizePreviewSvg(markup: string, paperView: boolean, theme: ThemeDef
       rethemePreviewSvgColors(document, theme);
     }
 
+    addPreviewPageOutlines(document, paperView, theme);
+
     return new XMLSerializer().serializeToString(document);
   } catch {
     return markup;
+  }
+}
+
+function addPreviewPageOutlines(
+  document: XMLDocument,
+  paperView: boolean,
+  theme: ThemeDefinition
+): void {
+  const outlineColor = paperView ? "#8c959f" : theme.palette.textMuted;
+  const outlineOpacity = paperView ? "0.62" : theme.mode === "dark" ? "0.78" : "0.44";
+  const outlineWidth = theme.mode === "dark" && !paperView ? 1.5 : 1;
+
+  for (const page of Array.from(document.querySelectorAll<SVGElement>("g.typst-page"))) {
+    const pageWidth = Number.parseFloat(page.getAttribute("data-page-width") ?? "");
+    const pageHeight = Number.parseFloat(page.getAttribute("data-page-height") ?? "");
+
+    if (!(pageWidth > outlineWidth) || !(pageHeight > outlineWidth)) {
+      continue;
+    }
+
+    page.querySelector(":scope > rect[data-preview-page-outline]")?.remove();
+
+    const inset = outlineWidth / 2;
+    const outline = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    outline.setAttribute("data-preview-page-outline", "true");
+    outline.setAttribute("x", String(inset));
+    outline.setAttribute("y", String(inset));
+    outline.setAttribute("width", String(pageWidth - outlineWidth));
+    outline.setAttribute("height", String(pageHeight - outlineWidth));
+    outline.setAttribute("fill", "none");
+    outline.setAttribute("stroke", outlineColor);
+    outline.setAttribute("stroke-opacity", outlineOpacity);
+    outline.setAttribute("stroke-width", String(outlineWidth));
+    outline.setAttribute("vector-effect", "non-scaling-stroke");
+    outline.setAttribute("pointer-events", "none");
+    outline.setAttribute("shape-rendering", "crispEdges");
+    page.append(outline);
   }
 }
 

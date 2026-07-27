@@ -7,9 +7,13 @@ import {
   DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME,
   DEFAULT_MARKDOWN_DOCUMENT_CONTENT,
   DEFAULT_MARKDOWN_DOCUMENT_NAME,
+  DEFAULT_PASTED_IMAGE_PREFERENCES,
+  getActiveDocument,
   normalizeSnapshot,
+  renameActiveDocument,
   renameDocumentById,
   renameFolderById,
+  updateActiveDocument,
   type AppSnapshot
 } from "./appState";
 
@@ -34,19 +38,56 @@ describe("appState", () => {
     expect(bibliography?.content).toContain("@book{knuth1984texbook");
   });
 
-  it("creates extensionless new files with the smallest available directory-local index", () => {
+  it("uses previewable Markdown syntax for pasted images and migrates the legacy wrapper", () => {
+    expect(DEFAULT_PASTED_IMAGE_PREFERENCES.markdownPrefix).toBe("![](");
+    expect(DEFAULT_PASTED_IMAGE_PREFERENCES.markdownSuffix).toBe(")");
+
+    const snapshot = createDefaultSnapshot();
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        pastedImages: {
+          ...snapshot.preferences.pastedImages,
+          markdownPrefix: '<img src="',
+          markdownSuffix: '" alt="" width="80%">'
+        }
+      }
+    });
+
+    expect(normalized.preferences.pastedImages.markdownPrefix).toBe("![](");
+    expect(normalized.preferences.pastedImages.markdownSuffix).toBe(")");
+  });
+
+  it("treats a project with no documents as a valid empty state", () => {
+    const initial = createDefaultSnapshot();
+    const emptySnapshot: AppSnapshot = {
+      ...initial,
+      project: {
+        ...initial.project,
+        activeDocumentId: "",
+        documents: []
+      }
+    };
+
+    expect(getActiveDocument(emptySnapshot.project)).toBeNull();
+    expect(updateActiveDocument(emptySnapshot, "unsaved text")).toBe(emptySnapshot);
+    expect(renameActiveDocument(emptySnapshot, "main.typ")).toBe(emptySnapshot);
+  });
+
+  it("creates extension-bearing new files with the smallest available directory-local index", () => {
     const initial = createDefaultSnapshot();
     const withRootFile = createDocument(initial);
     const withSecondRootFile = createDocument(withRootFile);
     const withFolder = createFolder(withSecondRootFile, "notes");
-    const withFolderFile = createDocument(withFolder, "notes/new-file-1");
-    const withSecondFolderFile = createDocument(withFolderFile, "notes/new-file-1");
+    const withFolderFile = createDocument(withFolder, "notes/new-file-1.md");
+    const withSecondFolderFile = createDocument(withFolderFile, "notes/new-file-1.md");
     const names = withSecondFolderFile.project.documents.map((document) => document.name);
 
-    expect(names).toContain("new-file-1");
-    expect(names).toContain("new-file-2");
-    expect(names).toContain("notes/new-file-1");
-    expect(names).toContain("notes/new-file-2");
+    expect(names).toContain("new-file-1.typ");
+    expect(names).toContain("new-file-2.typ");
+    expect(names).toContain("notes/new-file-1.md");
+    expect(names).toContain("notes/new-file-2.md");
   });
 
   it("renames nested documents without moving them to the project root", () => {

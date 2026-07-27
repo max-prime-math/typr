@@ -5,7 +5,10 @@ import {
   buildWorkspaceTree,
   findWorkspaceNodeByPath
 } from "../workspace/workspaceTree";
-import { getWorkspaceRenameDraft, renameWorkspaceNode } from "./workspaceRename";
+import {
+  getWorkspaceRenameDraft,
+  renameWorkspaceNodeWithPath
+} from "./workspaceRename";
 
 describe("App workspace rename semantics", () => {
   it("requests a basename and commits a nested document rename in place", () => {
@@ -18,8 +21,13 @@ describe("App workspace rename semantics", () => {
 
     expect(getWorkspaceRenameDraft(targetNode)).toBe("intro.typ");
 
-    const renamed = renameWorkspaceNode(snapshot, targetNode, "overview.typ");
+    const transition = renameWorkspaceNodeWithPath(snapshot, targetNode, "overview.typ");
+    const renamed = transition.snapshot;
 
+    expect(transition).toMatchObject({
+      previousPath: "chapters/intro.typ",
+      nextPath: "chapters/overview.typ"
+    });
     expect(
       renamed.project.documents.find(
         (document) => document.id === targetNode.source.id
@@ -38,8 +46,13 @@ describe("App workspace rename semantics", () => {
 
     expect(getWorkspaceRenameDraft(targetNode)).toBe("drafts");
 
-    const renamed = renameWorkspaceNode(snapshot, targetNode, "archive");
+    const transition = renameWorkspaceNodeWithPath(snapshot, targetNode, "archive");
+    const renamed = transition.snapshot;
 
+    expect(transition).toMatchObject({
+      previousPath: "chapters/drafts",
+      nextPath: "chapters/archive"
+    });
     expect(
       renamed.project.folders.find((folder) => folder.id === targetNode.source.id)?.name
     ).toBe("chapters/archive");

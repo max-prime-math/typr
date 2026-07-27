@@ -1,6 +1,10 @@
-import { marked, type Token, type Tokens } from "marked";
+import { marked, type MarkedOptions, type Token, type Tokens } from "marked";
 
 export type MarkdownRenderMode = "docs" | "preview" | "export";
+
+export interface MarkdownRenderOptions {
+  resolveImageHref?: (href: string) => string | null;
+}
 
 export interface MarkdownBlock {
   key: string;
@@ -13,6 +17,12 @@ export interface MarkdownBlock {
 export interface RenderedMarkdownBlock extends MarkdownBlock {
   html: string;
 }
+
+const MARKDOWN_OPTIONS = {
+  breaks: false,
+  gfm: true,
+  pedantic: false
+} satisfies MarkedOptions;
 
 function normalizeMarkdownSource(source: string): string {
   return source.replace(/\r\n?/g, "\n");
@@ -42,7 +52,7 @@ function getMarkdownBlockEndLine(raw: string, startLine: number): number {
 
 export function parseMarkdownBlocks(source: string): MarkdownBlock[] {
   const normalizedSource = normalizeMarkdownSource(source);
-  const tokens = marked.lexer(normalizedSource);
+  const tokens = marked.lexer(normalizedSource, MARKDOWN_OPTIONS);
   const blocks: MarkdownBlock[] = [];
   let sourceOffset = 0;
   let currentLine = 1;
@@ -66,6 +76,19 @@ export function parseMarkdownBlocks(source: string): MarkdownBlock[] {
   return blocks;
 }
 
+export function collectMarkdownImageReferences(source: string): string[] {
+  const references = new Set<string>();
+  const tokens = marked.lexer(normalizeMarkdownSource(source), MARKDOWN_OPTIONS);
+
+  marked.walkTokens(tokens, (token) => {
+    if (token.type === "image") {
+      references.add((token as Tokens.Image).href);
+    }
+  });
+
+  return [...references];
+}
+
 export function findMarkdownBlockKeyAtLine(
   blocks: readonly MarkdownBlock[],
   line: number
@@ -80,12 +103,11 @@ function isAllowedPreviewHref(href: string): boolean {
     return true;
   }
 
-  return (
-    (trimmed.startsWith("#") ||
-      trimmed.startsWith("/") ||
-      trimmed.startsWith("./") ||
-      trimmed.startsWith("../")) &&
-    !trimmed.startsWith("//")
+  return Boolean(
+    trimmed &&
+      !trimmed.startsWith("//") &&
+      !/^[a-z][a-z0-9+.-]*:/i.test(trimmed) &&
+      !/[\u0000-\u001f\u007f]/.test(trimmed)
   );
 }
 
@@ -93,7 +115,14 @@ function isExternalPreviewHref(href: string): boolean {
   return /^https?:/i.test(href);
 }
 
-function createMarkdownRenderer(mode: MarkdownRenderMode) {
+function isAllowedRemoteImageHref(href: string): boolean {
+  return /^https?:/i.test(href.trim());
+}
+
+function createMarkdownRenderer(
+  mode: MarkdownRenderMode,
+  options: MarkdownRenderOptions
+) {
   const renderer = new marked.Renderer();
 
   if (mode === "docs") {
@@ -114,28 +143,50 @@ function createMarkdownRenderer(mode: MarkdownRenderMode) {
         : ' rel="noreferrer"';
       return `<a href="${escapeHtml(href)}"${titleAttribute}${externalAttributes}>${renderer.parser.parseInline(tokens)}</a>`;
     };
-    renderer.image = ({ raw }: Tokens.Image) => escapeHtml(raw);
+    renderer.image = ({ href, title, text, raw }: Tokens.Image) => {
+      const resolvedHref =
+        options.resolveImageHref?.(href) ??
+        (isAllowedRemoteImageHref(href) ? href : null);
+
+      if (!resolvedHref) {
+        return escapeHtml(raw);
+      }
+
+      const titleAttribute = title ? ` title="${escapeHtml(title)}"` : "";
+      return `<img src="${escapeHtml(resolvedHref)}" alt="${escapeHtml(text)}"${titleAttribute} loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
+    };
   }
 
   return renderer;
 }
 
-function renderMarkdownTokens(tokens: Token[], mode: MarkdownRenderMode): string {
-  return marked.parser<string, string>(tokens, { renderer: createMarkdownRenderer(mode) });
+function renderMarkdownTokens(
+  tokens: Token[],
+  mode: MarkdownRenderMode,
+  options: MarkdownRenderOptions = {}
+): string {
+  return marked.parser<string, string>(tokens, {
+    ...MARKDOWN_OPTIONS,
+    renderer: createMarkdownRenderer(mode, options)
+  });
 }
 
-export function renderMarkdownHtml(source: string, mode: MarkdownRenderMode): string {
-  const tokens = marked.lexer(normalizeMarkdownSource(source));
-  return renderMarkdownTokens(tokens, mode);
+export function renderMarkdownHtml(
+  source: string,
+  mode: MarkdownRenderMode,
+  options: MarkdownRenderOptions = {}
+): string {
+  const tokens = marked.lexer(normalizeMarkdownSource(source), MARKDOWN_OPTIONS);
+  return renderMarkdownTokens(tokens, mode, options);
 }
 
 export function renderMarkdownBlocksHtml(
   blocks: readonly MarkdownBlock[],
-  mode: MarkdownRenderMode = "preview"
+  mode: MarkdownRenderMode = "preview",
+  options: MarkdownRenderOptions = {}
 ): RenderedMarkdownBlock[] {
   return blocks.map((block) => ({
     ...block,
-    html: renderMarkdownTokens([block.token], mode)
+    html: renderMarkdownTokens([block.token], mode, options)
   }));
 }
-

@@ -91,10 +91,11 @@ for (const viewport of [
     await expect(info.getByText("Build", { exact: true })).toBeVisible();
     await expect(info.getByText("Service worker", { exact: true })).toBeVisible();
 
-    for (const name of ["GitHub repository", "Documentation", "Issue tracker"]) {
+    for (const name of ["GitHub repository", "Issue tracker"]) {
       const link = info.getByRole("link", { name: new RegExp(name) });
       await expect(link).toHaveAttribute("target", "_blank");
       await expect(link).toHaveAttribute("rel", "noreferrer");
     }
+    await expect(info.getByRole("link", { name: /Documentation/ })).toHaveCount(0);
   });
 }

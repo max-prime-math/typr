@@ -181,6 +181,7 @@ export function createInitialGitHubCloneState(): GitHubCloneState {
 }
 
 export function useGitPanelController({
+  isGitPanelActive,
   isHydrated,
   selectedProjectRepository,
   fallbackProjectId,
@@ -189,6 +190,7 @@ export function useGitPanelController({
   setSyncFeedback,
   setSyncStatusSnapshot
 }: {
+  isGitPanelActive: boolean;
   isHydrated: boolean;
   selectedProjectRepository: TyprProjectRepository | null;
   fallbackProjectId: string;
@@ -646,7 +648,7 @@ export function useGitPanelController({
   }, [activeMergeState, repoBackend, selectedMergePath, selectedProjectRepository]);
 
   useEffect(() => {
-    if (!isHydrated || !selectedProjectRepository) return;
+    if (!isGitPanelActive || !isHydrated || !selectedProjectRepository) return;
     let cancelled = false;
     const handle = window.setTimeout(() => {
       if (!cancelled) void refreshLocalRepoState(selectedProjectRepository);
@@ -657,12 +659,22 @@ export function useGitPanelController({
     };
   }, [
     gitRefreshToken,
+    isGitPanelActive,
     isHydrated,
     refreshLocalRepoState,
     selectedProjectRepository?.filesystem.updatedAt,
     selectedProjectRepository?.git.headRef,
     selectedProjectRepository?.id
   ]);
+
+  useEffect(() => {
+    gitStatusRequestRef.current += 1;
+    setIsGitStatusLoading(false);
+    setLocalRepoStatus(null);
+    setLocalRepoCommits([]);
+    setLocalRepoBranches([]);
+    setUpstreamTracking(null);
+  }, [selectedProjectRepository?.id]);
 
   const applyRemoteGitProgress = useCallback(
     (progress: RemoteGitProgress) => {

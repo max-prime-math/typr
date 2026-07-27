@@ -17,6 +17,7 @@ import {
 interface MarkdownPreviewRenderOptions {
   activeSource: SourcePosition | null;
   onSourceJump?: (sourceLink: PreviewSourceLink) => void;
+  resolveImageHref?: (href: string) => string | null;
   sourcePath: string;
 }
 
@@ -48,6 +49,7 @@ function renderMarkdownPreviewBlock(
   const className = [
     "preview-markdown__source-block",
     block.kind === "code" ? "preview-markdown__code-block" : null,
+    block.kind === "table" ? "preview-markdown__table-block" : null,
     active ? "preview-markdown__source-block--active" : null
   ].filter(Boolean).join(" ");
 
@@ -79,7 +81,9 @@ export function renderMarkdownPreviewBlocks(
   source: string,
   options: MarkdownPreviewRenderOptions
 ): ReactNode[] {
-  return renderMarkdownBlocksHtml(parseMarkdownBlocks(source), "preview")
+  return renderMarkdownBlocksHtml(parseMarkdownBlocks(source), "preview", {
+    resolveImageHref: options.resolveImageHref
+  })
     .map((block) => renderMarkdownPreviewBlock(block, options));
 }
 
@@ -91,4 +95,3 @@ export function findActiveMarkdownBlockKey(
     ? findMarkdownBlockKeyAtLine(parseMarkdownBlocks(source), activeSource.line)
     : null;
 }
-
