@@ -27,10 +27,10 @@ export interface GoogleDriveRedirectResult {
 let capturedRedirectResult: GoogleDriveRedirectResult | null | undefined;
 let redirectResultClaimed = false;
 
-export function beginGoogleDriveRedirectAuthorization(
+export async function beginGoogleDriveRedirectAuthorization(
   clientId: string,
   projectId: string
-): void {
+): Promise<void> {
   if (!clientId.trim()) {
     throw new Error(
       "Google Drive sync is not configured on this deployment."
@@ -60,6 +60,7 @@ export function beginGoogleDriveRedirectAuthorization(
   authorizationUrl.searchParams.set("scope", GOOGLE_DRIVE_SCOPE);
   authorizationUrl.searchParams.set("include_granted_scopes", "true");
   authorizationUrl.searchParams.set("state", pending.state);
+  await unregisterControllingServiceWorker(redirectUri);
   window.location.assign(authorizationUrl.href);
 }
 
@@ -73,19 +74,25 @@ export function captureGoogleDriveRedirectResult(): GoogleDriveRedirectResult | 
       ? window.location.hash.slice(1)
       : window.location.hash
   );
-  if (!response.has("access_token") && !response.has("error")) {
+  const serializedPending = window.sessionStorage.getItem(
+    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
+  );
+  if (
+    !response.has("access_token") &&
+    !response.has("error") &&
+    !serializedPending
+  ) {
     capturedRedirectResult = null;
     return null;
   }
 
-  window.history.replaceState(
-    window.history.state,
-    "",
-    `${window.location.pathname}${window.location.search}`
-  );
-  const serializedPending = window.sessionStorage.getItem(
-    GOOGLE_DRIVE_REDIRECT_STORAGE_KEY
-  );
+  if (window.location.hash) {
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}`
+    );
+  }
   window.sessionStorage.removeItem(GOOGLE_DRIVE_REDIRECT_STORAGE_KEY);
   capturedRedirectResult = parseGoogleDriveRedirectResponse(
     response,
@@ -130,6 +137,14 @@ export function parseGoogleDriveRedirectResponse(
     };
   }
   if (response.get("state") !== pending.state) {
+    if (!response.has("access_token") && !response.has("error")) {
+      return {
+        error:
+          "Google returned to Typr without authorization details. The browser may have loaded a cached app version. Try connecting again.",
+        projectId: pending.projectId,
+        token: null
+      };
+    }
     return {
       error:
         "Google authorization could not be verified. Try connecting again.",
@@ -220,4 +235,15 @@ function parsePendingGoogleDriveRedirect(
   } catch {
     return null;
   }
+}
+
+async function unregisterControllingServiceWorker(
+  redirectUri: string
+): Promise<void> {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+  const registration =
+    await navigator.serviceWorker.getRegistration(redirectUri);
+  await registration?.unregister();
 }

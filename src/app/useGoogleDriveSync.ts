@@ -165,9 +165,10 @@ export function useGoogleDriveSync(options: {
         status: "authorizing",
         message: "Redirecting to Google for authorization…"
       }));
-      try {
-        beginGoogleDriveRedirectAuthorization(clientId, projectId);
-      } catch (error) {
+      void beginGoogleDriveRedirectAuthorization(
+        clientId,
+        projectId
+      ).catch((error) => {
         updateState(projectId, (current) => ({
           ...current,
           status: "error",
@@ -176,7 +177,7 @@ export function useGoogleDriveSync(options: {
               ? error.message
               : "Unable to start Google authorization."
         }));
-      }
+      });
     },
     [clientId, updateState]
   );

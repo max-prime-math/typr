@@ -22,11 +22,17 @@ describe("Google Drive redirect identity", () => {
     vi.unstubAllGlobals();
   });
 
-  it("starts authorization with an exact root redirect, project, and state", () => {
+  it("unregisters the app worker before starting an exact root redirect", async () => {
     const assign = vi.fn();
     const setItem = vi.fn();
+    const unregister = vi.fn(async () => true);
     vi.stubGlobal("crypto", {
       randomUUID: () => "oauth-state"
+    });
+    vi.stubGlobal("navigator", {
+      serviceWorker: {
+        getRegistration: vi.fn(async () => ({ unregister }))
+      }
     });
     vi.stubGlobal("window", {
       location: {
@@ -38,7 +44,7 @@ describe("Google Drive redirect identity", () => {
       }
     });
 
-    beginGoogleDriveRedirectAuthorization("client-id", "project-1");
+    await beginGoogleDriveRedirectAuthorization("client-id", "project-1");
 
     const authorizationUrl = new URL(assign.mock.calls[0][0] as string);
     expect(authorizationUrl.origin).toBe("https://accounts.google.com");
@@ -53,6 +59,10 @@ describe("Google Drive redirect identity", () => {
     expect(setItem).toHaveBeenCalledWith(
       "typr.google-drive.redirect.v1",
       expect.stringContaining('"projectId":"project-1"')
+    );
+    expect(unregister).toHaveBeenCalledOnce();
+    expect(unregister.mock.invocationCallOrder[0]).toBeLessThan(
+      assign.mock.invocationCallOrder[0]
     );
   });
 
@@ -132,6 +142,21 @@ describe("Google Drive redirect identity", () => {
 
     expect(result).toMatchObject({
       error: "Google authorization could not be verified. Try connecting again.",
+      projectId: "project-1",
+      token: null
+    });
+  });
+
+  it("surfaces a cached return that lost Google's authorization details", () => {
+    const result = parseGoogleDriveRedirectResponse(
+      new URLSearchParams(),
+      REDIRECT_PENDING,
+      NOW
+    );
+
+    expect(result).toMatchObject({
+      error:
+        "Google returned to Typr without authorization details. The browser may have loaded a cached app version. Try connecting again.",
       projectId: "project-1",
       token: null
     });
