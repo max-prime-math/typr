@@ -238,6 +238,16 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   </div>
                 ) : null}
               </div>
+              {googleDriveSyncState?.status === "error" ||
+              googleDriveSyncState?.status === "authorization-needed" ? (
+                <p
+                  className="sync-connection-notice sync-connection-notice--error"
+                  role="alert"
+                >
+                  <strong>Google Drive connection failed</strong>
+                  <span>{googleDriveSyncState.message}</span>
+                </p>
+              ) : null}
 
               <fieldset
                 className="sync-policy-options"

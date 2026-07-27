@@ -3,6 +3,7 @@ const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const SCRIPT_ELEMENT_ID = "typr-google-identity-services";
 const GOOGLE_AUTHORIZATION_TIMEOUT_MS = 120_000;
 const GOOGLE_AUTHORIZATION_RETURN_GRACE_MS = 5_000;
+const GOOGLE_AUTHORIZATION_FOCUS_POLL_MS = 250;
 
 interface GoogleTokenResponse {
   access_token?: string;
@@ -71,8 +72,11 @@ export function requestGoogleDriveAccessToken(
         let sawDocumentHidden = false;
         let sawWindowFocusAfterDeparture = false;
         let sawDocumentVisibleAfterDeparture = false;
+        let sawFocusPollingDeparture = false;
+        let sawFocusPollingReturn = false;
         let googleMessageCount = 0;
         let returnTimeoutId: number | null = null;
+        let focusPollId: number | null = null;
         const formatDiagnostics = () =>
           [
             `origin=${window.location?.origin ?? "unknown"}`,
@@ -80,12 +84,17 @@ export function requestGoogleDriveAccessToken(
             `document-hidden=${sawDocumentHidden ? "yes" : "no"}`,
             `window-refocused=${sawWindowFocusAfterDeparture ? "yes" : "no"}`,
             `document-visible=${sawDocumentVisibleAfterDeparture ? "yes" : "no"}`,
+            `focus-poll-left=${sawFocusPollingDeparture ? "yes" : "no"}`,
+            `focus-poll-returned=${sawFocusPollingReturn ? "yes" : "no"}`,
             `google-messages=${googleMessageCount}`
           ].join("; ");
         const cleanup = () => {
           window.clearTimeout(timeoutId);
           if (returnTimeoutId !== null) {
             window.clearTimeout(returnTimeoutId);
+          }
+          if (focusPollId !== null) {
+            window.clearInterval(focusPollId);
           }
           window.removeEventListener("blur", handleWindowBlur);
           window.removeEventListener("focus", handleWindowFocus);
@@ -113,7 +122,9 @@ export function requestGoogleDriveAccessToken(
           if (
             settled ||
             returnTimeoutId !== null ||
-            (!sawWindowBlur && !sawDocumentHidden)
+            (!sawWindowBlur &&
+              !sawDocumentHidden &&
+              !sawFocusPollingDeparture)
           ) {
             return;
           }
@@ -154,12 +165,30 @@ export function requestGoogleDriveAccessToken(
           sawDocumentVisibleAfterDeparture = true;
           scheduleMissingCallbackFailure();
         }
+        function pollDocumentFocus() {
+          if (typeof document.hasFocus !== "function") {
+            return;
+          }
+          if (!document.hasFocus()) {
+            sawFocusPollingDeparture = true;
+            return;
+          }
+          if (!sawFocusPollingDeparture) {
+            return;
+          }
+          sawFocusPollingReturn = true;
+          scheduleMissingCallbackFailure();
+        }
         window.addEventListener("blur", handleWindowBlur);
         window.addEventListener("focus", handleWindowFocus);
         window.addEventListener("message", handleWindowMessage);
         document.addEventListener(
           "visibilitychange",
           handleVisibilityChange
+        );
+        focusPollId = window.setInterval(
+          pollDocumentFocus,
+          GOOGLE_AUTHORIZATION_FOCUS_POLL_MS
         );
         const timeoutId = window.setTimeout(
           () =>

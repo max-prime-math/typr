@@ -15377,6 +15377,9 @@ ${nextLine}` : nextLine;
                         const googleDriveConnected = Boolean(
                           googleDriveState?.remoteRootName
                         );
+                        const googleDriveConnectionFailed =
+                          googleDriveStatus === "error" ||
+                          googleDriveStatus === "authorization-needed";
                         const connectedGitProject = gitWorkspace.projects.find(
                           (managedProject) =>
                             managedProject.projectId === project.id &&
@@ -15653,15 +15656,22 @@ ${nextLine}` : nextLine;
                                       <small>
                                         {googleDriveConnected
                                           ? `${googleDriveState?.remoteRootName} · ${googleDriveState?.message}`
-                                          : googleDriveSync.configured
-                                            ? "Keep an independent synchronized copy of this project in Google Drive."
-                                            : "Google Drive sync is not configured on this deployment."}
+                                          : !googleDriveSync.configured
+                                            ? "Google Drive sync is not configured on this deployment."
+                                            : googleDriveStatus ===
+                                                  "authorizing" ||
+                                                googleDriveConnectionFailed
+                                              ? googleDriveState?.message ??
+                                                "Connecting to Google Drive…"
+                                              : "Keep an independent synchronized copy of this project in Google Drive."}
                                       </small>
                                     </div>
                                     <span
                                       className={`project-manager__connection-badge ${
                                         googleDriveConnected
                                           ? "project-manager__connection-badge--connected"
+                                          : googleDriveConnectionFailed
+                                            ? "project-manager__connection-badge--error"
                                           : ""
                                       }`}
                                     >
@@ -15670,9 +15680,23 @@ ${nextLine}` : nextLine;
                                           "authorization-needed"
                                           ? "Reconnect"
                                           : "Connected"
-                                        : "Not connected"}
+                                        : googleDriveStatus === "authorizing"
+                                          ? "Connecting…"
+                                          : googleDriveConnectionFailed
+                                            ? "Connection failed"
+                                            : "Not connected"}
                                     </span>
                                   </div>
+                                  {googleDriveConnectionFailed &&
+                                  googleDriveState?.message ? (
+                                    <p
+                                      className="sync-connection-notice sync-connection-notice--error"
+                                      role="alert"
+                                    >
+                                      <strong>Google Drive connection failed</strong>
+                                      <span>{googleDriveState.message}</span>
+                                    </p>
+                                  ) : null}
                                   <div className="project-manager__connection-actions">
                                     {googleDriveConnected ? (
                                       <>

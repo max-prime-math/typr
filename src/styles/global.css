@@ -3386,6 +3386,11 @@ button {
   color: var(--success, #278457);
 }
 
+.project-manager__connection-badge--error {
+  background: color-mix(in srgb, var(--danger, #d15b5b) 14%, transparent);
+  color: var(--danger, #b94444);
+}
+
 .project-manager__connection-actions {
   display: flex;
   flex-wrap: wrap;
@@ -5072,6 +5077,26 @@ button {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.45rem;
+}
+
+.sync-connection-notice {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0.58rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.sync-connection-notice--error {
+  border-color: color-mix(in srgb, var(--danger, #d15b5b) 48%, var(--border));
+  background: color-mix(in srgb, var(--danger, #d15b5b) 9%, transparent);
+  color: var(--danger, #b94444);
 }
 
 .sync-policy-options {

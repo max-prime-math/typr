@@ -20,6 +20,7 @@ interface TokenClientConfig {
 
 function createGoogleIdentityHarness() {
   let config: TokenClientConfig | null = null;
+  let documentHasFocus = true;
   let visibilityState: DocumentVisibilityState = "visible";
   const documentTarget = new EventTarget();
   const windowTarget = new EventTarget();
@@ -30,6 +31,9 @@ function createGoogleIdentityHarness() {
   });
   vi.stubGlobal("document", {
     addEventListener: documentTarget.addEventListener.bind(documentTarget),
+    hasFocus() {
+      return documentHasFocus;
+    },
     get visibilityState() {
       return visibilityState;
     },
@@ -51,6 +55,8 @@ function createGoogleIdentityHarness() {
       origin: "https://typr.test"
     },
     removeEventListener: windowTarget.removeEventListener.bind(windowTarget),
+    clearInterval,
+    setInterval,
     setTimeout
   });
 
@@ -64,6 +70,9 @@ function createGoogleIdentityHarness() {
     },
     initTokenClient,
     requestAccessToken,
+    setDocumentFocus(hasFocus: boolean) {
+      documentHasFocus = hasFocus;
+    },
     setVisibility(nextVisibilityState: DocumentVisibilityState) {
       visibilityState = nextVisibilityState;
       documentTarget.dispatchEvent(new Event("visibilitychange"));
@@ -148,7 +157,7 @@ describe("Google Drive identity", () => {
   it("reports lifecycle diagnostics when the popup closes without a callback", async () => {
     const { harness, request } = await startRequest();
     const rejection = expect(request).rejects.toThrow(
-      /origin=https:\/\/typr\.test; window-blurred=yes; document-hidden=no; window-refocused=yes; document-visible=no; google-messages=1/
+      /origin=https:\/\/typr\.test; window-blurred=yes; document-hidden=no; window-refocused=yes; document-visible=no; focus-poll-left=no; focus-poll-returned=no; google-messages=1/
     );
 
     harness.windowTarget.dispatchEvent(new Event("blur"));
@@ -159,6 +168,20 @@ describe("Google Drive identity", () => {
     harness.windowTarget.dispatchEvent(googleMessage);
     harness.windowTarget.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(5_000);
+
+    await rejection;
+  });
+
+  it("detects popup return by polling focus when browsers omit focus events", async () => {
+    const { harness, request } = await startRequest();
+    const rejection = expect(request).rejects.toThrow(
+      /focus-poll-left=yes; focus-poll-returned=yes/
+    );
+
+    harness.setDocumentFocus(false);
+    await vi.advanceTimersByTimeAsync(250);
+    harness.setDocumentFocus(true);
+    await vi.advanceTimersByTimeAsync(5_250);
 
     await rejection;
   });
