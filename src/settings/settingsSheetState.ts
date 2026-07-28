@@ -24,6 +24,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
 const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
   sync: [
     "sync",
+    "google drive",
+    "drive",
     "local folder",
     "automatic",
     "compile",

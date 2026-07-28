@@ -5231,6 +5231,13 @@ button {
   border-color: color-mix(in srgb, var(--danger, #d15b5b) 55%, var(--border));
 }
 
+.google-drive-global-notice--bottom-left {
+  top: auto;
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  left: max(0.75rem, env(safe-area-inset-left));
+  transform: none;
+}
+
 @media (max-width: 900px) {
   .google-drive-global-notice {
     top: auto;

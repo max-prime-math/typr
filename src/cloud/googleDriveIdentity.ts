@@ -14,7 +14,8 @@ const GOOGLE_OAUTH_AUTHORIZATION_URL =
 export type GoogleDriveAuthorizationIntent =
   | "connect"
   | "reconnect"
-  | "change-location";
+  | "change-location"
+  | "import";
 
 export interface GoogleDriveAccessToken {
   accessToken: string;

@@ -44,6 +44,7 @@ import {
 } from "../cloud/googleDriveIdentity";
 import { showGoogleDriveFolderPicker } from "../cloud/googleDrivePicker";
 import {
+  createEmptyProjectRepository,
   projectRepositoryToLegacyProject,
   type TyprProjectRepository,
   type TyprProjectStorageState
@@ -103,6 +104,8 @@ export function useGoogleDriveSync(options: {
   const accessTokenRef = useRef<GoogleDriveAccessToken | null>(null);
   const redirectResumeStartedRef = useRef(false);
   const bindingsRef = useRef(new Map<string, GoogleDriveBindingV2>());
+  const pendingImportRef = useRef<TyprProjectRepository | null>(null);
+  const [importedProjectId, setImportedProjectId] = useState<string | null>(null);
   const runningProjectIdsRef = useRef(new Set<string>());
   const queuedProjectIdsRef = useRef(new Set<string>());
   const syncTimersRef = useRef(new Map<string, number>());
@@ -558,6 +561,72 @@ export function useGoogleDriveSync(options: {
     ]
   );
 
+  const importProject = useCallback(
+    async (projectName = "Drive project") => {
+      const pendingProject =
+        pendingImportRef.current ??
+        createEmptyProjectRepository({
+          displayName: projectName,
+          defaultFileName: null
+        });
+      pendingImportRef.current = pendingProject;
+
+      if (!isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+        startAuthorization(pendingProject.id, "import");
+        return;
+      }
+
+      dispatchState(pendingProject.id, { type: "choosing-location" });
+      try {
+        const pickerResult = await showGoogleDriveFolderPicker({
+          accessToken: accessTokenRef.current.accessToken,
+          appId: cloudProjectNumber,
+          developerKey: pickerApiKey
+        });
+        if (pickerResult.kind === "cancelled") {
+          pendingImportRef.current = null;
+          return;
+        }
+
+        const tree = await getRemote().readTree(pickerResult.folder.id);
+        const importedProject = applySyncTreeToProject(pendingProject, new Map(), tree);
+        setProjectStorage((currentStorage) => ({
+          ...currentStorage,
+          selectedProjectId: importedProject.id,
+          projects: [...currentStorage.projects, importedProject]
+        }));
+        setRawSnapshot((currentSnapshot) => ({
+          ...currentSnapshot,
+          project: projectRepositoryToLegacyProject(importedProject, currentSnapshot.project)
+        }));
+        pendingImportRef.current = null;
+        setImportedProjectId(importedProject.id);
+        showNotice(
+          importedProject.id,
+          "success",
+          "Google Drive project imported",
+          `Opened “${importedProject.displayName}” from Google Drive.`
+        );
+      } catch (error) {
+        pendingImportRef.current = null;
+        const message = getErrorMessage(error, "Unable to import the Google Drive folder.");
+        showNotice(pendingProject.id, "error", "Google Drive import failed", message);
+      } finally {
+        clearGoogleDriveAuthorizationResult();
+      }
+    },
+    [
+      cloudProjectNumber,
+      dispatchState,
+      getRemote,
+      pickerApiKey,
+      setProjectStorage,
+      setRawSnapshot,
+      showNotice,
+      startAuthorization
+    ]
+  );
+
   const connect = useCallback(
     async (projectId: string) => {
       if (bindingsRef.current.has(projectId)) {
@@ -646,6 +715,14 @@ export function useGoogleDriveSync(options: {
         : "Choose a parent destination in Google Drive to finish connecting."
     );
 
+    if (result.intent === "import") {
+      const pendingProject = pendingImportRef.current;
+      if (pendingProject?.id === projectId) {
+        void importProject(pendingProject.displayName);
+      }
+      return;
+    }
+
     if (result.intent !== "reconnect") {
       return;
     }
@@ -680,7 +757,7 @@ export function useGoogleDriveSync(options: {
       .finally(() => {
         clearGoogleDriveAuthorizationResult();
       });
-  }, [dispatchState, isHydrated, showNotice]);
+  }, [dispatchState, importProject, isHydrated, showNotice]);
 
   const disconnect = useCallback(
     async (projectId: string) => {
@@ -965,6 +1042,8 @@ export function useGoogleDriveSync(options: {
     connect,
     disconnect,
     dismissNotice: () => setNotice(null),
+    importProject,
+    importedProjectId,
     notice,
     setSyncPolicy,
     states,

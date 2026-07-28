@@ -80,7 +80,6 @@ import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useGoogleDriveSync } from "./useGoogleDriveSync";
 import {
-  GoogleDriveConnectionCard,
   GoogleDriveGlobalNotice
 } from "./GoogleDriveConnectionCard";
 import { useLocalFolderSync } from "./useLocalFolderSync";
@@ -3656,6 +3655,31 @@ ${nextLine}` : nextLine;
   const selectedGoogleDriveSyncState = selectedProjectRepository
     ? googleDriveSync.states[selectedProjectRepository.id]
     : undefined;
+  const handledImportedDriveProjectIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const importedProjectId = googleDriveSync.importedProjectId;
+    if (
+      !importedProjectId ||
+      handledImportedDriveProjectIdRef.current === importedProjectId
+    ) {
+      return;
+    }
+    const importedProject = projectStorage.projects.find(
+      (project) => project.id === importedProjectId
+    );
+    if (!importedProject) {
+      return;
+    }
+    handledImportedDriveProjectIdRef.current = importedProjectId;
+    setIsTrashViewOpen(false);
+    setSelectedWorkspacePath(importedProject.selection.activeFilePath);
+    setSelectedWorkspacePaths(
+      importedProject.selection.activeFilePath
+        ? [importedProject.selection.activeFilePath]
+        : []
+    );
+    setWorkspaceSelectionAnchorPath(importedProject.selection.activeFilePath);
+  }, [googleDriveSync.importedProjectId, projectStorage.projects]);
   const [repoStorageStats, setRepoStorageStats] = useState<RepoStorageStats | null>(null);
   const [isRepoStorageLoading, setIsRepoStorageLoading] = useState(false);
   const [repoStorageFeedback, setRepoStorageFeedback] = useState<SyncFeedback>({
@@ -15094,10 +15118,20 @@ ${nextLine}` : nextLine;
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""}`}>
       {googleDriveSync.notice ? (
-        <GoogleDriveGlobalNotice
-          dismiss={googleDriveSync.dismissNotice}
-          notice={googleDriveSync.notice}
-        />
+        <>
+          <GoogleDriveGlobalNotice
+            dismiss={googleDriveSync.dismissNotice}
+            notice={googleDriveSync.notice}
+          />
+          {googleDriveSync.notice.tone === "success" &&
+          googleDriveSync.notice.title === "Google authorization complete" ? (
+            <GoogleDriveGlobalNotice
+              dismiss={googleDriveSync.dismissNotice}
+              notice={googleDriveSync.notice}
+              placement="bottom-left"
+            />
+          ) : null}
+        </>
       ) : null}
       <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""} ${
         isZenMode ? "workspace-shell--zen" : ""
@@ -15353,6 +15387,17 @@ ${nextLine}` : nextLine;
                         type="button"
                       >
                         Import project
+                      </button>
+                      <button
+                        className="pane__button"
+                        onClick={() => {
+                          void googleDriveSync.importProject();
+                        }}
+                        disabled={!googleDriveSync.configured}
+                        title="Open a folder from Google Drive as a new Typr project"
+                        type="button"
+                      >
+                        Import Drive project
                       </button>
                     </div>
                     <div className="project-manager__actions project-manager__actions--github">
@@ -15662,13 +15707,35 @@ ${nextLine}` : nextLine;
                                   </div>
                                 </section>
 
-                                <GoogleDriveConnectionCard
-                                  className="project-manager__connection google-drive-card--compact"
-                                  controller={googleDriveSync}
-                                  projectId={project.id}
-                                  projectName={project.displayName}
-                                  state={googleDriveState}
-                                />
+                                <section className="project-manager__connection">
+                                  <div className="project-manager__connection-header">
+                                    <div>
+                                      <strong>Google Drive</strong>
+                                      <small>
+                                        {googleDriveConnected
+                                          ? `${googleDriveState?.projectFolderName} · configured in Settings`
+                                          : "Connect Google Drive and choose a folder from Settings."}
+                                      </small>
+                                    </div>
+                                    <span className={`project-manager__connection-badge ${googleDriveConnected ? "project-manager__connection-badge--connected" : ""}`}>
+                                      {googleDriveConnected ? "Connected" : "Not linked"}
+                                    </span>
+                                  </div>
+                                  <div className="project-manager__connection-actions">
+                                    <button
+                                      className="pane__button pane__button--compact"
+                                      onClick={() => {
+                                        if (!isActiveProject) {
+                                          handleSelectLocalProject(project.id);
+                                        }
+                                        handleOpenSettingsTab("sync");
+                                      }}
+                                      type="button"
+                                    >
+                                      {googleDriveConnected ? "Drive settings" : "Link Drive folder"}
+                                    </button>
+                                  </div>
+                                </section>
 
                                 <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">

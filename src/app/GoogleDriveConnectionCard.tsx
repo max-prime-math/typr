@@ -228,10 +228,15 @@ export function GoogleDriveConnectionCard(props: {
 export function GoogleDriveGlobalNotice(props: {
   dismiss(): void;
   notice: GoogleDriveNotice;
+  placement?: "top" | "bottom-left";
 }) {
   return (
     <div
-      className={`google-drive-global-notice google-drive-global-notice--${props.notice.tone}`}
+      className={`google-drive-global-notice google-drive-global-notice--${props.notice.tone} ${
+        props.placement === "bottom-left"
+          ? "google-drive-global-notice--bottom-left"
+          : ""
+      }`.trim()}
       role={props.notice.tone === "error" ? "alert" : "status"}
     >
       <div>
