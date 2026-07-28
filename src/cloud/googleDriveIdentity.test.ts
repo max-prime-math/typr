@@ -1,20 +1,27 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  GOOGLE_DRIVE_PENDING_STORAGE_KEY,
+  GOOGLE_DRIVE_RESULT_STORAGE_KEY,
+  GOOGLE_DRIVE_SCOPE,
   beginGoogleDriveRedirectAuthorization,
-  captureGoogleDriveRedirectResult,
+  captureGoogleDriveOAuthCallback,
+  clearGoogleDriveAuthorizationResult,
+  createGoogleDriveAuthorizationUrl,
   isGoogleDriveAccessTokenFresh,
-  parseGoogleDriveRedirectResponse
+  parseGoogleDriveAuthorizationResponse,
+  readGoogleDriveAuthorizationResult
 } from "./googleDriveIdentity";
 
 const NOW = Date.parse("2026-07-27T12:00:00.000Z");
 const REDIRECT_PENDING = JSON.stringify({
   createdAt: Date.parse("2026-07-27T11:59:00.000Z"),
+  intent: "connect",
   projectId: "project-1",
-  redirectUri: "https://typr.ca/",
+  redirectUri: "https://typr.ca/google-drive-oauth-callback.html",
+  returnUri: "https://typr.ca/",
   state: "oauth-state",
-  version: 1
+  version: 2
 });
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
 describe("Google Drive redirect identity", () => {
   afterEach(() => {
@@ -22,290 +29,241 @@ describe("Google Drive redirect identity", () => {
     vi.unstubAllGlobals();
   });
 
-  it("unregisters the app worker before starting an exact root redirect", async () => {
+  it("builds an authorization URL with the exact dedicated callback and drive.file only", () => {
+    const url = new URL(
+      createGoogleDriveAuthorizationUrl({
+        clientId: "client-id",
+        intent: "connect",
+        projectId: "project-1",
+        redirectUri:
+          "https://typr.ca/google-drive-oauth-callback.html",
+        returnUri: "https://typr.ca/",
+        state: "oauth-state"
+      })
+    );
+
+    expect(url.origin).toBe("https://accounts.google.com");
+    expect(url.pathname).toBe("/o/oauth2/v2/auth");
+    expect(url.searchParams.get("client_id")).toBe("client-id");
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      "https://typr.ca/google-drive-oauth-callback.html"
+    );
+    expect(url.searchParams.get("response_type")).toBe("token");
+    expect(url.searchParams.get("scope")).toBe(GOOGLE_DRIVE_SCOPE);
+    expect(url.searchParams.get("state")).toBe("oauth-state");
+  });
+
+  it("stores a reload-safe request before navigating to Google", async () => {
+    const sessionStorage = memoryStorage();
+    const localStorage = memoryStorage();
     const assign = vi.fn();
-    const setItem = vi.fn();
     const unregister = vi.fn(async () => true);
-    vi.stubGlobal("crypto", {
-      randomUUID: () => "oauth-state"
-    });
+    vi.stubGlobal("crypto", { randomUUID: () => "oauth-state" });
     vi.stubGlobal("navigator", {
       serviceWorker: {
         getRegistration: vi.fn(async () => ({ unregister }))
       }
     });
+    vi.stubGlobal("document", {
+      baseURI: "https://typr.ca/"
+    });
     vi.stubGlobal("window", {
-      location: {
-        assign,
-        origin: "https://typr.ca"
-      },
-      sessionStorage: {
-        setItem
-      }
+      localStorage,
+      location: { assign },
+      sessionStorage
     });
 
-    await beginGoogleDriveRedirectAuthorization("client-id", "project-1");
+    await beginGoogleDriveRedirectAuthorization(
+      "client-id",
+      "project-1",
+      "change-location"
+    );
 
-    const authorizationUrl = new URL(assign.mock.calls[0][0] as string);
-    expect(authorizationUrl.origin).toBe("https://accounts.google.com");
-    expect(authorizationUrl.pathname).toBe("/o/oauth2/v2/auth");
-    expect(authorizationUrl.searchParams.get("client_id")).toBe("client-id");
-    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
-      "https://typr.ca/"
+    const pending = JSON.parse(
+      sessionStorage.getItem(GOOGLE_DRIVE_PENDING_STORAGE_KEY) ?? ""
     );
-    expect(authorizationUrl.searchParams.get("response_type")).toBe("token");
-    expect(authorizationUrl.searchParams.get("scope")).toBe(DRIVE_SCOPE);
-    expect(authorizationUrl.searchParams.get("state")).toBe("oauth-state");
-    expect(setItem).toHaveBeenCalledWith(
-      "typr.google-drive.redirect.v1",
-      expect.stringContaining('"projectId":"project-1"')
-    );
+    expect(pending).toMatchObject({
+      intent: "change-location",
+      projectId: "project-1",
+      redirectUri:
+        "https://typr.ca/google-drive-oauth-callback.html",
+      returnUri: "https://typr.ca/",
+      state: "oauth-state",
+      version: 2
+    });
+    expect(
+      localStorage.getItem(GOOGLE_DRIVE_PENDING_STORAGE_KEY)
+    ).toBe(JSON.stringify(pending));
+    expect(new URL(assign.mock.calls[0][0] as string).searchParams.get(
+      "redirect_uri"
+    )).toBe("https://typr.ca/google-drive-oauth-callback.html");
     expect(unregister).toHaveBeenCalledOnce();
     expect(unregister.mock.invocationCallOrder[0]).toBeLessThan(
       assign.mock.invocationCallOrder[0]
     );
   });
 
-  it("captures a redirect token and removes it from the address bar and storage", () => {
-    const removeItem = vi.fn();
-    const replaceState = vi.fn();
-    const setItem = vi.fn();
-    vi.spyOn(Date, "now").mockReturnValue(NOW);
-    vi.stubGlobal("window", {
-      history: {
-        replaceState,
-        state: { existing: true }
-      },
-      location: {
-        hash: `#access_token=redirect-token&expires_in=3600&scope=${encodeURIComponent(
-          DRIVE_SCOPE
-        )}&state=oauth-state`,
-        pathname: "/",
-        search: ""
-      },
-      sessionStorage: {
-        getItem: () => REDIRECT_PENDING,
-        removeItem,
-        setItem
-      },
-      localStorage: {
-        getItem: () => null,
-        removeItem: vi.fn()
-      }
-    });
-
-    expect(captureGoogleDriveRedirectResult()).toMatchObject({
+  it("validates state, scope, lifetime, and expiry", () => {
+    expect(
+      parseGoogleDriveAuthorizationResponse(
+        successfulResponse(),
+        REDIRECT_PENDING,
+        NOW
+      )
+    ).toEqual({
       error: null,
-      projectId: "project-1",
-      token: {
-        accessToken: "redirect-token"
-      }
-    });
-    expect(replaceState).toHaveBeenCalledWith(
-      { existing: true },
-      "",
-      "/"
-    );
-    expect(removeItem).toHaveBeenCalledWith(
-      "typr.google-drive.redirect.v1"
-    );
-    expect(setItem).toHaveBeenCalledWith(
-      "typr.google-drive.redirect-result.v1",
-      expect.stringContaining('"accessToken":"redirect-token"')
-    );
-  });
-
-  it("restores a captured token after an additional app reload", async () => {
-    const storedValues = new Map([
-      [
-        "typr.google-drive.redirect-result.v1",
-        JSON.stringify({
-          capturedAt: NOW,
-          result: {
-            error: null,
-            projectId: "project-1",
-            token: {
-              accessToken: "redirect-token",
-              expiresAt: NOW + 3_600_000
-            }
-          },
-          version: 1
-        })
-      ]
-    ]);
-    vi.spyOn(Date, "now").mockReturnValue(NOW + 1_000);
-    vi.stubGlobal("window", {
-      location: {
-        hash: ""
-      },
-      sessionStorage: {
-        getItem: (key: string) => storedValues.get(key) ?? null,
-        removeItem: (key: string) => storedValues.delete(key),
-        setItem: (key: string, value: string) =>
-          storedValues.set(key, value)
-      },
-      localStorage: {
-        getItem: () => null
-      }
-    });
-    vi.resetModules();
-    const reloadedIdentity = await import("./googleDriveIdentity");
-
-    expect(
-      reloadedIdentity.captureGoogleDriveRedirectResult()
-    ).toMatchObject({
-      error: null,
-      projectId: "project-1",
-      token: {
-        accessToken: "redirect-token"
-      }
-    });
-    expect(
-      reloadedIdentity.claimGoogleDriveRedirectResult()
-    ).toMatchObject({
-      projectId: "project-1",
-      token: {
-        accessToken: "redirect-token"
-      }
-    });
-    expect(
-      storedValues.has("typr.google-drive.redirect-result.v1")
-    ).toBe(true);
-
-    reloadedIdentity.clearGoogleDriveRedirectResult();
-
-    expect(
-      storedValues.has("typr.google-drive.redirect-result.v1")
-    ).toBe(false);
-  });
-
-  it("accepts a verified token with Drive file access", () => {
-    const result = parseGoogleDriveRedirectResponse(
-      new URLSearchParams({
-        access_token: "redirect-token",
-        expires_in: "3600",
-        scope: `openid ${DRIVE_SCOPE}`,
-        state: "oauth-state",
-        token_type: "Bearer"
-      }),
-      REDIRECT_PENDING,
-      NOW
-    );
-
-    expect(result).toEqual({
-      error: null,
+      intent: "connect",
       projectId: "project-1",
       token: {
         accessToken: "redirect-token",
-        expiresAt: Date.parse("2026-07-27T13:00:00.000Z")
+        expiresAt: NOW + 3_600_000
       }
     });
+
+    expect(
+      parseGoogleDriveAuthorizationResponse(
+        successfulResponse({ state: "wrong" }),
+        REDIRECT_PENDING,
+        NOW
+      ).error
+    ).toBe("Google authorization could not be verified. Try connecting again.");
+    expect(
+      parseGoogleDriveAuthorizationResponse(
+        successfulResponse({ scope: "openid" }),
+        REDIRECT_PENDING,
+        NOW
+      ).error
+    ).toBe("Google Drive file access was not granted.");
+    expect(
+      parseGoogleDriveAuthorizationResponse(
+        successfulResponse(),
+        REDIRECT_PENDING,
+        Date.parse("2026-07-27T12:15:01.000Z")
+      ).error
+    ).toBe("Google authorization took too long. Try connecting again.");
+
+    const tamperedPending = JSON.stringify({
+      ...JSON.parse(REDIRECT_PENDING),
+      returnUri: "https://example.com/"
+    });
+    expect(
+      parseGoogleDriveAuthorizationResponse(
+        successfulResponse(),
+        tamperedPending,
+        NOW
+      ).error
+    ).toContain("without a matching Typr connection request");
   });
 
-  it("rejects a response whose state does not match", () => {
-    const result = parseGoogleDriveRedirectResponse(
-      new URLSearchParams({
-        access_token: "redirect-token",
-        expires_in: "3600",
-        scope: DRIVE_SCOPE,
-        state: "different-state"
-      }),
-      REDIRECT_PENDING,
-      NOW
-    );
+  it("captures the callback, clears pending state, and keeps the token through multiple startup reads", () => {
+    const sessionStorage = memoryStorage([
+      [GOOGLE_DRIVE_PENDING_STORAGE_KEY, REDIRECT_PENDING]
+    ]);
+    const localStorage = memoryStorage([
+      [GOOGLE_DRIVE_PENDING_STORAGE_KEY, REDIRECT_PENDING]
+    ]);
+    vi.stubGlobal("document", { baseURI: "https://typr.ca/" });
+    vi.stubGlobal("window", { localStorage, sessionStorage });
 
-    expect(result).toMatchObject({
-      error: "Google authorization could not be verified. Try connecting again.",
+    const captured = captureGoogleDriveOAuthCallback({
+      hash: `#${successfulResponse().toString()}`,
+      localStorage,
+      now: NOW,
+      sessionStorage
+    });
+
+    expect(captured.returnUri).toBe("https://typr.ca/");
+    expect(captured.result.token?.accessToken).toBe("redirect-token");
+    expect(
+      sessionStorage.getItem(GOOGLE_DRIVE_PENDING_STORAGE_KEY)
+    ).toBeNull();
+    expect(
+      localStorage.getItem(GOOGLE_DRIVE_PENDING_STORAGE_KEY)
+    ).toBeNull();
+    expect(readGoogleDriveAuthorizationResult(NOW + 1_000)).toMatchObject({
+      projectId: "project-1",
+      token: { accessToken: "redirect-token" }
+    });
+    expect(readGoogleDriveAuthorizationResult(NOW + 2_000)).toMatchObject({
+      projectId: "project-1",
+      token: { accessToken: "redirect-token" }
+    });
+
+    clearGoogleDriveAuthorizationResult();
+    expect(
+      sessionStorage.getItem(GOOGLE_DRIVE_RESULT_STORAGE_KEY)
+    ).toBeNull();
+    expect(readGoogleDriveAuthorizationResult(NOW + 3_000)).toBeNull();
+  });
+
+  it("stores a visible authorization error without retaining a token", () => {
+    const sessionStorage = memoryStorage([
+      [GOOGLE_DRIVE_PENDING_STORAGE_KEY, REDIRECT_PENDING]
+    ]);
+    const localStorage = memoryStorage();
+    vi.stubGlobal("document", { baseURI: "https://typr.ca/" });
+    vi.stubGlobal("window", { localStorage, sessionStorage });
+
+    const captured = captureGoogleDriveOAuthCallback({
+      hash:
+        "#error=access_denied&error_description=The+user+declined&state=oauth-state",
+      localStorage,
+      now: NOW,
+      sessionStorage
+    });
+
+    expect(captured.result).toMatchObject({
+      error: "The user declined",
       projectId: "project-1",
       token: null
     });
   });
 
-  it("surfaces a cached return that lost Google's authorization details", () => {
-    const result = parseGoogleDriveRedirectResponse(
-      new URLSearchParams(),
-      REDIRECT_PENDING,
-      NOW
-    );
-
-    expect(result).toMatchObject({
-      error:
-        "Google returned to Typr without authorization details. The browser may have loaded a cached app version. Try connecting again.",
-      projectId: "project-1",
-      token: null
-    });
-  });
-
-  it("surfaces errors returned by Google's authorization server", () => {
-    const result = parseGoogleDriveRedirectResponse(
-      new URLSearchParams({
-        error: "access_denied",
-        error_description: "The user declined Drive access.",
-        state: "oauth-state"
-      }),
-      REDIRECT_PENDING,
-      NOW
-    );
-
-    expect(result).toMatchObject({
-      error: "The user declined Drive access.",
-      projectId: "project-1",
-      token: null
-    });
-  });
-
-  it("rejects stale authorization responses", () => {
-    const result = parseGoogleDriveRedirectResponse(
-      new URLSearchParams({
-        access_token: "redirect-token",
-        expires_in: "3600",
-        scope: DRIVE_SCOPE,
-        state: "oauth-state"
-      }),
-      REDIRECT_PENDING,
-      Date.parse("2026-07-27T12:15:01.000Z")
-    );
-
-    expect(result.error).toBe(
-      "Google authorization took too long. Try connecting again."
-    );
-    expect(result.token).toBeNull();
-  });
-
-  it("requires the Drive file scope in the response", () => {
-    const result = parseGoogleDriveRedirectResponse(
-      new URLSearchParams({
-        access_token: "redirect-token",
-        expires_in: "3600",
-        scope: "openid",
-        state: "oauth-state"
-      }),
-      REDIRECT_PENDING,
-      NOW
-    );
-
-    expect(result.error).toBe("Google Drive file access was not granted.");
-    expect(result.token).toBeNull();
-  });
-
-  it("treats tokens with more than one minute remaining as fresh", () => {
+  it("treats tokens with no more than one minute remaining as expired", () => {
     expect(
       isGoogleDriveAccessTokenFresh(
-        {
-          accessToken: "access-token",
-          expiresAt: NOW + 60_001
-        },
+        { accessToken: "token", expiresAt: NOW + 60_001 },
         NOW
       )
     ).toBe(true);
     expect(
       isGoogleDriveAccessTokenFresh(
-        {
-          accessToken: "access-token",
-          expiresAt: NOW + 60_000
-        },
+        { accessToken: "token", expiresAt: NOW + 60_000 },
         NOW
       )
     ).toBe(false);
   });
 });
+
+function successfulResponse(
+  overrides: Record<string, string> = {}
+): URLSearchParams {
+  return new URLSearchParams({
+    access_token: "redirect-token",
+    expires_in: "3600",
+    scope: GOOGLE_DRIVE_SCOPE,
+    state: "oauth-state",
+    token_type: "Bearer",
+    ...overrides
+  });
+}
+
+function memoryStorage(
+  entries: Array<[string, string]> = []
+): Storage {
+  const values = new Map(entries);
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => {
+      values.delete(key);
+    },
+    setItem: (key, value) => {
+      values.set(key, value);
+    }
+  };
+}

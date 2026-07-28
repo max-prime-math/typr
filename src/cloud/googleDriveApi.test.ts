@@ -41,7 +41,10 @@ describe("Google Drive project adapter", () => {
             {
               id: "folder-existing",
               name: "Existing writing",
-              mimeType: "application/vnd.google-apps.folder"
+              mimeType: "application/vnd.google-apps.folder",
+              parents: ["parent-a"],
+              webViewLink:
+                "https://drive.google.com/drive/folders/folder-existing"
             }
           ]
         });
@@ -51,13 +54,17 @@ describe("Google Drive project adapter", () => {
     const remote = new GoogleDriveProjectRemote("token");
 
     await expect(
-      remote.findOrCreateProjectFolder({
+      remote.findOrCreateManagedProjectFolder({
+        parentId: "parent-a",
         projectId: "project-a",
         projectName: "Writing"
       })
     ).resolves.toEqual({
       id: "folder-existing",
-      name: "Existing writing"
+      name: "Existing writing",
+      parents: ["parent-a"],
+      webViewLink:
+        "https://drive.google.com/drive/folders/folder-existing"
     });
     expect(request).toHaveBeenCalledTimes(1);
   });
@@ -75,7 +82,10 @@ describe("Google Drive project adapter", () => {
             id: "folder-existing",
             name: "Existing writing",
             mimeType: "application/vnd.google-apps.folder",
-            modifiedTime: "2026-07-26T12:00:00.000Z"
+            modifiedTime: "2026-07-26T12:00:00.000Z",
+            parents: ["parent-a"],
+            webViewLink:
+              "https://drive.google.com/drive/folders/folder-existing"
           }
         ]
         });
@@ -84,23 +94,109 @@ describe("Google Drive project adapter", () => {
     const remote = new GoogleDriveProjectRemote("token", request);
 
     await expect(
-      remote.findOrCreateProjectFolder({
+      remote.findOrCreateManagedProjectFolder({
+        parentId: "parent-a",
         projectId: "project-a",
         projectName: "Writing"
       })
     ).resolves.toEqual({
       id: "folder-existing",
-      name: "Existing writing"
+      name: "Existing writing",
+      parents: ["parent-a"],
+      webViewLink:
+        "https://drive.google.com/drive/folders/folder-existing"
     });
 
     const url = new URL(getRequestUrl(capturedInput));
     expect(url.searchParams.get("q")).toContain(
       "key='typrProjectId' and value='project-a'"
     );
+    expect(url.searchParams.get("q")).toContain(
+      "'parent-a' in parents"
+    );
+    expect(url.searchParams.get("q")).toContain(
+      "key='typrSchema' and value='2'"
+    );
     expect(new Headers(capturedInit?.headers).get("Authorization")).toBe(
       "Bearer token"
     );
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the managed project child under the selected parent only", async () => {
+    const requests: Array<{ init?: RequestInit; url: URL }> = [];
+    const request = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(getRequestUrl(input));
+        requests.push({ init, url });
+        if (!init?.method) {
+          return jsonResponse({ files: [] });
+        }
+        const metadata = JSON.parse(String(init.body));
+        return jsonResponse({
+          ...metadata,
+          id: "managed-child",
+          webViewLink:
+            "https://drive.google.com/drive/folders/managed-child"
+        });
+      }
+    );
+    const remote = new GoogleDriveProjectRemote("token", request);
+
+    await expect(
+      remote.findOrCreateManagedProjectFolder({
+        parentId: "chosen-parent",
+        projectId: "project-a",
+        projectName: "Writing"
+      })
+    ).resolves.toMatchObject({
+      id: "managed-child",
+      name: "Writing",
+      parents: ["chosen-parent"]
+    });
+
+    const createRequest = requests.find(
+      ({ init }) => init?.method === "POST"
+    );
+    expect(JSON.parse(String(createRequest?.init?.body))).toEqual({
+      name: "Writing",
+      mimeType: "application/vnd.google-apps.folder",
+      parents: ["chosen-parent"],
+      appProperties: {
+        typrKind: "project",
+        typrProjectId: "project-a",
+        typrSchema: "2"
+      }
+    });
+  });
+
+  it("refuses to verify a managed folder from a different parent", async () => {
+    const remote = new GoogleDriveProjectRemote(
+      "token",
+      vi.fn(async () =>
+        jsonResponse({
+          id: "managed-child",
+          name: "Writing",
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["other-parent"],
+          appProperties: {
+            typrKind: "project",
+            typrProjectId: "project-a",
+            typrSchema: "2"
+          },
+          webViewLink:
+            "https://drive.google.com/drive/folders/managed-child"
+        })
+      )
+    );
+
+    await expect(
+      remote.verifyManagedProjectFolder({
+        folderId: "managed-child",
+        parentId: "chosen-parent",
+        projectId: "project-a"
+      })
+    ).rejects.toThrow("Typr refused to sync");
   });
 
   it("reads nested Drive folders and downloads ordinary project files", async () => {

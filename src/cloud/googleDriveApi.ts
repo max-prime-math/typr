@@ -14,9 +14,11 @@ interface GoogleDriveFile {
   id: string;
   name: string;
   mimeType: string;
+  appProperties?: Record<string, string>;
   modifiedTime?: string;
   parents?: string[];
   trashed?: boolean;
+  webViewLink?: string;
 }
 
 interface GoogleDriveFileList {
@@ -39,6 +41,15 @@ const defaultGoogleDriveFetch: GoogleDriveFetch = (input, init) =>
 export interface GoogleDriveProjectFolder {
   id: string;
   name: string;
+  parents: string[];
+  webViewLink: string;
+}
+
+export interface GoogleDriveFolderMetadata {
+  id: string;
+  name: string;
+  parents: string[];
+  webViewLink: string;
 }
 
 export class GoogleDriveApiError extends Error {
@@ -63,17 +74,30 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
     private readonly request: GoogleDriveFetch = defaultGoogleDriveFetch
   ) {}
 
-  async findOrCreateProjectFolder(options: {
+  async getFolderMetadata(folderId: string): Promise<GoogleDriveFolderMetadata> {
+    const folder = await this.getFile(folderId);
+    if (folder.mimeType !== DRIVE_FOLDER_MIME_TYPE || folder.trashed) {
+      throw new Error(
+        "The selected Google Drive destination is not an available folder."
+      );
+    }
+    return toFolderMetadata(folder);
+  }
+
+  async findOrCreateManagedProjectFolder(options: {
+    parentId: string;
     projectId: string;
     projectName: string;
   }): Promise<GoogleDriveProjectFolder> {
     const query = [
       `mimeType = '${DRIVE_FOLDER_MIME_TYPE}'`,
       "trashed = false",
+      `'${escapeDriveQueryValue(options.parentId)}' in parents`,
       `appProperties has { key='typrKind' and value='project' }`,
       `appProperties has { key='typrProjectId' and value='${escapeDriveQueryValue(
         options.projectId
-      )}' }`
+      )}' }`,
+      `appProperties has { key='typrSchema' and value='2' }`
     ].join(" and ");
     const existing = await this.listFiles({
       orderBy: "modifiedTime desc",
@@ -81,22 +105,41 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
     });
     const matchingFolder = existing[0];
     if (matchingFolder) {
-      return {
-        id: matchingFolder.id,
-        name: matchingFolder.name
-      };
+      return toProjectFolder(matchingFolder, options.parentId);
     }
 
     const folder = await this.createMetadata({
       name: options.projectName.trim() || "Untitled project",
       mimeType: DRIVE_FOLDER_MIME_TYPE,
+      parents: [options.parentId],
       appProperties: {
         typrKind: "project",
         typrProjectId: options.projectId,
-        typrSchema: "1"
+        typrSchema: "2"
       }
     });
-    return { id: folder.id, name: folder.name };
+    return toProjectFolder(folder, options.parentId);
+  }
+
+  async verifyManagedProjectFolder(options: {
+    folderId: string;
+    parentId: string;
+    projectId: string;
+  }): Promise<GoogleDriveProjectFolder> {
+    const folder = await this.getFile(options.folderId);
+    if (
+      folder.mimeType !== DRIVE_FOLDER_MIME_TYPE ||
+      folder.trashed ||
+      !folder.parents?.includes(options.parentId) ||
+      folder.appProperties?.typrKind !== "project" ||
+      folder.appProperties?.typrProjectId !== options.projectId ||
+      folder.appProperties?.typrSchema !== "2"
+    ) {
+      throw new Error(
+        "Typr refused to sync because the Drive folder is not the managed folder selected for this project."
+      );
+    }
+    return toProjectFolder(folder, options.parentId);
   }
 
   async readTree(remoteRootId: string): Promise<LocalFolderSyncTree> {
@@ -214,7 +257,7 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
                 appProperties: {
                   typrKind: "entry",
                   typrRootId: remoteRootId,
-                  typrSchema: "1"
+                  typrSchema: "2"
                 }
               })
             : await this.createFile({
@@ -252,7 +295,7 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
       const url = new URL(`${DRIVE_API_ROOT}/files`);
       url.searchParams.set(
         "fields",
-        "nextPageToken,files(id,name,mimeType,modifiedTime,parents,trashed)"
+        "nextPageToken,files(id,name,mimeType,modifiedTime,parents,trashed,webViewLink,appProperties)"
       );
       url.searchParams.set("pageSize", "1000");
       url.searchParams.set("spaces", "drive");
@@ -273,6 +316,18 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
     return files;
   }
 
+  private async getFile(fileId: string): Promise<GoogleDriveFile> {
+    const url = new URL(
+      `${DRIVE_API_ROOT}/files/${encodeURIComponent(fileId)}`
+    );
+    url.searchParams.set(
+      "fields",
+      "id,name,mimeType,modifiedTime,parents,trashed,webViewLink,appProperties"
+    );
+    const response = await this.authorizedFetch(url);
+    return (await response.json()) as GoogleDriveFile;
+  }
+
   private async downloadFile(fileId: string): Promise<Uint8Array> {
     const url = new URL(
       `${DRIVE_API_ROOT}/files/${encodeURIComponent(fileId)}`
@@ -289,7 +344,10 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
     appProperties?: Record<string, string>;
   }): Promise<GoogleDriveFile> {
     const url = new URL(`${DRIVE_API_ROOT}/files`);
-    url.searchParams.set("fields", "id,name,mimeType,modifiedTime,parents");
+    url.searchParams.set(
+      "fields",
+      "id,name,mimeType,modifiedTime,parents,trashed,webViewLink,appProperties"
+    );
     const response = await this.authorizedFetch(url, {
       method: "POST",
       headers: {
@@ -314,7 +372,7 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
       appProperties: {
         typrKind: "entry",
         typrRootId: options.rootId,
-        typrSchema: "1"
+        typrSchema: "2"
       }
     });
     const body = new Blob([
@@ -326,7 +384,10 @@ export class GoogleDriveProjectRemote implements CloudProjectRemote {
     ]);
     const url = new URL(`${DRIVE_UPLOAD_ROOT}/files`);
     url.searchParams.set("uploadType", "multipart");
-    url.searchParams.set("fields", "id,name,mimeType,modifiedTime,parents");
+    url.searchParams.set(
+      "fields",
+      "id,name,mimeType,modifiedTime,parents,trashed,webViewLink,appProperties"
+    );
     const response = await this.authorizedFetch(url, {
       method: "POST",
       headers: {
@@ -410,6 +471,43 @@ function getRemoteParentId(
     throw new Error(`Google Drive parent folder “${parentPath}” is missing.`);
   }
   return parent.id;
+}
+
+function toFolderMetadata(
+  folder: GoogleDriveFile
+): GoogleDriveFolderMetadata {
+  return {
+    id: folder.id,
+    name: folder.name,
+    parents: folder.parents ?? [],
+    webViewLink: getFolderWebViewLink(folder)
+  };
+}
+
+function toProjectFolder(
+  folder: GoogleDriveFile,
+  parentId: string
+): GoogleDriveProjectFolder {
+  return {
+    ...toFolderMetadata(folder),
+    parents: folder.parents?.includes(parentId)
+      ? folder.parents
+      : [parentId]
+  };
+}
+
+function getFolderWebViewLink(folder: GoogleDriveFile): string {
+  if (folder.webViewLink) {
+    try {
+      const url = new URL(folder.webViewLink);
+      if (url.protocol === "https:" && url.hostname === "drive.google.com") {
+        return url.href;
+      }
+    } catch {
+      // Fall back to Drive's stable folder URL.
+    }
+  }
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(folder.id)}`;
 }
 
 function getDriveEntryKind(file: GoogleDriveFile): LocalFolderSyncEntry["kind"] {

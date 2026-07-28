@@ -23,7 +23,7 @@ export interface CloudSyncPolicy {
 }
 
 export interface CloudProjectBindingRecord {
-  version: 1;
+  version: 1 | 2;
   projectId: string;
   providerId: CloudStorageProviderId;
   remoteRootId: string;

@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { GoogleDriveConnectionCard } from "../app/GoogleDriveConnectionCard";
 import type { MobileKeyboardLanguage } from "../app/appState";
 import type {
   EditorFormatterId,
@@ -238,17 +239,6 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   </div>
                 ) : null}
               </div>
-              {googleDriveSyncState?.status === "error" ||
-              googleDriveSyncState?.status === "authorization-needed" ? (
-                <p
-                  className="sync-connection-notice sync-connection-notice--error"
-                  role="alert"
-                >
-                  <strong>Google Drive connection failed</strong>
-                  <span>{googleDriveSyncState.message}</span>
-                </p>
-              ) : null}
-
               <fieldset
                 className="sync-policy-options"
                 disabled={!localFolderSyncState?.directoryName}
@@ -348,88 +338,26 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                 </p>
               </div>
 
-              <div className="sync-settings-project-card">
-                <div>
-                  <span className="sync-settings-project-card__label">
-                    Selected project
-                  </span>
-                  <strong>
-                    {selectedProjectRepository?.displayName ??
-                      "No project selected"}
-                  </strong>
-                  <small>
-                    {googleDriveSyncState?.remoteRootName
-                      ? `${googleDriveSyncState.remoteRootName} · ${googleDriveSyncState.message}`
-                      : googleDriveSync.configured
-                        ? googleDriveSyncState?.message ??
-                          "No Google Drive folder connected"
-                        : "Google Drive sync is not configured on this deployment"}
-                  </small>
-                </div>
-                {selectedProjectRepository ? (
-                  <div className="sync-settings-project-card__actions">
-                    {googleDriveSyncState?.remoteRootName ? (
-                      <>
-                        <button
-                          className="pane__button"
-                          disabled={
-                            googleDriveSyncState.status === "authorizing" ||
-                            googleDriveSyncState.status === "syncing"
-                          }
-                          onClick={() => {
-                            void googleDriveSync.syncNow(
-                              selectedProjectRepository.id
-                            );
-                          }}
-                          type="button"
-                        >
-                          {googleDriveSyncState.status === "authorizing"
-                            ? "Connecting…"
-                            : googleDriveSyncState.status === "syncing"
-                              ? "Syncing…"
-                              : googleDriveSyncState.status ===
-                                  "authorization-needed"
-                                ? "Reconnect"
-                                : "Sync now"}
-                        </button>
-                        <button
-                          className="pane__button"
-                          onClick={() => {
-                            void googleDriveSync.disconnect(
-                              selectedProjectRepository.id
-                            );
-                          }}
-                          type="button"
-                        >
-                          Unlink
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="pane__button"
-                        disabled={
-                          !googleDriveSync.configured ||
-                          googleDriveSyncState?.status === "authorizing"
-                        }
-                        onClick={() => {
-                          void googleDriveSync.connect(
-                            selectedProjectRepository.id
-                          );
-                        }}
-                        type="button"
-                      >
-                        {googleDriveSyncState?.status === "authorizing"
-                          ? "Connecting…"
-                          : "Connect Google Drive"}
-                      </button>
-                    )}
-                  </div>
-                ) : null}
-              </div>
+              {selectedProjectRepository ? (
+                <GoogleDriveConnectionCard
+                  className="sync-settings-project-card"
+                  controller={googleDriveSync}
+                  projectId={selectedProjectRepository.id}
+                  projectName={selectedProjectRepository.displayName}
+                  state={googleDriveSyncState}
+                />
+              ) : (
+                <p className="pane__meta">
+                  Select a project to configure Google Drive sync.
+                </p>
+              )}
 
               <fieldset
                 className="sync-policy-options"
-                disabled={!googleDriveSyncState?.remoteRootName}
+                disabled={
+                  !googleDriveSyncState?.projectFolderName ||
+                  googleDriveSyncState.migrationRequired
+                }
               >
                 <legend>Sync mode</legend>
                 {[
@@ -494,7 +422,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                 <span className="sync-interval-field__control">
                   <input
                     disabled={
-                      !googleDriveSyncState?.remoteRootName ||
+                      !googleDriveSyncState?.projectFolderName ||
+                      googleDriveSyncState.migrationRequired ||
                       googleDriveSyncState.syncMode !== "interval"
                     }
                     max={1440}

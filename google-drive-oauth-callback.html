@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#f5f2ea" />
+    <title>Connecting Google Drive · Typr</title>
+    <script>
+      window.__TYPR_GOOGLE_DRIVE_OAUTH_HASH__ = window.location.hash;
+      if (window.location.hash) {
+        window.history.replaceState(
+          window.history.state,
+          "",
+          window.location.pathname + window.location.search
+        );
+      }
+    </script>
+    <style>
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        box-sizing: border-box;
+        padding: 1.5rem;
+        background: #f5f2ea;
+        color: #1c231f;
+        font: 16px/1.5 system-ui, sans-serif;
+      }
+
+      main {
+        width: min(32rem, 100%);
+        padding: 1.25rem;
+        border: 1px solid #c9c2b5;
+        border-radius: 0.75rem;
+        background: #fffdf8;
+        box-shadow: 0 1rem 2.5rem rgba(28, 35, 31, 0.12);
+      }
+
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.15rem;
+      }
+
+      p {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main aria-live="polite">
+      <h1>Connecting Google Drive</h1>
+      <p id="google-drive-callback-status">
+        Verifying Google’s response before Typr starts…
+      </p>
+    </main>
+    <script type="module" src="/src/cloud/googleDriveOAuthCallbackPage.ts"></script>
+  </body>
+</html>

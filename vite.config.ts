@@ -123,13 +123,17 @@ export default defineConfig(({ command }) => {
             "svgedit/images/**/*"
           ],
           globIgnores: [
+            "google-drive-oauth-callback.html",
             "assets/binaryInlined-*.js",
             "core/busytex/**",
             "core/tikz-editor/**",
             "**/*.otf",
             "**/*.ttf"
           ],
-          navigateFallbackDenylist: [/\/core\/tikz-editor\//],
+          navigateFallbackDenylist: [
+            /\/core\/tikz-editor\//,
+            /\/google-drive-oauth-callback\.html$/
+          ],
           maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
           runtimeCaching: [
             {
@@ -175,6 +179,17 @@ export default defineConfig(({ command }) => {
       format: "es"
     },
     build: {
+      rollupOptions: {
+        input: {
+          app: fileURLToPath(new URL("./index.html", import.meta.url)),
+          googleDriveOAuthCallback: fileURLToPath(
+            new URL(
+              "./google-drive-oauth-callback.html",
+              import.meta.url
+            )
+          )
+        }
+      },
       assetsInlineLimit(filePath, content) {
         if (filePath.endsWith(".svg")) {
           return false;

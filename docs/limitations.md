@@ -12,7 +12,7 @@ Projects are tied to browser site data for the Typr origin. Clearing site data c
 
 ## Cloud sync
 
-Google Drive sync requires an online connection and a deployment configured with a Google OAuth web client, including its deployment root as an authorized redirect URI. The client-side access-token flow does not issue refresh tokens, so background policies run only while the Typr tab is open and authorization remains active. A user action may be required to reconnect after reload or token expiry.
+Google Drive sync requires an online connection and a deployment configured with a Google OAuth web client, a restricted Google Picker browser key, a numeric Cloud project number, and the dedicated callback page as an exact authorized redirect URI. The client-side `drive.file` access-token flow does not issue refresh tokens, so background policies run only while the Typr tab is open and authorization remains active. A user action is required to reconnect after reload or token expiry. Typr displays only the Picker-selected parent name and managed child-folder name because `drive.file` does not provide an arbitrary full Drive hierarchy.
 
 ## Git
 

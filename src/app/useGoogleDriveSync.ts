@@ -10,7 +10,6 @@ import {
 import type { AppSnapshot } from "./appState";
 import {
   DEFAULT_CLOUD_SYNC_POLICY,
-  getCloudSyncPolicyMessage,
   isCloudIntervalSyncDue,
   normalizeCloudSyncPolicy,
   synchronizeCloudProject,
@@ -18,16 +17,32 @@ import {
   type CloudSyncMode
 } from "../cloud/cloudSync";
 import {
+  createGoogleDriveBinding,
+  isGoogleDriveBindingV2,
+  isLegacyGoogleDriveBinding,
+  readGoogleDriveBindingMetadata,
+  type GoogleDriveBindingV2
+} from "../cloud/googleDriveBinding";
+import {
+  createGoogleDriveProjectState,
+  reduceGoogleDriveConnectionState,
+  type GoogleDriveConnectionEvent,
+  type GoogleDriveProjectState
+} from "../cloud/googleDriveConnectionState";
+import {
   GoogleDriveApiError,
   GoogleDriveProjectRemote
 } from "../cloud/googleDriveApi";
 import {
   beginGoogleDriveRedirectAuthorization,
-  claimGoogleDriveRedirectResult,
-  clearGoogleDriveRedirectResult,
+  clearGoogleDriveAuthorizationResult,
+  clearGoogleDrivePendingAuthorization,
   isGoogleDriveAccessTokenFresh,
-  type GoogleDriveAccessToken
+  readGoogleDriveAuthorizationResult,
+  type GoogleDriveAccessToken,
+  type GoogleDriveAuthorizationIntent
 } from "../cloud/googleDriveIdentity";
+import { showGoogleDriveFolderPicker } from "../cloud/googleDrivePicker";
 import {
   projectRepositoryToLegacyProject,
   type TyprProjectRepository,
@@ -48,76 +63,82 @@ const CLOUD_BROWSER_CHANGE_DEBOUNCE_MS = 800;
 const CLOUD_CONSTANT_POLL_INTERVAL_MS = 60_000;
 const CLOUD_INTERVAL_CHECK_MS = 30_000;
 
-export interface GoogleDriveProjectState {
-  status:
-    | "disconnected"
-    | "authorization-needed"
-    | "authorizing"
-    | "syncing"
-    | "synced"
-    | "error"
-    | "unconfigured";
-  remoteRootName: string | null;
-  lastSyncedAt: string | null;
+export type { GoogleDriveProjectState };
+
+export interface GoogleDriveNotice {
   message: string;
-  syncMode: CloudSyncMode;
-  syncIntervalMinutes: number;
+  projectId: string | null;
+  title: string;
+  tone: "error" | "info" | "success";
 }
 
 export function useGoogleDriveSync(options: {
   clientId: string;
+  cloudProjectNumber: string;
   isHydrated: boolean;
+  pickerApiKey: string;
   projectStorage: TyprProjectStorageState;
   setProjectStorage: Dispatch<SetStateAction<TyprProjectStorageState>>;
   setRawSnapshot: Dispatch<SetStateAction<AppSnapshot>>;
 }) {
   const {
     clientId,
+    cloudProjectNumber,
     isHydrated,
+    pickerApiKey,
     projectStorage,
     setProjectStorage,
     setRawSnapshot
   } = options;
-  const configured = Boolean(clientId.trim());
+  const configured = Boolean(
+    clientId.trim() &&
+      pickerApiKey.trim() &&
+      /^\d+$/.test(cloudProjectNumber.trim())
+  );
   const [states, setStates] = useState<Record<string, GoogleDriveProjectState>>(
     {}
   );
+  const [notice, setNotice] = useState<GoogleDriveNotice | null>(null);
   const projectStorageRef = useRef(projectStorage);
   const accessTokenRef = useRef<GoogleDriveAccessToken | null>(null);
   const redirectResumeStartedRef = useRef(false);
-  const bindingsRef = useRef(
-    new Map<string, CloudProjectBindingRecord>()
-  );
+  const bindingsRef = useRef(new Map<string, GoogleDriveBindingV2>());
   const runningProjectIdsRef = useRef(new Set<string>());
   const queuedProjectIdsRef = useRef(new Set<string>());
   const syncTimersRef = useRef(new Map<string, number>());
   const runProjectSyncRef = useRef<
-    (projectId: string, interactive: boolean) => Promise<void>
+    (
+      projectId: string,
+      interactive: boolean,
+      announce?: boolean
+    ) => Promise<void>
   >(async () => undefined);
   projectStorageRef.current = projectStorage;
 
-  const updateState = useCallback(
-    (
-      projectId: string,
-      updater:
-        | GoogleDriveProjectState
-        | ((
-            current: GoogleDriveProjectState
-          ) => GoogleDriveProjectState)
-    ) => {
-      setStates((currentStates) => {
-        const current =
+  const dispatchState = useCallback(
+    (projectId: string, event: GoogleDriveConnectionEvent) => {
+      setStates((currentStates) => ({
+        ...currentStates,
+        [projectId]: reduceGoogleDriveConnectionState(
           currentStates[projectId] ??
-          createDisconnectedGoogleDriveState(configured);
-        const next =
-          typeof updater === "function" ? updater(current) : updater;
-        return {
-          ...currentStates,
-          [projectId]: next
-        };
-      });
+            createGoogleDriveProjectState(configured),
+          event
+        )
+      }));
     },
     [configured]
+  );
+
+  const showNotice = useCallback(
+    (
+      projectId: string | null,
+      tone: GoogleDriveNotice["tone"],
+      title: string,
+      message: string
+    ) => {
+      setNotice({ message, projectId, title, tone });
+    },
+    []
   );
 
   const clearScheduledSync = useCallback((projectId: string) => {
@@ -140,47 +161,64 @@ export function useGoogleDriveSync(options: {
     [clearScheduledSync]
   );
 
-  const getRemote = useCallback(
-    async (): Promise<GoogleDriveProjectRemote> => {
-      if (!configured) {
-        throw new Error(
-          "Google Drive sync is not configured on this deployment."
-        );
-      }
-      if (
-        isGoogleDriveAccessTokenFresh(accessTokenRef.current)
-      ) {
-        return new GoogleDriveProjectRemote(
-          accessTokenRef.current.accessToken
-        );
-      }
-      throw new GoogleDriveAuthorizationRequiredError();
-    },
-    [configured]
-  );
+  const getRemote = useCallback((): GoogleDriveProjectRemote => {
+    if (!configured) {
+      throw new Error(getGoogleDriveConfigurationMessage(options));
+    }
+    if (isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+      return new GoogleDriveProjectRemote(
+        accessTokenRef.current.accessToken
+      );
+    }
+    throw new GoogleDriveAuthorizationRequiredError();
+  }, [
+    clientId,
+    cloudProjectNumber,
+    configured,
+    pickerApiKey
+  ]);
 
-  const startRedirectAuthorization = useCallback(
-    (projectId: string) => {
-      updateState(projectId, (current) => ({
-        ...current,
-        status: "authorizing",
-        message: "Redirecting to Google for authorization…"
-      }));
+  const startAuthorization = useCallback(
+    (projectId: string, intent: GoogleDriveAuthorizationIntent) => {
+      if (!configured) {
+        const message = getGoogleDriveConfigurationMessage(options);
+        dispatchState(projectId, { type: "failed", message });
+        showNotice(projectId, "error", "Google Drive unavailable", message);
+        return;
+      }
+      dispatchState(projectId, { type: "authorization-started" });
+      showNotice(
+        projectId,
+        "info",
+        "Connecting Google Drive",
+        "Typr is opening Google authorization. After returning, continue by choosing a Drive destination."
+      );
       void beginGoogleDriveRedirectAuthorization(
         clientId,
-        projectId
+        projectId,
+        intent
       ).catch((error) => {
-        updateState(projectId, (current) => ({
-          ...current,
-          status: "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Unable to start Google authorization."
-        }));
+        clearGoogleDrivePendingAuthorization();
+        const message = getErrorMessage(
+          error,
+          "Unable to start Google authorization."
+        );
+        dispatchState(projectId, { type: "failed", message });
+        showNotice(
+          projectId,
+          "error",
+          "Google authorization failed",
+          message
+        );
       });
     },
-    [clientId, updateState]
+    [
+      clientId,
+      configured,
+      dispatchState,
+      options,
+      showNotice
+    ]
   );
 
   const applySyncedProject = useCallback(
@@ -223,16 +261,30 @@ export function useGoogleDriveSync(options: {
   );
 
   const runProjectSync = useCallback(
-    async (projectId: string, interactive: boolean) => {
+    async (
+      projectId: string,
+      interactive: boolean,
+      announce = interactive
+    ) => {
       const binding = bindingsRef.current.get(projectId);
       if (!binding) {
         return;
       }
-      if (
-        interactive &&
-        !isGoogleDriveAccessTokenFresh(accessTokenRef.current)
-      ) {
-        startRedirectAuthorization(projectId);
+      const metadata = readGoogleDriveBindingMetadata(binding);
+      if (!metadata) {
+        dispatchState(projectId, {
+          type: "failed",
+          message:
+            "This Google Drive binding is incomplete. Unlink it and choose a destination again."
+        });
+        return;
+      }
+      if (!isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+        if (interactive) {
+          startAuthorization(projectId, "reconnect");
+        } else {
+          dispatchState(projectId, { type: "authorization-needed" });
+        }
         return;
       }
       if (runningProjectIdsRef.current.has(projectId)) {
@@ -241,21 +293,14 @@ export function useGoogleDriveSync(options: {
       }
 
       runningProjectIdsRef.current.add(projectId);
-      updateState(projectId, (current) => ({
-        ...current,
-        status: interactive ? "authorizing" : "syncing",
-        message: interactive
-          ? "Connecting to Google Drive…"
-          : `Syncing ${binding.remoteRootName}…`
-      }));
-
+      dispatchState(projectId, { type: "sync-started", metadata });
       try {
-        const remote = await getRemote();
-        updateState(projectId, (current) => ({
-          ...current,
-          status: "syncing",
-          message: `Syncing ${binding.remoteRootName}…`
-        }));
+        const remote = getRemote();
+        await remote.verifyManagedProjectFolder({
+          folderId: metadata.projectFolderId,
+          parentId: metadata.selectedParentId,
+          projectId
+        });
         const startedProject = projectStorageRef.current.projects.find(
           (project) => project.id === projectId
         );
@@ -277,31 +322,46 @@ export function useGoogleDriveSync(options: {
           result.startedProjectTree,
           result.desiredTree
         );
-        bindingsRef.current.set(projectId, result.binding);
-        await saveCloudProjectBinding(result.binding);
-        const policy = getBindingPolicy(result.binding);
-        updateState(projectId, {
-          status: "synced",
-          remoteRootName: result.binding.remoteRootName,
-          lastSyncedAt: result.binding.lastSyncedAt,
-          message: getCloudSyncPolicyMessage(policy),
+        const nextBinding = result.binding as GoogleDriveBindingV2;
+        bindingsRef.current.set(projectId, nextBinding);
+        await saveCloudProjectBinding(nextBinding);
+        const policy = getBindingPolicy(nextBinding);
+        dispatchState(projectId, {
+          type: "synced",
+          lastSyncedAt: nextBinding.lastSyncedAt ?? new Date().toISOString(),
+          metadata,
           syncMode: policy.mode,
           syncIntervalMinutes: policy.intervalMinutes
         });
+        if (announce) {
+          showNotice(
+            projectId,
+            "success",
+            "Google Drive sync complete",
+            `${metadata.projectFolderName} is synchronized inside ${metadata.selectedParentName}.`
+          );
+        }
       } catch (error) {
         if (isGoogleAuthorizationError(error)) {
           accessTokenRef.current = null;
+          dispatchState(projectId, {
+            type: "authorization-needed",
+            message: "Google authorization expired. Reconnect to resume sync."
+          });
+        } else {
+          dispatchState(projectId, {
+            type: "failed",
+            message: getErrorMessage(error, "Google Drive sync failed.")
+          });
         }
-        updateState(projectId, (current) => ({
-          ...current,
-          status: isGoogleAuthorizationError(error)
-            ? "authorization-needed"
-            : "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Google Drive sync failed."
-        }));
+        if (announce) {
+          showNotice(
+            projectId,
+            "error",
+            "Google Drive sync failed",
+            getErrorMessage(error, "Google Drive sync failed.")
+          );
+        }
       } finally {
         runningProjectIdsRef.current.delete(projectId);
         if (queuedProjectIdsRef.current.delete(projectId)) {
@@ -311,63 +371,113 @@ export function useGoogleDriveSync(options: {
     },
     [
       applySyncedProject,
+      dispatchState,
       getRemote,
       scheduleSync,
-      startRedirectAuthorization,
-      updateState
+      showNotice,
+      startAuthorization
     ]
   );
   runProjectSyncRef.current = runProjectSync;
 
-  const connect = useCallback(
+  const chooseLocation = useCallback(
     async (projectId: string) => {
-      if (bindingsRef.current.has(projectId)) {
-        await runProjectSyncRef.current(projectId, true);
-        return;
-      }
       const project = projectStorageRef.current.projects.find(
         (entry) => entry.id === projectId
       );
       if (!project) {
         return;
       }
-      if (!configured) {
-        updateState(
+      let existingBinding = bindingsRef.current.get(projectId);
+      let legacyBinding: CloudProjectBindingRecord | null = null;
+      if (!existingBinding) {
+        const storedBinding = await loadCloudProjectBinding(
+          GOOGLE_DRIVE_PROVIDER_ID,
+          projectId
+        );
+        if (isGoogleDriveBindingV2(storedBinding)) {
+          existingBinding = storedBinding;
+          bindingsRef.current.set(projectId, storedBinding);
+        } else if (isLegacyGoogleDriveBinding(storedBinding)) {
+          legacyBinding = storedBinding;
+        }
+      }
+      if (!isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+        startAuthorization(
           projectId,
-          createDisconnectedGoogleDriveState(false)
+          existingBinding ? "change-location" : "connect"
         );
         return;
       }
-      if (!isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
-        startRedirectAuthorization(projectId);
-        return;
-      }
 
-      updateState(projectId, {
-        ...createDisconnectedGoogleDriveState(true),
-        status: "authorizing",
-        message: "Connecting to Google Drive…"
-      });
+      if (legacyBinding) {
+        const legacyPolicy = getBindingPolicy(legacyBinding);
+        dispatchState(projectId, {
+          type: "legacy-binding-restored",
+          folderName: legacyBinding.remoteRootName,
+          lastSyncedAt: legacyBinding.lastSyncedAt,
+          syncIntervalMinutes: legacyPolicy.intervalMinutes,
+          syncMode: legacyPolicy.mode
+        });
+      }
+      dispatchState(projectId, { type: "choosing-location" });
       try {
-        const remote = await getRemote();
-        const folder = await remote.findOrCreateProjectFolder({
+        const pickerResult = await showGoogleDriveFolderPicker({
+          accessToken: accessTokenRef.current.accessToken,
+          appId: cloudProjectNumber,
+          developerKey: pickerApiKey
+        });
+        if (pickerResult.kind === "cancelled") {
+          dispatchState(projectId, {
+            type: "location-cancelled",
+            hasBinding: Boolean(existingBinding),
+            legacyFolderName: legacyBinding?.remoteRootName
+          });
+          showNotice(
+            projectId,
+            "info",
+            "Drive location unchanged",
+            existingBinding
+              ? "The existing managed project folder remains connected."
+              : legacyBinding
+                ? `No new folder was created. The old “${legacyBinding.remoteRootName}” test folder remains in Drive.`
+              : "No Google Drive folder was created."
+          );
+          return;
+        }
+
+        const remote = getRemote();
+        const parent = await remote.getFolderMetadata(
+          pickerResult.folder.id
+        );
+        dispatchState(projectId, {
+          type: "creating-project-folder",
+          parentName: parent.name
+        });
+        const folder = await remote.findOrCreateManagedProjectFolder({
+          parentId: parent.id,
           projectId,
           projectName: project.displayName
         });
-        const now = new Date().toISOString();
-        const binding: CloudProjectBindingRecord = {
-          version: 1,
-          projectId,
-          providerId: GOOGLE_DRIVE_PROVIDER_ID,
-          remoteRootId: folder.id,
-          remoteRootName: folder.name,
-          connectedAt: now,
-          lastSyncedAt: null,
-          syncMode: DEFAULT_CLOUD_SYNC_POLICY.mode,
-          syncIntervalMinutes:
-            DEFAULT_CLOUD_SYNC_POLICY.intervalMinutes,
-          worktreeSignatures: {}
-        };
+        const policy = existingBinding
+          ? getBindingPolicy(existingBinding)
+          : legacyBinding
+            ? getBindingPolicy(legacyBinding)
+            : DEFAULT_CLOUD_SYNC_POLICY;
+        const binding = createGoogleDriveBinding({
+          connectedAt: new Date().toISOString(),
+          folder,
+          parent,
+          policy,
+          projectId
+        });
+        const metadata = readGoogleDriveBindingMetadata(binding);
+        if (!metadata) {
+          throw new Error(
+            "Typr could not create a complete Google Drive binding."
+          );
+        }
+        dispatchState(projectId, { type: "sync-started", metadata });
         const result = await synchronizeCloudProject({
           binding,
           project,
@@ -378,111 +488,199 @@ export function useGoogleDriveSync(options: {
           result.startedProjectTree,
           result.desiredTree
         );
-        bindingsRef.current.set(projectId, result.binding);
-        await saveCloudProjectBinding(result.binding);
-        const policy = getBindingPolicy(result.binding);
-        updateState(projectId, {
-          status: "synced",
-          remoteRootName: folder.name,
-          lastSyncedAt: result.binding.lastSyncedAt,
-          message: getCloudSyncPolicyMessage(policy),
+        const nextBinding = result.binding as GoogleDriveBindingV2;
+        bindingsRef.current.set(projectId, nextBinding);
+        await saveCloudProjectBinding(nextBinding);
+        dispatchState(projectId, {
+          type: "synced",
+          lastSyncedAt: nextBinding.lastSyncedAt ?? new Date().toISOString(),
+          metadata,
           syncMode: policy.mode,
           syncIntervalMinutes: policy.intervalMinutes
         });
+        showNotice(
+          projectId,
+          "success",
+          "Google Drive connected",
+          `${folder.name} is now synchronized inside ${parent.name}.`
+        );
       } catch (error) {
+        const fallbackMessage = getErrorMessage(
+          error,
+          "Unable to create the Google Drive project folder."
+        );
+        const message = legacyBinding
+          ? `${fallbackMessage} The old “${legacyBinding.remoteRootName}” test folder remains in Drive until you remove it manually.`
+          : fallbackMessage;
+        if (existingBinding) {
+          const existingMetadata =
+            readGoogleDriveBindingMetadata(existingBinding);
+          if (existingMetadata) {
+            const policy = getBindingPolicy(existingBinding);
+            dispatchState(projectId, {
+              type: "binding-restored",
+              configured,
+              lastSyncedAt: existingBinding.lastSyncedAt,
+              metadata: existingMetadata,
+              syncMode: policy.mode,
+              syncIntervalMinutes: policy.intervalMinutes
+            });
+          }
+        }
         if (isGoogleAuthorizationError(error)) {
           accessTokenRef.current = null;
+          dispatchState(projectId, { type: "authorization-needed" });
+        } else {
+          dispatchState(projectId, {
+            type: "failed",
+            message
+          });
         }
-        updateState(projectId, {
-          ...createDisconnectedGoogleDriveState(true),
-          status: isGoogleAuthorizationError(error)
-            ? "authorization-needed"
-            : "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Unable to connect Google Drive."
-        });
+        showNotice(
+          projectId,
+          "error",
+          "Google Drive connection failed",
+          message
+        );
+      } finally {
+        clearGoogleDriveAuthorizationResult();
       }
     },
     [
       applySyncedProject,
+      cloudProjectNumber,
       configured,
+      dispatchState,
       getRemote,
-      startRedirectAuthorization,
-      updateState
+      pickerApiKey,
+      showNotice,
+      startAuthorization
     ]
+  );
+
+  const connect = useCallback(
+    async (projectId: string) => {
+      if (bindingsRef.current.has(projectId)) {
+        await runProjectSyncRef.current(projectId, true);
+        return;
+      }
+      if (isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+        await chooseLocation(projectId);
+        return;
+      }
+      startAuthorization(projectId, "connect");
+    },
+    [chooseLocation, startAuthorization]
+  );
+
+  const changeLocation = useCallback(
+    async (projectId: string) => {
+      if (isGoogleDriveAccessTokenFresh(accessTokenRef.current)) {
+        await chooseLocation(projectId);
+        return;
+      }
+      startAuthorization(projectId, "change-location");
+    },
+    [chooseLocation, startAuthorization]
   );
 
   useEffect(() => {
     if (!isHydrated || redirectResumeStartedRef.current) {
       return;
     }
-    const result = claimGoogleDriveRedirectResult();
+    const result = readGoogleDriveAuthorizationResult();
     if (!result) {
       return;
     }
     redirectResumeStartedRef.current = true;
+
+    const currentUrl = new URL(window.location.href);
+    if (currentUrl.searchParams.has("google-drive-return")) {
+      currentUrl.searchParams.delete("google-drive-return");
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`
+      );
+    }
+
     if (!result.projectId) {
-      clearGoogleDriveRedirectResult();
-      console.error(
+      clearGoogleDriveAuthorizationResult();
+      showNotice(
+        null,
+        "error",
+        "Google authorization failed",
         result.error ??
           "Google authorization returned without a Typr project."
       );
       return;
     }
     const projectId = result.projectId;
-    if (result.error || !result.token) {
-      clearGoogleDriveRedirectResult();
-      updateState(projectId, {
-        ...createDisconnectedGoogleDriveState(configured),
-        status: "error",
-        message:
-          result.error ??
-          "Google authorization did not return an access token."
-      });
+    if (
+      result.error ||
+      !result.token ||
+      !isGoogleDriveAccessTokenFresh(result.token)
+    ) {
+      clearGoogleDriveAuthorizationResult();
+      const message =
+        result.error ??
+        "Google authorization expired before Typr could continue.";
+      dispatchState(projectId, { type: "failed", message });
+      showNotice(
+        projectId,
+        "error",
+        "Google authorization failed",
+        message
+      );
       return;
     }
 
     accessTokenRef.current = result.token;
-    updateState(projectId, {
-      ...createDisconnectedGoogleDriveState(configured),
-      status: "authorizing",
-      message: "Google authorized. Connecting Drive…"
-    });
-    const resumeConnection = async () => {
+    dispatchState(projectId, { type: "authorization-returned" });
+    showNotice(
+      projectId,
+      "success",
+      "Google authorization complete",
+      result.intent === "reconnect"
+        ? "Typr is resuming synchronization with the existing managed folder."
+        : "Choose a parent destination in Google Drive to finish connecting."
+    );
+
+    if (result.intent !== "reconnect") {
+      return;
+    }
+
+    const resumeExistingBinding = async () => {
       const binding = await loadCloudProjectBinding(
         GOOGLE_DRIVE_PROVIDER_ID,
         projectId
       );
-      if (
-        binding?.version === 1 &&
-        binding.providerId === GOOGLE_DRIVE_PROVIDER_ID
-      ) {
-        const policy = getBindingPolicy(binding);
-        bindingsRef.current.set(projectId, {
-          ...binding,
-          syncMode: policy.mode,
-          syncIntervalMinutes: policy.intervalMinutes
-        });
+      if (!isGoogleDriveBindingV2(binding)) {
+        throw new Error(
+          "The previous Google Drive binding needs a new destination. Choose a Drive location to continue."
+        );
       }
-      await connect(projectId);
+      bindingsRef.current.set(projectId, binding);
+      await runProjectSyncRef.current(projectId, false, true);
     };
-    void resumeConnection()
+    void resumeExistingBinding()
       .catch((error) => {
-        updateState(projectId, {
-          ...createDisconnectedGoogleDriveState(configured),
-          status: "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Unable to resume Google Drive connection."
-        });
+        const message = getErrorMessage(
+          error,
+          "Unable to resume Google Drive synchronization."
+        );
+        dispatchState(projectId, { type: "failed", message });
+        showNotice(
+          projectId,
+          "error",
+          "Google Drive reconnect failed",
+          message
+        );
       })
       .finally(() => {
-        clearGoogleDriveRedirectResult();
+        clearGoogleDriveAuthorizationResult();
       });
-  }, [configured, connect, isHydrated, updateState]);
+  }, [dispatchState, isHydrated, showNotice]);
 
   const disconnect = useCallback(
     async (projectId: string) => {
@@ -495,25 +693,36 @@ export function useGoogleDriveSync(options: {
           GOOGLE_DRIVE_PROVIDER_ID,
           projectId
         );
-        updateState(
+        dispatchState(projectId, { type: "unlinked", configured });
+        showNotice(
           projectId,
-          createDisconnectedGoogleDriveState(configured)
+          "info",
+          "Google Drive unlinked",
+          "The Drive folder and all of its contents were left unchanged."
         );
       } catch (error) {
         if (binding) {
           bindingsRef.current.set(projectId, binding);
         }
-        updateState(projectId, (current) => ({
-          ...current,
-          status: "error",
-          message:
-            error instanceof Error
-              ? `Unable to unlink: ${error.message}`
-              : "Unable to unlink Google Drive."
-        }));
+        const message = getErrorMessage(
+          error,
+          "Unable to unlink Google Drive."
+        );
+        dispatchState(projectId, { type: "failed", message });
+        showNotice(
+          projectId,
+          "error",
+          "Unable to unlink Google Drive",
+          message
+        );
       }
     },
-    [clearScheduledSync, configured, updateState]
+    [
+      clearScheduledSync,
+      configured,
+      dispatchState,
+      showNotice
+    ]
   );
 
   const setSyncPolicy = useCallback(
@@ -534,35 +743,31 @@ export function useGoogleDriveSync(options: {
         intervalMinutes:
           nextPolicy.intervalMinutes ?? currentPolicy.intervalMinutes
       });
-      const nextBinding = {
+      const nextBinding: GoogleDriveBindingV2 = {
         ...binding,
         syncMode: policy.mode,
         syncIntervalMinutes: policy.intervalMinutes
       };
       bindingsRef.current.set(projectId, nextBinding);
-      updateState(projectId, (current) => ({
-        ...current,
+      dispatchState(projectId, {
+        type: "policy-updated",
         syncMode: policy.mode,
-        syncIntervalMinutes: policy.intervalMinutes,
-        message:
-          current.status === "synced"
-            ? getCloudSyncPolicyMessage(policy)
-            : current.message
-      }));
+        syncIntervalMinutes: policy.intervalMinutes
+      });
       try {
         await saveCloudProjectBinding(nextBinding);
       } catch (error) {
         bindingsRef.current.set(projectId, binding);
-        updateState(projectId, (current) => ({
-          ...current,
-          status: "error",
+        dispatchState(projectId, {
+          type: "policy-updated",
           syncMode: currentPolicy.mode,
-          syncIntervalMinutes: currentPolicy.intervalMinutes,
-          message:
-            error instanceof Error
-              ? `Unable to save sync settings: ${error.message}`
-              : "Unable to save sync settings."
-        }));
+          syncIntervalMinutes: currentPolicy.intervalMinutes
+        });
+        const message = getErrorMessage(
+          error,
+          "Unable to save sync settings."
+        );
+        dispatchState(projectId, { type: "failed", message });
         return;
       }
 
@@ -571,7 +776,11 @@ export function useGoogleDriveSync(options: {
         scheduleSync(projectId, 0);
       }
     },
-    [clearScheduledSync, scheduleSync, updateState]
+    [
+      clearScheduledSync,
+      dispatchState,
+      scheduleSync
+    ]
   );
 
   const syncOnCompile = useCallback(async (projectId: string) => {
@@ -607,6 +816,8 @@ export function useGoogleDriveSync(options: {
     }
     let cancelled = false;
     const projectIds = new Set(projectIdsKey.split("|").filter(Boolean));
+    const redirectProjectId =
+      readGoogleDriveAuthorizationResult()?.projectId ?? null;
 
     const restoreBindings = async () => {
       for (const projectId of [...bindingsRef.current.keys()]) {
@@ -632,35 +843,39 @@ export function useGoogleDriveSync(options: {
         return;
       }
       for (const binding of bindings) {
-        if (
-          !binding ||
-          binding.version !== 1 ||
-          binding.providerId !== GOOGLE_DRIVE_PROVIDER_ID
-        ) {
-          continue;
-        }
-        if (bindingsRef.current.has(binding.projectId)) {
+        if (!binding || binding.providerId !== GOOGLE_DRIVE_PROVIDER_ID) {
           continue;
         }
         const policy = getBindingPolicy(binding);
-        const normalizedBinding = {
-          ...binding,
-          syncMode: policy.mode,
-          syncIntervalMinutes: policy.intervalMinutes
-        };
-        bindingsRef.current.set(binding.projectId, normalizedBinding);
-        updateState(binding.projectId, {
-          status: configured
-            ? "authorization-needed"
-            : "unconfigured",
-          remoteRootName: binding.remoteRootName,
-          lastSyncedAt: binding.lastSyncedAt,
-          message: configured
-            ? "Reconnect to resume Google Drive sync."
-            : "Google Drive sync is not configured on this deployment.",
-          syncMode: policy.mode,
-          syncIntervalMinutes: policy.intervalMinutes
-        });
+        if (isGoogleDriveBindingV2(binding)) {
+          bindingsRef.current.set(binding.projectId, binding);
+          if (binding.projectId === redirectProjectId) {
+            continue;
+          }
+          const metadata = readGoogleDriveBindingMetadata(binding);
+          if (!metadata) {
+            continue;
+          }
+          dispatchState(binding.projectId, {
+            type: "binding-restored",
+            configured,
+            lastSyncedAt: binding.lastSyncedAt,
+            metadata,
+            syncMode: policy.mode,
+            syncIntervalMinutes: policy.intervalMinutes
+          });
+        } else if (isLegacyGoogleDriveBinding(binding)) {
+          if (binding.projectId === redirectProjectId) {
+            continue;
+          }
+          dispatchState(binding.projectId, {
+            type: "legacy-binding-restored",
+            folderName: binding.remoteRootName,
+            lastSyncedAt: binding.lastSyncedAt,
+            syncMode: policy.mode,
+            syncIntervalMinutes: policy.intervalMinutes
+          });
+        }
       }
     };
 
@@ -676,9 +891,9 @@ export function useGoogleDriveSync(options: {
   }, [
     clearScheduledSync,
     configured,
+    dispatchState,
     isHydrated,
-    projectIdsKey,
-    updateState
+    projectIdsKey
   ]);
 
   useEffect(() => {
@@ -743,9 +958,14 @@ export function useGoogleDriveSync(options: {
   );
 
   return {
+    changeLocation,
+    chooseLocation,
     configured,
+    configurationMessage: getGoogleDriveConfigurationMessage(options),
     connect,
     disconnect,
+    dismissNotice: () => setNotice(null),
+    notice,
     setSyncPolicy,
     states,
     syncNow: (projectId: string) =>
@@ -754,24 +974,10 @@ export function useGoogleDriveSync(options: {
   };
 }
 
-function createDisconnectedGoogleDriveState(
-  configured: boolean
-): GoogleDriveProjectState {
-  return {
-    status: configured ? "disconnected" : "unconfigured",
-    remoteRootName: null,
-    lastSyncedAt: null,
-    message: configured
-      ? "Not connected"
-      : "Google Drive sync is not configured on this deployment.",
-    syncMode: DEFAULT_CLOUD_SYNC_POLICY.mode,
-    syncIntervalMinutes: DEFAULT_CLOUD_SYNC_POLICY.intervalMinutes
-  };
-}
-
-function getBindingPolicy(
-  binding: CloudProjectBindingRecord
-) {
+function getBindingPolicy(binding: {
+  syncIntervalMinutes: number;
+  syncMode: CloudSyncMode;
+}) {
   return normalizeCloudSyncPolicy({
     mode: binding.syncMode,
     intervalMinutes: binding.syncIntervalMinutes
@@ -788,7 +994,27 @@ class GoogleDriveAuthorizationRequiredError extends Error {
 function isGoogleAuthorizationError(error: unknown): boolean {
   return (
     error instanceof GoogleDriveAuthorizationRequiredError ||
-    (error instanceof GoogleDriveApiError &&
-      error.status === 401)
+    (error instanceof GoogleDriveApiError && error.status === 401)
   );
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function getGoogleDriveConfigurationMessage(options: {
+  clientId: string;
+  cloudProjectNumber: string;
+  pickerApiKey: string;
+}): string {
+  if (!options.clientId.trim()) {
+    return "Google Drive OAuth client ID is not configured on this deployment.";
+  }
+  if (!options.pickerApiKey.trim()) {
+    return "Google Picker API key is not configured on this deployment.";
+  }
+  if (!/^\d+$/.test(options.cloudProjectNumber.trim())) {
+    return "Google Cloud project number for Picker is not configured on this deployment.";
+  }
+  return "Google Drive Picker is configured.";
 }

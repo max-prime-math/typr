@@ -79,6 +79,10 @@ import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
 import { useGoogleDriveSync } from "./useGoogleDriveSync";
+import {
+  GoogleDriveConnectionCard,
+  GoogleDriveGlobalNotice
+} from "./GoogleDriveConnectionCard";
 import { useLocalFolderSync } from "./useLocalFolderSync";
 import {
   areWorkspacePathListsEqual,
@@ -3641,7 +3645,10 @@ ${nextLine}` : nextLine;
     : undefined;
   const googleDriveSync = useGoogleDriveSync({
     clientId: import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID ?? "",
+    cloudProjectNumber:
+      import.meta.env.VITE_GOOGLE_CLOUD_PROJECT_NUMBER ?? "",
     isHydrated,
+    pickerApiKey: import.meta.env.VITE_GOOGLE_PICKER_API_KEY ?? "",
     projectStorage,
     setProjectStorage,
     setRawSnapshot
@@ -15086,6 +15093,12 @@ ${nextLine}` : nextLine;
 
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""}`}>
+      {googleDriveSync.notice ? (
+        <GoogleDriveGlobalNotice
+          dismiss={googleDriveSync.dismissNotice}
+          notice={googleDriveSync.notice}
+        />
+      ) : null}
       <div className={`workspace-shell ${isMobileWorkspace ? "workspace-shell--mobile" : ""} ${
         isZenMode ? "workspace-shell--zen" : ""
       } ${isMobileEditorFullscreen ? "workspace-shell--editor-fullscreen" : ""}`}>
@@ -15375,11 +15388,11 @@ ${nextLine}` : nextLine;
                             ? "disconnected"
                             : "unconfigured");
                         const googleDriveConnected = Boolean(
-                          googleDriveState?.remoteRootName
+                          googleDriveState?.selectedParentName &&
+                            googleDriveState?.projectFolderName &&
+                            googleDriveState?.projectFolderWebViewLink &&
+                            !googleDriveState?.migrationRequired
                         );
-                        const googleDriveConnectionFailed =
-                          googleDriveStatus === "error" ||
-                          googleDriveStatus === "authorization-needed";
                         const connectedGitProject = gitWorkspace.projects.find(
                           (managedProject) =>
                             managedProject.projectId === project.id &&
@@ -15469,9 +15482,9 @@ ${nextLine}` : nextLine;
                                           ? "project-manager__summary-badge--warning"
                                           : ""
                                       }`}
-                                      title={`${googleDriveState?.remoteRootName} · ${googleDriveState?.message}`}
+                                      title={`${googleDriveState?.selectedParentName} / ${googleDriveState?.projectFolderName} · ${googleDriveState?.message}`}
                                     >
-                                      Drive · {googleDriveState?.remoteRootName}
+                                      Drive · {googleDriveState?.projectFolderName}
                                     </span>
                                   ) : null}
                                   {hasInitializedGit ? (
@@ -15649,128 +15662,13 @@ ${nextLine}` : nextLine;
                                   </div>
                                 </section>
 
-                                <section className="project-manager__connection">
-                                  <div className="project-manager__connection-header">
-                                    <div>
-                                      <strong>Google Drive</strong>
-                                      <small>
-                                        {googleDriveConnected
-                                          ? `${googleDriveState?.remoteRootName} · ${googleDriveState?.message}`
-                                          : !googleDriveSync.configured
-                                            ? "Google Drive sync is not configured on this deployment."
-                                            : googleDriveStatus ===
-                                                  "authorizing" ||
-                                                googleDriveConnectionFailed
-                                              ? googleDriveState?.message ??
-                                                "Connecting to Google Drive…"
-                                              : "Keep an independent synchronized copy of this project in Google Drive."}
-                                      </small>
-                                    </div>
-                                    <span
-                                      className={`project-manager__connection-badge ${
-                                        googleDriveConnected
-                                          ? "project-manager__connection-badge--connected"
-                                          : googleDriveConnectionFailed
-                                            ? "project-manager__connection-badge--error"
-                                          : ""
-                                      }`}
-                                    >
-                                      {googleDriveConnected
-                                        ? googleDriveStatus ===
-                                          "authorization-needed"
-                                          ? "Reconnect"
-                                          : "Connected"
-                                        : googleDriveStatus === "authorizing"
-                                          ? "Connecting…"
-                                          : googleDriveConnectionFailed
-                                            ? "Connection failed"
-                                            : "Not connected"}
-                                    </span>
-                                  </div>
-                                  {googleDriveConnectionFailed &&
-                                  googleDriveState?.message ? (
-                                    <p
-                                      className="sync-connection-notice sync-connection-notice--error"
-                                      role="alert"
-                                    >
-                                      <strong>Google Drive connection failed</strong>
-                                      <span>{googleDriveState.message}</span>
-                                    </p>
-                                  ) : null}
-                                  <div className="project-manager__connection-actions">
-                                    {googleDriveConnected ? (
-                                      <>
-                                        <button
-                                          className="pane__button pane__button--compact"
-                                          disabled={
-                                            googleDriveStatus ===
-                                              "authorizing" ||
-                                            googleDriveStatus === "syncing"
-                                          }
-                                          onClick={() => {
-                                            void googleDriveSync.syncNow(
-                                              project.id
-                                            );
-                                          }}
-                                          type="button"
-                                        >
-                                          {googleDriveStatus ===
-                                          "authorizing"
-                                            ? "Connecting…"
-                                            : googleDriveStatus === "syncing"
-                                              ? "Syncing…"
-                                              : googleDriveStatus ===
-                                                  "authorization-needed"
-                                                ? "Reconnect"
-                                                : "Sync now"}
-                                        </button>
-                                        <button
-                                          className="pane__button pane__button--compact"
-                                          onClick={() => {
-                                            if (!isActiveProject) {
-                                              handleSelectLocalProject(
-                                                project.id
-                                              );
-                                            }
-                                            handleOpenSettingsTab("sync");
-                                          }}
-                                          type="button"
-                                        >
-                                          Sync settings
-                                        </button>
-                                        <button
-                                          className="pane__button pane__button--compact"
-                                          onClick={() => {
-                                            void googleDriveSync.disconnect(
-                                              project.id
-                                            );
-                                          }}
-                                          type="button"
-                                        >
-                                          Unlink
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <button
-                                        className="pane__button pane__button--compact"
-                                        disabled={
-                                          !googleDriveSync.configured ||
-                                          googleDriveStatus === "authorizing"
-                                        }
-                                        onClick={() => {
-                                          void googleDriveSync.connect(
-                                            project.id
-                                          );
-                                        }}
-                                        type="button"
-                                      >
-                                        {googleDriveStatus === "authorizing"
-                                          ? "Connecting…"
-                                          : "Connect Google Drive"}
-                                      </button>
-                                    )}
-                                  </div>
-                                </section>
+                                <GoogleDriveConnectionCard
+                                  className="project-manager__connection google-drive-card--compact"
+                                  controller={googleDriveSync}
+                                  projectId={project.id}
+                                  projectName={project.displayName}
+                                  state={googleDriveState}
+                                />
 
                                 <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">

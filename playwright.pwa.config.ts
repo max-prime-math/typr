@@ -5,7 +5,7 @@ const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: /(application-update|offline-first-compile)\.spec\.ts/,
+  testMatch: /(application-update|google-drive-callback-pwa|offline-first-compile)\.spec\.ts/,
   fullyParallel: false,
   workers: 1,
   reporter: [["line"]],
