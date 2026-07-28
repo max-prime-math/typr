@@ -15728,12 +15728,29 @@ ${nextLine}` : nextLine;
                                         if (!isActiveProject) {
                                           handleSelectLocalProject(project.id);
                                         }
-                                        handleOpenSettingsTab("sync");
+                                        if (googleDriveSync.isAuthorized) {
+                                          void googleDriveSync.chooseLocation(project.id);
+                                        } else {
+                                          handleOpenSettingsTab("sync");
+                                        }
                                       }}
                                       type="button"
                                     >
-                                      {googleDriveConnected ? "Drive settings" : "Link Drive folder"}
+                                      {googleDriveConnected
+                                        ? "Change Drive location"
+                                        : googleDriveSync.isAuthorized
+                                          ? "Choose Drive location"
+                                          : "Connect Drive in Settings"}
                                     </button>
+                                    {googleDriveConnected ? (
+                                      <button
+                                        className="pane__button pane__button--compact"
+                                        onClick={() => handleOpenSettingsTab("sync")}
+                                        type="button"
+                                      >
+                                        Drive sync settings
+                                      </button>
+                                    ) : null}
                                   </div>
                                 </section>
 

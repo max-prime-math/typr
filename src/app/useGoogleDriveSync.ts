@@ -1044,6 +1044,7 @@ export function useGoogleDriveSync(options: {
     dismissNotice: () => setNotice(null),
     importProject,
     importedProjectId,
+    isAuthorized: isGoogleDriveAccessTokenFresh(accessTokenRef.current),
     notice,
     setSyncPolicy,
     states,
