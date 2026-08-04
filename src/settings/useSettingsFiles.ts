@@ -40,7 +40,7 @@ export function useSettingsFiles(
     : "";
 
   useEffect(() => {
-    if (!isSettingsProject(selectedProject) || selectedProject.id === activeSettingsProjectId) return;
+    if (!selectedProject || !isSettingsProject(selectedProject) || selectedProject.id === activeSettingsProjectId) return;
     setActiveSettingsProjectId(selectedProject.id);
     window.localStorage.setItem("typr.active-settings-project.v1", selectedProject.id);
   }, [activeSettingsProjectId, selectedProject]);
