@@ -58,6 +58,14 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 | Formatter | Selects Disabled or Built in formatting for Typst, LaTeX, and Markdown. |
 | Linter | Selects Disabled or Built in linting for Typst, LaTeX, and Markdown. |
 
+### Settings project and external diagnostics
+
+Enable **Show Settings Project** to create a syncable project containing Typr's settings JSON files. It can use the normal GitHub and Google Drive project controls; invalid settings files fall back to their defaults and are reported in Settings.
+
+Typr can also run an offline Harper grammar check after its assets are cached. Advanced users can connect a local WebSocket language-server bridge, or a remote WebSocket language server after explicitly enabling document upload. A remote LSP can receive document content, so enable that consent only for an endpoint you trust.
+
+On mobile, configure the optional quick-key row and its Typst, LaTeX, and Markdown labels in Editor settings.
+
 ## Keybindings
 
 Use Keybindings to search and change keyboard shortcuts.

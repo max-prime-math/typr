@@ -52,10 +52,14 @@ Constant mode uses the browser's filesystem observer when available and otherwis
 
 ## Files
 
-Use the Files pane to create documents and folders, upload files, rename or move workspace entries, open recent files, and manage trash. Typr hides managed .git internals from the file tree and browser shell.
+Use the Files pane to create documents and folders, upload files, rename or move workspace entries, open recent files, and manage trash. Use the upload button or drag files from your computer over the Files pane; the pane highlights with a large **+** when releasing will add the files to the workspace. Typr hides managed .git internals from the file tree and browser shell.
 
 Supported source files include Typst, LaTeX, Markdown, plain text, bibliography files, and common project assets. Diagrams are stored as Typr workspace items and can be edited from the Diagram tool.
 
 ## Downloads and Backups
 
 Preview downloads export rendered output. Source downloads and project exports bundle local document dependencies where Typr can identify them. Keep independent backups when moving work between browsers or devices because browser site data is device-local.
+
+## App installation and updates
+
+Typr is a Progressive Web App. Install it from your browser when offered for a more app-like desktop or tablet experience. When a new version is available, Typr keeps the current version active until you choose to update, so open work is not interrupted unexpectedly.

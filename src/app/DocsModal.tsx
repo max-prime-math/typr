@@ -4,19 +4,11 @@ import { renderMarkdownHtml } from "../markdown/markdownParser";
 import indexSource from "../../docs/index.md?raw";
 import workspaceSource from "../../docs/user-guide/workspace.md?raw";
 import editingPreviewSource from "../../docs/user-guide/editing-preview.md?raw";
+import workspaceToolsSource from "../../docs/user-guide/workspace-tools.md?raw";
 import diagramsSource from "../../docs/user-guide/diagrams.md?raw";
 import gitSyncSource from "../../docs/user-guide/git-sync.md?raw";
 import packagesShellSource from "../../docs/user-guide/packages-shell.md?raw";
 import settingsSource from "../../docs/user-guide/settings.md?raw";
-import localFirstProjectsSource from "../../docs/concepts/local-first-projects.md?raw";
-import browserGitModelSource from "../../docs/concepts/browser-git-model.md?raw";
-import architectureOverviewSource from "../../docs/architecture/overview.md?raw";
-import storageSource from "../../docs/architecture/storage.md?raw";
-import previewRenderingSource from "../../docs/architecture/preview-rendering.md?raw";
-import gitArchitectureSource from "../../docs/architecture/git.md?raw";
-import remoteGitTransportSource from "../../docs/remote-git-transport.md?raw";
-import roadmapSource from "../../docs/roadmap.md?raw";
-import limitationsSource from "../../docs/limitations.md?raw";
 
 interface DocsPanelProps {
   embedded?: boolean;
@@ -48,7 +40,7 @@ const DOCS_MODAL_STORAGE_KEY = "typr.docs-modal.v1";
 
 const DOCS_SECTIONS: DocsSection[] = [
   {
-    title: "Start",
+    title: "User Guide",
     pages: [{ id: "index", title: "Introduction", path: "index.md", source: indexSource }]
   },
   {
@@ -56,34 +48,11 @@ const DOCS_SECTIONS: DocsSection[] = [
     pages: [
       { id: "user-guide/workspace", title: "Workspace and Projects", path: "user-guide/workspace.md", source: workspaceSource },
       { id: "user-guide/editing-preview", title: "Editing and Preview", path: "user-guide/editing-preview.md", source: editingPreviewSource },
+      { id: "user-guide/workspace-tools", title: "Workspace Tools", path: "user-guide/workspace-tools.md", source: workspaceToolsSource },
       { id: "user-guide/diagrams", title: "Diagrams", path: "user-guide/diagrams.md", source: diagramsSource },
       { id: "user-guide/git-sync", title: "GitHub Sync", path: "user-guide/git-sync.md", source: gitSyncSource },
       { id: "user-guide/settings", title: "Settings", path: "user-guide/settings.md", source: settingsSource },
       { id: "user-guide/packages-shell", title: "Packages and Browser Shell", path: "user-guide/packages-shell.md", source: packagesShellSource }
-    ]
-  },
-  {
-    title: "Concepts",
-    pages: [
-      { id: "concepts/local-first-projects", title: "Local-First Projects", path: "concepts/local-first-projects.md", source: localFirstProjectsSource },
-      { id: "concepts/browser-git-model", title: "Browser Git Model", path: "concepts/browser-git-model.md", source: browserGitModelSource }
-    ]
-  },
-  {
-    title: "Architecture",
-    pages: [
-      { id: "architecture/overview", title: "Architecture Overview", path: "architecture/overview.md", source: architectureOverviewSource },
-      { id: "architecture/storage", title: "Storage", path: "architecture/storage.md", source: storageSource },
-      { id: "architecture/preview-rendering", title: "Preview Rendering", path: "architecture/preview-rendering.md", source: previewRenderingSource },
-      { id: "architecture/git", title: "Git Architecture", path: "architecture/git.md", source: gitArchitectureSource },
-      { id: "remote-git-transport", title: "Remote Git Transport", path: "remote-git-transport.md", source: remoteGitTransportSource }
-    ]
-  },
-  {
-    title: "Planning",
-    pages: [
-      { id: "roadmap", title: "Roadmap", path: "roadmap.md", source: roadmapSource },
-      { id: "limitations", title: "Limitations", path: "limitations.md", source: limitationsSource }
     ]
   }
 ];
@@ -251,7 +220,7 @@ export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
         <header className="docs-modal__header modal-control-header">
           <div>
             <h2>Docs</h2>
-            <p>Typr user guide and architecture notes.</p>
+            <p>Typr user guide.</p>
           </div>
           {onClose ? <button className="modal-close-button pane__button" onClick={handleClose} type="button">Close</button> : null}
         </header>
