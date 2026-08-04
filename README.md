@@ -12,6 +12,46 @@ Live app: <https://typr.ca/>
 
 The detailed documentation lives in [docs/](docs/index.md). Application, build, link, and update information is available from the Info button above Settings.
 
+## Alternatives
+
+Typr is one option among several strong writing environments. The best choice depends on whether you prioritize local ownership, real-time collaboration, a Typst-first workflow, or a native desktop application.
+
+| Capability | Typr | [TeXlyre](https://texlyre.github.io/) | [Overleaf](https://www.overleaf.com/) | [Typst web app](https://typst.app/) | [TeXstudio](https://texstudio.org/) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Typst authoring | ✓ | ✓ | — | ✓ | — |
+| LaTeX authoring | ✓ | ✓ | ✓ | — | ✓ |
+| Markdown preview | ✓ | — | — | — | — |
+| Browser-local, offline-capable editing | ✓ | ✓ | — | — | — |
+| Real-time collaboration | — | ✓ | ✓ | ✓ | △ |
+| Browser-managed GitHub workflow | ✓ | — | — | — | — |
+| Native desktop application | — | — | — | — | ✓ |
+
+`✓` means the capability is a primary supported workflow; `△` means it is platform-limited; `—` means it is not a core offering in that product. Hosted products may offer additional features through paid plans or institutional deployments.
+
+- **[TeXlyre](https://texlyre.github.io/)** — Choose TeXlyre when you want a local-first, in-browser Typst and LaTeX editor but need real-time collaboration. It compiles on the client, retains documents in the browser, and adds peer-to-peer collaboration with live cursors and conflict-free synchronization.
+- **[Overleaf](https://www.overleaf.com/)** — Choose Overleaf when your LaTeX workflow centers on collaborating with a research group, publisher templates, comments, chat, and familiar cloud-hosted project sharing. Its Git integration is a premium feature, and it is primarily a hosted LaTeX environment.
+- **[Typst web app](https://typst.app/)** — Choose the official Typst web app when you are all-in on Typst and want its first-party collaborative workspace, project sharing, teams, and hosted Typst ecosystem. It is the most direct route to the official Typst collaboration workflow.
+- **[TeXstudio](https://texstudio.org/)** — Choose TeXstudio when you prefer a native, cross-platform desktop LaTeX IDE with deep local build customization, extensive editing assistants, and an integrated PDF viewer. It is a better fit for a traditional desktop TeX installation than for browser or iPad-first work.
+
+### More open-source options
+
+- **[Texpile](https://texpile.com/download)** — Choose Texpile for a modern, fully local desktop LaTeX workflow that moves comfortably between visual and source editing. Its visual table and equation editing, local TeX compilation, SyncTeX navigation, and Git diff support make it especially attractive for authors who want a more direct visual layer over LaTeX.
+- **[Collabst](https://github.com/collabst/collabst)** — Choose Collabst when you want to self-host a collaborative Typst workspace for a lab, team, or institution. It focuses on shared projects, comments, browser-based Typst editing, and a deployment you control; it is a promising young project for teams that want to help shape an open collaborative Typst stack.
+- **[TINO](https://github.com/confirm/typarr)** — Choose TINO (originally published as Typarr) when your organization needs a self-hosted, Typst-first collaboration service with Git-backed project history, SSO/OIDC, roles, local packages, custom fonts, and a container-friendly deployment. It is built for teams that treat documents as an auditable part of their internal systems.
+- **[Typesetter](https://flathub.org/apps/net.trowell.typesetter)** — Choose Typesetter for a focused, native Linux Typst editor. Its GTK interface, local-first design, live preview, package-cache controls, accessibility preview options, and deliberately distraction-free scope suit writers who want a lightweight dedicated desktop app.
+- **[Fidus Writer](https://www.fiduswriter.org/)** — Choose Fidus Writer when your priority is collaborative academic authoring with semantic documents, citations, comments, accessible publishing workflows, and broad import/export options rather than direct Typst or LaTeX source editing. It is particularly well suited to research groups and publishing workflows that want to self-host a full writing platform.
+
+### Why choose Typr?
+
+Choose Typr when you want a single local-first browser workspace that spans **Typst, LaTeX, and Markdown** rather than committing to only one format. It is a strong fit for independent writers, students, and technical teams who value these combinations:
+
+- **Work anywhere without a server.** Typr is a PWA designed for desktop and iPad use, with browser-local projects, offline-capable editing and preview, and no account required for normal work.
+- **Keep the project under your control.** Use browser-managed GitHub sync, an optional linked local folder, and optional Google Drive sync without making a hosted editor the primary copy of your project.
+- **Use a complete workspace, not only an editor.** Files, source and preview tabs, visual diagrams and TikZ figures, package caches, browser-shell commands, source tools, diagnostics, and configurable keybindings live together in one project surface.
+- **Move between formats as the job demands.** Draft notes in Markdown, build documents in Typst or LaTeX, and keep supporting assets and bibliography files in the same workspace.
+
+Typr is not meant to replace the excellent collaboration, native-desktop, or specialized visual-editing workflows above. It is for people who want an open, browser-native, local-first environment with broad document-format support and an explicit path to their own files and Git history.
+
 ## Quick Start
 
 Requirements:
