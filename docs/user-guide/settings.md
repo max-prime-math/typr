@@ -70,6 +70,8 @@ On mobile, configure the optional quick-key row and its Typst, LaTeX, and Markdo
 
 Use Keybindings to search and change keyboard shortcuts.
 
+The [Keyboard Shortcuts](./keyboard-shortcuts.md) page lists the defaults. Your Keybindings settings override that reference.
+
 | Setting | What it changes |
 |---|---|
 | Search keybindings | Filters the shortcut list by action or group. |

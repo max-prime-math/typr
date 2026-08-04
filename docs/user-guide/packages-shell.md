@@ -16,4 +16,4 @@ LaTeX package support uses the BusyTeX catalog and TeX Live bundle caching. Basi
 
 ## Browser Shell
 
-The browser shell exposes supported project commands without access to hidden .git internals. It is designed for local project operations and browser-managed git commands, not arbitrary host system access.
+The browser shell exposes supported project commands without access to hidden .git internals. It is designed for local project operations and browser-managed git commands, not arbitrary host system access. Toggle it with <kbd>Ctrl</kbd>+<kbd>'</kbd> on Windows/Linux or <kbd>⌘</kbd>+<kbd>'</kbd> on Apple platforms. See [Keyboard Shortcuts](./keyboard-shortcuts.md) for input controls and the default app keymap; run `help` in the shell for the current supported commands.

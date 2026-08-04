@@ -4,6 +4,7 @@ import { renderMarkdownHtml } from "../markdown/markdownParser";
 import indexSource from "../../docs/index.md?raw";
 import workspaceSource from "../../docs/user-guide/workspace.md?raw";
 import editingPreviewSource from "../../docs/user-guide/editing-preview.md?raw";
+import keyboardShortcutsSource from "../../docs/user-guide/keyboard-shortcuts.md?raw";
 import workspaceToolsSource from "../../docs/user-guide/workspace-tools.md?raw";
 import diagramsSource from "../../docs/user-guide/diagrams.md?raw";
 import gitSyncSource from "../../docs/user-guide/git-sync.md?raw";
@@ -48,6 +49,7 @@ const DOCS_SECTIONS: DocsSection[] = [
     pages: [
       { id: "user-guide/workspace", title: "Workspace and Projects", path: "user-guide/workspace.md", source: workspaceSource },
       { id: "user-guide/editing-preview", title: "Editing and Preview", path: "user-guide/editing-preview.md", source: editingPreviewSource },
+      { id: "user-guide/keyboard-shortcuts", title: "Keyboard Shortcuts", path: "user-guide/keyboard-shortcuts.md", source: keyboardShortcutsSource },
       { id: "user-guide/workspace-tools", title: "Workspace Tools", path: "user-guide/workspace-tools.md", source: workspaceToolsSource },
       { id: "user-guide/diagrams", title: "Diagrams", path: "user-guide/diagrams.md", source: diagramsSource },
       { id: "user-guide/git-sync", title: "GitHub Sync", path: "user-guide/git-sync.md", source: gitSyncSource },
