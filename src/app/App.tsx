@@ -3325,6 +3325,7 @@ export function App() {
     useState<WorkspaceOpenFolderStorage>(() => readStoredWorkspaceOpenFolders());
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceTreeNode[]>([]);
   const [isTrashViewOpen, setIsTrashViewOpen] = useState(storedLeftPane.isTrashViewOpen);
+  const [isFilesPaneFileDragActive, setIsFilesPaneFileDragActive] = useState(false);
   const {
     activePreviewPath,
     draggingWorkspaceTab,
@@ -10496,6 +10497,21 @@ ${nextLine}` : nextLine;
     event.preventDefault();
     event.stopPropagation();
     event.dataTransfer.dropEffect = "copy";
+    if (!isTrashViewOpen) {
+      setIsFilesPaneFileDragActive(true);
+    }
+  };
+
+  const handleFilesPaneDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+
+    setIsFilesPaneFileDragActive(false);
   };
 
   const handleFilesPaneDrop = (event: ReactDragEvent<HTMLElement>) => {
@@ -10505,6 +10521,7 @@ ${nextLine}` : nextLine;
 
     event.preventDefault();
     event.stopPropagation();
+    setIsFilesPaneFileDragActive(false);
     const files = Array.from(event.dataTransfer.files);
 
     if (files.length === 0) {
@@ -15407,7 +15424,7 @@ ${nextLine}` : nextLine;
                         onClick={() => documentUploadInputRef.current?.click()}
                         type="button"
                         aria-label="Upload file"
-                        title="Upload files (or drag them into the Files pane)"
+                        title="Upload file"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
                       </button>
@@ -15903,7 +15920,10 @@ ${nextLine}` : nextLine;
               ) : activeSidebarTool === "files" ? (
                 <section
                   ref={filesSectionRef}
-                  className="sidebar-section sidebar-section--scrollable sidebar-section--files"
+                  className={`sidebar-section sidebar-section--scrollable sidebar-section--files ${
+                    isFilesPaneFileDragActive ? "sidebar-section--file-drop-active" : ""
+                  }`}
+                  onDragLeaveCapture={handleFilesPaneDragLeave}
                   onDragOverCapture={handleFilesPaneDragOver}
                   onDropCapture={handleFilesPaneDrop}
                   onScroll={handleLeftPaneScroll}
@@ -15943,16 +15963,6 @@ ${nextLine}` : nextLine;
                         Empty Trash
                       </button>
                     </div>
-                  ) : null}
-                  {!isTrashViewOpen ? (
-                    <button
-                      className="files-upload-hint"
-                      onClick={() => documentUploadInputRef.current?.click()}
-                      type="button"
-                    >
-                      <span aria-hidden="true">+</span>
-                      Drop files here to upload
-                    </button>
                   ) : null}
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
