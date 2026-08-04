@@ -10455,11 +10455,13 @@ ${nextLine}` : nextLine;
     setWorkspaceContextMenu(null);
   }
 
-  const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.currentTarget.files ?? []);
-    event.currentTarget.value = "";
-
+  const uploadWorkspaceFiles = async (files: File[]) => {
     if (files.length === 0) {
+      return;
+    }
+
+    if (isTrashViewOpen) {
+      setSyncFeedback({ tone: "error", text: "Leave Trash before uploading files." });
       return;
     }
 
@@ -10478,6 +10480,38 @@ ${nextLine}` : nextLine;
         currentSnapshot
       )
     );
+  };
+
+  const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    await uploadWorkspaceFiles(files);
+  };
+
+  const handleFilesPaneDragOver = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleFilesPaneDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const files = Array.from(event.dataTransfer.files);
+
+    if (files.length === 0) {
+      return;
+    }
+
+    void uploadWorkspaceFiles(files);
   };
 
   const handleDownloadActivePreview = useCallback(async (mode: PreviewDownloadMode = previewDownloadMode) => {
@@ -15870,6 +15904,8 @@ ${nextLine}` : nextLine;
                 <section
                   ref={filesSectionRef}
                   className="sidebar-section sidebar-section--scrollable sidebar-section--files"
+                  onDragOverCapture={handleFilesPaneDragOver}
+                  onDropCapture={handleFilesPaneDrop}
                   onScroll={handleLeftPaneScroll}
                 >
                   {!isTrashViewOpen && filesGitConflictNotice ? (
