@@ -15407,7 +15407,7 @@ ${nextLine}` : nextLine;
                         onClick={() => documentUploadInputRef.current?.click()}
                         type="button"
                         aria-label="Upload file"
-                        title="Upload file"
+                        title="Upload files (or drag them into the Files pane)"
                       >
                         <span aria-hidden="true" className="toolbar-icon toolbar-icon--upload" />
                       </button>
@@ -15943,6 +15943,16 @@ ${nextLine}` : nextLine;
                         Empty Trash
                       </button>
                     </div>
+                  ) : null}
+                  {!isTrashViewOpen ? (
+                    <button
+                      className="files-upload-hint"
+                      onClick={() => documentUploadInputRef.current?.click()}
+                      type="button"
+                    >
+                      <span aria-hidden="true">+</span>
+                      Drop files here to upload
+                    </button>
                   ) : null}
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
