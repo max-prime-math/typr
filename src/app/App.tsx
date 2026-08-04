@@ -21,6 +21,8 @@ import { DocsModal, DocsPanel } from "./DocsModal";
 import { SettingsSheet } from "../settings/SettingsSheet";
 import { SettingsPanelContent } from "../settings/SettingsPanelContent";
 import { useSettingsSheetController } from "../settings/useSettingsSheetController";
+import { useSettingsFiles } from "../settings/useSettingsFiles";
+import { SETTINGS_FILE_NAMES } from "../settings/settingsFiles";
 import type { SettingsTab } from "../settings/settingsSheetState";
 import { BuildLogPanel } from "../buildLog/BuildLogPanel";
 import { useBuildLogController } from "../buildLog/useBuildLogController";
@@ -3544,6 +3546,7 @@ ${nextLine}` : nextLine;
     isMountedRef,
     setStorageStatus
   });
+  const settingsFilesController = useSettingsFiles(snapshot, setSnapshot, isHydrated);
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
   const [projectDragOverId, setProjectDragOverId] = useState<string | null>(null);
   const [managedProjectId, setManagedProjectId] = useState<string | null>(null);
@@ -15085,6 +15088,10 @@ ${nextLine}` : nextLine;
     setPendingKeybindingConflict,
     setRecordingKeybindingId,
     setThemeMode,
+    settingsFiles: {
+      ...settingsFilesController,
+      fileNames: SETTINGS_FILE_NAMES
+    },
     settingsTab,
     snapshot,
     snippetImportFeedback,

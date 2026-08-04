@@ -3,6 +3,7 @@ import { KEYBINDING_DEFINITIONS } from "../app/keybindings";
 export const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 
 export type SettingsTab =
+  | "files"
   | "sync"
   | "git"
   | "themes"
@@ -18,10 +19,11 @@ export interface StoredSettingsMenuState {
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  "sync", "git", "themes", "editor", "keybindings", "snippets", "packages"
+  "files", "sync", "git", "themes", "editor", "keybindings", "snippets", "packages"
 ];
 
 const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
+  files: ["files", "json", "text", "configuration", "settings as text"],
   sync: [
     "sync",
     "google drive",
@@ -102,5 +104,5 @@ export function findMatchingSettingsTabs(searchQuery: string): readonly Settings
 }
 
 export function getSettingsTabTitle(tab: SettingsTab): string {
-  return tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : tab === "snippets" ? "Snippets" : "Packages";
+  return tab === "files" ? "Settings files" : tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : tab === "snippets" ? "Snippets" : "Packages";
 }

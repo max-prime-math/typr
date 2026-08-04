@@ -50,6 +50,7 @@ describe("settings sheet state", () => {
     expect(findMatchingSettingsTabs("constant")).toEqual(["sync"]);
     expect(findMatchingSettingsTabs("formatter")).toContain("editor");
     expect(findMatchingSettingsTabs("")).toEqual([
+      "files",
       "sync",
       "git",
       "themes",
