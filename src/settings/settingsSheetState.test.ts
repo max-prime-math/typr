@@ -50,7 +50,6 @@ describe("settings sheet state", () => {
     expect(findMatchingSettingsTabs("constant")).toEqual(["sync"]);
     expect(findMatchingSettingsTabs("formatter")).toContain("editor");
     expect(findMatchingSettingsTabs("")).toEqual([
-      "files",
       "sync",
       "git",
       "themes",
@@ -66,6 +65,12 @@ describe("settings sheet state", () => {
       readStoredSettingsMenuState(createStorage(JSON.stringify({ tab: "snippets" })))
     ).toEqual({
       tab: "keybindings",
+      scrollByTab: {}
+    });
+    expect(
+      readStoredSettingsMenuState(createStorage(JSON.stringify({ tab: "files" })))
+    ).toEqual({
+      tab: "editor",
       scrollByTab: {}
     });
   });

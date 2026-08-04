@@ -10103,37 +10103,6 @@ body,
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 10%, var(--surface-strong));
 }
-.settings-files-list {
-  display: grid;
-  gap: 1rem;
-}
-
-.settings-file-card {
-  display: grid;
-  gap: 0.6rem;
-}
-
-.settings-file-card__header {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-}
-
-.settings-file-editor {
-  background: var(--surface-strong);
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  color: inherit;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 0.82rem;
-  line-height: 1.5;
-  min-height: 14rem;
-  padding: 0.75rem;
-  resize: vertical;
-  tab-size: 2;
-  width: 100%;
-}
-
 .settings-file-warning {
   background: color-mix(in srgb, #d97706 14%, transparent);
   border-left: 3px solid #d97706;

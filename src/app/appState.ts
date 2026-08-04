@@ -237,6 +237,7 @@ export interface PastedImagePreferences {
 }
 
 export interface AppPreferences {
+  showSettingsProject: boolean;
   theme: ThemePreference;
   vimMode: boolean;
   vimClipboardSharing: boolean;
@@ -523,6 +524,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       figures: []
     },
     preferences: {
+      showSettingsProject: false,
       theme: AUTO_THEME_ID,
       vimMode: false,
       vimClipboardSharing: false,
@@ -600,6 +602,8 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     ...snapshot,
     version: 9,
     preferences: {
+      showSettingsProject:
+        (snapshot.preferences as Partial<AppPreferences>).showSettingsProject ?? false,
       theme: normalizeThemeId(snapshot.preferences.theme ?? AUTO_THEME_ID),
       vimMode: snapshot.preferences.vimMode ?? false,
       vimClipboardSharing:

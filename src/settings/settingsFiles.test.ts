@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultSnapshot } from "../app/appState";
 import {
-  createSettingsFileContents,
+  createSettingsProject,
+  isSettingsProject,
   parseSettingsFile,
-  readSettingsFileContents,
-  SETTINGS_FILES_STORAGE_KEY
+  readSettingsProjectFile
 } from "./settingsFiles";
 
 describe("settings files", () => {
@@ -26,15 +26,18 @@ describe("settings files", () => {
     expect(result.preferences.theme).toBe("tokyo-night");
   });
 
-  it("retains corrupt stored text so the user can repair it", () => {
+  it("creates a recognizable project with editable files", () => {
     const defaults = createDefaultSnapshot().preferences;
-    const valid = createSettingsFileContents(defaults);
-    const storage = {
-      getItem: (key: string) => key === SETTINGS_FILES_STORAGE_KEY
-        ? JSON.stringify({ ...valid, "editor.json": "{" })
-        : null
-    };
-    expect(readSettingsFileContents(storage, defaults)["editor.json"]).toBe("{");
+    const project = createSettingsProject(defaults);
+    expect(isSettingsProject(project)).toBe(true);
+    expect(readSettingsProjectFile(project, "editor.json")).toContain('"vimMode"');
+    expect(project.selection.activeFilePath).toBe("editor.json");
+  });
+
+  it("keeps project visibility local instead of syncing it in editor.json", () => {
+    const defaults = createDefaultSnapshot().preferences;
+    const project = createSettingsProject({ ...defaults, showSettingsProject: true });
+    expect(readSettingsProjectFile(project, "editor.json")).not.toContain("showSettingsProject");
   });
 
   it("warns on invalid values instead of silently accepting them", () => {

@@ -4,24 +4,30 @@ import {
   type AppPreferences,
   type AppSnapshot
 } from "../app/appState";
+import {
+  createEmptyProjectRepository,
+  readProjectFileBytes,
+  writeProjectFile,
+  type TyprProjectRepository
+} from "../project/projectState";
 
-export const SETTINGS_FILES_STORAGE_KEY = "typr.settings-files.v1";
+export const SETTINGS_PROJECT_MARKER_PATH = ".typr-settings-project.json";
+export const SETTINGS_PROJECT_MARKER_CONTENT = `${JSON.stringify({ type: "typr-settings", version: 1 }, null, 2)}\n`;
 
 export const SETTINGS_FILE_NAMES = [
-  "appearance.json",
+  "theme.json",
   "editor.json",
   "keybindings.json",
   "sync.json"
 ] as const;
 
 export type SettingsFileName = (typeof SETTINGS_FILE_NAMES)[number];
-export type SettingsFileContents = Record<SettingsFileName, string>;
 export type SettingsFileErrors = Partial<Record<SettingsFileName, string>>;
 
 type JsonObject = Record<string, unknown>;
 
 const GROUP_KEYS: Record<SettingsFileName, readonly (keyof AppPreferences)[]> = {
-  "appearance.json": [
+  "theme.json": [
     "theme",
     "cursorSmooth",
     "cursorSmear",
@@ -46,6 +52,44 @@ const GROUP_KEYS: Record<SettingsFileName, readonly (keyof AppPreferences)[]> = 
   "sync.json": ["autoSyncGitProjects"]
 };
 
+export function isSettingsProject(project: TyprProjectRepository | null | undefined): boolean {
+  if (!project) return false;
+  const bytes = readProjectFileBytes(project, SETTINGS_PROJECT_MARKER_PATH);
+  if (!bytes) return false;
+  try {
+    const marker = JSON.parse(new TextDecoder().decode(bytes));
+    return marker?.type === "typr-settings" && marker?.version === 1;
+  } catch {
+    return false;
+  }
+}
+
+export function readSettingsProjectFile(
+  project: TyprProjectRepository,
+  fileName: SettingsFileName
+): string | null {
+  const bytes = readProjectFileBytes(project, fileName);
+  return bytes ? new TextDecoder().decode(bytes) : null;
+}
+
+export function createSettingsProject(preferences: AppPreferences): TyprProjectRepository {
+  let project = createEmptyProjectRepository({
+    displayName: "Typr Settings",
+    defaultFileName: null
+  });
+  project = writeProjectFile(project, SETTINGS_PROJECT_MARKER_PATH, SETTINGS_PROJECT_MARKER_CONTENT);
+  for (const fileName of SETTINGS_FILE_NAMES) {
+    project = writeProjectFile(project, fileName, serializeSettingsFile(fileName, preferences));
+  }
+  return {
+    ...project,
+    selection: {
+      activeFilePath: "editor.json",
+      openFilePaths: ["editor.json"]
+    }
+  };
+}
+
 function isJsonObject(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -57,12 +101,6 @@ export function serializeSettingsFile(
   const value: JsonObject = {};
   for (const key of GROUP_KEYS[fileName]) value[key] = preferences[key];
   return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-export function createSettingsFileContents(preferences: AppPreferences): SettingsFileContents {
-  return Object.fromEntries(
-    SETTINGS_FILE_NAMES.map((fileName) => [fileName, serializeSettingsFile(fileName, preferences)])
-  ) as SettingsFileContents;
 }
 
 export function parseSettingsFile(
@@ -140,29 +178,4 @@ function replaceSettingsGroup(
     (next as unknown as Record<keyof AppPreferences, unknown>)[key] = source[key];
   }
   return next;
-}
-
-export function readSettingsFileContents(
-  storage: Pick<Storage, "getItem"> | undefined,
-  preferences: AppPreferences
-): SettingsFileContents {
-  const defaults = createSettingsFileContents(preferences);
-  if (!storage) return defaults;
-  try {
-    const parsed = JSON.parse(storage.getItem(SETTINGS_FILES_STORAGE_KEY) ?? "null");
-    if (!isJsonObject(parsed)) return defaults;
-    return Object.fromEntries(SETTINGS_FILE_NAMES.map((fileName) => [
-      fileName,
-      typeof parsed[fileName] === "string" ? parsed[fileName] : defaults[fileName]
-    ])) as SettingsFileContents;
-  } catch {
-    return defaults;
-  }
-}
-
-export function writeSettingsFileContents(
-  storage: Pick<Storage, "setItem"> | undefined,
-  contents: SettingsFileContents
-): void {
-  storage?.setItem(SETTINGS_FILES_STORAGE_KEY, JSON.stringify(contents));
 }

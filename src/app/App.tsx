@@ -22,7 +22,7 @@ import { SettingsSheet } from "../settings/SettingsSheet";
 import { SettingsPanelContent } from "../settings/SettingsPanelContent";
 import { useSettingsSheetController } from "../settings/useSettingsSheetController";
 import { useSettingsFiles } from "../settings/useSettingsFiles";
-import { SETTINGS_FILE_NAMES } from "../settings/settingsFiles";
+import { isSettingsProject, SETTINGS_PROJECT_MARKER_PATH } from "../settings/settingsFiles";
 import type { SettingsTab } from "../settings/settingsSheetState";
 import { BuildLogPanel } from "../buildLog/BuildLogPanel";
 import { useBuildLogController } from "../buildLog/useBuildLogController";
@@ -3546,7 +3546,13 @@ ${nextLine}` : nextLine;
     isMountedRef,
     setStorageStatus
   });
-  const settingsFilesController = useSettingsFiles(snapshot, setSnapshot, isHydrated);
+  const settingsFilesController = useSettingsFiles(
+    snapshot,
+    setSnapshot,
+    isHydrated,
+    projectStorage,
+    setProjectStorage
+  );
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
   const [projectDragOverId, setProjectDragOverId] = useState<string | null>(null);
   const [managedProjectId, setManagedProjectId] = useState<string | null>(null);
@@ -5238,9 +5244,14 @@ ${nextLine}` : nextLine;
     }
 
     const currentProjectRepository = selectedProjectRepositoryRef.current;
+    const repositoryEntries = currentProjectRepository
+      ? buildProjectWorkspaceEntriesFromProject(currentProjectRepository).filter(
+          (entry) => !isSettingsProject(currentProjectRepository) || entry.path !== SETTINGS_PROJECT_MARKER_PATH
+        )
+      : null;
     const fallbackTree = buildWorkspaceTree(
-      currentProjectRepository
-        ? buildProjectWorkspaceEntriesFromProject(currentProjectRepository)
+      repositoryEntries
+        ? repositoryEntries
         : buildProjectWorkspaceEntries(snapshot)
     );
     setWorkspaceTree(fallbackTree);
@@ -12849,13 +12860,25 @@ ${nextLine}` : nextLine;
     gitMergePaneMode !== "sidebar";
   const isGitMergePreviewExpanded = isGitMergeInlineExpanded && gitMergePaneMode === "preview";
   const isSidebarInlineExpanded = isGitMergeInlineExpanded;
+  const isSettingsProjectSelected = isSettingsProject(selectedProjectRepository);
+  const activeSettingsFileError = isSettingsProjectSelected
+    ? (settingsFilesController.errors as Record<string, string | undefined>)[activeSourcePath]
+    : undefined;
   const showSourcePane =
     !isSidebarInlineExpanded &&
-    (isZenMode || (isSourceFileEditable && (isMobileWorkspace || !isSourcePaneHidden)));
+    (isSettingsProjectSelected ||
+      isZenMode ||
+      (isSourceFileEditable && (isMobileWorkspace || !isSourcePaneHidden)));
   const showPreviewPane =
     !isZenMode &&
+    !isSettingsProjectSelected &&
     !isGitMergePreviewExpanded &&
     (isMobileWorkspace || !isPreviewCollapsed);
+  useEffect(() => {
+    if (isSettingsProjectSelected && mobileWorkspaceTab === "preview") {
+      setMobileWorkspaceTab("editor");
+    }
+  }, [isSettingsProjectSelected, mobileWorkspaceTab]);
   const isSidebarOnlyWorkspace =
     !isMobileWorkspace && showDesktopSidebar && !showSourcePane && !showPreviewPane;
   const sidebarPaneWidth = showDesktopSidebar
@@ -15089,8 +15112,7 @@ ${nextLine}` : nextLine;
     setRecordingKeybindingId,
     setThemeMode,
     settingsFiles: {
-      ...settingsFilesController,
-      fileNames: SETTINGS_FILE_NAMES
+      ...settingsFilesController
     },
     settingsTab,
     snapshot,
@@ -15258,17 +15280,19 @@ ${nextLine}` : nextLine;
               >
                 Source
               </button>
-              <button
-                aria-selected={mobileWorkspaceTab === "preview"}
-                className={`workspace-mobile-tab ${
-                  mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
-                }`}
-                onClick={() => handleMobileWorkspaceTabChange("preview")}
-                role="tab"
-                type="button"
-              >
-                Preview
-              </button>
+              {!isSettingsProjectSelected ? (
+                <button
+                  aria-selected={mobileWorkspaceTab === "preview"}
+                  className={`workspace-mobile-tab ${
+                    mobileWorkspaceTab === "preview" ? "workspace-mobile-tab--active" : ""
+                  }`}
+                  onClick={() => handleMobileWorkspaceTabChange("preview")}
+                  role="tab"
+                  type="button"
+                >
+                  Preview
+                </button>
+              ) : null}
             </div>
             {mobileWorkspaceTab === "files" ? (
               <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
@@ -15420,11 +15444,15 @@ ${nextLine}` : nextLine;
                       {gitHubClone.isOpen && gitHubClone.mode === "clone" ? projectGitHubPanel : null}
                     </div>
                     <div className="project-manager__list" role="list" aria-label="Projects">
-                      {projectStorage.projects.map((project) => {
-                        const isActiveProject = selectedProjectRepository?.id === project.id;
-                        const projectFileCount = listProjectEntries(project).filter(
-                          (entry) => entry.kind === "file"
-                        ).length;
+                      {projectStorage.projects
+                        .filter((project) =>
+                          snapshot.preferences.showSettingsProject || !isSettingsProject(project)
+                        )
+                        .map((project) => {
+                          const isActiveProject = selectedProjectRepository?.id === project.id;
+                          const projectFileCount = listProjectEntries(project).filter(
+                            (entry) => entry.kind === "file"
+                          ).length;
                         const localFolderState = localFolderSync.states[project.id];
                         const localFolderStatus =
                           localFolderState?.status ??
@@ -17268,6 +17296,11 @@ ${nextLine}` : nextLine;
               ) : null}
             </div>
           )}
+          {activeSettingsFileError ? (
+            <div className="source-inline-status source-inline-status--warning" role="status">
+              {activeSettingsFileError} Defaults for this file are active until the JSON is fixed.
+            </div>
+          ) : null}
           {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) && compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}

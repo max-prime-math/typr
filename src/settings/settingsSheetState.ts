@@ -3,7 +3,6 @@ import { KEYBINDING_DEFINITIONS } from "../app/keybindings";
 export const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 
 export type SettingsTab =
-  | "files"
   | "sync"
   | "git"
   | "themes"
@@ -18,11 +17,10 @@ export interface StoredSettingsMenuState {
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  "files", "sync", "git", "themes", "editor", "keybindings", "packages"
+  "sync", "git", "themes", "editor", "keybindings", "packages"
 ];
 
 const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
-  files: ["files", "json", "text", "configuration", "settings as text"],
   sync: [
     "sync",
     "google drive",
@@ -37,7 +35,7 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
   ],
   git: ["git", "github", "token", "remote", "owner", "repo", "repository", "branch", "gitignore", "status", "push", "sync", "commit"],
   themes: ["theme", "themes", "light", "dark", "system", "import", "palette", "cursor", "smear cursor", "intensity", "follow system default"],
-  editor: ["editor", "vim", "format", "formatter", "lint", "linter", "diagnostics", "harper", "lsp", "language server", "websocket", "local lsp", "remote lsp", "compile", "live"],
+  editor: ["editor", "settings project", "settings files", "json", "vim", "format", "formatter", "lint", "linter", "diagnostics", "harper", "lsp", "language server", "websocket", "local lsp", "remote lsp", "compile", "live"],
   keybindings: [
     "keybindings", "keys", "shortcuts", "hotkeys", "vim", "layout", "preview", "multi cursor",
     "snippets", "typst", "latex", "markdown", "autocomplete", "import", "json", "template",
@@ -78,7 +76,7 @@ export function readStoredSettingsMenuState(
     if (!stored) return { tab: "git", scrollByTab: {} };
     const parsed = JSON.parse(stored);
     return {
-      tab: parsed?.tab === "snippets" ? "keybindings" : isSettingsTab(parsed?.tab) ? parsed.tab : "git",
+      tab: parsed?.tab === "snippets" ? "keybindings" : parsed?.tab === "files" ? "editor" : isSettingsTab(parsed?.tab) ? parsed.tab : "git",
       scrollByTab: normalizeSettingsScrollPositions(parsed?.scrollByTab)
     };
   } catch {
@@ -103,5 +101,5 @@ export function findMatchingSettingsTabs(searchQuery: string): readonly Settings
 }
 
 export function getSettingsTabTitle(tab: SettingsTab): string {
-  return tab === "files" ? "Settings files" : tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : "Packages";
+  return tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : "Packages";
 }

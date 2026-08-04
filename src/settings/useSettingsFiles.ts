@@ -1,90 +1,120 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { AppSnapshot } from "../app/appState";
 import {
+  projectRepositoryToLegacyProject,
+  writeProjectFile,
+  type TyprProjectStorageState
+} from "../project/projectState";
+import {
   SETTINGS_FILE_NAMES,
-  createSettingsFileContents,
+  createSettingsProject,
+  isSettingsProject,
   parseSettingsFile,
-  readSettingsFileContents,
+  readSettingsProjectFile,
   serializeSettingsFile,
-  writeSettingsFileContents,
-  type SettingsFileContents,
-  type SettingsFileErrors,
-  type SettingsFileName
+  type SettingsFileErrors
 } from "./settingsFiles";
 
 export function useSettingsFiles(
   snapshot: AppSnapshot,
   setSnapshot: Dispatch<SetStateAction<AppSnapshot>>,
-  isHydrated: boolean
+  isHydrated: boolean,
+  projectStorage: TyprProjectStorageState,
+  setProjectStorage: Dispatch<SetStateAction<TyprProjectStorageState>>
 ) {
-  const [contents, setContents] = useState<SettingsFileContents>(() =>
-    readSettingsFileContents(
-      typeof window === "undefined" ? undefined : window.localStorage,
-      snapshot.preferences
-    )
-  );
   const [errors, setErrors] = useState<SettingsFileErrors>({});
-  const contentsRef = useRef(contents);
-  const snapshotRef = useRef(snapshot);
-  const hasAppliedStoredFilesRef = useRef(false);
-  const skipFirstPreferenceSyncRef = useRef(true);
-  contentsRef.current = contents;
-  snapshotRef.current = snapshot;
-
-  const changeFile = useCallback((fileName: SettingsFileName, source: string) => {
-    const nextContents = { ...contentsRef.current, [fileName]: source };
-    contentsRef.current = nextContents;
-    setContents(nextContents);
-    writeSettingsFileContents(
-      typeof window === "undefined" ? undefined : window.localStorage,
-      nextContents
-    );
-    const current = snapshotRef.current;
-    const result = parseSettingsFile(fileName, source, current);
-    const nextSnapshot = { ...current, preferences: result.preferences };
-    snapshotRef.current = nextSnapshot;
-    setErrors((currentErrors) => ({ ...currentErrors, [fileName]: result.error ?? undefined }));
-    setSnapshot(nextSnapshot);
-  }, [setSnapshot]);
-
-  const repairFile = useCallback((fileName: SettingsFileName) => {
-    changeFile(fileName, serializeSettingsFile(fileName, snapshot.preferences));
-  }, [changeFile, snapshot.preferences]);
+  const [activeSettingsProjectId, setActiveSettingsProjectId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.localStorage.getItem("typr.active-settings-project.v1")
+  );
+  const skipPreferenceWriteRef = useRef(false);
+  const selectedProject = projectStorage.projects.find(
+    (project) => project.id === projectStorage.selectedProjectId
+  );
+  const settingsProject = useMemo(() => {
+    return projectStorage.projects.find(
+      (project) => project.id === activeSettingsProjectId && isSettingsProject(project)
+    ) ?? projectStorage.projects.find(isSettingsProject) ?? null;
+  }, [activeSettingsProjectId, projectStorage.projects]);
+  const settingsProjectSignature = settingsProject
+    ? SETTINGS_FILE_NAMES.map((fileName) => readSettingsProjectFile(settingsProject, fileName) ?? "").join("\u001f")
+    : "";
 
   useEffect(() => {
-    if (!isHydrated || hasAppliedStoredFilesRef.current) return;
-    hasAppliedStoredFilesRef.current = true;
-    // Apply persisted files once. Invalid source is deliberately kept available for repair.
+    if (!isSettingsProject(selectedProject) || selectedProject.id === activeSettingsProjectId) return;
+    setActiveSettingsProjectId(selectedProject.id);
+    window.localStorage.setItem("typr.active-settings-project.v1", selectedProject.id);
+  }, [activeSettingsProjectId, selectedProject]);
+
+  useEffect(() => {
+    if (!isHydrated || !snapshot.preferences.showSettingsProject || settingsProject) return;
+    setProjectStorage((current) => {
+      if (current.projects.some(isSettingsProject)) return current;
+      return {
+        ...current,
+        projects: [...current.projects, createSettingsProject(snapshot.preferences)]
+      };
+    });
+  }, [isHydrated, setProjectStorage, settingsProject, snapshot.preferences]);
+
+  useEffect(() => {
+    if (!isHydrated || !settingsProject) return;
+    let preferences = snapshot.preferences;
+    const nextErrors: SettingsFileErrors = {};
+    let workingSnapshot = snapshot;
     for (const fileName of SETTINGS_FILE_NAMES) {
-      changeFile(fileName, contentsRef.current[fileName]);
+      const result = parseSettingsFile(
+        fileName,
+        readSettingsProjectFile(settingsProject, fileName) ?? "{}",
+        workingSnapshot
+      );
+      preferences = result.preferences;
+      workingSnapshot = { ...workingSnapshot, preferences };
+      if (result.error) nextErrors[fileName] = result.error;
     }
-    // Initial validation only; later edits go through changeFile.
-  }, [changeFile, isHydrated]);
+    skipPreferenceWriteRef.current = true;
+    setErrors(nextErrors);
+    setSnapshot((current) => ({
+      ...current,
+      preferences,
+      project: projectStorage.selectedProjectId === settingsProject.id
+        ? projectRepositoryToLegacyProject(settingsProject, current.project)
+        : current.project
+    }));
+    // File contents, rather than repository metadata, determine when settings are reapplied.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHydrated, projectStorage.selectedProjectId, settingsProject?.id, settingsProjectSignature]);
 
   useEffect(() => {
-    if (!hasAppliedStoredFilesRef.current) return;
-    if (skipFirstPreferenceSyncRef.current) {
-      skipFirstPreferenceSyncRef.current = false;
+    if (!isHydrated || !settingsProject) return;
+    if (skipPreferenceWriteRef.current) {
+      skipPreferenceWriteRef.current = false;
       return;
     }
-    let changed = false;
-    const next = { ...contentsRef.current };
-    for (const fileName of SETTINGS_FILE_NAMES) {
-      if (errors[fileName]) continue;
-      const serialized = serializeSettingsFile(fileName, snapshot.preferences);
-      if (next[fileName] !== serialized) {
-        next[fileName] = serialized;
-        changed = true;
-      }
-    }
-    if (!changed) return;
-    contentsRef.current = next;
-    setContents(next);
-    writeSettingsFileContents(
-      typeof window === "undefined" ? undefined : window.localStorage,
-      next
-    );
-  }, [errors, snapshot.preferences]);
+    setProjectStorage((current) => {
+      let changed = false;
+      const projects = current.projects.map((project) => {
+        if (project.id !== settingsProject.id) return project;
+        let nextProject = project;
+        for (const fileName of SETTINGS_FILE_NAMES) {
+          if (errors[fileName]) continue;
+          const serialized = serializeSettingsFile(fileName, snapshot.preferences);
+          if (readSettingsProjectFile(nextProject, fileName) !== serialized) {
+            nextProject = writeProjectFile(nextProject, fileName, serialized);
+            changed = true;
+          }
+        }
+        return nextProject;
+      });
+      return changed ? { ...current, projects } : current;
+    });
+  }, [errors, isHydrated, setProjectStorage, settingsProject, snapshot.preferences]);
 
-  return { changeFile, contents, errors, repairFile };
+  const setShowSettingsProject = useCallback((showSettingsProject: boolean) => {
+    setSnapshot((current) => ({
+      ...current,
+      preferences: { ...current.preferences, showSettingsProject }
+    }));
+  }, [setSnapshot]);
+
+  return { errors, settingsProject, setShowSettingsProject };
 }

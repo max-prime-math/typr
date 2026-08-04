@@ -154,45 +154,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 
   return (
     <>
-        {settingsTab === "files" ? (
-          <div className="settings-panel settings-files-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="settings-section__header">
-                <h3>Editable settings files</h3>
-                <p>
-                  Each file is local to Typr. Missing properties use defaults. Changes made
-                  elsewhere in Settings are written back here automatically.
-                </p>
-              </div>
-              <div className="settings-files-list">
-                {settingsFiles.fileNames.map((fileName: string) => (
-                  <section className="settings-file-card" key={fileName}>
-                    <div className="settings-file-card__header">
-                      <strong>{fileName}</strong>
-                      {settingsFiles.errors[fileName] ? (
-                        <button className="pane__button pane__button--compact" onClick={() => settingsFiles.repairFile(fileName)} type="button">
-                          Restore working file
-                        </button>
-                      ) : null}
-                    </div>
-                    {settingsFiles.errors[fileName] ? (
-                      <p className="settings-file-warning" role="status">
-                        {settingsFiles.errors[fileName]} Defaults are active until it is fixed.
-                      </p>
-                    ) : null}
-                    <textarea
-                      aria-label={`Edit ${fileName}`}
-                      className="settings-file-editor"
-                      onChange={(event) => settingsFiles.changeFile(fileName, event.target.value)}
-                      spellCheck={false}
-                      value={settingsFiles.contents[fileName]}
-                    />
-                  </section>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : settingsTab === "sync" ? (
+        {settingsTab === "sync" ? (
           <div className="settings-panel settings-panel--sync" role="tabpanel">
             <div className="settings-section">
               <div className="settings-section__header">
@@ -792,6 +754,26 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
               </div>
 
               <div className="settings-toggle-stack">
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Show settings files as a project</strong>
+                    <small>
+                      Create and show a syncable Typr Settings project. Its JSON files can use
+                      the normal GitHub and Google Drive project controls.
+                    </small>
+                    {Object.keys(settingsFiles.errors).length > 0 ? (
+                      <small className="settings-file-warning" role="status">
+                        One or more settings files are invalid and their defaults are active.
+                      </small>
+                    ) : null}
+                  </span>
+                  <input
+                    checked={snapshot.preferences.showSettingsProject}
+                    onChange={(event) => settingsFiles.setShowSettingsProject(event.target.checked)}
+                    type="checkbox"
+                  />
+                </label>
+
                 <label className="settings-toggle">
                   <span>
                     <strong>Live compilation (experimental)</strong>
