@@ -9,7 +9,6 @@ export type SettingsTab =
   | "themes"
   | "editor"
   | "keybindings"
-  | "snippets"
   | "packages";
 export type SettingsScrollPositions = Partial<Record<SettingsTab, number>>;
 
@@ -19,7 +18,7 @@ export interface StoredSettingsMenuState {
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  "files", "sync", "git", "themes", "editor", "keybindings", "snippets", "packages"
+  "files", "sync", "git", "themes", "editor", "keybindings", "packages"
 ];
 
 const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
@@ -41,9 +40,9 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
   editor: ["editor", "vim", "format", "formatter", "lint", "linter", "diagnostics", "harper", "lsp", "language server", "websocket", "local lsp", "remote lsp", "compile", "live"],
   keybindings: [
     "keybindings", "keys", "shortcuts", "hotkeys", "vim", "layout", "preview", "multi cursor",
+    "snippets", "typst", "latex", "markdown", "autocomplete", "import", "json", "template",
     ...KEYBINDING_DEFINITIONS.flatMap((definition) => [definition.label, definition.group, definition.defaultBinding])
   ],
-  snippets: ["snippets", "typst", "latex", "markdown", "autocomplete", "import", "json", "template"],
   packages: ["packages", "package", "typst universe", "latex", "cache", "offline", "bundle", "manual", "recommended", "basic"]
 };
 
@@ -79,7 +78,7 @@ export function readStoredSettingsMenuState(
     if (!stored) return { tab: "git", scrollByTab: {} };
     const parsed = JSON.parse(stored);
     return {
-      tab: isSettingsTab(parsed?.tab) ? parsed.tab : "git",
+      tab: parsed?.tab === "snippets" ? "keybindings" : isSettingsTab(parsed?.tab) ? parsed.tab : "git",
       scrollByTab: normalizeSettingsScrollPositions(parsed?.scrollByTab)
     };
   } catch {
@@ -104,5 +103,5 @@ export function findMatchingSettingsTabs(searchQuery: string): readonly Settings
 }
 
 export function getSettingsTabTitle(tab: SettingsTab): string {
-  return tab === "files" ? "Settings files" : tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : tab === "snippets" ? "Snippets" : "Packages";
+  return tab === "files" ? "Settings files" : tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : "Packages";
 }

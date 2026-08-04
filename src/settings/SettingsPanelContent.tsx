@@ -1421,18 +1421,15 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   Reset all
                 </button>
               </div>
-            </div>
-          </div>
-        ) : settingsTab === "snippets" ? (
-          <div className="settings-panel" role="tabpanel">
-            <div className="settings-section">
-              <div className="settings-section__header">
-                <h3>Snippets</h3>
-                <span className="pane__meta">
-                  {activeSnippetLanguageLabel} · {activeAllSnippets.length} total ·{" "}
-                  {activeCustomSnippets.length} custom
-                </span>
-              </div>
+
+              <section className="settings-section settings-section--nested">
+                <div className="settings-section__header">
+                  <h3>Snippets</h3>
+                  <span className="pane__meta">
+                    {activeSnippetLanguageLabel} · {activeAllSnippets.length} total ·{" "}
+                    {activeCustomSnippets.length} custom
+                  </span>
+                </div>
 
               <div
                 className="snippet-language-tabs"
@@ -1579,6 +1576,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     <span>{snippetImportFeedback.text}</span>
                   </div>
                 ) : null}
+                </section>
               </section>
             </div>
           </div>

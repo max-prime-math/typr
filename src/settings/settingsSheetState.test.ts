@@ -56,11 +56,16 @@ describe("settings sheet state", () => {
       "themes",
       "editor",
       "keybindings",
-      "snippets",
       "packages"
     ]);
     expect(readStoredSettingsMenuState(createStorage("not-json"))).toEqual({
       tab: "git",
+      scrollByTab: {}
+    });
+    expect(
+      readStoredSettingsMenuState(createStorage(JSON.stringify({ tab: "snippets" })))
+    ).toEqual({
+      tab: "keybindings",
       scrollByTab: {}
     });
   });

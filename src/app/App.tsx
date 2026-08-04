@@ -10066,7 +10066,7 @@ ${nextLine}` : nextLine;
       text: `Imported ${nextSnippets.length} ${SNIPPET_LANGUAGE_LABELS[language]} snippet${nextSnippets.length === 1 ? "" : "s"}.`
     });
     setActiveSnippetLanguage(language);
-    setSettingsTab("snippets");
+    setSettingsTab("keybindings");
     setIsSettingsOpen(true);
   }, []);
 
