@@ -7993,10 +7993,23 @@ ${nextLine}` : nextLine;
       setSelectedWorkspacePath(nextPath);
       setSelectedWorkspacePaths([nextPath]);
       setWorkspaceSelectionAnchorPath(nextPath);
+      setProjectRepository((project) => ({
+        ...project,
+        selection: {
+          ...project.selection,
+          activeFilePath: nextPath
+        }
+      }));
     }
 
     setSnapshot((currentSnapshot) => setActiveDocument(currentSnapshot, documentId));
-  }, [openSourceTab, previewSourceTab, rememberNewDocumentFile, snapshot.project.documents]);
+  }, [
+    openSourceTab,
+    previewSourceTab,
+    rememberNewDocumentFile,
+    setProjectRepository,
+    snapshot.project.documents
+  ]);
 
   const handleActivateSourceTab = useCallback(
     (path: string) => {
