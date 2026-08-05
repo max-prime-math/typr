@@ -35,6 +35,11 @@ export interface CompileDiagnostic {
   column?: number;
   endLine?: number;
   endColumn?: number;
+  provenance?: {
+    kind: "lsp";
+    label: string;
+    source?: string;
+  };
 }
 
 export interface CompileOutput {

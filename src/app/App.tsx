@@ -198,6 +198,7 @@ import {
   type SourceLanguage
 } from "../compiler/sourceFileTypes";
 import type { CompileAssetFile, CompileDiagnostic, CompileMetadata } from "../compiler/types";
+import { mergeEditorDiagnostics } from "../diagnostics/mergeDiagnostics";
 import { exportTypstPdf } from "../compiler/typstRuntime";
 import {
   clearTypstPackageCache,
@@ -12804,11 +12805,11 @@ ${nextLine}` : nextLine;
         ? compileResult.diagnostics
         : compileResult.errors;
   const editorDiagnostics = useMemo(
-    () => [
-      ...(isDebouncedDiagnosticSourceCurrent ? lintDiagnostics : EMPTY_COMPILE_DIAGNOSTICS),
-      ...currentExternalDiagnostics,
-      ...compilerDiagnostics
-    ],
+    () => mergeEditorDiagnostics(
+      isDebouncedDiagnosticSourceCurrent ? lintDiagnostics : EMPTY_COMPILE_DIAGNOSTICS,
+      currentExternalDiagnostics,
+      compilerDiagnostics
+    ),
     [
       compilerDiagnostics,
       currentExternalDiagnostics,
@@ -17230,6 +17231,12 @@ ${nextLine}` : nextLine;
                                     {formatDiagnosticRange(diagnostic) ? ` · ${formatDiagnosticRange(diagnostic)}` : ""}
                                   </strong>
                                   <span>{diagnostic.message}</span>
+                                  {diagnostic.provenance?.kind === "lsp" ? (
+                                    <small className="sidebar-diagnostic__provenance">
+                                      From {diagnostic.provenance.label}
+                                      {diagnostic.provenance.source ? ` · ${diagnostic.provenance.source}` : ""}
+                                    </small>
+                                  ) : null}
                                   {diagnostic.line ? (
                                     <button className="pane__button pane__button--compact" onClick={() => jumpToDiagnostic(diagnostic, activeSourcePath)} type="button">
                                       Jump

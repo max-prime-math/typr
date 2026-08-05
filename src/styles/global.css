@@ -4290,6 +4290,11 @@ button {
   white-space: pre-wrap;
 }
 
+.sidebar-diagnostic__provenance {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
 .sidebar-card {
   display: flex;
   flex-direction: column;

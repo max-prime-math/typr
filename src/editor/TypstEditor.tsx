@@ -861,7 +861,9 @@ function createDiagnosticsSignature(
         diagnostic.endLine ?? "",
         diagnostic.endColumn ?? "",
         diagnostic.range ?? "",
-        diagnostic.message
+        diagnostic.message,
+        diagnostic.provenance?.label ?? "",
+        diagnostic.provenance?.source ?? ""
       ].join("\u{1f}")
     )
     .join("\u{1e}")}`;

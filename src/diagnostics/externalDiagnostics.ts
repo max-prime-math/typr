@@ -505,6 +505,7 @@ async function runLspDiagnostics({
   try {
     const diagnostics = await requestLspDiagnostics({
       url,
+      label,
       source,
       path,
       language,
@@ -542,12 +543,14 @@ async function runLspDiagnostics({
 
 function requestLspDiagnostics({
   url,
+  label,
   source,
   path,
   language,
   signal
 }: {
   url: string;
+  label: string;
   source: string;
   path: string;
   language: SourceLanguage;
@@ -680,7 +683,7 @@ function requestLspDiagnostics({
         diagnostics.splice(
           0,
           diagnostics.length,
-          ...(params?.diagnostics ?? []).map((diagnostic) => mapLspDiagnostic(diagnostic, path))
+          ...(params?.diagnostics ?? []).map((diagnostic) => mapLspDiagnostic(diagnostic, path, label))
         );
         scheduleResolve();
       }
@@ -721,7 +724,7 @@ function parseLspMessages(data: string): JsonRpcMessage[] {
   }
 }
 
-function mapLspDiagnostic(diagnostic: LspDiagnostic, path: string): CompileDiagnostic {
+function mapLspDiagnostic(diagnostic: LspDiagnostic, path: string, label: string): CompileDiagnostic {
   const start = diagnostic.range?.start;
   const end = diagnostic.range?.end;
   const source = diagnostic.source ? `${diagnostic.source}: ` : "";
@@ -734,7 +737,12 @@ function mapLspDiagnostic(diagnostic: LspDiagnostic, path: string): CompileDiagn
     column: typeof start?.character === "number" ? start.character + 1 : undefined,
     endLine: typeof end?.line === "number" ? end.line + 1 : undefined,
     endColumn: typeof end?.character === "number" ? end.character + 1 : undefined,
-    message: `${source}${diagnostic.message ?? "LSP diagnostic"}${code}`
+    message: `${source}${diagnostic.message ?? "LSP diagnostic"}${code}`,
+    provenance: {
+      kind: "lsp",
+      label,
+      source: diagnostic.source
+    }
   };
 }
 
