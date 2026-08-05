@@ -18,15 +18,15 @@ Typr is one option among several strong writing environments. The best choice de
 
 | Capability | Typr | [TeXlyre](https://texlyre.github.io/) | [Overleaf](https://www.overleaf.com/) | [Typst web app](https://typst.app/) | [TeXstudio](https://texstudio.org/) |
 |---|:---:|:---:|:---:|:---:|:---:|
-| Typst authoring | ✔ | ✔ | ❌ | ✔ | ❌ |
-| LaTeX authoring | ✔ | ✔ | ✔ | ❌ | ✔ |
-| Markdown preview | ✔ | ✔ | ❌ | ❌ | ❌ |
-| Browser-local, offline-capable editing | ✔ | ✔ | ❌ | ❌ | ❌ |
-| Real-time collaboration | ❌ | ✔ | ✔ | ✔ | ✔* |
-| Git or GitHub workflow | ✔ | ✔† | ✔‡ | ✔§ | ✔¶ |
-| Native desktop application | ❌ | ❌ | ❌ | ❌ | ✔ |
+| Typst authoring | ✔️ | ✔️ | ❌ | ✔️ | ❌ |
+| LaTeX authoring | ✔️ | ✔️ | ✔️ | ❌ | ✔️ |
+| Markdown preview | ✔️ | ✔️ | ❌ | ❌ | ❌ |
+| Browser-local, offline-capable editing | ✔️ | ✔️ | ❌ | ❌ | ❌ |
+| Real-time collaboration | ❌ | ✔️ | ✔️ | ✔️ | ✔️ |
+| Git or GitHub workflow | ✔️ | ✔️ | ✔️* | ✔️* | ✔️ |
+| Native desktop application | ❌ | ❌ | ❌ | ❌ | ✔️ |
 
-`✔` means the capability is supported; `❌` means it is not a core offering. `*` TeXstudio collaboration is platform-limited. `†` TeXlyre provides optional repository backups to GitHub, GitLab, Gitea, and Codeberg. `‡` Overleaf Git integration is a premium feature. `§` Typst web-app GitHub/GitLab check-in is part of Typst Pro. `¶` TeXstudio includes a native Git panel.
+\* Premium feature
 
 - **[TeXlyre](https://texlyre.github.io/)** — Choose TeXlyre when you want a local-first, in-browser Typst and LaTeX editor but need real-time collaboration. It compiles on the client, retains documents in the browser, and adds peer-to-peer collaboration with live cursors and conflict-free synchronization.
 - **[Overleaf](https://www.overleaf.com/)** — Choose Overleaf when your LaTeX workflow centers on collaborating with a research group, publisher templates, comments, chat, and familiar cloud-hosted project sharing. Its Git integration is a premium feature, and it is primarily a hosted LaTeX environment.
