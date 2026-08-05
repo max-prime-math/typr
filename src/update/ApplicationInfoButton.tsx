@@ -113,8 +113,7 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
         >
           <header className="application-info__header">
             <div>
-              <span className="application-info__eyebrow">Application</span>
-              <h2>{TYPR_BUILD_INFO.name}</h2>
+              <h2>About {TYPR_BUILD_INFO.name}</h2>
             </div>
             <button
               aria-label="Close application info"
@@ -127,7 +126,7 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
           </header>
 
           <section className="application-info__section" aria-labelledby="application-build-heading">
-            <h3 id="application-build-heading">Typr</h3>
+            <h3 id="application-build-heading">Build details</h3>
             <dl className="application-info__details">
               <div>
                 <dt>Version</dt>

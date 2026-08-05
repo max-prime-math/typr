@@ -4,8 +4,6 @@ slug: /
 sidebar_position: 1
 ---
 
-# Typr User Guide
-
 Typr is a local-first browser workspace for writing, previewing, and syncing Typst, LaTeX, and Markdown projects. This guide covers everyday workflows. For product architecture, storage boundaries, current limitations, and project direction, see the [README](../README.md).
 
 ## Table of Contents

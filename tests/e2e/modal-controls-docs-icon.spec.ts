@@ -86,7 +86,19 @@ for (const viewport of [
 
     const info = page.getByRole("dialog", { name: "Typr application information" });
     await expect(info).toBeVisible();
-    await expect(info.locator("h2")).toHaveText("Typr");
+    await expect(info.locator("h2")).toHaveText("About Typr");
+    await expect(info.getByText("Build details", { exact: true })).toBeVisible();
+    expect(await info.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return Math.abs(box.left + box.width / 2 - window.innerWidth / 2) < 2 &&
+        Math.abs(box.top + box.height / 2 - window.innerHeight / 2) < 2;
+    })).toBe(true);
+    if (viewport.name === "mobile") {
+      expect(await info.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return box.width >= window.innerWidth - 1 && box.height >= window.innerHeight - 1;
+      })).toBe(true);
+    }
     await expect(info.getByText("Version", { exact: true })).toBeVisible();
     await expect(info.getByText("Build", { exact: true })).toBeVisible();
     await expect(info.getByText("Service worker", { exact: true })).toBeVisible();

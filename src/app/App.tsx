@@ -1067,8 +1067,6 @@ interface EditableSourceTable {
 
 const MATRIX_MIN_ROWS = 1;
 const MATRIX_MIN_COLUMNS = 1;
-const MATRIX_SIZE_PICKER_INITIAL_ROWS = 4;
-const MATRIX_SIZE_PICKER_INITIAL_COLUMNS = 4;
 const MATRIX_MAX_ROWS = 24;
 const MATRIX_MAX_COLUMNS = 24;
 const MATRIX_DELIMITER_OPTIONS: Array<{
@@ -3280,11 +3278,8 @@ export function App() {
     wholeWord: false
   });
   const [matrixSettings, setMatrixSettings] = useState<MatrixSettings>(createInitialMatrixSettings);
-  const [matrixPickerSize, setMatrixPickerSize] = useState<MatrixSize>({
-    rows: MATRIX_SIZE_PICKER_INITIAL_ROWS,
-    columns: MATRIX_SIZE_PICKER_INITIAL_COLUMNS
-  });
   const [matrixSizePreview, setMatrixSizePreview] = useState<MatrixSize | null>(null);
+  const [matrixSizeInput, setMatrixSizeInput] = useState({ rows: "3", columns: "3" });
   const [tableSettings, setTableSettings] = useState<TableSettings>(createInitialTableSettings);
   const [tableSizePreview, setTableSizePreview] = useState<MatrixSize | null>(null);
   const [tableSizeInput, setTableSizeInput] = useState({ rows: "3", columns: "3" });
@@ -7425,22 +7420,45 @@ ${nextLine}` : nextLine;
 
   const handleMatrixSizePreview = useCallback((rows: number, columns: number) => {
     setMatrixSizePreview({ rows, columns });
-    setMatrixPickerSize((current) => ({
-      rows:
-        rows >= current.rows
-          ? Math.min(MATRIX_MAX_ROWS, current.rows + 1)
-          : current.rows,
-      columns:
-        columns >= current.columns
-          ? Math.min(MATRIX_MAX_COLUMNS, current.columns + 1)
-          : current.columns
-    }));
   }, []);
 
   const handleMatrixSizeSelect = useCallback((rows: number, columns: number) => {
     setMatrixSettings((current) => resizeMatrixSettings(current, rows, columns));
     setMatrixSizePreview(null);
   }, []);
+
+  const handleMatrixSizeInputChange = useCallback(
+    (dimension: "rows" | "columns", value: string) => {
+      setMatrixSizeInput((current) => ({ ...current, [dimension]: value }));
+
+      const parsedValue = Number.parseInt(value, 10);
+      if (!Number.isFinite(parsedValue)) {
+        return;
+      }
+
+      const rows = clampMatrixDimension(
+        dimension === "rows" ? parsedValue : matrixSettings.rows,
+        MATRIX_MIN_ROWS,
+        MATRIX_MAX_ROWS
+      );
+      const columns = clampMatrixDimension(
+        dimension === "columns" ? parsedValue : matrixSettings.columns,
+        MATRIX_MIN_COLUMNS,
+        MATRIX_MAX_COLUMNS
+      );
+
+      setMatrixSettings((current) => resizeMatrixSettings(current, rows, columns));
+      setMatrixSizePreview(null);
+    },
+    [matrixSettings.columns, matrixSettings.rows]
+  );
+
+  const handleMatrixSizeInputBlur = useCallback(() => {
+    setMatrixSizeInput({
+      rows: String(matrixSettings.rows),
+      columns: String(matrixSettings.columns)
+    });
+  }, [matrixSettings.columns, matrixSettings.rows]);
 
   const handleMatrixCellChange = useCallback(
     (rowIndex: number, columnIndex: number, value: string) => {
@@ -7847,6 +7865,13 @@ ${nextLine}` : nextLine;
   useEffect(() => {
     setTableSelection((current) => clampTableSelection(current, tableSettings));
   }, [tableSettings.columns, tableSettings.rows]);
+
+  useEffect(() => {
+    setMatrixSizeInput({
+      rows: String(matrixSettings.rows),
+      columns: String(matrixSettings.columns)
+    });
+  }, [matrixSettings.columns, matrixSettings.rows]);
 
   useEffect(() => {
     setTableSizeInput({
@@ -8770,7 +8795,8 @@ ${nextLine}` : nextLine;
       setSyncFeedback({ tone: "error", text: "Create or select a managed git project first." });
       return { ok: false as const };
     }
-    if (!selectedGitToken.trim()) {
+    const token = selectedGitToken.trim();
+    if (!token) {
       setSyncFeedback({ tone: "error", text: "Add a GitHub token before connecting." });
       return { ok: false as const };
     }
@@ -8785,9 +8811,9 @@ ${nextLine}` : nextLine;
       isLoadingBranches: false
     }));
 
-    const result = await remoteGitService.inspectToken(() => selectedGitToken);
+    const result = await remoteGitService.inspectToken(() => token);
     if (!result.ok) {
-      const message = redactGitSecrets(result.message, [selectedGitToken]);
+      const message = redactGitSecrets(result.message, [token]);
       setGitHubDiscovery((current) => ({
         ...current,
         status: "error",
@@ -8821,9 +8847,51 @@ ${nextLine}` : nextLine;
     if (!currentOwner || nextOwner !== currentOwner) {
       handleGitRemoteConfigChange("owner", nextOwner);
     }
-    setSyncFeedback({ tone: "success", text: result.message });
+    try {
+      await saveGitCredentialMap({
+        ...gitCredentials,
+        [selectedGitProject.id]: token
+      });
+      setSyncFeedback({ tone: "success", text: result.message });
+    } catch {
+      setSyncFeedback({
+        tone: "error",
+        text: "GitHub connected, but Typr could not save the token for the next session."
+      });
+    }
     return { ok: true as const };
-  }, [handleGitRemoteConfigChange, remoteConfig.owner, remoteGitService, selectedGitProject, selectedGitToken]);
+  }, [
+    gitCredentials,
+    handleGitRemoteConfigChange,
+    remoteConfig.owner,
+    remoteGitService,
+    selectedGitProject,
+    selectedGitToken
+  ]);
+
+  const restoredGitHubConnectionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const token = selectedGitToken.trim();
+    const connectionKey = selectedGitProject && token
+      ? `${selectedGitProject.id}:${token}`
+      : null;
+
+    if (!connectionKey) {
+      restoredGitHubConnectionRef.current = null;
+      return;
+    }
+
+    if (
+      !isHydrated ||
+      !isOnline ||
+      restoredGitHubConnectionRef.current === connectionKey
+    ) {
+      return;
+    }
+
+    restoredGitHubConnectionRef.current = connectionKey;
+    void handleConnectGitHub();
+  }, [handleConnectGitHub, isHydrated, isOnline, selectedGitProject, selectedGitToken]);
 
   useEffect(() => {
     if (
@@ -14153,6 +14221,10 @@ ${nextLine}` : nextLine;
   };
   const activeMatrixSize = matrixSizePreview ?? matrixSettings;
   const activeTableSize = tableSizePreview ?? tableSettings;
+  const visibleMatrixPickerSize = {
+    rows: Math.min(MATRIX_MAX_ROWS, activeMatrixSize.rows + 1),
+    columns: Math.min(MATRIX_MAX_COLUMNS, activeMatrixSize.columns + 1)
+  };
   const visibleTablePickerSize = {
     rows: Math.min(TABLE_MAX_ROWS, activeTableSize.rows + 1),
     columns: Math.min(TABLE_MAX_COLUMNS, activeTableSize.columns + 1)
@@ -14181,6 +14253,31 @@ ${nextLine}` : nextLine;
     );
 
     handleTableSizePreview(rows, columns);
+  };
+  const handleMatrixSizePickerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const firstCell = event.currentTarget.querySelector<HTMLElement>(".matrix-size-picker__cell");
+    const firstRow = event.currentTarget.querySelector<HTMLElement>(".matrix-size-picker__row");
+
+    if (!firstCell || !firstRow) {
+      return;
+    }
+
+    const cellRect = firstCell.getBoundingClientRect();
+    const rowStyle = window.getComputedStyle(firstRow);
+    const columnGap = Number.parseFloat(rowStyle.columnGap || rowStyle.gap) || 0;
+    const rowGap = Number.parseFloat(rowStyle.rowGap || rowStyle.gap) || columnGap;
+    const columnStep = Math.max(1, cellRect.width + columnGap);
+    const rowStep = Math.max(1, cellRect.height + rowGap);
+    const columns = Math.min(
+      visibleMatrixPickerSize.columns,
+      Math.max(1, Math.floor((event.clientX - cellRect.left + columnGap / 2) / columnStep) + 1)
+    );
+    const rows = Math.min(
+      visibleMatrixPickerSize.rows,
+      Math.max(1, Math.floor((event.clientY - cellRect.top + rowGap / 2) / rowStep) + 1)
+    );
+
+    handleMatrixSizePreview(rows, columns);
   };
   const matrixColumnTemplate = useMemo(
     () => buildTableauColumnTemplate(matrixSettings.cells, matrixSettings.columns),
@@ -14226,23 +14323,49 @@ ${nextLine}` : nextLine;
           </button>
           {openToolbarMenu === "matrix" ? (
             <div className="matrix-menu__panel" aria-label="Matrix options">
-              <div className="matrix-menu__size-header">
-                <span>Size</span>
-                <strong>{activeMatrixSize.rows} x {activeMatrixSize.columns}</strong>
-              </div>
               <div
                 aria-label="Matrix size"
-                className="matrix-size-picker"
+                className="matrix-size-picker matrix-size-picker--responsive"
                 onPointerLeave={() => setMatrixSizePreview(null)}
-                style={
-                  {
-                    "--matrix-picker-columns": matrixPickerSize.columns
-                  } as CSSProperties
-                }
               >
-                {Array.from({ length: matrixPickerSize.rows }, (_unusedRow, rowIndex) => (
-                  <div className="matrix-size-picker__row" key={`matrix-size-row-${rowIndex}`}>
-                    {Array.from({ length: matrixPickerSize.columns }, (_unusedColumn, columnIndex) => {
+                <div className="table-size-picker__manual" aria-label="Manual matrix size">
+                  <label className="table-size-picker__manual-field">
+                    <span>Rows</span>
+                    <input
+                      inputMode="numeric"
+                      max={MATRIX_MAX_ROWS}
+                      min={MATRIX_MIN_ROWS}
+                      onBlur={handleMatrixSizeInputBlur}
+                      onChange={(event) => handleMatrixSizeInputChange("rows", event.target.value)}
+                      type="number"
+                      value={matrixSizeInput.rows}
+                    />
+                  </label>
+                  <label className="table-size-picker__manual-field">
+                    <span>Columns</span>
+                    <input
+                      inputMode="numeric"
+                      max={MATRIX_MAX_COLUMNS}
+                      min={MATRIX_MIN_COLUMNS}
+                      onBlur={handleMatrixSizeInputBlur}
+                      onChange={(event) => handleMatrixSizeInputChange("columns", event.target.value)}
+                      type="number"
+                      value={matrixSizeInput.columns}
+                    />
+                  </label>
+                </div>
+                <div
+                  className="table-size-picker__grid"
+                  onPointerMove={handleMatrixSizePickerPointerMove}
+                  style={
+                    {
+                      "--matrix-picker-columns": visibleMatrixPickerSize.columns
+                    } as CSSProperties
+                  }
+                >
+                  {Array.from({ length: visibleMatrixPickerSize.rows }, (_unusedRow, rowIndex) => (
+                    <div className="matrix-size-picker__row" key={`matrix-size-row-${rowIndex}`}>
+                      {Array.from({ length: visibleMatrixPickerSize.columns }, (_unusedColumn, columnIndex) => {
                       const rows = rowIndex + 1;
                       const columns = columnIndex + 1;
                       const isActive = rows <= activeMatrixSize.rows && columns <= activeMatrixSize.columns;
@@ -14263,9 +14386,10 @@ ${nextLine}` : nextLine;
                           type="button"
                         />
                       );
-                    })}
-                  </div>
-                ))}
+                      })}
+                    </div>
+                  ))}
+                </div>
               </div>
               <div className="matrix-menu__label">Brackets</div>
               <div className="matrix-menu__delimiters" role="group" aria-label="Brackets">

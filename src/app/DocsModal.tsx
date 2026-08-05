@@ -28,7 +28,7 @@ interface DocsPage {
 }
 
 interface DocsSection {
-  title: string;
+  title?: string;
   pages: DocsPage[];
 }
 
@@ -41,12 +41,8 @@ const DOCS_MODAL_STORAGE_KEY = "typr.docs-modal.v1";
 
 const DOCS_SECTIONS: DocsSection[] = [
   {
-    title: "User Guide",
-    pages: [{ id: "index", title: "Introduction", path: "index.md", source: indexSource }]
-  },
-  {
-    title: "User Guide",
     pages: [
+      { id: "index", title: "Introduction", path: "index.md", source: indexSource },
       { id: "user-guide/workspace", title: "Workspace and Projects", path: "user-guide/workspace.md", source: workspaceSource },
       { id: "user-guide/editing-preview", title: "Editing and Preview", path: "user-guide/editing-preview.md", source: editingPreviewSource },
       { id: "user-guide/keyboard-shortcuts", title: "Keyboard Shortcuts", path: "user-guide/keyboard-shortcuts.md", source: keyboardShortcutsSource },
@@ -221,8 +217,7 @@ export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
       >
         <header className="docs-modal__header modal-control-header">
           <div>
-            <h2>Docs</h2>
-            <p>Typr user guide.</p>
+            <h2>Typr Documentation</h2>
           </div>
           {onClose ? <button className="modal-close-button pane__button" onClick={handleClose} type="button">Close</button> : null}
         </header>
@@ -264,8 +259,8 @@ export function DocsPanel({ embedded = false, onClose }: DocsPanelProps) {
               ) : null}
             </div>
             {visibleDocsSections.length > 0 ? visibleDocsSections.map((section) => (
-              <section className="docs-modal__nav-section" key={section.title}>
-                <h3>{section.title}</h3>
+              <section className="docs-modal__nav-section" key={section.title ?? "pages"}>
+                {section.title ? <h3>{section.title}</h3> : null}
                 {section.pages.map(({ page, snippet }) => (
                   <button
                     aria-current={activePage.id === page.id ? "page" : undefined}

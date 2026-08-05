@@ -35,6 +35,32 @@ test("Settings preserves accessible desktop and mobile sheet behavior", async ({
   expect(pageErrors).toEqual([]);
 });
 
+test("Settings controls remain within the mobile pane", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Files", exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+
+  const mobileSheet = page.getByRole("region", { name: "Typr settings" });
+  const mobileNavToggle = mobileSheet.locator(".settings-sheet__mobile-nav-toggle");
+  const tabNames = ["Sync", "Git", "Themes", "Editor", "Keybindings", "Packages", "Snippets"];
+
+  for (const tabName of tabNames) {
+    await mobileNavToggle.click();
+    await mobileSheet.getByRole("tab", { name: tabName, exact: true }).click();
+    await expect(mobileNavToggle).toContainText(tabName);
+    await expect.poll(() => mobileSheet.locator(".settings-sheet__body").evaluate((element) =>
+      element.scrollWidth <= element.clientWidth + 1
+    )).toBe(true);
+  }
+
+  const tokenField = mobileSheet.getByLabel("Fine-grained token");
+  await expect(tokenField).toBeVisible();
+  await expect.poll(() => tokenField.locator("xpath=..").evaluate((element) =>
+    element.scrollWidth <= element.clientWidth + 1
+  )).toBe(true);
+});
+
 test("Build Log renders, filters, and clears compile history", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
