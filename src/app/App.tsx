@@ -15484,7 +15484,6 @@ ${nextLine}` : nextLine;
             </div>
             {mobileWorkspaceTab === "files" ? (
               <div className="activity-bar activity-bar--mobile" aria-label="Sidebar tools">
-                <ApplicationInfoButton mobile />
                 {MOBILE_SIDEBAR_TOOLS.map((tool) => (
                   <button
                     key={tool.id}
@@ -15515,6 +15514,7 @@ ${nextLine}` : nextLine;
                     <span className="visually-hidden">{tool.label}</span>
                   </button>
                 ))}
+                <ApplicationInfoButton mobile />
               </div>
             ) : null}
           </>

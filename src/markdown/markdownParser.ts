@@ -126,6 +126,9 @@ function createMarkdownRenderer(
   const renderer = new marked.Renderer();
 
   if (mode === "docs") {
+    const renderTable = renderer.table.bind(renderer);
+    renderer.table = (token: Tokens.Table) =>
+      `<div class="docs-markdown__table-scroll">${renderTable(token)}</div>`;
     return renderer;
   }
 

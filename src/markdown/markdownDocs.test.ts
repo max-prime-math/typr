@@ -12,9 +12,9 @@ describe("Docs Markdown rendering", () => {
     for (const fragment of COMMON_MARKDOWN_HTML_FRAGMENTS) {
       expect(html).toContain(fragment);
     }
+    expect(html).toContain('<div class="docs-markdown__table-scroll"><table>');
     expect(html).toContain('<a href="javascript:alert(1)">unsafe</a>');
     expect(html).toContain('<img src="javascript:alert(2)" alt="unsafe image">');
     expect(html).toContain('<span data-fixture="raw">raw HTML</span>');
   });
 });
-
