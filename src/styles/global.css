@@ -9242,6 +9242,11 @@ button {
   vertical-align: top;
 }
 
+.docs-modal__content th *,
+.docs-modal__content td * {
+  font-size: inherit;
+}
+
 .docs-modal__content th {
   background: color-mix(in srgb, var(--surface) 86%, var(--background) 14%);
 }
