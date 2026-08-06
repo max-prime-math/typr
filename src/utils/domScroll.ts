@@ -1,4 +1,4 @@
-export type ScrollAlignment = "center" | "nearest";
+export type ScrollAlignment = "center" | "nearest" | "none";
 
 export interface ScrollElementWithinOptions {
   behavior?: ScrollBehavior;
@@ -44,6 +44,10 @@ export function resolveScrollOffset(
 ): number {
   if (alignment === "center") {
     return Math.max(0, targetOffset + targetSize / 2 - viewportSize / 2);
+  }
+
+  if (alignment === "none") {
+    return currentOffset;
   }
 
   const viewportEnd = currentOffset + viewportSize;

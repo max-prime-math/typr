@@ -19,4 +19,8 @@ describe("resolveScrollOffset", () => {
     expect(resolveScrollOffset(100, 300, 500, 40, "center")).toBe(370);
     expect(resolveScrollOffset(100, 300, 10, 20, "center")).toBe(0);
   });
+
+  it("preserves the current offset when scrolling is disabled for an axis", () => {
+    expect(resolveScrollOffset(100, 300, 500, 40, "none")).toBe(100);
+  });
 });

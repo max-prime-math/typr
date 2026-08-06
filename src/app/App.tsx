@@ -15,6 +15,7 @@ import {
   type ReactNode,
   type SetStateAction
 } from "react";
+import { createPortal } from "react-dom";
 import { zipSync } from "fflate";
 import { areBytesEqual } from "../utils/bytes";
 import { DocsModal, DocsPanel } from "./DocsModal";
@@ -98,7 +99,6 @@ import {
   copyWorkspaceNodesToSnapshot,
   emptyWorkspaceTrash,
   getWorkspaceClipboardDomain,
-  getWorkspaceMovePromptLabel,
   isWorkspaceNodeCopyable,
   moveWorkspaceNodeInSnapshot,
   normalizeWorkspacePasteDestination,
@@ -4396,7 +4396,7 @@ ${nextLine}` : nextLine;
     ).find((row) => row.dataset.workspacePath === workspaceTreeCursorPath);
 
     if (selectedRow && filesSectionRef.current) {
-      scrollElementWithin(filesSectionRef.current, selectedRow);
+      scrollElementWithin(filesSectionRef.current, selectedRow, { inline: "none" });
     }
   }, [activeSidebarTool, workspaceTreeCursorPath]);
   const sourceWorkspaceNode = isTrashViewOpen ? null : selectedWorkspaceNode;
@@ -4414,15 +4414,13 @@ ${nextLine}` : nextLine;
   }, [activeDocumentTextContent]);
   const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
   const workspaceContextMenuPosition = useMemo(() => {
-    if (!workspaceContextMenu || !filesSectionRef.current) {
+    if (!workspaceContextMenu) {
       return null;
     }
 
-    const rect = filesSectionRef.current.getBoundingClientRect();
-
     return {
-      left: workspaceContextMenu.x - rect.left + filesSectionRef.current.scrollLeft,
-      top: workspaceContextMenu.y - rect.top + filesSectionRef.current.scrollTop
+      left: workspaceContextMenu.x,
+      top: workspaceContextMenu.y
     };
   }, [workspaceContextMenu]);
   const isSourceFileEditable =
@@ -8435,16 +8433,6 @@ ${nextLine}` : nextLine;
     workspaceRenameDraft
   ]);
 
-  const handleRequestWorkspaceRootRename = useCallback(() => {
-    if (isTrashViewOpen) {
-      return;
-    }
-
-    setWorkspaceContextMenu(null);
-    setRenamingWorkspacePath(WORKSPACE_ROOT_PATH);
-    setWorkspaceRenameDraft(snapshot.project.name);
-  }, [isTrashViewOpen, snapshot.project.name]);
-
   const handleRequestWorkspaceContextMenu = useCallback(
     (node: WorkspaceTreeNode, x: number, y: number) => {
       if (node.kind === "folder") {
@@ -8584,36 +8572,6 @@ ${nextLine}` : nextLine;
     [selectedWorkspacePath, selectedWorkspacePaths, snapshot]
   );
 
-  const handleRequestWorkspaceMove = useCallback(
-    (node: WorkspaceTreeNode) => {
-      const currentParentPath = getWorkspaceParentPath(node.path);
-      const nextValue = window.prompt(
-        getWorkspaceMovePromptLabel(node),
-        currentParentPath ?? ""
-      );
-
-      if (nextValue === null) {
-        setWorkspaceContextMenu(null);
-        return;
-      }
-
-      const requestedPath = normalizeWorkspacePath(nextValue);
-
-      if (node.source.kind === "diagram") {
-        if (requestedPath && requestedPath !== "figures" && !requestedPath.startsWith("figures/")) {
-          window.alert("Figures can only be moved inside the figures folder.");
-          return;
-        }
-      } else if (requestedPath === "figures" || requestedPath.startsWith("figures/")) {
-        window.alert("That destination is reserved.");
-        return;
-      }
-
-      handleMoveWorkspaceNode(node, requestedPath || null);
-    },
-    [handleMoveWorkspaceNode]
-  );
-
   const handleWorkspaceDragStart = useCallback((node: WorkspaceTreeNode) => {
     setDraggedWorkspacePath(node.path);
     setWorkspaceContextMenu(null);
@@ -8717,13 +8675,13 @@ ${nextLine}` : nextLine;
     ]
   );
 
-  const handleNewDocument = () => {
+  const handleNewDocument = (parentPath = newDocumentDefaultsRef.current.parentPath) => {
     if (isTrashViewOpen) {
       setSyncFeedback({ tone: "error", text: "Leave Trash before creating files." });
       return;
     }
 
-    const { extension, parentPath } = newDocumentDefaultsRef.current;
+    const { extension } = newDocumentDefaultsRef.current;
     const requestedName = joinWorkspacePath(parentPath, `new-file-1${extension}`);
     const nextSnapshot = createDocument(snapshot, requestedName);
     const createdDocument = getActiveDocument(nextSnapshot.project);
@@ -10826,15 +10784,46 @@ ${nextLine}` : nextLine;
     });
   }, []);
 
-  const handleAddFolder = useCallback(() => {
-    const nextName = window.prompt("Folder name", "folder");
-
-    if (nextName === null) {
+  const handleAddFolder = useCallback((parentPath = newDocumentDefaultsRef.current.parentPath) => {
+    if (isTrashViewOpen) {
+      setSyncFeedback({ tone: "error", text: "Leave Trash before creating folders." });
       return;
     }
 
-    setSnapshot((currentSnapshot) => createFolder(currentSnapshot, nextName));
-  }, []);
+    const nextSnapshot = createFolder(snapshot, joinWorkspacePath(parentPath, "New folder"));
+    const createdFolder = nextSnapshot.project.folders.at(-1);
+
+    if (!createdFolder) {
+      return;
+    }
+
+    const createdPath = normalizeWorkspacePath(createdFolder.name);
+    setSnapshot(nextSnapshot);
+    rememberNewDocumentFolder(createdPath);
+    setWorkspaceContextMenu(null);
+    setSelectedWorkspacePath(createdPath);
+    setSelectedWorkspacePaths([createdPath]);
+    setWorkspaceSelectionAnchorPath(createdPath);
+    setRenamingWorkspacePath(createdPath);
+    setWorkspaceRenameDraft(getWorkspaceBaseName(createdPath));
+    updateWorkspaceOpenFolders((currentPaths) => {
+      const nextPaths = new Set(currentPaths);
+      let ancestorPath = getWorkspaceParentPath(createdPath);
+
+      nextPaths.add(WORKSPACE_ROOT_PATH);
+      while (ancestorPath) {
+        nextPaths.add(ancestorPath);
+        ancestorPath = getWorkspaceParentPath(ancestorPath);
+      }
+
+      return nextPaths;
+    });
+  }, [
+    isTrashViewOpen,
+    rememberNewDocumentFolder,
+    snapshot,
+    updateWorkspaceOpenFolders
+  ]);
 
   const handleToggleFolder = useCallback((folderId: string) => {
     const normalizedFolderId =
@@ -15547,7 +15536,7 @@ ${nextLine}` : nextLine;
                     <>
                       <button
                         className="pane__button pane__button--compact pane__icon-button"
-                        onClick={handleNewDocument}
+                        onClick={() => handleNewDocument()}
                         type="button"
                         aria-label="New file"
                         title={`New file (${newFileShortcutLabel})`}
@@ -15556,7 +15545,7 @@ ${nextLine}` : nextLine;
                       </button>
                       <button
                         className="pane__button pane__button--compact pane__icon-button"
-                        onClick={handleAddFolder}
+                        onClick={() => handleAddFolder()}
                         type="button"
                         aria-label="New folder"
                         title="New folder"
@@ -16070,6 +16059,14 @@ ${nextLine}` : nextLine;
                   onDragLeaveCapture={handleFilesPaneDragLeave}
                   onDragOverCapture={handleFilesPaneDragOver}
                   onDropCapture={handleFilesPaneDrop}
+                  onContextMenu={(event) => {
+                    if (event.defaultPrevented || event.target !== event.currentTarget) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    handleRequestWorkspaceRootContextMenu(event.clientX, event.clientY);
+                  }}
                   onScroll={handleLeftPaneScroll}
                 >
                   {!isTrashViewOpen && filesGitConflictNotice ? (
@@ -16116,7 +16113,6 @@ ${nextLine}` : nextLine;
                     nodes={visibleWorkspaceTree}
                     gitStatusByPath={workspaceGitBadgeByPath}
                     rootLabel={isTrashViewOpen ? "Trash" : "Files"}
-                    rootIsRenameable={false}
                     renamingPath={renamingWorkspacePath}
                     renameDraft={workspaceRenameDraft}
                     selectedPaths={selectedWorkspacePaths}
@@ -16140,15 +16136,15 @@ ${nextLine}` : nextLine;
                   {workspaceLoadError ? (
                     <p className="sidebar-card__copy">{workspaceLoadError}</p>
                   ) : null}
-                  {workspaceContextMenu && workspaceContextMenuPosition ? (
+                  {workspaceContextMenu && workspaceContextMenuPosition ? createPortal(
                     <div
                       className="workspace-context-menu"
                       onPointerDown={(event) => event.stopPropagation()}
                       role="menu"
                       style={
                         {
-                          left: `${workspaceContextMenuPosition.left}px`,
-                          top: `${workspaceContextMenuPosition.top}px`
+                          "--workspace-context-menu-left": `${workspaceContextMenuPosition.left}px`,
+                          "--workspace-context-menu-top": `${workspaceContextMenuPosition.top}px`
                         } as CSSProperties
                       }
                     >
@@ -16156,10 +16152,27 @@ ${nextLine}` : nextLine;
                         <>
                           <button
                             className="workspace-context-menu__item"
-                            onClick={handleRequestWorkspaceRootRename}
+                            onClick={() => handleNewDocument(null)}
                             type="button"
                           >
-                            Rename
+                            New file
+                          </button>
+                          <button
+                            className="workspace-context-menu__item"
+                            onClick={() => handleAddFolder(null)}
+                            type="button"
+                          >
+                            New folder
+                          </button>
+                          <button
+                            className="workspace-context-menu__item"
+                            onClick={() => {
+                              setWorkspaceContextMenu(null);
+                              documentUploadInputRef.current?.click();
+                            }}
+                            type="button"
+                          >
+                            Upload file
                           </button>
                           <button
                             className="workspace-context-menu__item"
@@ -16187,6 +16200,41 @@ ${nextLine}` : nextLine;
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
+                        workspaceContextMenu.node.source.kind === "folder") &&
+                      !(workspaceContextMenu.node.kind === "folder" &&
+                        (workspaceContextMenu.node.path === "figures" ||
+                          workspaceContextMenu.node.path.startsWith("figures/"))) ? (
+                        <>
+                          <button
+                            className="workspace-context-menu__item"
+                            onClick={() =>
+                              handleNewDocument(
+                                workspaceContextMenu.node.kind === "folder"
+                                  ? workspaceContextMenu.node.path
+                                  : getWorkspaceParentPath(workspaceContextMenu.node.path)
+                              )
+                            }
+                            type="button"
+                          >
+                            New file
+                          </button>
+                          <button
+                            className="workspace-context-menu__item"
+                            onClick={() =>
+                              handleAddFolder(
+                                workspaceContextMenu.node.kind === "folder"
+                                  ? workspaceContextMenu.node.path
+                                  : getWorkspaceParentPath(workspaceContextMenu.node.path)
+                              )
+                            }
+                            type="button"
+                          >
+                            New folder
+                          </button>
+                        </>
+                      ) : null}
+                      {workspaceContextMenu.kind === "node" &&
+                      (workspaceContextMenu.node.source.kind === "document" ||
                         workspaceContextMenu.node.source.kind === "folder" ||
                         workspaceContextMenu.node.source.kind === "diagram") ? (
                         <button
@@ -16195,18 +16243,6 @@ ${nextLine}` : nextLine;
                           type="button"
                         >
                           Rename
-                        </button>
-                      ) : null}
-                      {workspaceContextMenu.kind === "node" &&
-                      (workspaceContextMenu.node.source.kind === "document" ||
-                        workspaceContextMenu.node.source.kind === "folder" ||
-                        workspaceContextMenu.node.source.kind === "diagram") ? (
-                        <button
-                          className="workspace-context-menu__item"
-                          onClick={() => handleRequestWorkspaceMove(workspaceContextMenu.node)}
-                          type="button"
-                        >
-                          Move
                         </button>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
@@ -16257,7 +16293,8 @@ ${nextLine}` : nextLine;
                           );
                         })()
                       ) : null}
-                    </div>
+                    </div>,
+                    document.body
                   ) : null}
                 </section>
               ) : null}

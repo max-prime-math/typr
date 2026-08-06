@@ -3777,12 +3777,13 @@ button {
 }
 
 .file-tree {
+  --file-tree-row-height: 1.35em;
   cursor: default;
   -webkit-touch-callout: none;
   color: var(--editor-foreground);
   font-family: "Typr File Tree Nerd Font", "JetBrainsMono Nerd Font Mono", "JetBrains Mono", "SFMono-Regular", monospace;
   font-size: 0.86rem;
-  line-height: 1.35;
+  line-height: var(--file-tree-row-height);
 }
 
 .file-tree--drag-active {
@@ -3792,19 +3793,6 @@ button {
 .file-tree--drop-target {
   background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
   box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.file-tree__root-drop-cue {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  margin: 0.1rem 0.25rem 0.3rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px dashed color-mix(in srgb, var(--accent) 76%, var(--border));
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--surface-strong) 82%, var(--accent-soft));
-  color: var(--accent-strong);
-  white-space: normal;
 }
 
 .file-tree * {
@@ -3827,13 +3815,14 @@ button {
   display: inline-block;
   width: max-content;
   min-width: 100%;
+  height: var(--file-tree-row-height);
   padding: 0 0.35rem 0 0.2rem;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
   color: var(--editor-foreground);
-  line-height: 1.35;
+  line-height: var(--file-tree-row-height);
   text-align: left;
   touch-action: manipulation;
   white-space: pre;
@@ -3868,22 +3857,6 @@ button {
 .file-tree__branch-header--dragging,
 .file-tree .file-row--dragging {
   opacity: 0.45;
-}
-
-.file-tree__drop-label {
-  display: inline-block;
-  max-width: 24ch;
-  margin-left: 0.75rem;
-  padding: 0 0.4rem;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface-strong));
-  color: var(--accent-strong);
-  font-weight: 700;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  white-space: nowrap;
 }
 
 .file-tree__branch-header--static {
@@ -3950,6 +3923,8 @@ button {
 }
 
 .file-tree__rename-input {
+  box-sizing: border-box;
+  height: var(--file-tree-row-height);
   min-width: 0;
   padding: 0 0.25rem;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
@@ -3957,6 +3932,8 @@ button {
   background: var(--editor-background);
   color: var(--editor-foreground);
   cursor: text;
+  line-height: calc(var(--file-tree-row-height) - 2px);
+  vertical-align: top;
 }
 
 .file-tree__rename-input:focus {
@@ -3981,9 +3958,14 @@ button {
 }
 
 .workspace-context-menu {
-  position: absolute;
-  z-index: 80;
+  position: fixed;
+  z-index: 200;
+  top: max(0.5rem, min(var(--workspace-context-menu-top), calc(100vh - 18rem)));
+  left: max(0.5rem, min(var(--workspace-context-menu-left), calc(100vw - 13rem)));
   min-width: 12rem;
+  max-width: calc(100vw - 1rem);
+  max-height: calc(100vh - 1rem);
+  overflow-y: auto;
   padding: 0.35rem;
   border: 1px solid var(--border);
   border-radius: 12px;

@@ -182,7 +182,6 @@ interface WorkspaceTreeProps {
   gitStatusByPath?: Record<string, WorkspaceGitBadgeKind>;
   nodes: WorkspaceTreeNode[];
   rootLabel: string;
-  rootIsRenameable: boolean;
   selectedPaths: string[];
   selectedPath: string | null;
   renamingPath: string | null;
@@ -215,7 +214,6 @@ export function WorkspaceTree({
   gitStatusByPath = {},
   nodes,
   rootLabel,
-  rootIsRenameable,
   selectedPaths,
   selectedPath,
   renamingPath,
@@ -238,7 +236,6 @@ export function WorkspaceTree({
   draggedPath,
   dropTargetPath
 }: WorkspaceTreeProps) {
-  const draggedName = draggedPath?.split("/").at(-1) ?? "item";
   const isRootDropTarget = draggedPath !== null && dropTargetPath === WORKSPACE_ROOT_PATH;
 
   return (
@@ -265,7 +262,7 @@ export function WorkspaceTree({
         onDropAtRoot();
       }}
       onContextMenu={(event) => {
-        if (!rootIsRenameable || event.defaultPrevented) {
+        if (event.defaultPrevented) {
           return;
         }
 
@@ -273,11 +270,6 @@ export function WorkspaceTree({
         onRequestRootContextMenu(event.clientX, event.clientY);
       }}
     >
-      {isRootDropTarget ? (
-        <div className="file-tree__root-drop-cue" role="status">
-          Move <strong>{draggedName}</strong> to project root
-        </div>
-      ) : null}
       {nodes.length > 0 ? (
         nodes.map((node) => (
           <WorkspaceTreeBranch
@@ -375,7 +367,6 @@ function WorkspaceTreeBranch({
   const isSelected = selectedPaths.includes(node.path);
   const isDragging = draggedPath === node.path;
   const isDropTarget = draggedPath !== null && dropTargetPath === node.path;
-  const draggedName = draggedPath?.split("/").at(-1) ?? "item";
   const gitStatus = getWorkspaceNodeGitStatus(node, gitStatusByPath);
   const indent = " ".repeat(depth * 2);
   const longPressTimerRef = useRef<number | null>(null);
@@ -524,6 +515,7 @@ function WorkspaceTreeBranch({
                 onBlur={onRenameCommit}
                 onChange={(event) => onRenameDraftChange(event.target.value)}
                 onClick={(event) => event.stopPropagation()}
+                onFocus={(event) => event.currentTarget.select()}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
@@ -545,11 +537,6 @@ function WorkspaceTreeBranch({
               <span aria-hidden="true" className="file-tree__caret">{folderCaret}</span>
               <span aria-hidden="true" className={folderIconClassName}>{folderIcon}</span>
               <span>{node.name}</span>
-              {isDropTarget ? (
-                <span className="file-tree__drop-label" role="status">
-                  Move {draggedName} here
-                </span>
-              ) : null}
             </span>
           )}
           {gitStatus ? (
