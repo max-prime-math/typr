@@ -751,6 +751,15 @@ button {
   transform: translate(-50%, -50%);
 }
 
+.application-info__backdrop {
+  position: fixed;
+  z-index: 1190;
+  inset: 0;
+  background: color-mix(in srgb, var(--surface) 28%, transparent);
+  backdrop-filter: blur(9px);
+  -webkit-backdrop-filter: blur(9px);
+}
+
 .application-info__header,
 .application-info__details > div,
 .application-info__links a,
@@ -8116,13 +8125,18 @@ button {
 }
 
 @media (max-width: 720px) {
-  .application-info__popover {
-    inset: 0;
+  .application-info--mobile .application-info__popover {
+    position: fixed;
+    z-index: 1200;
+    top: 6.85rem;
+    right: 0.6rem;
+    bottom: 0.6rem;
+    left: 0.6rem;
     width: auto;
-    height: 100dvh;
+    height: auto;
     max-height: none;
     border: 0;
-    border-radius: 0;
+    border-radius: 12px;
     transform: none;
   }
 }

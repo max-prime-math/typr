@@ -104,7 +104,7 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
         <span className="visually-hidden">Application info</span>
       </button>
 
-      {isOpen ? createPortal(
+      {isOpen ? (mobile ? (
         <section
           aria-label="Typr application information"
           className="application-info__popover"
@@ -237,9 +237,75 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
               </div>
             )}
           </section>
-        </section>,
+        </section>
+      ) : createPortal(
+        <>
+          <div aria-hidden="true" className="application-info__backdrop" />
+          <section
+            aria-label="Typr application information"
+            className="application-info__popover"
+            ref={popoverRef}
+            role="dialog"
+          >
+            <header className="application-info__header">
+              <div>
+                <h2>About {TYPR_BUILD_INFO.name}</h2>
+              </div>
+              <button
+                aria-label="Close application info"
+                className="application-info__close"
+                onClick={() => setIsOpen(false)}
+                type="button"
+              >
+                Close
+              </button>
+            </header>
+
+            <ApplicationInfoContents state={state} updateReady={updateReady} onClose={() => setIsOpen(false)} />
+          </section>
+        </>,
         document.body
-      ) : null}
+      )) : null}
     </div>
   );
+}
+
+function ApplicationInfoContents({
+  state,
+  updateReady,
+  onClose
+}: {
+  state: UpdateManagerState;
+  updateReady: boolean;
+  onClose: () => void;
+}) {
+  return <>
+    <section className="application-info__section" aria-labelledby="application-build-heading">
+      <h3 id="application-build-heading">Build details</h3>
+      <dl className="application-info__details">
+        <div><dt>Version</dt><dd>{TYPR_BUILD_INFO.version}</dd></div>
+        <div><dt>Build</dt><dd>{TYPR_BUILD_INFO.buildSha}</dd></div>
+        <div><dt>Service worker</dt><dd>{getServiceWorkerLabel(state)}</dd></div>
+      </dl>
+    </section>
+    <section className="application-info__section" aria-labelledby="application-links-heading">
+      <h3 id="application-links-heading">Links</h3>
+      <nav className="application-info__links" aria-label="Typr links">
+        {TYPR_LINKS.map((link) => <a href={link.href} key={link.href} rel="noreferrer" target="_blank">{link.label}<span aria-hidden="true">↗</span></a>)}
+      </nav>
+    </section>
+    <section className="application-info__section" aria-labelledby="application-updates-heading">
+      <h3 id="application-updates-heading">Updates</h3>
+      {state.phase === "checking" ? <div className="application-info__checking" role="status"><span aria-hidden="true" className="application-info__spinner" /><span>Checking...</span></div>
+        : updateReady ? <div className="application-info__update">
+          <p><strong>{state.release?.version ? `Typr ${state.release.version} is ready.` : "A Typr update is ready."}</strong></p>
+          {state.release?.notes.length ? <ul>{state.release.notes.map((note) => <li key={note}>{note}</li>)}</ul> : null}
+          {state.release?.breaking || state.release?.backupRecommended ? <div className="application-info__warning"><span aria-hidden="true" className="application-info__warning-icon" /><p>{state.release.breaking ? "This update contains changes that may affect existing projects." : ""}{state.release.backupRecommended ? " Please make a backup of your projects before updating." : ""}</p></div> : null}
+          <div className="application-info__actions"><button className="pane__button pane__button--compact" onClick={onClose} type="button">Later</button><button className="pane__button pane__button--compact pane__button--success" onClick={() => { void updateManager.activateUpdate(true); }} type="button">Update</button></div>
+        </div>
+        : state.phase === "activating" ? <div className="application-info__checking" role="status"><span aria-hidden="true" className="application-info__spinner" /><span>Installing update...</span></div>
+        : state.phase === "disabled" ? <p className="application-info__muted">Update checks run in installed production builds.</p>
+        : <div className="application-info__current"><p>Typr is up to date.</p><button className="pane__button pane__button--compact" disabled={state.serviceWorkerStatus === "unavailable"} onClick={() => { void updateManager.checkForUpdates(true); }} type="button">Check for updates</button></div>}
+    </section>
+  </>;
 }
