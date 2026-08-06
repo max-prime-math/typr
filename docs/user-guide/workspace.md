@@ -52,7 +52,9 @@ Constant mode uses the browser's filesystem observer when available and otherwis
 
 ## Files
 
-Use the Files pane to create documents and folders, upload files, rename or move workspace entries, open recent files, and manage trash. Use the upload button or drag files from your computer over the Files pane; the pane highlights with a large **+** when releasing will add the files to the workspace. Typr hides managed .git internals from the file tree and browser shell.
+Use the Files pane to create documents and folders, upload files, rename or move workspace entries, open recent files, and manage trash. Use the upload button or drag files or folders from your computer over the Files pane; dropped folders retain their nested files and empty directories. Typr hides managed .git internals from the file tree and browser shell.
+
+Select multiple entries with `Ctrl`/`Cmd` or `Shift`, then drag any selected entry onto a folder to move the selection together. To rename multiple files, select at least two files, right-click one of them, and choose **Batch rename**. Typr opens a source editor with one filename per line. Edit the names in place, then choose **Save names** (or use the normal compile shortcut) to apply them; keep the same number of non-empty lines and edit filenames only, not their folders.
 
 Supported source files include Typst, LaTeX, Markdown, plain text, bibliography files, and common project assets. Diagrams are stored as Typr workspace items and can be edited from the Diagram tool.
 

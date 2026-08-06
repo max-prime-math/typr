@@ -77,6 +77,10 @@ import {
   renameWorkspaceNodeWithPath
 } from "./workspaceRename";
 import { selectWorkspaceRange } from "./workspaceSelection";
+import {
+  createWorkspaceBatchRenameDraft,
+  parseWorkspaceBatchRenameDraft
+} from "./workspaceBatchRename";
 import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
@@ -399,6 +403,11 @@ import {
   joinRelativePaths as joinWorkspacePath
 } from "../utils/relativePath";
 import { scrollElementWithin } from "../utils/domScroll";
+import {
+  collectWorkspaceDropContents,
+  type WorkspaceDropContents,
+  type WorkspaceDroppedFile
+} from "../workspace/dropFiles";
 import { ApplicationInfoButton, ApplicationInfoPanel } from "../update/ApplicationInfoButton";
 import { updateManager } from "../update/updateManager";
 
@@ -856,6 +865,11 @@ function getLatexCompileProfile(id: LatexCompileProfileId): LatexCompileProfile 
 interface WorkspaceClipboardState {
   mode: WorkspaceClipboardMode;
   paths: string[];
+}
+
+interface WorkspaceBatchRenameState {
+  draft: string;
+  nodes: WorkspaceTreeNode[];
 }
 
 interface SyncFeedback {
@@ -3341,11 +3355,13 @@ export function App() {
   } = useWorkspaceTabs();
   const [workspaceLoadError, setWorkspaceLoadError] = useState<string | null>(null);
   const [workspaceContextMenu, setWorkspaceContextMenu] = useState<WorkspaceContextMenuState | null>(null);
+  const [workspaceBatchRename, setWorkspaceBatchRename] =
+    useState<WorkspaceBatchRenameState | null>(null);
   const [renamingWorkspacePath, setRenamingWorkspacePath] = useState<string | null>(null);
   const [workspaceRenameDraft, setWorkspaceRenameDraft] = useState("");
   const [workspaceClipboard, setWorkspaceClipboard] = useState<WorkspaceClipboardState | null>(null);
   const [pendingWorkspaceDeletePath, setPendingWorkspaceDeletePath] = useState<string | null>(null);
-  const [draggedWorkspacePath, setDraggedWorkspacePath] = useState<string | null>(null);
+  const [draggedWorkspacePaths, setDraggedWorkspacePaths] = useState<string[]>([]);
   const [workspaceDropTargetPath, setWorkspaceDropTargetPath] = useState<string | null>(null);
   const [collapsedOutlineEntries, setCollapsedOutlineEntries] = useState<Record<string, boolean>>(
     {}
@@ -8433,6 +8449,145 @@ ${nextLine}` : nextLine;
     workspaceRenameDraft
   ]);
 
+  const handleStartWorkspaceBatchRename = useCallback(
+    (node: WorkspaceTreeNode) => {
+      const nodes = selectedWorkspacePaths
+        .includes(node.path)
+        ? selectedWorkspacePaths
+            .map((path) => findWorkspaceNodeByPath(visibleWorkspaceTree, path))
+            .filter((entry): entry is WorkspaceTreeNode => entry !== null)
+            .filter((entry) => entry.source.kind === "document")
+        : [];
+
+      if (nodes.length < 2) {
+        setSyncFeedback({ tone: "neutral", text: "Select at least two files to batch rename." });
+        return;
+      }
+
+      setWorkspaceContextMenu(null);
+      setWorkspaceBatchRename({
+        nodes,
+        draft: createWorkspaceBatchRenameDraft(nodes.map((entry) => entry.name))
+      });
+      setIsSourcePaneHidden(false);
+      setWorkspaceMode("split");
+      if (isMobileWorkspace) {
+        setMobileWorkspaceTab("editor");
+      }
+    },
+    [isMobileWorkspace, selectedWorkspacePaths, visibleWorkspaceTree]
+  );
+
+  const handleCancelWorkspaceBatchRename = useCallback(() => {
+    setWorkspaceBatchRename(null);
+  }, []);
+
+  const handleCommitWorkspaceBatchRename = useCallback(() => {
+    if (!workspaceBatchRename) {
+      return;
+    }
+
+    const parsed = parseWorkspaceBatchRenameDraft(
+      workspaceBatchRename.draft,
+      workspaceBatchRename.nodes.length
+    );
+    if (parsed.error) {
+      setSyncFeedback({ tone: "error", text: parsed.error });
+      return;
+    }
+
+    let nextSnapshot = snapshot;
+    const transitions = workspaceBatchRename.nodes.map((node, index) => {
+      const transition = renameWorkspaceNodeWithPath(nextSnapshot, node, parsed.names[index]);
+      nextSnapshot = transition.snapshot;
+      return transition;
+    });
+
+    setSnapshot(nextSnapshot);
+    setSourceTabPaths((currentPaths) =>
+      transitions.reduce(
+        (paths, transition) => remapWorkspacePaths(paths, transition.previousPath, transition.nextPath),
+        currentPaths
+      )
+    );
+    setTransientSourceTabPath((currentPath) =>
+      currentPath
+        ? transitions.reduce(
+            (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+            currentPath
+          )
+        : null
+    );
+    setPreviewTabPaths((currentPaths) =>
+      transitions.reduce(
+        (paths, transition) => remapWorkspacePaths(paths, transition.previousPath, transition.nextPath),
+        currentPaths
+      )
+    );
+    setActivePreviewPath((currentPath) =>
+      currentPath
+        ? transitions.reduce(
+            (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+            currentPath
+          )
+        : null
+    );
+    setSelectedWorkspacePath((currentPath) =>
+      currentPath
+        ? transitions.reduce(
+            (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+            currentPath
+          )
+        : transitions[0]?.nextPath ?? null
+    );
+    setSelectedWorkspacePaths((currentPaths) =>
+      transitions.reduce(
+        (paths, transition) => remapWorkspacePaths(paths, transition.previousPath, transition.nextPath),
+        currentPaths
+      )
+    );
+    setWorkspaceSelectionAnchorPath((currentPath) =>
+      currentPath
+        ? transitions.reduce(
+            (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+            currentPath
+          )
+        : transitions[0]?.nextPath ?? null
+    );
+    activeSourcePathRef.current = transitions.reduce(
+      (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+      activeSourcePathRef.current
+    );
+    if (editedSourcePathRef.current) {
+      editedSourcePathRef.current = transitions.reduce(
+        (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+        editedSourcePathRef.current ?? ""
+      );
+    }
+    if (pastedImageRenameBindingRef.current) {
+      pastedImageRenameBindingRef.current = {
+        ...pastedImageRenameBindingRef.current,
+        sourcePath: transitions.reduce(
+          (path, transition) => remapWorkspacePath(path, transition.previousPath, transition.nextPath),
+          pastedImageRenameBindingRef.current?.sourcePath ?? ""
+        )
+      };
+    }
+
+    setWorkspaceBatchRename(null);
+    setSyncFeedback({
+      tone: "success",
+      text: `Renamed ${workspaceBatchRename.nodes.length} files.`
+    });
+  }, [
+    setActivePreviewPath,
+    setPreviewTabPaths,
+    setSourceTabPaths,
+    setTransientSourceTabPath,
+    snapshot,
+    workspaceBatchRename
+  ]);
+
   const handleRequestWorkspaceContextMenu = useCallback(
     (node: WorkspaceTreeNode, x: number, y: number) => {
       if (node.kind === "folder") {
@@ -8537,49 +8692,148 @@ ${nextLine}` : nextLine;
     setSelectedWorkspacePath(null);
   }, []);
 
-  const handleMoveWorkspaceNode = useCallback(
-    (node: WorkspaceTreeNode, destinationFolderPath: string | null) => {
-      const { movedPath } = moveWorkspaceNodeInSnapshot(
-        snapshot,
-        node,
-        destinationFolderPath
-      );
-      const nextSelectedPaths = remapWorkspaceSelectionAfterMove(
-        selectedWorkspacePaths,
-        node.path,
-        movedPath,
-        node.kind === "folder"
-      );
-      const nextSelectedPath = remapWorkspaceSelectionAfterMove(
-        selectedWorkspacePath ? [selectedWorkspacePath] : [],
-        node.path,
-        movedPath,
-        node.kind === "folder"
-      )[0] ?? null;
+  const handleMoveWorkspaceNodes = useCallback(
+    (
+      nodes: WorkspaceTreeNode[],
+      destinationForNode: string | null | ((node: WorkspaceTreeNode) => string | null)
+    ) => {
+      const rootNodes = removeDescendantWorkspaceNodes(nodes).filter(canMoveWorkspaceNode);
+      if (rootNodes.length === 0) {
+        return;
+      }
 
-      setSnapshot((currentSnapshot) =>
-        moveWorkspaceNodeInSnapshot(currentSnapshot, node, destinationFolderPath).snapshot
-      );
+      let nextSnapshot = snapshot;
+      let nextSelectedPaths = selectedWorkspacePaths;
+      let nextSelectedPath = selectedWorkspacePath;
+      let nextSelectionAnchorPath = workspaceSelectionAnchorPath;
+      const movedNodes: Array<{ node: WorkspaceTreeNode; previousPath: string; movedPath: string }> = [];
 
+      for (const node of rootNodes) {
+        const destinationPath =
+          typeof destinationForNode === "function"
+            ? destinationForNode(node)
+            : destinationForNode;
+        const transition = moveWorkspaceNodeInSnapshot(nextSnapshot, node, destinationPath);
+        nextSnapshot = transition.snapshot;
+        nextSelectedPaths = remapWorkspaceSelectionAfterMove(
+          nextSelectedPaths,
+          node.path,
+          transition.movedPath,
+          node.kind === "folder"
+        );
+        nextSelectedPath = remapWorkspaceSelectionAfterMove(
+          nextSelectedPath ? [nextSelectedPath] : [],
+          node.path,
+          transition.movedPath,
+          node.kind === "folder"
+        )[0] ?? null;
+        nextSelectionAnchorPath = remapWorkspaceSelectionAfterMove(
+          nextSelectionAnchorPath ? [nextSelectionAnchorPath] : [],
+          node.path,
+          transition.movedPath,
+          node.kind === "folder"
+        )[0] ?? null;
+        movedNodes.push({ node, previousPath: node.path, movedPath: transition.movedPath });
+      }
+
+      setSnapshot(nextSnapshot);
+      setSourceTabPaths((currentPaths) =>
+        movedNodes.reduce(
+          (paths, entry) => remapWorkspacePaths(paths, entry.previousPath, entry.movedPath),
+          currentPaths
+        )
+      );
+      setTransientSourceTabPath((currentPath) =>
+        currentPath
+          ? movedNodes.reduce(
+              (path, entry) => remapWorkspacePath(path, entry.previousPath, entry.movedPath),
+              currentPath
+            )
+          : null
+      );
+      setPreviewTabPaths((currentPaths) =>
+        movedNodes.reduce(
+          (paths, entry) => remapWorkspacePaths(paths, entry.previousPath, entry.movedPath),
+          currentPaths
+        )
+      );
+      setActivePreviewPath((currentPath) =>
+        currentPath
+          ? movedNodes.reduce(
+              (path, entry) => remapWorkspacePath(path, entry.previousPath, entry.movedPath),
+              currentPath
+            )
+          : null
+      );
       setWorkspaceContextMenu(null);
-      setDraggedWorkspacePath(null);
+      setDraggedWorkspacePaths([]);
       setWorkspaceDropTargetPath(null);
       setSelectedWorkspacePaths(nextSelectedPaths);
-      if (nextSelectedPath) {
-        setSelectedWorkspacePath(nextSelectedPath);
+      setSelectedWorkspacePath(nextSelectedPath);
+      setWorkspaceSelectionAnchorPath(nextSelectionAnchorPath);
+      setWorkspaceOpenFoldersByProject((current) => {
+        const storedPaths = current[workspaceFolderStorageKey];
+        if (!storedPaths) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [workspaceFolderStorageKey]: movedNodes.reduce(
+            (paths, entry) => remapWorkspacePaths(paths, entry.previousPath, entry.movedPath),
+            storedPaths
+          )
+        };
+      });
+      activeSourcePathRef.current = movedNodes.reduce(
+        (path, entry) => remapWorkspacePath(path, entry.previousPath, entry.movedPath),
+        activeSourcePathRef.current
+      );
+      if (editedSourcePathRef.current) {
+        editedSourcePathRef.current = movedNodes.reduce(
+          (path, entry) => remapWorkspacePath(path, entry.previousPath, entry.movedPath),
+          editedSourcePathRef.current ?? ""
+        );
+      }
+      if (pastedImageRenameBindingRef.current) {
+        pastedImageRenameBindingRef.current = {
+          ...pastedImageRenameBindingRef.current,
+          sourcePath: movedNodes.reduce(
+            (path, entry) => remapWorkspacePath(path, entry.previousPath, entry.movedPath),
+            pastedImageRenameBindingRef.current?.sourcePath ?? ""
+          )
+        };
       }
     },
-    [selectedWorkspacePath, selectedWorkspacePaths, snapshot]
+    [
+      selectedWorkspacePath,
+      selectedWorkspacePaths,
+      setActivePreviewPath,
+      setPreviewTabPaths,
+      setSourceTabPaths,
+      setTransientSourceTabPath,
+      snapshot,
+      workspaceFolderStorageKey,
+      workspaceSelectionAnchorPath
+    ]
   );
 
   const handleWorkspaceDragStart = useCallback((node: WorkspaceTreeNode) => {
-    setDraggedWorkspacePath(node.path);
+    const selectedNodes =
+      selectedWorkspacePaths.includes(node.path) && selectedWorkspacePaths.length > 1
+        ? selectedWorkspacePaths
+            .map((path) => findWorkspaceNodeByPath(workspaceTree, path))
+            .filter((entry): entry is WorkspaceTreeNode => Boolean(entry))
+        : [node];
+    const draggedNodes = removeDescendantWorkspaceNodes(selectedNodes).filter(canMoveWorkspaceNode);
+
+    setDraggedWorkspacePaths(draggedNodes.map((entry) => entry.path));
     setWorkspaceContextMenu(null);
     setWorkspaceDropTargetPath(null);
-  }, []);
+  }, [selectedWorkspacePaths, workspaceTree]);
 
   const handleWorkspaceDragEnd = useCallback(() => {
-    setDraggedWorkspacePath(null);
+    setDraggedWorkspacePaths([]);
     setWorkspaceDropTargetPath(null);
     if (workspaceHoverExpandTimerRef.current !== null) {
       window.clearTimeout(workspaceHoverExpandTimerRef.current);
@@ -8617,59 +8871,58 @@ ${nextLine}` : nextLine;
   );
 
   const handleWorkspaceDropAtRoot = useCallback(() => {
-    if (!draggedWorkspacePath) {
+    const draggedNodes = draggedWorkspacePaths
+      .map((path) => findWorkspaceNodeByPath(workspaceTree, path))
+      .filter((entry): entry is WorkspaceTreeNode => Boolean(entry));
+
+    if (draggedNodes.length === 0) {
       return;
     }
 
-    const draggedNode = findWorkspaceNodeByPath(workspaceTree, draggedWorkspacePath);
-
-    if (!draggedNode || !canMoveWorkspaceNode(draggedNode)) {
+    if (draggedNodes.some((node) => !canMoveWorkspaceNode(node))) {
       handleWorkspaceDragEnd();
       return;
     }
 
-    if (draggedNode.source.kind === "diagram") {
-      handleMoveWorkspaceNode(draggedNode, "figures");
-      return;
-    }
-
-    handleMoveWorkspaceNode(draggedNode, null);
-  }, [draggedWorkspacePath, handleMoveWorkspaceNode, handleWorkspaceDragEnd, workspaceTree]);
+    handleMoveWorkspaceNodes(draggedNodes, (node) =>
+      node.source.kind === "diagram" ? "figures" : null
+    );
+  }, [draggedWorkspacePaths, handleMoveWorkspaceNodes, handleWorkspaceDragEnd, workspaceTree]);
 
   const handleWorkspaceDropIntoFolder = useCallback(
     (targetNode: WorkspaceTreeNode) => {
-      if (!draggedWorkspacePath) {
+      const draggedNodes = draggedWorkspacePaths
+        .map((path) => findWorkspaceNodeByPath(workspaceTree, path))
+        .filter((entry): entry is WorkspaceTreeNode => Boolean(entry));
+
+      if (draggedNodes.length === 0) {
         return;
       }
 
-      const draggedNode = findWorkspaceNodeByPath(workspaceTree, draggedWorkspacePath);
-
-      if (!draggedNode || !canMoveWorkspaceNode(draggedNode)) {
+      if (draggedNodes.some((node) => !canMoveWorkspaceNode(node))) {
         handleWorkspaceDragEnd();
         return;
       }
 
-      if (draggedNode.source.kind === "diagram") {
-        if (targetNode.path !== "figures" && !targetNode.path.startsWith("figures/")) {
-          handleWorkspaceDragEnd();
-          return;
-        }
+      const targetIsFiguresFolder =
+        targetNode.path === "figures" || targetNode.path.startsWith("figures/");
+      const hasDiagram = draggedNodes.some((node) => node.source.kind === "diagram");
+      const hasNonDiagram = draggedNodes.some((node) => node.source.kind !== "diagram");
 
-        handleMoveWorkspaceNode(draggedNode, targetNode.path);
-        return;
-      }
-
-      if (targetNode.path === "figures" || targetNode.path.startsWith("figures/")) {
+      if ((hasDiagram && !targetIsFiguresFolder) || (hasNonDiagram && targetIsFiguresFolder)) {
+        setSyncFeedback({
+          tone: "error",
+          text: "Selected items cannot all be moved into that folder."
+        });
         handleWorkspaceDragEnd();
         return;
       }
 
-      handleMoveWorkspaceNode(draggedNode, targetNode.path);
+      handleMoveWorkspaceNodes(draggedNodes, targetNode.path);
     },
     [
-      draggedWorkspacePath,
-      handleDeleteWorkspaceNode,
-      handleMoveWorkspaceNode,
+      draggedWorkspacePaths,
+      handleMoveWorkspaceNodes,
       handleWorkspaceDragEnd,
       workspaceTree
     ]
@@ -10498,8 +10751,11 @@ ${nextLine}` : nextLine;
     setWorkspaceContextMenu(null);
   }
 
-  const uploadWorkspaceFiles = async (files: File[]) => {
-    if (files.length === 0) {
+  const uploadWorkspaceFiles = async (
+    files: WorkspaceDroppedFile[],
+    directories: string[] = []
+  ) => {
+    if (files.length === 0 && directories.length === 0) {
       return;
     }
 
@@ -10509,18 +10765,55 @@ ${nextLine}` : nextLine;
     }
 
     const uploadedFiles = await Promise.all(
-      files.map(async (file) => ({
-        name: file.name,
-        content: isTextWorkspaceFile(file.name)
+      files.map(async ({ file, path }) => ({
+        path,
+        content: isTextWorkspaceFile(path)
           ? await file.text()
           : new Uint8Array(await file.arrayBuffer())
       }))
     );
 
-    setSnapshot((currentSnapshot) =>
+    let nextSnapshot = snapshot;
+    const droppedFolderPaths = new Map<string, string>();
+    const normalizedDirectories = [...new Set(directories.map(normalizeWorkspacePath).filter(Boolean))]
+      .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right));
+
+    for (const directoryPath of normalizedDirectories) {
+      const parentPath = getWorkspaceParentPath(directoryPath);
+      const mappedParentPath = parentPath ? droppedFolderPaths.get(parentPath) ?? parentPath : null;
+      const requestedPath = joinWorkspacePath(mappedParentPath, getWorkspaceBaseName(directoryPath));
+      const existingFolder = nextSnapshot.project.folders.find(
+        (folder) => folder.name === requestedPath
+      );
+
+      if (existingFolder) {
+        droppedFolderPaths.set(directoryPath, existingFolder.name);
+        continue;
+      }
+
+      nextSnapshot = createFolder(nextSnapshot, requestedPath);
+      const createdFolder = nextSnapshot.project.folders.at(-1);
+      if (createdFolder) {
+        droppedFolderPaths.set(directoryPath, createdFolder.name);
+      }
+    }
+
+    const remapDroppedPath = (path: string): string => {
+      const normalizedPath = normalizeWorkspacePath(path);
+      const matchingFolderPath = [...droppedFolderPaths.keys()]
+        .filter((folderPath) => normalizedPath.startsWith(`${folderPath}/`))
+        .sort((left, right) => right.length - left.length)[0];
+
+      return matchingFolderPath
+        ? `${droppedFolderPaths.get(matchingFolderPath)}${normalizedPath.slice(matchingFolderPath.length)}`
+        : normalizedPath;
+    };
+
+    setSnapshot(
       uploadedFiles.reduce(
-        (nextSnapshot, file) => createDocumentFromFile(nextSnapshot, file.name, file.content),
-        currentSnapshot
+        (currentSnapshot, file) =>
+          createDocumentFromFile(currentSnapshot, remapDroppedPath(file.path), file.content),
+        nextSnapshot
       )
     );
   };
@@ -10528,7 +10821,7 @@ ${nextLine}` : nextLine;
   const handleUploadDocument = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
     event.currentTarget.value = "";
-    await uploadWorkspaceFiles(files);
+    await uploadWorkspaceFiles(files.map((file) => ({ file, path: file.name })));
   };
 
   const handleFilesPaneDragOver = (event: ReactDragEvent<HTMLElement>) => {
@@ -10564,13 +10857,11 @@ ${nextLine}` : nextLine;
     event.preventDefault();
     event.stopPropagation();
     setIsFilesPaneFileDragActive(false);
-    const files = Array.from(event.dataTransfer.files);
-
-    if (files.length === 0) {
-      return;
-    }
-
-    void uploadWorkspaceFiles(files);
+    void collectWorkspaceDropContents(event.dataTransfer)
+      .then((contents: WorkspaceDropContents) => uploadWorkspaceFiles(contents.files, contents.directories))
+      .catch(() => {
+        setSyncFeedback({ tone: "error", text: "Could not read the dropped files." });
+      });
   };
 
   const handleDownloadActivePreview = useCallback(async (mode: PreviewDownloadMode = previewDownloadMode) => {
@@ -12988,9 +13279,11 @@ ${nextLine}` : nextLine;
   const activeSettingsFileError = isSettingsProjectSelected
     ? (settingsFilesController.errors as Record<string, string | undefined>)[activeSourcePath]
     : undefined;
+  const isBatchRenameOpen = workspaceBatchRename !== null;
   const showSourcePane =
     !isSidebarInlineExpanded &&
-    (isSettingsProjectSelected ||
+    (isBatchRenameOpen ||
+      isSettingsProjectSelected ||
       isZenMode ||
       (isSourceFileEditable && (isMobileWorkspace || !isSourcePaneHidden)));
   const showPreviewPane =
@@ -13598,9 +13891,7 @@ ${nextLine}` : nextLine;
           return;
         }
 
-        for (const entry of movableNodes) {
-          handleMoveWorkspaceNode(entry, pasteDestination.destinationFolderPath);
-        }
+        handleMoveWorkspaceNodes(movableNodes, pasteDestination.destinationFolderPath);
 
         setWorkspaceClipboard(null);
         setPendingWorkspaceDeletePath(null);
@@ -13636,7 +13927,7 @@ ${nextLine}` : nextLine;
     },
     [
       getWorkspacePasteDestination,
-      handleMoveWorkspaceNode,
+      handleMoveWorkspaceNodes,
       isTrashViewOpen,
       setSnapshot,
       setSyncFeedback,
@@ -16108,7 +16399,7 @@ ${nextLine}` : nextLine;
                   <WorkspaceTree
                     collapsedPaths={collapsedFileFolders}
                     colorfulIcons={snapshot.preferences.colorfulFileTreeIcons}
-                    draggedPath={draggedWorkspacePath}
+                    draggedPaths={draggedWorkspacePaths}
                     dropTargetPath={workspaceDropTargetPath}
                     nodes={visibleWorkspaceTree}
                     gitStatusByPath={workspaceGitBadgeByPath}
@@ -16232,6 +16523,18 @@ ${nextLine}` : nextLine;
                             New folder
                           </button>
                         </>
+                      ) : null}
+                      {workspaceContextMenu.kind === "node" &&
+                      workspaceContextMenu.node.source.kind === "document" &&
+                      selectedWorkspacePaths.includes(workspaceContextMenu.node.path) &&
+                      selectedWorkspacePaths.length > 1 ? (
+                        <button
+                          className="workspace-context-menu__item"
+                          onClick={() => handleStartWorkspaceBatchRename(workspaceContextMenu.node)}
+                          type="button"
+                        >
+                          Batch rename
+                        </button>
                       ) : null}
                       {workspaceContextMenu.kind === "node" &&
                       (workspaceContextMenu.node.source.kind === "document" ||
@@ -17385,7 +17688,7 @@ ${nextLine}` : nextLine;
             <>
               <div className="pane__header">
                 <div className="pane__header-group">
-                  <h2>Source</h2>
+                  <h2>{isBatchRenameOpen ? "Batch rename" : "Source"}</h2>
                 </div>
                 <div className="pane__header-actions">
                   {isMobileWorkspace ? (
@@ -17400,7 +17703,16 @@ ${nextLine}` : nextLine;
                       <span className="visually-hidden">Full screen</span>
                     </button>
                   ) : null}
-                  {showSourceCompileButton && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
+                  {isBatchRenameOpen ? (
+                    <button
+                      className="pane__button pane__button--compact"
+                      onClick={handleCommitWorkspaceBatchRename}
+                      title="Save renamed files"
+                      type="button"
+                    >
+                      Save names
+                    </button>
+                  ) : showSourceCompileButton && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
                     activeSourceLanguage === "latex" ? (
                       <div
                         className={`compile-options-menu ${isCompileOptionsMenuOpen ? "compile-options-menu--open" : ""}`}
@@ -17466,17 +17778,47 @@ ${nextLine}` : nextLine;
                   ) : null}
                 </div>
               </div>
-              {renderWorkspaceTabStrip({
+              {!isBatchRenameOpen ? renderWorkspaceTabStrip({
                 activePath: visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? normalizedActiveSourcePath : null,
                 ariaLabel: "Open source files",
                 kind: "source",
                 onActivate: handleActivateSourceTab,
                 onClose: handleCloseSourceTab,
                 paths: visibleSourceTabPaths
-              })}
+              }) : null}
             </>
           )}
-          {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
+          {isBatchRenameOpen ? (
+            <TypstEditor
+              ref={editorRef}
+              diagnostics={[]}
+              highlightErrors={false}
+              language="text"
+              snippets={[]}
+              onChange={(value) =>
+                setWorkspaceBatchRename((current) =>
+                  current ? { ...current, draft: value } : current
+                )
+              }
+              onCloseRequested={handleCancelWorkspaceBatchRename}
+              onCompileRequested={handleCommitWorkspaceBatchRename}
+              onFocusChange={setIsEditorFocused}
+              onFormatRequested={() => undefined}
+              onSearchRequested={openSearchPane}
+              onSelectionChange={handleSourceEditorSelectionChange}
+              value={workspaceBatchRename?.draft ?? ""}
+              vimMode={snapshot.preferences.vimMode}
+              editorFontSize={snapshot.preferences.editorFontSize}
+              keybindings={keybindings}
+              relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
+              cursorSmooth={!isMobileWorkspace && snapshot.preferences.cursorSmooth}
+              cursorSmear={isMobileWorkspace ? 0 : snapshot.preferences.cursorSmear}
+              latexMathPreview={false}
+              typstMathPreview={false}
+              constrainMobileScroll={isMobileWorkspace}
+              theme={theme}
+            />
+          ) : isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) ? (
             <>
               <TypstEditor
                 ref={editorRef}

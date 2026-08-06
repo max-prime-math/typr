@@ -204,7 +204,7 @@ interface WorkspaceTreeProps {
   onRequestRename: (node: WorkspaceTreeNode) => void;
   onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
   onDropIntoFolder: (targetNode: WorkspaceTreeNode) => void;
-  draggedPath: string | null;
+  draggedPaths: string[];
   dropTargetPath: string | null;
 }
 
@@ -233,14 +233,15 @@ export function WorkspaceTree({
   onRequestRename,
   onRequestContextMenu,
   onDropIntoFolder,
-  draggedPath,
+  draggedPaths,
   dropTargetPath
 }: WorkspaceTreeProps) {
-  const isRootDropTarget = draggedPath !== null && dropTargetPath === WORKSPACE_ROOT_PATH;
+  const isRootDropTarget =
+    draggedPaths.length > 0 && dropTargetPath === WORKSPACE_ROOT_PATH;
 
   return (
     <div
-      className={`file-tree ${draggedPath ? "file-tree--drag-active" : ""} ${
+      className={`file-tree ${draggedPaths.length > 0 ? "file-tree--drag-active" : ""} ${
         isRootDropTarget ? "file-tree--drop-target" : ""
       }`}
       role="tree"
@@ -296,7 +297,7 @@ export function WorkspaceTree({
             onRequestRename={onRequestRename}
             onRequestContextMenu={onRequestContextMenu}
             onDropIntoFolder={onDropIntoFolder}
-            draggedPath={draggedPath}
+            draggedPaths={draggedPaths}
             dropTargetPath={dropTargetPath}
           />
         ))
@@ -333,7 +334,7 @@ interface WorkspaceTreeBranchProps {
   onRequestRename: (node: WorkspaceTreeNode) => void;
   onRequestContextMenu: (node: WorkspaceTreeNode, x: number, y: number) => void;
   onDropIntoFolder: (targetNode: WorkspaceTreeNode) => void;
-  draggedPath: string | null;
+  draggedPaths: string[];
   dropTargetPath: string | null;
 }
 
@@ -360,13 +361,13 @@ function WorkspaceTreeBranch({
   onRequestRename,
   onRequestContextMenu,
   onDropIntoFolder,
-  draggedPath,
+  draggedPaths,
   dropTargetPath
 }: WorkspaceTreeBranchProps) {
   const isRenaming = renamingPath === node.path;
   const isSelected = selectedPaths.includes(node.path);
-  const isDragging = draggedPath === node.path;
-  const isDropTarget = draggedPath !== null && dropTargetPath === node.path;
+  const isDragging = draggedPaths.includes(node.path);
+  const isDropTarget = draggedPaths.length > 0 && dropTargetPath === node.path;
   const gitStatus = getWorkspaceNodeGitStatus(node, gitStatusByPath);
   const indent = " ".repeat(depth * 2);
   const longPressTimerRef = useRef<number | null>(null);
@@ -576,7 +577,7 @@ function WorkspaceTreeBranch({
                 onRequestRename={onRequestRename}
                 onRequestContextMenu={onRequestContextMenu}
                 onDropIntoFolder={onDropIntoFolder}
-                draggedPath={draggedPath}
+                draggedPaths={draggedPaths}
                 dropTargetPath={dropTargetPath}
               />
             ))}
