@@ -528,6 +528,7 @@ function WorkspaceTreeBranch({
                     onRenameCancel();
                   }
                 }}
+                style={{ width: `calc(100% - ${depth * 2 + 4}ch)` }}
                 type="text"
                 value={renameDraft}
               />
@@ -595,7 +596,7 @@ function WorkspaceTreeBranch({
   if (isRenaming) {
     return (
       <div
-        className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
+        className={`file-row file-tree__entry-row ${selectedPath === node.path && isSelected ? "file-row--active" : ""} ${
           isSelected ? "file-row--selected" : ""
         } ${
           isDragging ? "file-row--dragging" : ""
@@ -633,6 +634,7 @@ function WorkspaceTreeBranch({
               onRenameCancel();
             }
           }}
+          style={{ width: `calc(100% - ${depth * 2 + 4}ch)` }}
           type="text"
           value={renameDraft}
         />
@@ -642,7 +644,7 @@ function WorkspaceTreeBranch({
 
   return (
     <button
-      className={`file-row file-tree__entry-row ${selectedPath === node.path ? "file-row--active" : ""} ${
+      className={`file-row file-tree__entry-row ${selectedPath === node.path && isSelected ? "file-row--active" : ""} ${
         isSelected ? "file-row--selected" : ""
       } ${
         isDragging ? "file-row--dragging" : ""

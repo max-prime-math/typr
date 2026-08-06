@@ -78,6 +78,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handlePastedImagesEnabledToggle,
     handleProjectGitignoreChange,
     handleRecordedKeybinding,
+    handleLineWrapToggle,
     handleRelativeLineNumbersToggle,
     handleRemoveCachedLatexPackage,
     handleRemoveCustomSnippet,
@@ -842,6 +843,20 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     </div>
                   ) : null}
                 </div>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Line wrap</strong>
+                    <small>
+                      Wrap long lines in the source editor instead of scrolling sideways.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.lineWrap}
+                    onChange={handleLineWrapToggle}
+                    type="checkbox"
+                  />
+                </label>
 
                 <label className="settings-toggle">
                   <span>

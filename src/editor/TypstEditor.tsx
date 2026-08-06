@@ -53,6 +53,7 @@ interface TypstEditorProps {
   readOnly?: boolean;
   vimMode: boolean;
   relativeLineNumbers: boolean;
+  lineWrap: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   constrainMobileScroll?: boolean;
@@ -68,6 +69,7 @@ interface TypstEditorProps {
   onSearchRequested: () => void;
   onCompileRequested: () => void;
   onFormatRequested: () => void;
+  onToggleLineWrap: () => void;
   onCloseRequested: () => void;
   onSelectionChange: (selection: TypstEditorSelection) => void;
   onSourceDoubleClick?: (position: { line: number; column: number }) => void;
@@ -180,6 +182,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   readOnly = false,
   vimMode,
   relativeLineNumbers,
+  lineWrap,
   cursorSmooth,
   cursorSmear,
   constrainMobileScroll = false,
@@ -195,6 +198,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   onSearchRequested,
   onCompileRequested,
   onFormatRequested,
+  onToggleLineWrap,
   onCloseRequested,
   onSelectionChange,
   onSourceDoubleClick,
@@ -631,6 +635,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         readOnly,
         vimMode,
         relativeLineNumbers,
+        lineWrap,
         cursorSmooth,
         cursorSmear,
         constrainMobileScroll,
@@ -646,6 +651,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         onSearchRequested: () => latestOnSearchRequestedRef.current(),
         onCompileRequested: () => latestOnCompileRequestedRef.current(),
         onFormatRequested: () => latestOnFormatRequestedRef.current(),
+        onToggleLineWrap,
         onCloseRequested: () => latestOnCloseRequestedRef.current(),
         onFocusChange: (focused) => latestOnFocusChangeRef.current?.(focused)
       }),
@@ -765,9 +771,11 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     language,
     readOnly,
     relativeLineNumbers,
+    lineWrap,
     theme,
     vimMode,
-    snippetCompletionSource
+    snippetCompletionSource,
+    onToggleLineWrap
   ]);
 
   useEffect(() => {

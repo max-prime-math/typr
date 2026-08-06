@@ -19,6 +19,11 @@ describe("keybindings", () => {
     expect(formatKeybinding(DEFAULT_KEYBINDINGS.formatDocument, false)).toBe("Shift+Alt+F");
   });
 
+  it("defaults line wrap to Alt/Option+W", () => {
+    expect(DEFAULT_KEYBINDINGS.toggleLineWrap).toBe("Alt-w");
+    expect(formatKeybinding(DEFAULT_KEYBINDINGS.toggleLineWrap, true)).toBe("Option+W");
+  });
+
   it("preserves shifted letter bindings for CodeMirror", () => {
     expect(toCodeMirrorKeybinding("Shift-Alt-f")).toBe("Shift-Alt-f");
     expect(toCodeMirrorKeybinding("Alt-Shift-f")).toBe("Alt-Shift-f");

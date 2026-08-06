@@ -15,6 +15,7 @@ Open **Settings → Keybindings** to view, search, change, reset, or resolve con
 | Compile document | <kbd>Mod</kbd>+<kbd>Enter</kbd> |
 | Format document | <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>F</kbd> |
 | Toggle Vim mode | <kbd>Alt</kbd>+<kbd>V</kbd> |
+| Toggle line wrap | <kbd>Alt</kbd>+<kbd>W</kbd> |
 | Open Search | <kbd>Mod</kbd>+<kbd>F</kbd> |
 | New file | <kbd>Alt</kbd>+<kbd>N</kbd> |
 | Rename selected file | <kbd>Alt</kbd>+<kbd>R</kbd> |

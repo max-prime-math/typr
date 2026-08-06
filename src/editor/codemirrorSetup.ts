@@ -62,6 +62,7 @@ interface EditorSetupOptions {
   readOnly: boolean;
   vimMode: boolean;
   relativeLineNumbers: boolean;
+  lineWrap: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   constrainMobileScroll: boolean;
@@ -77,6 +78,7 @@ interface EditorSetupOptions {
   onSearchRequested: () => void;
   onCompileRequested: () => void;
   onFormatRequested: () => void;
+  onToggleLineWrap: () => void;
   onCloseRequested: () => void;
   onFocusChange: (focused: boolean) => void;
 }
@@ -267,6 +269,10 @@ function createEditorTheme(
         color: "var(--editor-gutter-foreground)",
         border: "none"
       },
+      ".cm-lineNumbers .cm-gutterElement": {
+        minWidth: "1ch",
+        padding: "0"
+      },
       ".cm-activeLineGutter": {
         backgroundColor: "var(--editor-active-line)"
       },
@@ -299,6 +305,7 @@ export function createEditorExtensions({
   readOnly,
   vimMode,
   relativeLineNumbers,
+  lineWrap,
   cursorSmooth,
   cursorSmear,
   constrainMobileScroll,
@@ -314,6 +321,7 @@ export function createEditorExtensions({
   onSearchRequested,
   onCompileRequested,
   onFormatRequested,
+  onToggleLineWrap,
   onCloseRequested,
   onFocusChange,
   onSourceDoubleClick
@@ -346,6 +354,10 @@ export function createEditorExtensions({
     }, scope: "editor" },
     { key: toCodeMirrorKeybinding(keybindings.formatDocument), run: () => {
       onFormatRequested();
+      return true;
+    }, scope: "editor" },
+    { key: toCodeMirrorKeybinding(keybindings.toggleLineWrap), run: () => {
+      onToggleLineWrap();
       return true;
     }, scope: "editor" },
     { key: "Mod-b", run: toggleTextFormatCommand(language, "bold"), preventDefault: true },
@@ -438,7 +450,7 @@ export function createEditorExtensions({
       { key: "Escape", run: clearSnippet },
       ...keymaps
     ]),
-    EditorView.lineWrapping,
+    ...(lineWrap ? [EditorView.lineWrapping] : []),
     scrollPastEnd(),
     ...(constrainMobileScroll ? [createMobileScrollConstraint()] : []),
     createEditorTheme(theme, cursorSmooth, editorFontSize),

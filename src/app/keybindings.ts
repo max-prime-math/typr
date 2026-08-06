@@ -2,6 +2,7 @@ export type KeybindingCommandId =
   | "compile"
   | "formatDocument"
   | "toggleVim"
+  | "toggleLineWrap"
   | "openSearch"
   | "newFile"
   | "renameFile"
@@ -55,6 +56,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { id: "compile", label: "Compile document", group: "Editing", defaultBinding: "Mod-Enter" },
   { id: "formatDocument", label: "Format document", group: "Editing", defaultBinding: "Shift-Alt-f" },
   { id: "toggleVim", label: "Toggle Vim mode", group: "Editing", defaultBinding: "Alt-v" },
+  { id: "toggleLineWrap", label: "Toggle line wrap", group: "Editing", defaultBinding: "Alt-w" },
   { id: "openSearch", label: "Open search", group: "Editing", defaultBinding: "Mod-f" },
   { id: "newFile", label: "New file", group: "Files", defaultBinding: "Alt-n" },
   { id: "renameFile", label: "Rename file", group: "Files", defaultBinding: "Alt-r" },

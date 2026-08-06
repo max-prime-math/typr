@@ -40,6 +40,7 @@ const GROUP_KEYS: Record<SettingsFileName, readonly (keyof AppPreferences)[]> = 
     "vimMode",
     "vimClipboardSharing",
     "relativeLineNumbers",
+    "lineWrap",
     "liveCompilation",
     "latexMathPreview",
     "typstMathPreview",

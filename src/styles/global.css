@@ -2865,6 +2865,11 @@ button {
   height: auto;
 }
 
+.editor-root .cm-lineNumbers .cm-gutterElement {
+  min-width: 0 !important;
+  padding: 0 1ch !important;
+}
+
 .mobile-keyboard-extension {
   display: none;
 }

@@ -58,6 +58,7 @@ import {
   updateExternalDiagnosticsPreference,
   updateKeybindingsPreference,
   updateLatexMathPreviewPreference,
+  updateLineWrapPreference,
   updateLiveCompilationPreference,
   updateMobileKeyboardPreference,
   updatePastedImagePreference,
@@ -3731,6 +3732,15 @@ ${nextLine}` : nextLine;
     });
   }, []);
 
+  const handleLineWrapToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateLineWrapPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.lineWrap
+      )
+    );
+  }, []);
+
   const handleCursorSmearChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       setSnapshot((currentSnapshot) =>
@@ -5800,6 +5810,9 @@ ${nextLine}` : nextLine;
           return true;
         case "toggleVim":
           handleVimToggle();
+          return true;
+        case "toggleLineWrap":
+          handleLineWrapToggle();
           return true;
         case "openSearch":
           setActiveSidebarTool("search");
@@ -15523,6 +15536,7 @@ ${nextLine}` : nextLine;
     handlePastedImagesEnabledToggle,
     handleProjectGitignoreChange,
     handleRecordedKeybinding,
+    handleLineWrapToggle,
     handleRelativeLineNumbersToggle,
     handleRemoveCachedLatexPackage,
     handleRemoveCustomSnippet,
@@ -17804,6 +17818,7 @@ ${nextLine}` : nextLine;
               onCompileRequested={handleCommitWorkspaceBatchRename}
               onFocusChange={setIsEditorFocused}
               onFormatRequested={() => undefined}
+              onToggleLineWrap={handleLineWrapToggle}
               onSearchRequested={openSearchPane}
               onSelectionChange={handleSourceEditorSelectionChange}
               value={workspaceBatchRename?.draft ?? ""}
@@ -17811,6 +17826,7 @@ ${nextLine}` : nextLine;
               editorFontSize={snapshot.preferences.editorFontSize}
               keybindings={keybindings}
               relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
+              lineWrap={snapshot.preferences.lineWrap}
               cursorSmooth={!isMobileWorkspace && snapshot.preferences.cursorSmooth}
               cursorSmear={isMobileWorkspace ? 0 : snapshot.preferences.cursorSmear}
               latexMathPreview={false}
@@ -17832,6 +17848,7 @@ ${nextLine}` : nextLine;
                 }
                 onCompileRequested={handleCompile}
                 onFormatRequested={handleFormatDocument}
+                onToggleLineWrap={handleLineWrapToggle}
                 onCloseRequested={handleCloseActiveSourceTab}
                 onSearchRequested={openSearchPane}
                 onSelectionChange={handleSourceEditorSelectionChange}
@@ -17846,6 +17863,7 @@ ${nextLine}` : nextLine;
                 editorFontSize={snapshot.preferences.editorFontSize}
                 keybindings={keybindings}
                 relativeLineNumbers={snapshot.preferences.relativeLineNumbers}
+                lineWrap={snapshot.preferences.lineWrap}
                 cursorSmooth={!isMobileWorkspace && snapshot.preferences.cursorSmooth}
                 cursorSmear={isMobileWorkspace ? 0 : snapshot.preferences.cursorSmear}
                 latexMathPreview={snapshot.preferences.latexMathPreview}

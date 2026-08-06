@@ -47,30 +47,36 @@ export function createEditorDiagnosticExtensions(
     lineMap.set(diagnosticLine.line, diagnosticLine);
   }
 
+  const diagnosticGutters: Extension[] = lineMap.size > 0
+    ? [
+        lintGutter({
+          markerFilter: (codeMirrorDiagnostics) =>
+            codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message)),
+          tooltipFilter: (codeMirrorDiagnostics) =>
+            codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message))
+        }),
+        gutter({
+          class: "cm-diagnostic-gutter",
+          lineMarker(view, line) {
+            const diagnosticLine = lineMap.get(view.state.doc.lineAt(line.from).number);
+
+            if (!diagnosticLine) {
+              return null;
+            }
+
+            return new DiagnosticMarker(diagnosticLine.severity, diagnosticLine.message);
+          },
+          initialSpacer() {
+            return new DiagnosticMarker("warning", "Diagnostic");
+          }
+        })
+      ]
+    : [];
+
   return [
     linter((view) => toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors), { delay: 120 }),
-    lintGutter({
-      markerFilter: (codeMirrorDiagnostics) =>
-        codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message)),
-      tooltipFilter: (codeMirrorDiagnostics) =>
-        codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message))
-    }),
     decorationField,
-    gutter({
-      class: "cm-diagnostic-gutter",
-      lineMarker(view, line) {
-        const diagnosticLine = lineMap.get(view.state.doc.lineAt(line.from).number);
-
-        if (!diagnosticLine) {
-          return null;
-        }
-
-        return new DiagnosticMarker(diagnosticLine.severity, diagnosticLine.message);
-      },
-      initialSpacer() {
-        return new DiagnosticMarker("warning", "Diagnostic");
-      }
-    })
+    ...diagnosticGutters
   ];
 }
 

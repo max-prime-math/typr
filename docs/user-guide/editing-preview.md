@@ -8,7 +8,7 @@ Typr provides source editing with live preview for Typst, LaTeX, and Markdown. S
 
 ## Source Editing
 
-The editor supports themes, Vim-compatible editing, relative line numbers, snippets, formatting and linting tools where available, configurable keybindings, and an optional mobile quick-key row. See [Keyboard Shortcuts](./keyboard-shortcuts.md) for the default keymap; Settings search can find editor, theme, keybinding, snippet, package, and Git options quickly.
+The editor supports themes, Vim-compatible editing, line wrap, relative line numbers, snippets, formatting and linting tools where available, configurable keybindings, and an optional mobile quick-key row. See [Keyboard Shortcuts](./keyboard-shortcuts.md) for the default keymap; Settings search can find editor, theme, keybinding, snippet, package, and Git options quickly.
 
 Use source tools for common insertions such as matrices and tables. Typst reference opens the official Typst docs in a new tab.
 

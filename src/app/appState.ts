@@ -242,6 +242,7 @@ export interface AppPreferences {
   vimMode: boolean;
   vimClipboardSharing: boolean;
   relativeLineNumbers: boolean;
+  lineWrap: boolean;
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
@@ -529,6 +530,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       vimMode: false,
       vimClipboardSharing: false,
       relativeLineNumbers: false,
+      lineWrap: true,
       cursorSmooth: false,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
@@ -613,6 +615,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
           | undefined)?.clipboardSharing ??
         false,
       relativeLineNumbers: snapshot.preferences.relativeLineNumbers ?? false,
+      lineWrap: snapshot.preferences.lineWrap ?? true,
       cursorSmooth: snapshot.preferences.cursorSmooth ?? false,
       cursorSmear:
         typeof storedCursorSmear === "number"
@@ -2118,6 +2121,19 @@ export function updateRelativeLineNumbersPreference(
     preferences: {
       ...snapshot.preferences,
       relativeLineNumbers
+    }
+  };
+}
+
+export function updateLineWrapPreference(
+  snapshot: AppSnapshot,
+  lineWrap: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      lineWrap
     }
   };
 }

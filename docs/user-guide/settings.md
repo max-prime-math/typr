@@ -52,6 +52,7 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 | Live compilation | Recompiles the active Typst document automatically while editing. |
 | Lint while editing | Shows browser-available diagnostics in the source editor. |
 | Format on compile | Runs the selected formatter before compile or Markdown preview. |
+| Line wrap | Wraps long source lines instead of scrolling sideways. |
 | Relative line numbers | Shows line numbers relative to the cursor line. |
 | Smooth cursor | Animates the source cursor as it moves. |
 | Smear cursor | Adjusts cursor trail intensity when Smooth cursor is enabled. |

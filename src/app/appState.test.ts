@@ -38,6 +38,20 @@ describe("appState", () => {
     expect(bibliography?.content).toContain("@book{knuth1984texbook");
   });
 
+  it("enables line wrap by default and migrates snapshots without the preference", () => {
+    const snapshot = createDefaultSnapshot();
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        lineWrap: undefined as unknown as boolean
+      }
+    });
+
+    expect(snapshot.preferences.lineWrap).toBe(true);
+    expect(normalized.preferences.lineWrap).toBe(true);
+  });
+
   it("uses previewable Markdown syntax for pasted images and migrates the legacy wrapper", () => {
     expect(DEFAULT_PASTED_IMAGE_PREFERENCES.markdownPrefix).toBe("![](");
     expect(DEFAULT_PASTED_IMAGE_PREFERENCES.markdownSuffix).toBe(")");
