@@ -15515,7 +15515,6 @@ ${nextLine}` : nextLine;
                     <span className="visually-hidden">{tool.label}</span>
                   </button>
                 ))}
-                <ApplicationInfoButton mobile />
               </div>
             ) : null}
           </>
@@ -15568,6 +15567,7 @@ ${nextLine}` : nextLine;
                       </button>
                     </>
                   ) : null}
+                  {isMobileWorkspace ? <ApplicationInfoButton mobile /> : null}
                 </div>
               </div>
 

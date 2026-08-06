@@ -88,7 +88,7 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
         aria-expanded={isOpen}
         aria-haspopup="dialog"
         aria-label="Application info"
-        className="activity-bar__button application-info__trigger"
+        className={`${mobile ? "pane__button pane__button--compact pane__icon-button" : "activity-bar__button"} application-info__trigger`}
         onClick={() => setIsOpen((open) => !open)}
         title="Application info"
         type="button"

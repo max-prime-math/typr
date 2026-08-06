@@ -8126,16 +8126,13 @@ button {
 
 @media (max-width: 720px) {
   .application-info--mobile .application-info__popover {
-    position: fixed;
+    position: absolute;
     z-index: 1200;
-    top: 6.85rem;
-    right: 0.6rem;
-    bottom: 0.6rem;
-    left: 0.6rem;
-    width: auto;
-    height: auto;
-    max-height: none;
-    border: 0;
+    top: calc(100% + 0.45rem);
+    right: 0;
+    width: min(24rem, calc(100vw - 1.5rem));
+    max-height: calc(100dvh - var(--pane-header-height) - 2rem);
+    border: 1px solid color-mix(in srgb, var(--border) 88%, var(--text-muted));
     border-radius: 12px;
     transform: none;
   }
