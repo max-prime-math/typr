@@ -43,7 +43,15 @@ function getServiceWorkerLabel(state: UpdateManagerState): string {
   return "Active · up to date";
 }
 
-export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) {
+export function ApplicationInfoButton({
+  mobile = false,
+  active = false,
+  onOpen
+}: {
+  mobile?: boolean;
+  active?: boolean;
+  onOpen?: () => void;
+}) {
   const state = useUpdateManagerState();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -85,11 +93,17 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
       ref={containerRef}
     >
       <button
-        aria-expanded={isOpen}
-        aria-haspopup="dialog"
+        aria-expanded={mobile ? active : isOpen}
+        aria-haspopup={mobile ? undefined : "dialog"}
         aria-label="Application info"
-        className={`${mobile ? "pane__button pane__button--compact pane__icon-button" : "activity-bar__button"} application-info__trigger`}
-        onClick={() => setIsOpen((open) => !open)}
+        className={`activity-bar__button application-info__trigger ${mobile && active ? "activity-bar__button--active" : ""}`}
+        onClick={() => {
+          if (mobile && onOpen) {
+            onOpen();
+            return;
+          }
+          setIsOpen((open) => !open);
+        }}
         title="Application info"
         type="button"
       >
@@ -268,6 +282,13 @@ export function ApplicationInfoButton({ mobile = false }: { mobile?: boolean }) 
       )) : null}
     </div>
   );
+}
+
+export function ApplicationInfoPanel({ onClose }: { onClose: () => void }) {
+  const state = useUpdateManagerState();
+  return <div className="application-info__panel">
+    <ApplicationInfoContents state={state} updateReady={state.phase === "ready"} onClose={onClose} />
+  </div>;
 }
 
 function ApplicationInfoContents({

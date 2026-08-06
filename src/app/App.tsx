@@ -399,7 +399,7 @@ import {
   joinRelativePaths as joinWorkspacePath
 } from "../utils/relativePath";
 import { scrollElementWithin } from "../utils/domScroll";
-import { ApplicationInfoButton } from "../update/ApplicationInfoButton";
+import { ApplicationInfoButton, ApplicationInfoPanel } from "../update/ApplicationInfoButton";
 import { updateManager } from "../update/updateManager";
 
 const COMPILE_DEBOUNCE_MS = 60;
@@ -781,7 +781,8 @@ type SidebarTool =
   | "debug"
   | "diagram"
   | "docs"
-  | "settings";
+  | "settings"
+  | "app-info";
 type PackageSettingsScope = "typst" | "latex";
 type WorkspaceClipboardMode = "copy" | "cut";
 type MatrixDelimiter = "paren" | "bracket" | "brace" | "bar" | "angle" | "none";
@@ -1879,7 +1880,8 @@ function isSidebarTool(value: unknown): value is SidebarTool {
     value === "debug" ||
     value === "diagram" ||
     value === "docs" ||
-    value === "settings"
+    value === "settings" ||
+    value === "app-info"
   );
 }
 
@@ -15515,6 +15517,11 @@ ${nextLine}` : nextLine;
                     <span className="visually-hidden">{tool.label}</span>
                   </button>
                 ))}
+                <ApplicationInfoButton
+                  active={activeSidebarTool === "app-info"}
+                  mobile
+                  onOpen={() => handleOpenSidebarTool("app-info")}
+                />
               </div>
             ) : null}
           </>
@@ -15567,7 +15574,6 @@ ${nextLine}` : nextLine;
                       </button>
                     </>
                   ) : null}
-                  {isMobileWorkspace ? <ApplicationInfoButton mobile /> : null}
                 </div>
               </div>
 
@@ -16273,6 +16279,16 @@ ${nextLine}` : nextLine;
                   onScroll={handleLeftPaneScroll}
                 >
                   {renderSettingsSheet(true)}
+                </section>
+              ) : null}
+
+              {activeSidebarTool === "app-info" ? (
+                <section
+                  ref={filesSectionRef}
+                  className="sidebar-section sidebar-section--scrollable application-info__pane"
+                  onScroll={handleLeftPaneScroll}
+                >
+                  <ApplicationInfoPanel onClose={() => handleOpenSidebarTool("files")} />
                 </section>
               ) : null}
 
@@ -18192,6 +18208,8 @@ function getSidebarToolTitle(tool: SidebarTool): string {
       return "Docs";
     case "settings":
       return "Settings";
+    case "app-info":
+      return "App info";
   }
 }
 

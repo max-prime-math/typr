@@ -721,6 +721,10 @@ button {
   position: relative;
 }
 
+.application-info__panel {
+  padding: 0.85rem;
+}
+
 .application-info__update-badge {
   position: absolute;
   top: 0.42rem;
