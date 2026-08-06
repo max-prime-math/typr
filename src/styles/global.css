@@ -1756,6 +1756,11 @@ button {
   -webkit-mask-image: url("../icons/toolbar/toggle.svg");
 }
 
+.toolbar-icon--contrast {
+  mask-image: url("../icons/toolbar/contrast.svg");
+  -webkit-mask-image: url("../icons/toolbar/contrast.svg");
+}
+
 .toolbar-icon--pane-hide {
   mask-image: url("../icons/toolbar/pane-hide.svg");
   -webkit-mask-image: url("../icons/toolbar/pane-hide.svg");

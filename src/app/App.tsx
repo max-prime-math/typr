@@ -17568,12 +17568,15 @@ ${nextLine}` : nextLine;
                 </span>
               ) : null}
               <button
+                aria-label={isPaperView ? "Theme contrast" : "Paper contrast"}
                 aria-pressed={isPaperView}
-                className="pane__button pane__button--quiet"
+                className="pane__button pane__button--quiet pane__icon-button"
                 onClick={togglePaperView}
+                title={isPaperView ? "Theme contrast" : "Paper contrast"}
                 type="button"
               >
-                Paper
+                <span aria-hidden="true" className="toolbar-icon toolbar-icon--contrast" />
+                <span className="visually-hidden">{isPaperView ? "Theme contrast" : "Paper contrast"}</span>
               </button>
               <div
                 className={`preview-download-menu ${
