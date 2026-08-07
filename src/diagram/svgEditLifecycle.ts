@@ -169,6 +169,7 @@ class SvgEditLifecycle {
       noStorageOnLoad: true,
       preventAllURLConfig: true,
       preventURLContentLoading: true,
+      selectNew: false,
       showRulers: false,
       extensions: [],
       userExtensions: []
