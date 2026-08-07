@@ -11,7 +11,7 @@ Typr can connect a browser-managed project to GitHub without sending tokens thro
 1. Open Settings, then Git.
 2. Paste and connect a fine-grained GitHub token. Existing repositories need Contents read/write; creating repositories also needs Administration read/write.
 3. Open Projects. Use Clone GitHub repo for an existing repository, or choose **Manage → Create GitHub repo** on a local project to create and push it.
-4. Use Sync for status, pull, commit, push, and conflict resolution.
+4. Use the Git pane for status, pull, commit, push, and conflict resolution.
 
 Tokens are stored separately from repository config and are redacted from UI feedback, terminal output, and diagnostics. The Projects pane uses the connected token to show your GitHub username, owners, repositories, and branch choices.
 

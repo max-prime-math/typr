@@ -16,7 +16,7 @@ Google Drive access tokens remain in memory. Use **Reconnect** when Google autho
 
 ## Git
 
-Use Git settings for GitHub token validation and Git defaults. Choosing or creating a remote repository happens in Projects. Pull, commit, push, and conflict workflows are managed in Sync.
+Use Git settings for GitHub token validation and Git defaults. Choosing or creating a remote repository happens in Projects. Pull, commit, push, and conflict workflows are managed in the Git pane.
 
 | Setting | What it changes |
 |---|---|
@@ -28,7 +28,7 @@ Use Git settings for GitHub token validation and Git defaults. Choosing or creat
 
 For a fine-grained GitHub token, use the shortest lifespan that fits your workflow, typically 30 to 90 days. Existing repositories need Contents read/write. Creating repositories from Typr also needs Administration read/write for the target account or organization.
 
-Cloning an existing remote repo is done through the Projects tab and managed through the Sync tab.
+Cloning an existing remote repo is done through the Projects tab and managed through the Git pane.
 
 ## Themes
 

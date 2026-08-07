@@ -2,6 +2,7 @@ type SvgEditEditor = {
   init: () => Promise<void> | void;
   setConfig: (config: Record<string, unknown>) => void;
   loadSvgString: (svg: string, options?: { noAlert?: boolean }) => void;
+  updateCanvas?: (center?: boolean) => void;
   svgCanvas?: {
     bind?: (eventName: string, callback: (...args: unknown[]) => void) => void;
     getSvgString?: () => string;
@@ -68,6 +69,7 @@ class SvgEditLifecycle {
   private readyTimers = new Set<number>();
   private runtimeHost: HTMLDivElement | null = null;
   private syncTimer: number | null = null;
+  private viewportTimers = new Set<number>();
 
   attach(target: HTMLElement, callbacks: SvgEditAttachmentCallbacks): symbol {
     const attachment: SvgEditAttachment = {
@@ -81,6 +83,7 @@ class SvgEditLifecycle {
 
     if (this.editor) {
       this.flushPendingSvg();
+      this.scheduleViewportReset(attachment);
       this.notifyReady(attachment);
     } else {
       void this.ensureInitialized();
@@ -130,6 +133,8 @@ class SvgEditLifecycle {
 
     this.readyTimers.forEach((timer) => window.clearTimeout(timer));
     this.readyTimers.clear();
+    this.viewportTimers.forEach((timer) => window.clearTimeout(timer));
+    this.viewportTimers.clear();
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -178,6 +183,7 @@ class SvgEditLifecycle {
     this.flushPendingSvg();
 
     if (this.attachment) {
+      this.scheduleViewportReset(this.attachment);
       this.notifyReady(this.attachment);
     }
   }
@@ -211,6 +217,7 @@ class SvgEditLifecycle {
       this.loadedSvg = pendingSvg.svg;
       this.lastError = null;
       attachment.onError(null);
+      this.scheduleViewportReset(attachment);
     } catch (error) {
       this.lastError = formatSvgEditError(error, "Unable to load diagram SVG.");
       attachment.onError(this.lastError);
@@ -226,6 +233,29 @@ class SvgEditLifecycle {
     }
 
     return this.runtimeHost;
+  }
+
+  private scheduleViewportReset(attachment: SvgEditAttachment): void {
+    this.viewportTimers.forEach((timer) => window.clearTimeout(timer));
+    this.viewportTimers.clear();
+
+    [0, 100, 500].forEach((delay) => {
+      const timer = window.setTimeout(() => {
+        this.viewportTimers.delete(timer);
+
+        if (this.attachment?.id !== attachment.id || !this.runtimeHost?.isConnected) {
+          return;
+        }
+
+        const workarea = this.runtimeHost.querySelector<HTMLElement>("#workarea");
+        if (!workarea || workarea.clientWidth === 0 || workarea.clientHeight === 0) {
+          return;
+        }
+
+        this.editor?.updateCanvas?.(true);
+      }, delay);
+      this.viewportTimers.add(timer);
+    });
   }
 
   private notifyReady(attachment: SvgEditAttachment): void {

@@ -1870,6 +1870,44 @@ button {
   min-width: 0;
 }
 
+.source-tools-panel__tool-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-strong) 92%, var(--surface-muted));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow) 22%, transparent);
+}
+
+.source-tools-panel__tool-tab {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.source-tools-panel__tool-tab:hover,
+.source-tools-panel__tool-tab:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-strong));
+  outline: none;
+}
+
+.source-tools-panel__tool-tab[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--accent-strong);
+  background: var(--surface-strong);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 28%, transparent);
+}
+
 .source-tools-panel .matrix-menu,
 .source-tools-panel .table-menu {
   min-width: 0;

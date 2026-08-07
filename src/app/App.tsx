@@ -3298,6 +3298,7 @@ export function App() {
   const [matrixSettings, setMatrixSettings] = useState<MatrixSettings>(createInitialMatrixSettings);
   const [matrixSizePreview, setMatrixSizePreview] = useState<MatrixSize | null>(null);
   const [matrixSizeInput, setMatrixSizeInput] = useState({ rows: "3", columns: "3" });
+  const [isMatrixSizePickerOpen, setIsMatrixSizePickerOpen] = useState(false);
   const [tableSettings, setTableSettings] = useState<TableSettings>(createInitialTableSettings);
   const [tableSizePreview, setTableSizePreview] = useState<MatrixSize | null>(null);
   const [tableSizeInput, setTableSizeInput] = useState({ rows: "3", columns: "3" });
@@ -4742,6 +4743,7 @@ ${nextLine}` : nextLine;
     renamingWorkspacePath !== null ||
     pendingWorkspaceDeletePath !== null ||
     openToolbarMenu !== null ||
+    isMatrixSizePickerOpen ||
     isTableSizePickerOpen ||
     isTableBorderMenuOpen ||
     isCompileOptionsMenuOpen ||
@@ -7455,6 +7457,7 @@ ${nextLine}` : nextLine;
   const handleMatrixSizeSelect = useCallback((rows: number, columns: number) => {
     setMatrixSettings((current) => resizeMatrixSettings(current, rows, columns));
     setMatrixSizePreview(null);
+    setIsMatrixSizePickerOpen(false);
   }, []);
 
   const handleMatrixSizeInputChange = useCallback(
@@ -7940,13 +7943,14 @@ ${nextLine}` : nextLine;
     handleInsertEditorTemplate(template);
   }, [activeEditableTableMatch, activeSourceLanguage, handleInsertEditorTemplate, tableSettings]);
 
-  const toggleToolbarMenu = useCallback((menu: "matrix" | "table") => {
-    setOpenToolbarMenu((current) => (current === menu ? null : menu));
+  const selectToolbarMenu = useCallback((menu: "matrix" | "table") => {
+    setOpenToolbarMenu(menu);
   }, []);
 
   useEffect(() => {
     if (openToolbarMenu !== "matrix") {
       setMatrixSizePreview(null);
+      setIsMatrixSizePickerOpen(false);
     }
 
     if (openToolbarMenu !== "table") {
@@ -14606,86 +14610,119 @@ ${nextLine}` : nextLine;
   const sourceToolsPanel = isSourceFileEditable ? (
     <div className="source-tools-panel">
       <div className="source-tools-panel__section">
-        <div className={`matrix-menu ${openToolbarMenu === "matrix" ? "matrix-menu--open" : ""}`}>
+        <div aria-label="Insertion tool" className="source-tools-panel__tool-tabs" role="tablist">
           <button
-            aria-expanded={openToolbarMenu === "matrix"}
             aria-label="Matrix options"
-            className="pane__button source-tools-panel__dropdown-button"
-            onClick={() => toggleToolbarMenu("matrix")}
+            aria-selected={openToolbarMenu === "matrix"}
+            className="source-tools-panel__tool-tab"
+            onClick={() => selectToolbarMenu("matrix")}
+            role="tab"
             title="Matrix options"
             type="button"
           >
-            <span>Matrix</span>
+            Matrix
           </button>
+          <button
+            aria-label="Table options"
+            aria-selected={openToolbarMenu === "table"}
+            className="source-tools-panel__tool-tab"
+            onClick={() => selectToolbarMenu("table")}
+            role="tab"
+            title="Table options"
+            type="button"
+          >
+            Table
+          </button>
+        </div>
+
+        <div className="matrix-menu">
           {openToolbarMenu === "matrix" ? (
             <div className="matrix-menu__panel" aria-label="Matrix options">
-              <div
-                aria-label="Matrix size"
-                className="matrix-size-picker matrix-size-picker--responsive"
-                onPointerLeave={() => setMatrixSizePreview(null)}
-              >
-                <div className="table-size-picker__manual" aria-label="Manual matrix size">
-                  <label className="table-size-picker__manual-field">
-                    <span>Rows</span>
-                    <input
-                      inputMode="numeric"
-                      max={MATRIX_MAX_ROWS}
-                      min={MATRIX_MIN_ROWS}
-                      onBlur={handleMatrixSizeInputBlur}
-                      onChange={(event) => handleMatrixSizeInputChange("rows", event.target.value)}
-                      type="number"
-                      value={matrixSizeInput.rows}
-                    />
-                  </label>
-                  <label className="table-size-picker__manual-field">
-                    <span>Columns</span>
-                    <input
-                      inputMode="numeric"
-                      max={MATRIX_MAX_COLUMNS}
-                      min={MATRIX_MIN_COLUMNS}
-                      onBlur={handleMatrixSizeInputBlur}
-                      onChange={(event) => handleMatrixSizeInputChange("columns", event.target.value)}
-                      type="number"
-                      value={matrixSizeInput.columns}
-                    />
-                  </label>
-                </div>
-                <div
-                  className="table-size-picker__grid"
-                  onPointerMove={handleMatrixSizePickerPointerMove}
-                  style={
-                    {
-                      "--matrix-picker-columns": visibleMatrixPickerSize.columns
-                    } as CSSProperties
-                  }
+              <div className="table-size-dropdown">
+                <button
+                  aria-expanded={isMatrixSizePickerOpen}
+                  className="pane__button table-size-dropdown__button"
+                  onClick={() => {
+                    setIsMatrixSizePickerOpen((current) => !current);
+                    setMatrixSizePreview(null);
+                  }}
+                  type="button"
                 >
-                  {Array.from({ length: visibleMatrixPickerSize.rows }, (_unusedRow, rowIndex) => (
-                    <div className="matrix-size-picker__row" key={`matrix-size-row-${rowIndex}`}>
-                      {Array.from({ length: visibleMatrixPickerSize.columns }, (_unusedColumn, columnIndex) => {
-                      const rows = rowIndex + 1;
-                      const columns = columnIndex + 1;
-                      const isActive = rows <= activeMatrixSize.rows && columns <= activeMatrixSize.columns;
-                      const isSelected = rows === matrixSettings.rows && columns === matrixSettings.columns;
-
-                      return (
-                        <button
-                          aria-label={`${rows} by ${columns} matrix`}
-                          aria-pressed={isSelected}
-                          className={`matrix-size-picker__cell ${
-                            isActive ? "matrix-size-picker__cell--active" : ""
-                          } ${isSelected ? "matrix-size-picker__cell--selected" : ""}`}
-                          key={`matrix-size-${rows}-${columns}`}
-                          onClick={() => handleMatrixSizeSelect(rows, columns)}
-                          onFocus={() => handleMatrixSizePreview(rows, columns)}
-                          onPointerEnter={() => handleMatrixSizePreview(rows, columns)}
-                          title={`${rows} x ${columns}`}
-                          type="button"
+                  <span className="table-size-dropdown__label">
+                    Size: <strong>{activeMatrixSize.rows}x{activeMatrixSize.columns}</strong>
+                  </span>
+                  <span aria-hidden="true" className="table-size-dropdown__caret" />
+                </button>
+                {isMatrixSizePickerOpen ? (
+                  <div
+                    aria-label="Matrix size"
+                    className="table-size-picker"
+                    onPointerLeave={() => setMatrixSizePreview(null)}
+                  >
+                    <div className="table-size-picker__manual" aria-label="Manual matrix size">
+                      <label className="table-size-picker__manual-field">
+                        <span>Rows</span>
+                        <input
+                          inputMode="numeric"
+                          max={MATRIX_MAX_ROWS}
+                          min={MATRIX_MIN_ROWS}
+                          onBlur={handleMatrixSizeInputBlur}
+                          onChange={(event) => handleMatrixSizeInputChange("rows", event.target.value)}
+                          type="number"
+                          value={matrixSizeInput.rows}
                         />
-                      );
-                      })}
+                      </label>
+                      <label className="table-size-picker__manual-field">
+                        <span>Columns</span>
+                        <input
+                          inputMode="numeric"
+                          max={MATRIX_MAX_COLUMNS}
+                          min={MATRIX_MIN_COLUMNS}
+                          onBlur={handleMatrixSizeInputBlur}
+                          onChange={(event) => handleMatrixSizeInputChange("columns", event.target.value)}
+                          type="number"
+                          value={matrixSizeInput.columns}
+                        />
+                      </label>
                     </div>
-                  ))}
-                </div>
+                    <div
+                      className="table-size-picker__grid"
+                      onPointerMove={handleMatrixSizePickerPointerMove}
+                      style={
+                        {
+                          "--matrix-picker-columns": visibleMatrixPickerSize.columns
+                        } as CSSProperties
+                      }
+                    >
+                      {Array.from({ length: visibleMatrixPickerSize.rows }, (_unusedRow, rowIndex) => (
+                        <div className="matrix-size-picker__row" key={`matrix-size-row-${rowIndex}`}>
+                          {Array.from({ length: visibleMatrixPickerSize.columns }, (_unusedColumn, columnIndex) => {
+                            const rows = rowIndex + 1;
+                            const columns = columnIndex + 1;
+                            const isActive = rows <= activeMatrixSize.rows && columns <= activeMatrixSize.columns;
+                            const isSelected = rows === matrixSettings.rows && columns === matrixSettings.columns;
+
+                            return (
+                              <button
+                                aria-label={`${rows} by ${columns} matrix`}
+                                aria-pressed={isSelected}
+                                className={`matrix-size-picker__cell ${
+                                  isActive ? "matrix-size-picker__cell--active" : ""
+                                } ${isSelected ? "matrix-size-picker__cell--selected" : ""}`}
+                                key={`matrix-size-${rows}-${columns}`}
+                                onClick={() => handleMatrixSizeSelect(rows, columns)}
+                                onFocus={() => handleMatrixSizePreview(rows, columns)}
+                                onPointerEnter={() => handleMatrixSizePreview(rows, columns)}
+                                title={`${rows} x ${columns}`}
+                                type="button"
+                              />
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <div className="matrix-menu__label">Brackets</div>
               <div className="matrix-menu__delimiters" role="group" aria-label="Brackets">
@@ -14754,17 +14791,7 @@ ${nextLine}` : nextLine;
           ) : null}
         </div>
 
-        <div className={`table-menu ${openToolbarMenu === "table" ? "table-menu--open" : ""}`}>
-          <button
-            aria-expanded={openToolbarMenu === "table"}
-            aria-label="Table options"
-            className="pane__button source-tools-panel__dropdown-button"
-            onClick={() => toggleToolbarMenu("table")}
-            title="Table options"
-            type="button"
-          >
-            <span>Table</span>
-          </button>
+        <div className="table-menu">
           {openToolbarMenu === "table" ? (
             <div className="table-menu__panel" aria-label="Table options">
               <div className="table-menu__top-row">
@@ -18598,7 +18625,7 @@ function getSidebarToolTitle(tool: SidebarTool): string {
     case "diagram":
       return "Diagram";
     case "sync":
-      return "Sync";
+      return "Git";
     case "debug":
       return "Debug";
     case "docs":
