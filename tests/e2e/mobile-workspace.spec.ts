@@ -122,6 +122,34 @@ test("mobile source scrolling keeps pane controls fixed", async ({ browserName, 
   expect((await sourceHeader.boundingBox())?.y).toBeCloseTo(headerBefore!.y, 1);
 });
 
+test("mobile quick keys sit below the source pane at the viewport edge", async ({
+  browserName,
+  page
+}) => {
+  test.skip(browserName !== "chromium", "Mobile layout regression runs in the Chromium touch harness.");
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await waitForMobileAppReady(page);
+  await page.getByRole("tab", { name: "Source", exact: true }).click();
+  await page.locator(".cm-content").click();
+
+  const sourcePane = page.getByLabel("Source editor");
+  const quickKeys = page.locator(".mobile-keyboard-extension");
+  await expect(quickKeys).toBeVisible();
+  await expect(sourcePane.locator(".mobile-keyboard-extension")).toHaveCount(0);
+
+  const [sourcePaneBox, quickKeysBox, viewportHeight] = await Promise.all([
+    sourcePane.boundingBox(),
+    quickKeys.boundingBox(),
+    page.evaluate(() => window.visualViewport?.height ?? window.innerHeight)
+  ]);
+
+  expect(sourcePaneBox).not.toBeNull();
+  expect(quickKeysBox).not.toBeNull();
+  expect(sourcePaneBox!.y + sourcePaneBox!.height).toBeCloseTo(quickKeysBox!.y, 1);
+  expect(quickKeysBox!.y + quickKeysBox!.height).toBeCloseTo(viewportHeight, 1);
+});
+
 test("mobile Safari gesture scale continuously zooms the preview", async ({
   browserName,
   page

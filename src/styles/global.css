@@ -8243,6 +8243,11 @@ button {
     padding-inline: 0.6rem;
   }
 
+  .app-shell--mobile-keyboard-open {
+    /* The accessory is a sibling of the workspace, so it can meet the native keyboard. */
+    padding-bottom: 0;
+  }
+
   .activity-bar--mobile,
   .workspace--mobile .workspace-mobile-switcher {
     width: min(100%, calc(100vw - 1.2rem));
@@ -8351,6 +8356,15 @@ button {
     background: color-mix(in srgb, var(--surface-strong) 94%, transparent);
     box-shadow: none;
     backdrop-filter: blur(12px);
+  }
+
+  .app-shell--mobile-keyboard-open .mobile-keyboard-extension {
+    flex-basis: 3.6rem;
+    width: calc(100% + 1.2rem);
+    max-width: none;
+    margin-inline: -0.6rem;
+    border-right: 0;
+    border-left: 0;
   }
 
   .mobile-keyboard-extension__label {

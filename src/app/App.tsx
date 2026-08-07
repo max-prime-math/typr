@@ -7964,6 +7964,12 @@ ${nextLine}` : nextLine;
     ? snapshot.preferences.mobileKeyboard.keys[activeSourceLanguage]
     : [];
   const mobileKeyboardKeys = resolveMobileKeyboardKeys(activeSourceLanguage, mobileKeyboardLabels);
+  const showMobileKeyboardExtension =
+    snapshot.preferences.mobileKeyboard.enabled &&
+    isMobileWorkspace &&
+    isEditorFocused &&
+    mobileWorkspaceTab === "editor" &&
+    mobileKeyboardKeys.length > 0;
 
   const handleMobileKeyboardKey = useCallback((key: MobileKeyboardKey) => {
     switch (key.action.type) {
@@ -15657,7 +15663,7 @@ ${nextLine}` : nextLine;
   );
 
   return (
-    <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""}`}>
+    <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""} ${showMobileKeyboardExtension ? "app-shell--mobile-keyboard-open" : ""}`}>
       {googleDriveSync.notice ? (
         <>
           <GoogleDriveGlobalNotice
@@ -17899,27 +17905,6 @@ ${nextLine}` : nextLine;
                 theme={theme}
                 onChange={handleDocumentChange}
               />
-              {snapshot.preferences.mobileKeyboard.enabled && isMobileWorkspace && isEditorFocused && mobileWorkspaceTab === "editor" && mobileKeyboardKeys.length > 0 ? (
-                <div className="mobile-keyboard-extension" aria-label={`${formatSourceLanguageLabel(activeSourceLanguage)} quick keys`}>
-                  <div className="mobile-keyboard-extension__label">
-                    {formatSourceLanguageLabel(activeSourceLanguage)}
-                  </div>
-                  <div className="mobile-keyboard-extension__keys" role="toolbar" aria-label="Mobile editor quick keys">
-                    {mobileKeyboardKeys.map((key) => (
-                      <button
-                        className="mobile-keyboard-extension__key"
-                        key={`${key.label}-${key.title}`}
-                        onClick={() => handleMobileKeyboardKey(key)}
-                        onPointerDown={(event) => event.preventDefault()}
-                        title={key.title}
-                        type="button"
-                      >
-                        {key.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
               <TerminalDrawer
                 isOpen={isTerminalOpen}
                 onClose={() => setIsTerminalOpen(false)}
@@ -18092,6 +18077,28 @@ ${nextLine}` : nextLine;
       </main>
       </div>
       </div>
+
+      {showMobileKeyboardExtension ? (
+        <div className="mobile-keyboard-extension" aria-label={`${formatSourceLanguageLabel(activeSourceLanguage)} quick keys`}>
+          <div className="mobile-keyboard-extension__label">
+            {formatSourceLanguageLabel(activeSourceLanguage)}
+          </div>
+          <div className="mobile-keyboard-extension__keys" role="toolbar" aria-label="Mobile editor quick keys">
+            {mobileKeyboardKeys.map((key) => (
+              <button
+                className="mobile-keyboard-extension__key"
+                key={`${key.label}-${key.title}`}
+                onClick={() => handleMobileKeyboardKey(key)}
+                onPointerDown={(event) => event.preventDefault()}
+                title={key.title}
+                type="button"
+              >
+                {key.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {isPreviewPopupOpen ? (
         <div
