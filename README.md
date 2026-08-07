@@ -184,6 +184,13 @@ Production builds can enable an optional in-app sign-in layer with `VITE_TYPR_AU
 
 Typr is focused on reliable local-first writing on iPad and desktop: predictable GitHub conflict and branch handling, clearer offline package-cache behavior, stronger mobile ergonomics, visual asset workflows for diagrams, broader project handoff formats, and safer migration/recovery tooling. A trusted local-agent transport for non-browser Git workflows remains a later possibility.
 
+## Roadmap
+
+- **Local Agent terminal.** An opt-in companion service, limited to a user-selected project root, for native filesystem access, Git, and non-browser tools.
+- **Cloud Shell.** An authenticated remote container session for heavier builds and tooling that cannot run in the browser.
+- **Browser Shell capability gaps.** Expand the in-browser terminal with Typst queries and practical Git filesystem support, while keeping its sandboxed model explicit.
+- **Visual asset workflows.** Build on the diagram editor with richer asset import/export and reusable diagram components.
+
 ## License
 
 See [LICENSE](LICENSE).
