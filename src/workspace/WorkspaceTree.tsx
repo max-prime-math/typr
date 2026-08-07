@@ -528,7 +528,7 @@ function WorkspaceTreeBranch({
                     onRenameCancel();
                   }
                 }}
-                style={{ width: `calc(100% - ${depth * 2 + 4}ch)` }}
+                style={{ width: `calc(100% - ${depth * 2 + 5}ch)` }}
                 type="text"
                 value={renameDraft}
               />
@@ -634,7 +634,7 @@ function WorkspaceTreeBranch({
               onRenameCancel();
             }
           }}
-          style={{ width: `calc(100% - ${depth * 2 + 4}ch)` }}
+          style={{ width: `calc(100% - ${depth * 2 + 5}ch)` }}
           type="text"
           value={renameDraft}
         />
