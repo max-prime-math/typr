@@ -151,6 +151,10 @@ export function ApplicationInfoButton({
                 <dd>{TYPR_BUILD_INFO.buildSha}</dd>
               </div>
               <div>
+                <dt>Channel</dt>
+                <dd>{TYPR_BUILD_INFO.channel}</dd>
+              </div>
+              <div>
                 <dt>Service worker</dt>
                 <dd>{getServiceWorkerLabel(state)}</dd>
               </div>
@@ -306,6 +310,7 @@ function ApplicationInfoContents({
       <dl className="application-info__details">
         <div><dt>Version</dt><dd>{TYPR_BUILD_INFO.version}</dd></div>
         <div><dt>Build</dt><dd>{TYPR_BUILD_INFO.buildSha}</dd></div>
+        <div><dt>Channel</dt><dd>{TYPR_BUILD_INFO.channel}</dd></div>
         <div><dt>Service worker</dt><dd>{getServiceWorkerLabel(state)}</dd></div>
       </dl>
     </section>

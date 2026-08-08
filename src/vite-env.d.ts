@@ -13,6 +13,8 @@ interface ImportMeta {
 
 declare const __TYPR_APP_VERSION__: string;
 declare const __TYPR_BUILD_SHA__: string;
+declare const __TYPR_DEPLOYMENT_CHANNEL__: "development" | "beta" | "stable";
+declare const __TYPR_DEPLOYMENT_LABEL__: string;
 
 declare module "mitex-wasm/mitex_wasm_bg.js" {
   export function __wbg_set_wasm(wasm: WebAssembly.Exports): void;
