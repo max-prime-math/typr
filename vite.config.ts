@@ -17,6 +17,38 @@ const releaseMetadata = JSON.parse(
   notes?: string[];
 };
 
+type DeploymentChannel = "development" | "beta" | "stable";
+
+function resolveDeploymentChannel(): DeploymentChannel {
+  const requestedChannel =
+    process.env.TYPR_DEPLOYMENT_CHANNEL ??
+    process.env.GITHUB_REF_NAME ??
+    resolveCurrentBranch();
+
+  switch (requestedChannel?.trim().toLowerCase()) {
+    case "main":
+    case "stable":
+      return "stable";
+    case "beta":
+      return "beta";
+    case "development":
+    case "dev":
+      return "development";
+    default:
+      return "development";
+  }
+}
+
+function resolveCurrentBranch(): string | undefined {
+  try {
+    return execFileSync("git", ["branch", "--show-current"], {
+      encoding: "utf8"
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveBuildSha(): string {
   const environmentSha =
     process.env.GITHUB_SHA ??
@@ -48,6 +80,9 @@ function resolveBuildSha(): string {
 
 const appVersion = packageMetadata.version;
 const buildSha = resolveBuildSha();
+const deploymentChannel = resolveDeploymentChannel();
+const deploymentLabel =
+  deploymentChannel.charAt(0).toUpperCase() + deploymentChannel.slice(1);
 
 export default defineConfig(({ command }) => {
   const base = command === "build" ? DEPLOYED_BASE : "/";
@@ -57,7 +92,9 @@ export default defineConfig(({ command }) => {
     cacheDir: process.env.TYPR_VITE_CACHE_DIR,
     define: {
       __TYPR_APP_VERSION__: JSON.stringify(appVersion),
-      __TYPR_BUILD_SHA__: JSON.stringify(buildSha)
+      __TYPR_BUILD_SHA__: JSON.stringify(buildSha),
+      __TYPR_DEPLOYMENT_CHANNEL__: JSON.stringify(deploymentChannel),
+      __TYPR_DEPLOYMENT_LABEL__: JSON.stringify(deploymentLabel)
     },
     plugins: [
       {
@@ -70,6 +107,7 @@ export default defineConfig(({ command }) => {
               {
                 version: appVersion,
                 build: buildSha,
+                channel: deploymentChannel,
                 breaking: Boolean(releaseMetadata.breaking),
                 backupRecommended: Boolean(releaseMetadata.backupRecommended),
                 notes: Array.isArray(releaseMetadata.notes)
@@ -92,9 +130,10 @@ export default defineConfig(({ command }) => {
           "icons/icon-512.png"
         ],
         manifest: {
-          name: "Typr",
-          short_name: "Typr",
-          description: "A local-first, browser-based Typst editor for iPad and desktop.",
+          id: base,
+          name: `Typr ${deploymentLabel}`,
+          short_name: `Typr ${deploymentLabel}`,
+          description: `${deploymentLabel} channel of a local-first, browser-based Typst editor for iPad and desktop.`,
           theme_color: "#f5f2ea",
           background_color: "#f5f2ea",
           display: "standalone",
@@ -140,28 +179,28 @@ export default defineConfig(({ command }) => {
               urlPattern: /\/assets\/.*\.(?:wasm|otf|ttf)$/,
               handler: "CacheFirst",
               options: {
-                cacheName: "typr-compiler-assets"
+                cacheName: `typr-${deploymentChannel}-compiler-assets`
               }
             },
             {
               urlPattern: /\/core\/busytex\/.*\.(?:js|wasm)$/,
               handler: "CacheFirst",
               options: {
-                cacheName: "typr-busytex-assets"
+                cacheName: `typr-${deploymentChannel}-busytex-assets`
               }
             },
             {
               urlPattern: /\/core\/tikz-editor\//,
               handler: "CacheFirst",
               options: {
-                cacheName: "typr-tikz-editor-assets"
+                cacheName: `typr-${deploymentChannel}-tikz-editor-assets`
               }
             },
             {
               urlPattern: /\/core\/tylax\//,
               handler: "CacheFirst",
               options: {
-                cacheName: "typr-tylax-assets"
+                cacheName: `typr-${deploymentChannel}-tylax-assets`
               }
             }
           ]

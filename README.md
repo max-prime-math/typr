@@ -8,6 +8,20 @@ It runs as a Progressive Web App, keeps projects on device, and supports live pr
 
 Live app: <https://typr.ca/>
 
+## Release channels
+
+Typr uses a three-channel promotion path: **Development** (`development`) → **Beta** (`beta`) → **Stable** (`main`). The public production channel is called Stable everywhere in the product and documentation; the Git branch remains `main`.
+
+Each channel produces a separately named PWA and can be built explicitly:
+
+```bash
+npm run build:development
+npm run build:beta
+npm run build:stable
+```
+
+The three installed PWAs must use distinct origins—for example `dev.typr.ca`, `beta.typr.ca`, and `typr.ca`—so their service workers and offline caches cannot control one another. GitHub Pages supports only one Pages site per repository, so independent channel deployments require either separate Pages repositories/sites or a deployment host with branch subdomains. See [the release-channel guide](docs/release-channels.md) for the branch policy, deployment requirements, and promotion checklist.
+
 ## Documentation
 
 The detailed documentation lives in [docs/](docs/index.md). Application, build, link, and update information is available from the Info button above Settings.
