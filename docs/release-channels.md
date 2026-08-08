@@ -4,7 +4,7 @@ Typr has three long-lived release branches:
 
 | Channel | Git branch | Purpose | Recommended URL |
 |---|---|---|---|
-| Development | `development` | Daily integration and feature testing | `https://dev.typr.ca` |
+| Development | `dev` | Daily integration and feature testing | `https://dev.typr.ca` |
 | Beta | `beta` | Release-candidate validation | `https://beta.typr.ca` |
 | Stable | `main` | Public production release | `https://typr.ca` |
 
