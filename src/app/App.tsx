@@ -177,6 +177,10 @@ import {
 } from "../compiler/latexCompiler";
 import {
   CompanionClient,
+  DEFAULT_COMPANION_BASE_URL,
+  normalizeCompanionBaseUrl,
+  readStoredCompanionBaseUrl,
+  writeStoredCompanionBaseUrl,
   type CompanionConnectionStatus
 } from "../compiler/companionClient";
 import {
@@ -3576,24 +3580,41 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
-  const companionClient = useMemo(() => new CompanionClient(), []);
+  const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
+  const companionClient = useMemo(
+    () => new CompanionClient({ baseUrl: companionBaseUrl }),
+    [companionBaseUrl]
+  );
   const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
     () => ({ state: "checking", baseUrl: companionClient.baseUrl })
   );
-  const refreshCompanionConnection = useCallback(async () => {
-    const status = await companionClient.getConnectionStatus();
-    if (isMountedRef.current) {
-      setCompanionConnection(status);
-    }
-    return status;
-  }, [companionClient, isMountedRef]);
   useEffect(() => {
+    let active = true;
+    const refreshCompanionConnection = async () => {
+      const status = await companionClient.getConnectionStatus();
+      if (active && isMountedRef.current) {
+        setCompanionConnection(status);
+      }
+    };
+
+    setCompanionConnection({ state: "checking", baseUrl: companionClient.baseUrl });
     void refreshCompanionConnection();
     const interval = window.setInterval(() => {
       void refreshCompanionConnection();
     }, 15_000);
-    return () => window.clearInterval(interval);
-  }, [refreshCompanionConnection]);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [companionClient, isMountedRef]);
+  const handleCompanionBaseUrlChange = useCallback((baseUrl: string) => {
+    writeStoredCompanionBaseUrl(baseUrl);
+    setCompanionBaseUrl(baseUrl);
+  }, []);
+  const handleCompanionBaseUrlReset = useCallback(() => {
+    writeStoredCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+    setCompanionBaseUrl(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
+  }, []);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const matrixCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
   const tableCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
@@ -15677,6 +15698,7 @@ ${nextLine}` : nextLine;
     activeDefaultSnippets,
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
+    companionBaseUrl,
     companionConnection,
     customThemes,
     darkThemes,
@@ -15702,6 +15724,8 @@ ${nextLine}` : nextLine;
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
+    handleCompanionBaseUrlChange,
+    handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
     handleDownloadCustomSnippets,

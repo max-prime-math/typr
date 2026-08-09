@@ -28,7 +28,7 @@ The detailed documentation lives in [docs/](docs/index.md). Application, build, 
 
 ## Typr Companion
 
-The optional Docker Companion adds native `latexmk`/pdfLaTeX compilation and experimental TeXpresso live preview while preserving Typr's in-browser BusyTeX fallback. The published image is `ghcr.io/max-prime-math/typr-server` for `linux/amd64` and `linux/arm64`; it binds to host loopback and stores no projects. See [Install Typr Companion](docs/companion-installation.md) for install, verification, update, pinning, rollback, platform, and security guidance.
+The optional Docker Companion adds native `latexmk`/pdfLaTeX compilation and experimental TeXpresso live preview while preserving Typr's in-browser BusyTeX fallback. The published image is `ghcr.io/max-prime-math/typr-server` for `linux/amd64` and `linux/arm64`; it stores no projects. Desktop Docker binds it to host loopback, while the [Unraid template](docs/companion-unraid.md) documents the HTTPS reverse proxy required for a separate NAS. See [Install Typr Companion](docs/companion-installation.md) for install, verification, update, pinning, rollback, platform, and security guidance.
 
 ## Alternatives
 

@@ -9,6 +9,13 @@ import {
 
 export const DEFAULT_COMPANION_BASE_URL =
   import.meta.env.VITE_TYPR_COMPANION_URL?.trim() || "http://127.0.0.1:8484";
+export const COMPANION_BASE_URL_STORAGE_KEY = "typr.companion-base-url.v1";
+
+type CompanionUrlStorage = Pick<Storage, "getItem" | "setItem">;
+
+export type CompanionBaseUrlValidation =
+  | { ok: true; value: string }
+  | { ok: false; message: string };
 
 export type CompanionConnectionState =
   | "checking"
@@ -120,11 +127,57 @@ export class CompanionClient {
 }
 
 export function normalizeCompanionBaseUrl(value: string): string {
-  try {
-    return new URL(value).toString().replace(/\/$/, "");
-  } catch {
-    return DEFAULT_COMPANION_BASE_URL.replace(/\/$/, "");
+  const validation = validateCompanionBaseUrl(value);
+  return validation.ok
+    ? validation.value
+    : DEFAULT_COMPANION_BASE_URL.replace(/\/$/, "");
+}
+
+export function validateCompanionBaseUrl(value: string): CompanionBaseUrlValidation {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { ok: false, message: "Enter the HTTP or HTTPS URL of Typr Companion." };
   }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { ok: false, message: "The Companion URL must start with http:// or https://." };
+    }
+    if (parsed.username || parsed.password) {
+      return { ok: false, message: "The Companion URL must not contain credentials." };
+    }
+    if (parsed.search || parsed.hash) {
+      return { ok: false, message: "The Companion URL must not contain a query string or fragment." };
+    }
+    return { ok: true, value: parsed.toString().replace(/\/$/, "") };
+  } catch {
+    return { ok: false, message: "Enter a valid Companion URL." };
+  }
+}
+
+export function readStoredCompanionBaseUrl(
+  storage: Pick<CompanionUrlStorage, "getItem"> | undefined = getDefaultStorage()
+): string {
+  if (!storage) return normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+
+  try {
+    const stored = storage.getItem(COMPANION_BASE_URL_STORAGE_KEY);
+    return stored ? normalizeCompanionBaseUrl(stored) : normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+  } catch {
+    return normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+  }
+}
+
+export function writeStoredCompanionBaseUrl(
+  value: string,
+  storage: Pick<CompanionUrlStorage, "setItem"> | undefined = getDefaultStorage()
+): void {
+  storage?.setItem(COMPANION_BASE_URL_STORAGE_KEY, normalizeCompanionBaseUrl(value));
+}
+
+function getDefaultStorage(): CompanionUrlStorage | undefined {
+  return typeof window === "undefined" ? undefined : window.localStorage;
 }
 
 export function parseCompanionStatus(value: unknown): Result<CompanionStatusResponse> {

@@ -6238,6 +6238,55 @@ button {
   gap: 1rem;
 }
 
+.companion-settings__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.companion-settings__form > label {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.companion-settings__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+}
+
+.companion-settings__controls input {
+  min-width: 0;
+  min-height: 2.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  padding: 0.52rem 0.62rem;
+}
+
+.companion-settings__controls input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.companion-settings__error {
+  color: var(--danger, #c43d4b);
+}
+
+@media (max-width: 640px) {
+  .companion-settings__controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .companion-settings__controls input {
+    grid-column: 1 / -1;
+  }
+}
+
 
 .settings-embedded-grid {
   display: grid;

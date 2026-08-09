@@ -1,6 +1,12 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { GoogleDriveConnectionCard } from "../app/GoogleDriveConnectionCard";
 import type { MobileKeyboardLanguage } from "../app/appState";
+import {
+  DEFAULT_COMPANION_BASE_URL,
+  normalizeCompanionBaseUrl,
+  validateCompanionBaseUrl,
+  type CompanionConnectionStatus
+} from "../compiler/companionClient";
 import type {
   EditorFormatterId,
   EditorLinterId,
@@ -26,6 +32,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
     customThemes,
+    companionBaseUrl,
     companionConnection,
     darkThemes,
     detectedLatexPackages,
@@ -50,6 +57,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
+    handleCompanionBaseUrlChange,
+    handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
     handleDownloadCustomSnippets,
@@ -776,20 +785,12 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   />
                 </label>
 
-                <div className="settings-toggle settings-toggle--stacked" role="status">
-                  <span>
-                    <strong>Typr Companion</strong>
-                    <small>
-                      {companionConnection?.state === "available"
-                        ? `Connected to ${companionConnection.baseUrl} · ${companionConnection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
-                        : companionConnection?.state === "checking"
-                          ? `Checking ${companionConnection.baseUrl}…`
-                        : companionConnection?.state === "incompatible"
-                          ? companionConnection.message
-                          : `BusyTeX is active${companionConnection?.message ? ` · ${companionConnection.message}` : ""}`}
-                    </small>
-                  </span>
-                </div>
+                <CompanionSettingsCard
+                  baseUrl={companionBaseUrl}
+                  connection={companionConnection}
+                  onApply={handleCompanionBaseUrlChange}
+                  onReset={handleCompanionBaseUrlReset}
+                />
 
                 <label className="settings-toggle">
                   <span>
@@ -2021,5 +2022,94 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
           </div>
         ) : null}
     </>
+  );
+}
+
+interface CompanionSettingsCardProps {
+  baseUrl: string;
+  connection: CompanionConnectionStatus;
+  onApply: (baseUrl: string) => void;
+  onReset: () => void;
+}
+
+function CompanionSettingsCard({
+  baseUrl,
+  connection,
+  onApply,
+  onReset
+}: CompanionSettingsCardProps) {
+  const [draft, setDraft] = useState(baseUrl);
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(baseUrl);
+    setValidationMessage(null);
+  }, [baseUrl]);
+
+  const connectionMessage = connection.state === "available"
+    ? `Connected · ${connection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
+    : connection.state === "checking"
+      ? "Checking connection…"
+      : connection.state === "incompatible"
+        ? connection.message ?? "The Companion protocol is incompatible."
+        : `BusyTeX is active${connection.message ? ` · ${connection.message}` : ""}`;
+
+  return (
+    <div className="settings-toggle settings-toggle--stacked companion-settings">
+      <span>
+        <strong>Typr Companion</strong>
+        <small aria-live="polite" role="status">{connectionMessage}</small>
+      </span>
+      <form
+        className="companion-settings__form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const validation = validateCompanionBaseUrl(draft);
+          if (!validation.ok) {
+            setValidationMessage(validation.message);
+            return;
+          }
+          setValidationMessage(null);
+          onApply(validation.value);
+        }}
+      >
+        <label htmlFor="companion-base-url">Companion URL</label>
+        <div className="companion-settings__controls">
+          <input
+            aria-describedby="companion-base-url-help"
+            id="companion-base-url"
+            inputMode="url"
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setValidationMessage(null);
+            }}
+            spellCheck={false}
+            type="url"
+            value={draft}
+          />
+          <button className="pane__button" type="submit">Apply</button>
+          <button
+            className="pane__button pane__button--quiet"
+            disabled={baseUrl === normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL)}
+            onClick={() => {
+              setValidationMessage(null);
+              onReset();
+            }}
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+        <small id="companion-base-url-help">
+          Keep the loopback default for Docker on this device. A Companion on Unraid or another
+          host requires an HTTPS reverse-proxy URL that is reachable from this browser.
+        </small>
+        {validationMessage ? (
+          <small className="companion-settings__error" role="alert">
+            {validationMessage}
+          </small>
+        ) : null}
+      </form>
+    </div>
   );
 }

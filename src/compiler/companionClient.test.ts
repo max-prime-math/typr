@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPANION_BASE_URL_STORAGE_KEY,
   CompanionClient,
   CompanionClientError,
-  parseCompanionStatus
+  DEFAULT_COMPANION_BASE_URL,
+  normalizeCompanionBaseUrl,
+  parseCompanionStatus,
+  readStoredCompanionBaseUrl,
+  validateCompanionBaseUrl,
+  writeStoredCompanionBaseUrl
 } from "./companionClient";
 
 const validStatus = {
@@ -72,6 +78,32 @@ describe("CompanionClient", () => {
 
   it("runtime-validates status capabilities", () => {
     expect(parseCompanionStatus({ ...validStatus, capabilities: { compile: {} } }).ok).toBe(false);
+  });
+
+  it("validates and normalizes user-configured Companion URLs", () => {
+    expect(validateCompanionBaseUrl(" https://companion.example.test/typr/ ")).toEqual({
+      ok: true,
+      value: "https://companion.example.test/typr"
+    });
+    expect(validateCompanionBaseUrl("ws://companion.example.test")).toMatchObject({ ok: false });
+    expect(validateCompanionBaseUrl("https://user:secret@companion.example.test")).toMatchObject({ ok: false });
+    expect(validateCompanionBaseUrl("https://companion.example.test?token=secret")).toMatchObject({ ok: false });
+    expect(normalizeCompanionBaseUrl("not a URL")).toBe(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
+  });
+
+  it("persists a validated Companion URL and safely ignores invalid stored data", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value)
+    };
+
+    writeStoredCompanionBaseUrl("https://companion.example.test/", storage);
+    expect(values.get(COMPANION_BASE_URL_STORAGE_KEY)).toBe("https://companion.example.test");
+    expect(readStoredCompanionBaseUrl(storage)).toBe("https://companion.example.test");
+
+    values.set(COMPANION_BASE_URL_STORAGE_KEY, "javascript:alert(1)");
+    expect(readStoredCompanionBaseUrl(storage)).toBe(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
   });
 });
 

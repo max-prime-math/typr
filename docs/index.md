@@ -18,4 +18,5 @@ Typr is a local-first browser workspace for writing, previewing, and syncing Typ
 - [Packages and Browser Shell](./user-guide/packages-shell.md) — Manage offline package caches and use project-local shell commands.
 - [Typr Companion Protocol](./companion-protocol.md) — The versioned contract and local native-LaTeX Companion server.
 - [Install Typr Companion](./companion-installation.md) — Install, update, pin, roll back, diagnose, and uninstall the Docker Companion.
+- [Install Typr Companion on Unraid](./companion-unraid.md) — Install the Unraid template and connect through a trusted HTTPS reverse proxy.
 - [Release Typr Companion](./companion-release.md) — Maintainer CI, multi-architecture, tagging, metadata, and publication policy.
