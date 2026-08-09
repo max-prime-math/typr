@@ -33,7 +33,8 @@
     "icons:check": "node scripts/verify-icon-assets.mjs",
     "test:e2e:diagram": "playwright test --config=playwright.config.ts",
     "test:e2e:pwa": "npm run build && playwright test --config=playwright.pwa.config.ts",
-    "test:e2e:texpresso": "playwright test --config=playwright.texpresso.config.ts"
+    "test:e2e:texpresso": "playwright test --config=playwright.texpresso.config.ts",
+    "screenshots:readme": "node scripts/capture-readme-screenshots.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.6",

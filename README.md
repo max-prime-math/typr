@@ -8,6 +8,12 @@ It runs as a Progressive Web App, keeps projects on device, and supports live pr
 
 Live app: <https://typr.ca/>
 
+## Screenshots
+
+![Typr editing and previewing the default Markdown welcome file](screenshots/typr-markdown-workspace.png)
+
+![Typr editing and previewing the default Typst welcome file](screenshots/typr-typst-workspace.png)
+
 ## Release channels
 
 Typr uses a three-channel promotion path: **Development** (`dev`) → **Beta** (`beta`) → **Stable** (`main`). The public production channel is called Stable everywhere in the product and documentation; the Git branch remains `main`.
