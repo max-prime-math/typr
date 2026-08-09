@@ -48,6 +48,22 @@ The lowest-risk migration keeps the working Stable GitHub Pages deployment in pl
 
 For each project, use `npm run build` as the build command and `dist` as the output directory. Set `TYPR_DEPLOYMENT_CHANNEL` to the value in the table; the build also recognizes Cloudflare's `CF_PAGES_BRANCH` when the explicit value is absent. Disable automatic preview-branch deployments so each project builds only its production branch.
 
+Cloudflare Pages cannot accept Typr's largest compiler files directly. Store one immutable compiler release in the `typr-assets` R2 bucket using this layout:
+
+```text
+releases/busytex-1.1.1-typst-0.7.0-rc2/
+├── core/busytex/...
+└── typst/typst_ts_web_compiler_bg.wasm
+```
+
+After `assets.typr.ca` serves that bucket, set this build variable on every Cloudflare Pages project:
+
+```text
+VITE_TYPR_COMPILER_ASSET_BASE_URL=https://assets.typr.ca/releases/busytex-1.1.1-typst-0.7.0-rc2
+```
+
+That setting redirects both compilers to the versioned release, omits their oversized local copies from `dist`, and rejects any remaining Pages file over 25 MiB. Builds without the setting remain self-contained for local preview and GitHub Pages.
+
 Configure `VITE_TYPR_AUTH_USERS_SHA256`, `VITE_GOOGLE_DRIVE_CLIENT_ID`, `VITE_GOOGLE_PICKER_API_KEY`, and `VITE_GOOGLE_CLOUD_PROJECT_NUMBER` separately in each project. Authorize the exact origin and callback for each channel, including `/google-drive-oauth-callback.html`.
 
 Attach each custom domain through the Pages project's **Custom domains** screen rather than creating a DNS record by hand. Because `typr.ca` is already a Cloudflare-managed zone, Pages can create and validate the proxied record. Confirm a successful `release.json` on the project's `pages.dev` URL before attaching its public domain. The existing Stable deployment can remain untouched until a separate `typr-stable` project has passed the same check.

@@ -6,6 +6,9 @@ import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
 const INLINE_ASSET_LIMIT = 8 * 1024;
+const externalCompilerAssetBaseUrl = process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL
+  ?.trim()
+  .replace(/\/+$/, "");
 const packageMetadata = JSON.parse(
   readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8")
 ) as { version: string };
@@ -177,7 +180,8 @@ export default defineConfig(({ command }) => {
           maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
           runtimeCaching: [
             {
-              urlPattern: /\/assets\/.*\.(?:wasm|otf|ttf)$/,
+              urlPattern:
+                /\/(?:assets\/.*|typst\/typst_ts_web_compiler_bg)\.(?:wasm|otf|ttf)$/,
               handler: "CacheFirst",
               options: {
                 cacheName: `typr-${deploymentChannel}-compiler-assets`
@@ -217,6 +221,18 @@ export default defineConfig(({ command }) => {
     },
     worker: {
       format: "es"
+    },
+    experimental: {
+      renderBuiltUrl(filename) {
+        if (
+          externalCompilerAssetBaseUrl &&
+          /(?:^|\/)typst_ts_web_compiler_bg-[^/]+\.wasm$/.test(filename)
+        ) {
+          return `${externalCompilerAssetBaseUrl}/typst/typst_ts_web_compiler_bg.wasm`;
+        }
+
+        return undefined;
+      }
     },
     build: {
       rollupOptions: {

@@ -7,6 +7,7 @@ import {
   type TyprProjectRepository
 } from "../project/projectState";
 import { BusyTexWorkerRunner, type BusyTexCompileResultWithMetadata } from "./busytexWorkerRunner";
+import { getBusyTexBasePath } from "./compilerAssetUrls";
 import type {
   CompileAssetFile,
   CompileFailure,
@@ -823,17 +824,6 @@ async function getBusyTexRunner(): Promise<BusyTexWorkerRunner> {
 
 function getBusyTexDataPackageUrls(busytexBasePath: string): string[] {
   return BUSYTEX_DATA_PACKAGE_NAMES.map((packageName) => `${busytexBasePath}/${packageName}.js`);
-}
-
-function getBusyTexBasePath(): string {
-  const normalizedPath = "core/busytex";
-
-  if (import.meta.env.DEV) {
-    return `/${normalizedPath}`;
-  }
-
-  const bundleBase = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
-  return `${bundleBase}../${normalizedPath}`;
 }
 
 function fail(message: string, path?: string, log?: string, metadata?: CompileMetadata): CompileFailure {
