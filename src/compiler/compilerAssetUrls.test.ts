@@ -6,12 +6,12 @@ describe("resolveBusyTexBasePath", () => {
     expect(
       resolveBusyTexBasePath({
         externalAssetBaseUrl:
-          " https://assets.typr.ca/releases/busytex-1.1.1-typst-0.7.0-rc2/ ",
+          " https://assets.typr.ca/releases/busytex-1.1.1-typr.1-typst-0.7.0-rc2/ ",
         dev: false,
         moduleUrl: "https://typr.ca/assets/app.js"
       })
     ).toBe(
-      "https://assets.typr.ca/releases/busytex-1.1.1-typst-0.7.0-rc2/core/busytex"
+      "https://assets.typr.ca/releases/busytex-1.1.1-typr.1-typst-0.7.0-rc2/core/busytex"
     );
   });
 

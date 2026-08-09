@@ -51,7 +51,7 @@ For each project, use `npm run build` as the build command and `dist` as the out
 Cloudflare Pages cannot accept Typr's largest compiler files directly. Store one immutable compiler release in the `typr-assets` R2 bucket using this layout:
 
 ```text
-releases/busytex-1.1.1-typst-0.7.0-rc2/
+releases/busytex-1.1.1-typr.1-typst-0.7.0-rc2/
 ├── core/busytex/...
 └── typst/typst_ts_web_compiler_bg.wasm
 ```
@@ -59,10 +59,12 @@ releases/busytex-1.1.1-typst-0.7.0-rc2/
 After `assets.typr.ca` serves that bucket, set this build variable on every Cloudflare Pages project:
 
 ```text
-VITE_TYPR_COMPILER_ASSET_BASE_URL=https://assets.typr.ca/releases/busytex-1.1.1-typst-0.7.0-rc2
+VITE_TYPR_COMPILER_ASSET_BASE_URL=https://assets.typr.ca/releases/busytex-1.1.1-typr.1-typst-0.7.0-rc2
 ```
 
 That setting redirects both compilers to the versioned release, omits their oversized local copies from `dist`, and rejects any remaining Pages file over 25 MiB. Builds without the setting remain self-contained for local preview and GitHub Pages.
+
+The **Publish compiler assets** GitHub Actions workflow runs when its publishing inputs change on `dev` and can also be started manually after it reaches the default branch. It reads the repository secrets `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ENDPOINT`, derives the release name from the installed package versions plus the explicit Typr asset revision, and refuses to replace an immutable object with different contents. Increment that revision whenever Typr's BusyTeX optimization changes without an upstream package-version change.
 
 Configure `VITE_TYPR_AUTH_USERS_SHA256`, `VITE_GOOGLE_DRIVE_CLIENT_ID`, `VITE_GOOGLE_PICKER_API_KEY`, and `VITE_GOOGLE_CLOUD_PROJECT_NUMBER` separately in each project. Authorize the exact origin and callback for each channel, including `/google-drive-oauth-callback.html`.
 
