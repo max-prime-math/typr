@@ -10,7 +10,7 @@ Live app: <https://typr.ca/>
 
 ## Release channels
 
-Typr uses a three-channel promotion path: **Development** (`development`) → **Beta** (`beta`) → **Stable** (`main`). The public production channel is called Stable everywhere in the product and documentation; the Git branch remains `main`.
+Typr uses a three-channel promotion path: **Development** (`dev`) → **Beta** (`beta`) → **Stable** (`main`). The public production channel is called Stable everywhere in the product and documentation; the Git branch remains `main`.
 
 Each channel produces a separately named PWA and can be built explicitly:
 

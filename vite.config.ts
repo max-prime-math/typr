@@ -23,6 +23,7 @@ function resolveDeploymentChannel(): DeploymentChannel {
   const requestedChannel =
     process.env.TYPR_DEPLOYMENT_CHANNEL ??
     process.env.GITHUB_REF_NAME ??
+    process.env.CF_PAGES_BRANCH ??
     resolveCurrentBranch();
 
   switch (requestedChannel?.trim().toLowerCase()) {
