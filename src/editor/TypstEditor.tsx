@@ -82,6 +82,14 @@ interface TypstEditorProps {
     selection: { from: number; to: number }
   ) => { position: number } | { move: "lineEnd" } | null;
   onChange: (value: string) => void;
+  onTextChanges?: (changes: readonly TypstEditorTextChange[], previousValue: string) => void;
+}
+
+export interface TypstEditorTextChange {
+  /** UTF-16 offsets into previousValue, matching CodeMirror's document model. */
+  from: number;
+  to: number;
+  text: string;
 }
 
 let vimClipboardSharingEnabled = false;
@@ -207,13 +215,15 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   vimClipboardSharing = false,
   onImagePaste,
   onImageRenameKey,
-  onChange
+  onChange,
+  onTextChanges
 }, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const currentValueRef = useRef(value);
   const isApplyingExternalValueRef = useRef(false);
   const latestOnChangeRef = useRef(onChange);
+  const latestOnTextChangesRef = useRef(onTextChanges);
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
   const latestOnSourceDoubleClickRef = useRef(onSourceDoubleClick);
   const latestOnFocusChangeRef = useRef(onFocusChange);
@@ -239,6 +249,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   useEffect(() => {
     latestOnChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    latestOnTextChangesRef.current = onTextChanges;
+  }, [onTextChanges]);
 
   useEffect(() => {
     latestOnSelectionChangeRef.current = onSelectionChange;
@@ -626,6 +640,9 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
             return;
           }
 
+          const previousValue = currentValueRef.current;
+          const changes = getEditorTextChanges(update);
+          latestOnTextChangesRef.current?.(changes, previousValue);
           latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
         },
         onSelectionChange: (update) => {
@@ -896,6 +913,19 @@ function applyEditorChanges(
   currentValueRef.current = nextValue;
 
   return nextValue;
+}
+
+/**
+ * Multiple selections are reported against the pre-transaction document.
+ * Applying them from the end of the document keeps every range valid while
+ * TeXpresso receives one monotonically numbered change per replacement.
+ */
+export function getEditorTextChanges(update: Pick<ViewUpdate, "changes">): TypstEditorTextChange[] {
+  const changes: TypstEditorTextChange[] = [];
+  update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    changes.push({ from: fromA, to: toA, text: inserted.toString() });
+  });
+  return changes.sort((left, right) => right.from - left.from || right.to - left.to);
 }
 
 function getEditorSelectionSnapshot(view: EditorView): TypstEditorSelection {

@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_GOOGLE_PICKER_API_KEY?: string;
   readonly VITE_GOOGLE_CLOUD_PROJECT_NUMBER?: string;
   readonly VITE_TYPR_AUTH_USERS_SHA256?: string;
+  readonly VITE_TYPR_COMPANION_URL?: string;
+  readonly VITE_TYPR_COMPILER_ASSET_BASE_URL?: string;
 }
 
 interface ImportMeta {

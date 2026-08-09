@@ -10,7 +10,7 @@ Live app: <https://typr.ca/>
 
 ## Release channels
 
-Typr uses a three-channel promotion path: **Development** (`development`) → **Beta** (`beta`) → **Stable** (`main`). The public production channel is called Stable everywhere in the product and documentation; the Git branch remains `main`.
+Typr uses a three-channel promotion path: **Development** (`dev`) → **Beta** (`beta`) → **Stable** (`main`). The public production channel is called Stable everywhere in the product and documentation; the Git branch remains `main`.
 
 Each channel produces a separately named PWA and can be built explicitly:
 
@@ -25,6 +25,10 @@ The three installed PWAs must use distinct origins—for example `dev.typr.ca`, 
 ## Documentation
 
 The detailed documentation lives in [docs/](docs/index.md). Application, build, link, and update information is available from the Info button above Settings.
+
+## Typr Companion
+
+The optional Docker Companion adds native `latexmk`/pdfLaTeX compilation and experimental TeXpresso live preview while preserving Typr's in-browser BusyTeX fallback. The published image is `ghcr.io/max-prime-math/typr-server` for `linux/amd64` and `linux/arm64`; it binds to host loopback and stores no projects. See [Install Typr Companion](docs/companion-installation.md) for install, verification, update, pinning, rollback, platform, and security guidance.
 
 ## Alternatives
 

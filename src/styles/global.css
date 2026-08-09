@@ -7272,6 +7272,110 @@ button {
   gap: 0.9rem;
 }
 
+.texpresso-preview {
+  position: relative;
+  overflow: auto;
+  background: color-mix(in srgb, var(--surface-muted) 82%, var(--background));
+}
+
+.texpresso-preview__pages {
+  display: flex;
+  min-width: min-content;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.4rem;
+  padding: 1.4rem;
+}
+
+.texpresso-page {
+  flex: 0 0 auto;
+  margin: 0;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 8px 25px color-mix(in srgb, #000 20%, transparent);
+}
+
+.texpresso-page img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.texpresso-status {
+  position: absolute;
+  right: 0.7rem;
+  bottom: 0.7rem;
+  z-index: 4;
+  display: flex;
+  max-width: min(34rem, calc(100% - 1.4rem));
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-strong) 92%, transparent);
+  box-shadow: 0 3px 12px color-mix(in srgb, #000 12%, transparent);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.texpresso-status__dot {
+  width: 0.48rem;
+  height: 0.48rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.texpresso-status--ready {
+  color: var(--success, #278457);
+}
+
+.texpresso-status--connecting,
+.texpresso-status--updating {
+  color: var(--accent-strong);
+}
+
+.texpresso-status--error,
+.texpresso-status--disconnected {
+  color: var(--danger, #b94444);
+}
+
+.texpresso-status__detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-mode-select {
+  max-width: 11.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.3rem 1.55rem 0.3rem 0.48rem;
+}
+
+.live-preview-fallback {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.live-preview-fallback > .preview-layout,
+.live-preview-fallback > .preview-state {
+  flex: 1 1 auto;
+}
+
 .preview-toolbar {
   display: flex;
   align-items: center;
@@ -7392,6 +7496,11 @@ button {
   color: var(--text-muted);
   font-size: 0.74rem;
   line-height: 1.25;
+}
+
+.compile-options-menu__item .compile-options-menu__provider {
+  color: var(--accent-strong);
+  font-size: 0.71rem;
 }
 
 .compile-options-menu__item:hover,
@@ -7951,6 +8060,11 @@ button {
   max-width: none;
 }
 
+/* Keep the themed page surface visible while PDF.js creates its white raster. */
+.preview-document--pdf-canvas .pdf-page--rendering canvas {
+  visibility: hidden;
+}
+
 .preview-document--pdf-canvas .pdf-page.canvas::after {
   content: "";
   position: absolute;
@@ -8310,7 +8424,12 @@ button {
   .pane__header--preview .pane__header-mobile-zoom {
     display: flex;
     justify-content: flex-end;
+    gap: 0.35rem;
     min-width: 0;
+  }
+
+  .pane__header--preview .preview-mode-select--mobile {
+    width: 7.4rem;
   }
 
   .pane__header--preview .preview-zoom-controls {

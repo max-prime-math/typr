@@ -26,6 +26,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
     customThemes,
+    companionConnection,
     darkThemes,
     detectedLatexPackages,
     documentStats,
@@ -774,6 +775,21 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     type="checkbox"
                   />
                 </label>
+
+                <div className="settings-toggle settings-toggle--stacked" role="status">
+                  <span>
+                    <strong>Typr Companion</strong>
+                    <small>
+                      {companionConnection?.state === "available"
+                        ? `Connected to ${companionConnection.baseUrl} · ${companionConnection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
+                        : companionConnection?.state === "checking"
+                          ? `Checking ${companionConnection.baseUrl}…`
+                        : companionConnection?.state === "incompatible"
+                          ? companionConnection.message
+                          : `BusyTeX is active${companionConnection?.message ? ` · ${companionConnection.message}` : ""}`}
+                    </small>
+                  </span>
+                </div>
 
                 <label className="settings-toggle">
                   <span>

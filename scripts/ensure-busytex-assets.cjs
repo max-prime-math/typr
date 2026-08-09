@@ -179,6 +179,14 @@ function optimizeBusyTexDataPackageMemory() {
 
 
 async function main() {
+  if (
+    process.env.TYPR_EXTERNAL_COMPILER_ASSETS === "1" ||
+    process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL?.trim()
+  ) {
+    console.log("External compiler assets enabled; skipping local BusyTeX preparation.");
+    return;
+  }
+
   let missingFiles = getMissingAssetFiles();
 
   if (missingFiles.length === 0) {
