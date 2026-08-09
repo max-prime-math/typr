@@ -56,6 +56,21 @@ test("preview zoom is continuous and cursor anchored across document types", asy
   const zoomSelect = page.locator('select[aria-label="Preview zoom"]:visible').first();
   const markdown = page.locator(".preview-markdown");
   await expect(markdown).toBeVisible();
+
+  const markdownEditor = page.locator(".cm-content").first();
+  const longMarkdown = [
+    "# Preview zoom fixture",
+    ...Array.from(
+      { length: 40 },
+      (_, index) =>
+        `Paragraph ${index + 1}: This content makes the preview taller than its viewport so cursor-anchored zooming can be verified.`
+    )
+  ].join("\n\n");
+  await markdownEditor.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(longMarkdown);
+  await expect(markdown).toContainText("Paragraph 40");
+
   const markdownViewport = page.locator(".preview-document--markdown");
   const markdownZoom = await dispatchPreviewZoom(page, markdown, markdownViewport, 0.62, 0.5);
 
@@ -63,7 +78,7 @@ test("preview zoom is continuous and cursor anchored across document types", asy
   expect(markdownZoom.anchorAfter.y).toBeCloseTo(markdownZoom.anchorBefore.y, 1);
   expect(await zoomSelect.inputValue()).toBe("171.6");
 
-  await page.getByText("main.typ", { exact: true }).first().click();
+  await page.getByText("typst.typ", { exact: true }).first().click();
   const compileButton = page.getByRole("button", { name: "Compile", exact: true });
   await expect(compileButton).toBeVisible();
   await compileButton.click();
@@ -169,7 +184,7 @@ test("mobile Typst pinch applies every scale update before release", async ({ pa
   test.setTimeout(120_000);
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.getByText("main.typ", { exact: true }).first().click();
+  await page.getByText("typst.typ", { exact: true }).first().click();
   const compileButton = page.getByRole("button", { name: "Compile", exact: true });
   await expect(compileButton).toBeVisible();
   await compileButton.click();

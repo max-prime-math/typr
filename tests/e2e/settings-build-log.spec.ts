@@ -66,7 +66,7 @@ test("Build Log renders, filters, and clears compile history", async ({ page }) 
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  const sourceFile = page.getByRole("treeitem", { name: /main\.typ/ });
+  const sourceFile = page.getByRole("treeitem", { name: /typst\.typ/ });
   await expect(sourceFile).toBeVisible();
   await sourceFile.click();
 
@@ -86,7 +86,7 @@ test("Build Log renders, filters, and clears compile history", async ({ page }) 
   await expect(buildLog.locator(".build-log-entry").first()).toBeVisible({ timeout: 30_000 });
   await expect(buildLog.getByRole("button", { name: "Copy filtered build log" })).toBeVisible();
   await buildLog.getByLabel("Filter").selectOption("current-file");
-  await buildLog.getByLabel("Search").fill("main.typ");
+  await buildLog.getByLabel("Search").fill("typst.typ");
   await expect(buildLog.locator(".build-log-entry").first()).toBeVisible();
   await buildLog.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(buildLog.getByText("No builds match the current filters.")).toBeVisible();
