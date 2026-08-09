@@ -86,7 +86,7 @@ test("mobile source scrolling keeps pane controls fixed", async ({ browserName, 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await waitForMobileAppReady(page);
   await page.getByRole("tab", { name: "Files", exact: true }).click();
-  await page.getByRole("treeitem", { name: /README\.md/ }).waitFor();
+  await page.getByRole("treeitem", { name: /markdown\.md/ }).waitFor();
 
   const source = Array.from(
     { length: 180 },
@@ -226,8 +226,8 @@ test("mobile first LaTeX compile stays alive and renders its PDF", async ({
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await waitForMobileAppReady(page);
   await page.getByRole("tab", { name: "Files", exact: true }).click();
-  await page.getByRole("treeitem", { name: /latex-starter\.tex/ }).waitFor();
-  await openMobileSourceFile(page, /latex-starter\.tex/, "latex-starter.tex");
+  await page.getByRole("treeitem", { name: /latex\.tex/ }).waitFor();
+  await openMobileSourceFile(page, /latex\.tex/, "latex.tex");
 
   const compileButton = page.getByRole("button", { name: "Compile", exact: true });
   if (await compileButton.isEnabled()) {
@@ -322,7 +322,7 @@ test("mobile first LaTeX compile stays alive and renders its PDF", async ({
 
   await expect(
     page.getByRole("tablist", { name: "Open previews" }).getByRole("tab", {
-      name: "latex-starter.pdf"
+      name: "latex.pdf"
     })
   ).toBeVisible();
 
@@ -333,7 +333,7 @@ test("mobile first LaTeX compile stays alive and renders its PDF", async ({
   ).toBeVisible({ timeout: 30_000 });
   await expect(
     page.getByRole("tablist", { name: "Open previews" }).getByRole("tab", {
-      name: "latex-starter.pdf"
+      name: "latex.pdf"
     })
   ).toBeVisible();
   expect(pageErrors).toEqual([]);

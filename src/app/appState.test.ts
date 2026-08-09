@@ -5,6 +5,10 @@ import {
   createFolder,
   DEFAULT_BIBLIOGRAPHY_DOCUMENT_CONTENT,
   DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME,
+  DEFAULT_DOCUMENT_CONTENT,
+  DEFAULT_DOCUMENT_NAME,
+  DEFAULT_LATEX_DOCUMENT_CONTENT,
+  DEFAULT_LATEX_DOCUMENT_NAME,
   DEFAULT_MARKDOWN_DOCUMENT_CONTENT,
   DEFAULT_MARKDOWN_DOCUMENT_NAME,
   DEFAULT_PASTED_IMAGE_PREFERENCES,
@@ -19,24 +23,42 @@ import {
 } from "./appState";
 
 describe("appState", () => {
-  it("uses README.md as the default Markdown document", () => {
+  it("creates simple, consistently named welcome files", () => {
     const snapshot = createDefaultSnapshot();
-    const readme = snapshot.project.documents.find(
+    const markdown = snapshot.project.documents.find(
       (document) => document.name === DEFAULT_MARKDOWN_DOCUMENT_NAME
     );
 
-    expect(DEFAULT_MARKDOWN_DOCUMENT_NAME).toBe("README.md");
-    expect(snapshot.project.activeDocumentId).toBe(readme?.id);
-    expect(readme?.content).toBe(DEFAULT_MARKDOWN_DOCUMENT_CONTENT);
-    expect(readme?.content).toContain("matching bibliography stress tests");
-    expect(readme?.content).toContain(DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME);
+    expect(DEFAULT_MARKDOWN_DOCUMENT_NAME).toBe("markdown.md");
+    expect(snapshot.project.activeDocumentId).toBe(markdown?.id);
+    expect(markdown?.content).toBe(DEFAULT_MARKDOWN_DOCUMENT_CONTENT);
+    expect(markdown?.content).toContain("Welcome to Typr");
+    expect(markdown?.content).toContain("Docs");
+
+    const typst = snapshot.project.documents.find(
+      (document) => document.name === DEFAULT_DOCUMENT_NAME
+    );
+    expect(DEFAULT_DOCUMENT_NAME).toBe("typst.typ");
+    expect(typst?.content).toBe(DEFAULT_DOCUMENT_CONTENT);
+    expect(typst?.content).toContain("Welcome to Typr");
+    expect(typst?.content).toContain("Docs");
+
+    const latex = snapshot.project.documents.find(
+      (document) => document.name === DEFAULT_LATEX_DOCUMENT_NAME
+    );
+    expect(DEFAULT_LATEX_DOCUMENT_NAME).toBe("latex.tex");
+    expect(latex?.content).toBe(DEFAULT_LATEX_DOCUMENT_CONTENT);
+    expect(latex?.content).toContain("Welcome to Typr");
+    expect(latex?.content).toContain("Docs");
 
     const bibliography = snapshot.project.documents.find(
       (document) => document.name === DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME
     );
 
     expect(bibliography?.content).toBe(DEFAULT_BIBLIOGRAPHY_DOCUMENT_CONTENT);
-    expect(bibliography?.content).toContain("@book{knuth1984texbook");
+    expect(DEFAULT_BIBLIOGRAPHY_DOCUMENT_NAME).toBe("bib.bib");
+    expect(bibliography?.content).toContain("@misc{typr");
+    expect(bibliography?.content).toContain("Docs");
   });
 
   it("enables line wrap by default and migrates snapshots without the preference", () => {
