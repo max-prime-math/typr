@@ -26,6 +26,10 @@ The three installed PWAs must use distinct origins—for example `dev.typr.ca`, 
 
 The detailed documentation lives in [docs/](docs/index.md). Application, build, link, and update information is available from the Info button above Settings.
 
+## Typr Companion
+
+The optional Docker Companion adds native `latexmk`/pdfLaTeX compilation and experimental TeXpresso live preview while preserving Typr's in-browser BusyTeX fallback. The published image is `ghcr.io/max-prime-math/typr-server` for `linux/amd64` and `linux/arm64`; it binds to host loopback and stores no projects. See [Install Typr Companion](docs/companion-installation.md) for install, verification, update, pinning, rollback, platform, and security guidance.
+
 ## Alternatives
 
 Typr is one option among several strong writing environments. The best choice depends on whether you prioritize local ownership, real-time collaboration, a Typst-first workflow, or a native desktop application.

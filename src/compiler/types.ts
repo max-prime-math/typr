@@ -1,4 +1,4 @@
-export type CompilerEngine = "mock" | "typst-ts" | "busytex";
+export type CompilerEngine = "mock" | "typst-ts" | "busytex" | "companion";
 export type CompilerMode = "worker" | "main-thread" | "mock";
 export type CompilerPhase =
   | "idle"

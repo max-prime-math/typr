@@ -208,7 +208,12 @@ export function releaseLatexCompilerMemory(): void {
   sharedBasePath = null;
 }
 
-function collectLatexFiles(
+/**
+ * Produces the complete, safe-to-compile LaTeX project view used by BusyTeX
+ * and by the Companion provider.  Keeping this here means both providers see
+ * the same documents, generated diagram assets, and active-editor override.
+ */
+export function collectLatexFiles(
   project: TyprProjectRepository,
   mainFilePath: string,
   source: string,

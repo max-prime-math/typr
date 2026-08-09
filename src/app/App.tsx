@@ -60,6 +60,7 @@ import {
   updateLatexMathPreviewPreference,
   updateLineWrapPreference,
   updateLiveCompilationPreference,
+  updatePreviewModePreference,
   updateMobileKeyboardPreference,
   updatePastedImagePreference,
   updateRelativeLineNumbersPreference,
@@ -170,11 +171,18 @@ import {
 } from "../compiler/typstCompiler";
 import {
   cancelLatexCompile,
-  compileLatexDocument,
   releaseLatexCompilerMemory,
   type LatexCompileDriver,
   type LatexCompileMode
 } from "../compiler/latexCompiler";
+import {
+  CompanionClient,
+  type CompanionConnectionStatus
+} from "../compiler/companionClient";
+import {
+  compileLatexWithAutomaticProvider,
+  selectLatexCompilerProvider
+} from "../compiler/latexCompilerProviders";
 import {
   cacheLatexPackageBundle,
   clearLatexPackageBundleCache,
@@ -221,7 +229,8 @@ import {
   TypstEditor,
   type TypstEditorHandle,
   type TypstEditorSelection,
-  type TypstSearchQueryState
+  type TypstSearchQueryState,
+  type TypstEditorTextChange
 } from "../editor/TypstEditor";
 import { TerminalDrawer } from "../terminal/TerminalDrawer";
 import {
@@ -376,6 +385,12 @@ import {
   type SnippetLanguage
 } from "../snippets/snippets";
 import { PreviewZoomControls } from "../preview/PreviewPane";
+import { TexpressoPreview, TexpressoPreviewStatus } from "../preview/TexpressoPreview";
+import {
+  createTexpressoProjectSnapshot,
+  getTexpressoProjectCompatibilityIssue
+} from "../preview/texpressoClient";
+import { useTexpressoLivePreview } from "../preview/useTexpressoLivePreview";
 import {
   removeProjectFromOpfs,
   syncProjectToOpfs,
@@ -861,6 +876,35 @@ const LATEX_COMPILE_PROFILES: LatexCompileProfile[] = [
 
 function getLatexCompileProfile(id: LatexCompileProfileId): LatexCompileProfile {
   return LATEX_COMPILE_PROFILES.find((profile) => profile.id === id) ?? LATEX_COMPILE_PROFILES[0];
+}
+
+/** Describes the provider this profile will use now, without changing provider selection. */
+function getLatexCompileProviderLabel(
+  profile: LatexCompileProfile,
+  companion: CompanionConnectionStatus
+): string {
+  if (
+    selectLatexCompilerProvider({
+      companion,
+      compileDriver: profile.driver
+    }) === "companion"
+  ) {
+    return `Typr Companion server · native pdflatex · ${companion.baseUrl}`;
+  }
+
+  if (profile.driver !== "pdftex_bibtex8") {
+    return "BusyTeX · in browser · Companion currently supports pdfTeX only";
+  }
+
+  if (companion.state === "checking") {
+    return "BusyTeX · in browser · checking Typr Companion";
+  }
+
+  if (companion.state === "incompatible") {
+    return "BusyTeX · in browser · Companion protocol incompatible";
+  }
+
+  return "BusyTeX · in browser";
 }
 
 interface WorkspaceClipboardState {
@@ -3532,6 +3576,24 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
+  const companionClient = useMemo(() => new CompanionClient(), []);
+  const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
+    () => ({ state: "checking", baseUrl: companionClient.baseUrl })
+  );
+  const refreshCompanionConnection = useCallback(async () => {
+    const status = await companionClient.getConnectionStatus();
+    if (isMountedRef.current) {
+      setCompanionConnection(status);
+    }
+    return status;
+  }, [companionClient, isMountedRef]);
+  useEffect(() => {
+    void refreshCompanionConnection();
+    const interval = window.setInterval(() => {
+      void refreshCompanionConnection();
+    }, 15_000);
+    return () => window.clearInterval(interval);
+  }, [refreshCompanionConnection]);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const matrixCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
   const tableCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
@@ -4006,6 +4068,11 @@ ${nextLine}` : nextLine;
         currentSnapshot,
         !currentSnapshot.preferences.liveCompilation
       )
+    );
+  }, []);
+  const handlePreviewModeChange = useCallback((previewMode: "pdf" | "texpresso") => {
+    setSnapshot((currentSnapshot) =>
+      updatePreviewModePreference(currentSnapshot, previewMode)
     );
   }, []);
   const handleLatexMathPreviewToggle = useCallback(() => {
@@ -5085,6 +5152,72 @@ ${nextLine}` : nextLine;
     () => buildDiagramShadowFiles([...savedFigures, diagram]),
     [diagram, savedFigures]
   );
+  const isTexpressoPreviewRequested = snapshot.preferences.previewMode === "texpresso";
+  const isTexpressoSourceCandidate = Boolean(
+    selectedProjectRepository &&
+    activeSourceLanguage === "latex"
+  );
+  const texpressoProject = useMemo(() => {
+    if (!selectedProjectRepository || !isTexpressoSourceCandidate) {
+      return null;
+    }
+    try {
+      return createTexpressoProjectSnapshot({
+        project: selectedProjectRepository,
+        activeFilePath: activeSourcePath,
+        activeSource: sourceEditorValue,
+        assets: diagramShadowAssets
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    activeSourcePath,
+    diagramShadowAssets,
+    isTexpressoSourceCandidate,
+    selectedProjectRepository,
+    sourceEditorValue
+  ]);
+  const texpressoProjectCompatibilityIssue = texpressoProject
+    ? !isLatexMainSourceFile(texpressoProject.mainFilePath)
+      ? "Live Preview currently requires a LaTeX .tex root document."
+      : getTexpressoProjectCompatibilityIssue(texpressoProject)
+    : "Live Preview currently requires an open LaTeX .tex document.";
+  const isTexpressoProjectSupported = texpressoProjectCompatibilityIssue === null;
+  const texpressoSessionKey = texpressoProject && selectedProjectRepository
+    ? `${selectedProjectRepository.id}:${texpressoProject.mainFilePath}`
+    : null;
+  const {
+    snapshot: texpressoSnapshot,
+    acknowledgeVisibleRevision: acknowledgeTexpressoVisibleRevision,
+    sendEditorChanges: sendTexpressoEditorChanges
+  } = useTexpressoLivePreview({
+    enabled: isTexpressoPreviewRequested && isTexpressoProjectSupported,
+    companion: companionConnection,
+    project: texpressoProject,
+    sessionKey: texpressoSessionKey
+  });
+  const texpressoDisplaySnapshot = isTexpressoPreviewRequested && !isTexpressoProjectSupported
+    ? {
+        ...texpressoSnapshot,
+        status: "disconnected" as const,
+        statusDetail: texpressoProjectCompatibilityIssue ?? "This project is not supported by Live Preview."
+      }
+    : texpressoSnapshot;
+  const handleTexpressoEditorChanges = useCallback((
+    changes: readonly TypstEditorTextChange[],
+    previousValue: string
+  ) => {
+    if (!isTexpressoPreviewRequested || !isTexpressoProjectSupported) {
+      return;
+    }
+    sendTexpressoEditorChanges(activeSourcePath, changes, previousValue);
+  }, [
+    activeSourcePath,
+    isTexpressoPreviewRequested,
+    isTexpressoProjectSupported,
+    sendTexpressoEditorChanges
+  ]);
   const diagramAssetsRevision = useMemo(
     () =>
       [diagram, ...savedFigures].map((asset) => `${asset.id}:${asset.updatedAt}`)
@@ -6666,15 +6799,27 @@ ${nextLine}` : nextLine;
             result = savedResult;
             compileUsedCachedOutput = true;
           } else {
-            result = await compileLatexDocument({
-              mainFilePath: sourcePath,
-              source,
-              project,
-              assets: compileAssets,
-              compileMode: requestedLatexCompileMode,
-              compileDriver: requestedLatexCompileProfile.driver,
-              onStatusChange: handleScopedCompilerStatusChange
-            });
+            result = (await compileLatexWithAutomaticProvider({
+              client: companionClient,
+              companion: companionConnection,
+              options: {
+                mainFilePath: sourcePath,
+                source,
+                project,
+                assets: compileAssets,
+                compileMode: requestedLatexCompileMode,
+                compileDriver: requestedLatexCompileProfile.driver,
+                onStatusChange: handleScopedCompilerStatusChange
+              },
+              onCompanionUnavailable: (error) => {
+                setCompanionConnection({
+                  state: "unavailable",
+                  baseUrl: companionClient.baseUrl,
+                  checkedAt: Date.now(),
+                  message: error.message
+                });
+              }
+            })).result;
 
             if (result.ok && result.output.kind === "pdf") {
               generatedLatexPdf = {
@@ -6925,6 +7070,8 @@ ${nextLine}` : nextLine;
     }
   }, [
     appendBuildLogEntry,
+    companionClient,
+    companionConnection,
     compiler,
     isHydrated,
     openPreviewTab,
@@ -11763,14 +11910,26 @@ ${nextLine}` : nextLine;
     try {
       const result =
         sourceLanguage === "latex"
-          ? await compileLatexDocument({
-              mainFilePath: sourcePath,
-              source,
-              project,
-              assets: compileAssets,
-              compileMode: options.latexMode ?? "full",
-              onStatusChange: handleCompilerStatusChange
-            })
+          ? (await compileLatexWithAutomaticProvider({
+              client: companionClient,
+              companion: companionConnection,
+              options: {
+                mainFilePath: sourcePath,
+                source,
+                project,
+                assets: compileAssets,
+                compileMode: options.latexMode ?? "full",
+                onStatusChange: handleCompilerStatusChange
+              },
+              onCompanionUnavailable: (error) => {
+                setCompanionConnection({
+                  state: "unavailable",
+                  baseUrl: companionClient.baseUrl,
+                  checkedAt: Date.now(),
+                  message: error.message
+                });
+              }
+            })).result
           : await compiler.compileDocument(
               typstCompileSource,
               compileAssets,
@@ -11797,6 +11956,8 @@ ${nextLine}` : nextLine;
       setIsCompiling(false);
     }
   }, [
+    companionClient,
+    companionConnection,
     compiler,
     diagramShadowAssets,
     isPaperView,
@@ -15516,6 +15677,7 @@ ${nextLine}` : nextLine;
     activeDefaultSnippets,
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
+    companionConnection,
     customThemes,
     darkThemes,
     detectedLatexPackages,
@@ -17807,6 +17969,9 @@ ${nextLine}` : nextLine;
                                   ) : null}
                                 </span>
                                 <small>{profile.description}</small>
+                                <small className="compile-options-menu__provider">
+                                  {getLatexCompileProviderLabel(profile, companionConnection)}
+                                </small>
                               </button>
                             ))}
                           </div>
@@ -17904,6 +18069,7 @@ ${nextLine}` : nextLine;
                 constrainMobileScroll={isMobileWorkspace}
                 theme={theme}
                 onChange={handleDocumentChange}
+                onTextChanges={handleTexpressoEditorChanges}
               />
               <TerminalDrawer
                 isOpen={isTerminalOpen}
@@ -17929,6 +18095,11 @@ ${nextLine}` : nextLine;
           {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) && compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}
+            </div>
+          ) : null}
+          {isTexpressoPreviewRequested && texpressoSnapshot.status === "error" && texpressoSnapshot.statusDetail ? (
+            <div className="source-inline-status source-inline-status--error" role="status">
+              Live Preview: {texpressoSnapshot.statusDetail}
             </div>
           ) : null}
         </section>
@@ -17975,6 +18146,23 @@ ${nextLine}` : nextLine;
               <h2>Preview</h2>
             </div>
             <div className="pane__header-center pane__header-center--preview-zoom">
+              <select
+                aria-label="Preview mode"
+                className="preview-mode-select"
+                onChange={(event) => handlePreviewModeChange(event.target.value as "pdf" | "texpresso")}
+                title={isTexpressoProjectSupported
+                  ? "Choose authoritative PDF or experimental TeXpresso live preview"
+                  : texpressoProjectCompatibilityIssue ?? "TeXpresso live preview is unavailable for this project"}
+                value={snapshot.preferences.previewMode}
+              >
+                <option value="pdf">PDF Preview</option>
+                <option
+                  disabled={companionConnection.state !== "available" || !isTexpressoProjectSupported}
+                  value="texpresso"
+                >
+                  Live Preview (Experimental)
+                </option>
+              </select>
               <PreviewZoomControls
                 onZoomChange={setPreviewZoom}
                 zoom={previewZoom}
@@ -17982,6 +18170,20 @@ ${nextLine}` : nextLine;
             </div>
             <div className="pane__header-actions">
               <div className="pane__header-mobile-zoom">
+                <select
+                  aria-label="Preview mode"
+                  className="preview-mode-select preview-mode-select--mobile"
+                  onChange={(event) => handlePreviewModeChange(event.target.value as "pdf" | "texpresso")}
+                  value={snapshot.preferences.previewMode}
+                >
+                  <option value="pdf">PDF</option>
+                  <option
+                    disabled={companionConnection.state !== "available" || !isTexpressoProjectSupported}
+                    value="texpresso"
+                  >
+                    Live (Experimental)
+                  </option>
+                </select>
                 <PreviewZoomControls
                   onZoomChange={setPreviewZoom}
                   zoom={previewZoom}
@@ -18054,6 +18256,15 @@ ${nextLine}` : nextLine;
             onClose: handleClosePreviewTab,
             paths: visiblePreviewTabPaths
           })}
+          {isTexpressoPreviewRequested && isTexpressoProjectSupported && texpressoSnapshot.pages.length > 0 ? (
+            <TexpressoPreview
+              onRevisionCommitted={acknowledgeTexpressoVisibleRevision}
+              paperView={isPaperView}
+              snapshot={texpressoSnapshot}
+              zoom={previewZoom}
+            />
+          ) : (
+          <div className="live-preview-fallback">
           <PreviewPane
             activeSource={activePreviewSourcePosition}
             compilerStatus={visiblePreviewCompilerStatus}
@@ -18072,6 +18283,11 @@ ${nextLine}` : nextLine;
             workspacePreview={visibleWorkspacePreview}
             zoom={previewZoom}
           />
+          {isTexpressoPreviewRequested ? (
+            <TexpressoPreviewStatus snapshot={texpressoDisplaySnapshot} />
+          ) : null}
+          </div>
+          )}
         </section>
         ) : null}
       </main>
@@ -18125,6 +18341,15 @@ ${nextLine}` : nextLine;
                 Close
               </button>
             </div>
+            {isTexpressoPreviewRequested && isTexpressoProjectSupported && texpressoSnapshot.pages.length > 0 ? (
+              <TexpressoPreview
+                onRevisionCommitted={acknowledgeTexpressoVisibleRevision}
+                paperView={isPaperView}
+                snapshot={texpressoSnapshot}
+                zoom={previewZoom}
+              />
+            ) : (
+            <div className="live-preview-fallback">
             <PreviewPane
               activeSource={activePreviewSourcePosition}
               compilerStatus={visiblePreviewCompilerStatus}
@@ -18143,6 +18368,11 @@ ${nextLine}` : nextLine;
               workspacePreview={visibleWorkspacePreview}
               zoom={previewZoom}
             />
+            {isTexpressoPreviewRequested ? (
+              <TexpressoPreviewStatus snapshot={texpressoDisplaySnapshot} />
+            ) : null}
+            </div>
+            )}
           </section>
         </div>
       ) : null}
