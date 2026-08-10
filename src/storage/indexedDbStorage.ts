@@ -82,20 +82,45 @@ export async function loadProjectStorage(): Promise<TyprProjectStorageState | nu
 
 export async function saveProjectStorage(storage: TyprProjectStorageState): Promise<void> {
   const database = await getDatabase();
+  const transaction = database.transaction(STORE_NAME, "readwrite");
   await Promise.all([
-    database.put(STORE_NAME, storage, PROJECT_STORAGE_KEY),
-    database.put(
-      STORE_NAME,
-      {
-        version: storage.version,
-        selectedProjectId: storage.selectedProjectId,
-        projectCount: storage.projects.length,
-        savedAt: new Date().toISOString(),
-        legacySnapshotRetained: storage.migration.legacySnapshotRetained
-      },
-      PROJECT_STORAGE_METADATA_KEY
-    )
+    transaction.store.put(storage, PROJECT_STORAGE_KEY),
+    transaction.store.put(createProjectStorageMetadata(storage), PROJECT_STORAGE_METADATA_KEY),
+    transaction.done
   ]);
+}
+
+export async function commitCompanionWorkspaceSync(options: {
+  projectStorage: TyprProjectStorageState;
+  snapshot: AppSnapshot;
+  binding: CloudProjectBindingRecord;
+}): Promise<void> {
+  if (options.binding.providerId !== "typr-companion" ||
+      !options.projectStorage.projects.some((project) => project.id === options.binding.projectId)) {
+    throw new Error("A Companion workspace commit requires a matching project and binding.");
+  }
+  const database = await getDatabase();
+  const transaction = database.transaction(STORE_NAME, "readwrite");
+  await Promise.all([
+    transaction.store.put(options.projectStorage, PROJECT_STORAGE_KEY),
+    transaction.store.put(createProjectStorageMetadata(options.projectStorage), PROJECT_STORAGE_METADATA_KEY),
+    transaction.store.put(options.snapshot, SNAPSHOT_KEY),
+    transaction.store.put(
+      options.binding,
+      getCloudProjectBindingKey(options.binding.providerId, options.binding.projectId)
+    ),
+    transaction.done
+  ]);
+}
+
+function createProjectStorageMetadata(storage: TyprProjectStorageState) {
+  return {
+    version: storage.version,
+    selectedProjectId: storage.selectedProjectId,
+    projectCount: storage.projects.length,
+    savedAt: new Date().toISOString(),
+    legacySnapshotRetained: storage.migration.legacySnapshotRetained
+  };
 }
 
 export async function loadLocalFolderBinding(

@@ -33,6 +33,10 @@ export interface ResolvedSyncTrees {
   signatures: Record<string, string>;
 }
 
+export type StrictSyncResolution =
+  | ({ ok: true } & ResolvedSyncTrees)
+  | { ok: false; conflicts: string[] };
+
 export interface LocalFolderDirectorySnapshot {
   worktree: LocalFolderSyncTree;
   git: LocalFolderSyncTree;
@@ -64,7 +68,29 @@ export function resolveSyncTrees(options: {
   browser: LocalFolderSyncTree;
   local: LocalFolderSyncTree;
 }): ResolvedSyncTrees {
+  const result = resolveSyncTreesInternal(options, false);
+  if (!result.ok) throw new Error("Non-strict synchronization unexpectedly reported conflicts.");
+  return result;
+}
+
+export function resolveSyncTreesStrict(options: {
+  baseline: Readonly<Record<string, string>>;
+  browser: LocalFolderSyncTree;
+  local: LocalFolderSyncTree;
+}): StrictSyncResolution {
+  return resolveSyncTreesInternal(options, true);
+}
+
+function resolveSyncTreesInternal(
+  options: {
+    baseline: Readonly<Record<string, string>>;
+    browser: LocalFolderSyncTree;
+    local: LocalFolderSyncTree;
+  },
+  strict: boolean
+): StrictSyncResolution {
   const desired = new Map<string, LocalFolderSyncEntry>();
+  const conflicts: string[] = [];
   const paths = new Set([
     ...Object.keys(options.baseline),
     ...options.browser.keys(),
@@ -102,6 +128,8 @@ export function resolveSyncTrees(options: {
     } else if (!browserEntry || !localEntry) {
       // A deletion racing a content edit must not discard the edit.
       selected = browserEntry ?? localEntry;
+    } else if (strict) {
+      conflicts.push(path);
     } else {
       selected =
         localEntry.modifiedAt >= browserEntry.modifiedAt ? localEntry : browserEntry;
@@ -113,10 +141,20 @@ export function resolveSyncTrees(options: {
   }
 
   addImplicitParentFolders(desired);
+  if (strict) conflicts.push(...findStructuralConflicts(desired));
+  if (conflicts.length > 0) return { ok: false, conflicts: [...new Set(conflicts)].sort() };
   return {
+    ok: true,
     desired,
     signatures: getSyncTreeSignatures(desired)
   };
+}
+
+function findStructuralConflicts(tree: LocalFolderSyncTree): string[] {
+  const paths = [...tree.keys()];
+  return paths.filter((path) =>
+    tree.get(path)?.kind === "file" && paths.some((candidate) => candidate.startsWith(`${path}/`))
+  );
 }
 
 export function createProjectSyncTree(

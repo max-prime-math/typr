@@ -476,7 +476,10 @@ async function createPdfPageRenderTarget(
   canvas.style.imageRendering = "auto";
   canvas.style.filter = "none";
 
-  pageElement.className = "pdf-page canvas";
+  // PDF.js paints the canvas white before Typr can apply its dark-theme
+  // retheming. Keep that intermediate raster hidden so replacing a native
+  // Companion PDF does not flash white in a dark preview.
+  pageElement.className = "pdf-page canvas pdf-page--rendering";
   pageElement.dataset.pdfNaturalWidth = String(cssViewport.width);
   pageElement.dataset.pdfNaturalHeight = String(cssViewport.height);
   pageElement.dataset.pdfPageNumber = String(pageNumber);
@@ -536,6 +539,8 @@ async function renderPdfPageTarget(
       options.signal
     );
   }
+
+  target.pageElement.classList.remove("pdf-page--rendering");
 }
 
 function yieldPdfRenderFrame(signal: AbortSignal | undefined): Promise<void> {

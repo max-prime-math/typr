@@ -60,6 +60,7 @@ import {
   updateLatexMathPreviewPreference,
   updateLineWrapPreference,
   updateLiveCompilationPreference,
+  updatePreviewModePreference,
   updateMobileKeyboardPreference,
   updatePastedImagePreference,
   updateRelativeLineNumbersPreference,
@@ -86,11 +87,9 @@ import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
-import { useGoogleDriveSync } from "./useGoogleDriveSync";
-import {
-  GoogleDriveGlobalNotice
-} from "./GoogleDriveConnectionCard";
+import { GoogleDriveGlobalNotice, useGoogleDriveSync } from "@typr/google-drive-feature";
 import { useLocalFolderSync } from "./useLocalFolderSync";
+import { useCompanionWorkspaceSync } from "./useCompanionWorkspaceSync";
 import {
   areWorkspacePathListsEqual,
   insertWorkspacePathAfterActive,
@@ -170,11 +169,23 @@ import {
 } from "../compiler/typstCompiler";
 import {
   cancelLatexCompile,
-  compileLatexDocument,
   releaseLatexCompilerMemory,
   type LatexCompileDriver,
   type LatexCompileMode
 } from "../compiler/latexCompiler";
+import {
+  CompanionClient,
+  DEFAULT_COMPANION_BASE_URL,
+  isCompanionBaseUrlConfigured,
+  normalizeCompanionBaseUrl,
+  readStoredCompanionBaseUrl,
+  writeStoredCompanionBaseUrl,
+  type CompanionConnectionStatus
+} from "../compiler/companionClient";
+import {
+  compileLatexWithAutomaticProvider,
+  selectLatexCompilerProvider
+} from "../compiler/latexCompilerProviders";
 import {
   cacheLatexPackageBundle,
   clearLatexPackageBundleCache,
@@ -221,7 +232,8 @@ import {
   TypstEditor,
   type TypstEditorHandle,
   type TypstEditorSelection,
-  type TypstSearchQueryState
+  type TypstSearchQueryState,
+  type TypstEditorTextChange
 } from "../editor/TypstEditor";
 import { TerminalDrawer } from "../terminal/TerminalDrawer";
 import {
@@ -376,6 +388,12 @@ import {
   type SnippetLanguage
 } from "../snippets/snippets";
 import { PreviewZoomControls } from "../preview/PreviewPane";
+import { TexpressoPreview, TexpressoPreviewStatus } from "../preview/TexpressoPreview";
+import {
+  createTexpressoProjectSnapshot,
+  getTexpressoProjectCompatibilityIssue
+} from "../preview/texpressoClient";
+import { useTexpressoLivePreview } from "../preview/useTexpressoLivePreview";
 import {
   removeProjectFromOpfs,
   syncProjectToOpfs,
@@ -861,6 +879,35 @@ const LATEX_COMPILE_PROFILES: LatexCompileProfile[] = [
 
 function getLatexCompileProfile(id: LatexCompileProfileId): LatexCompileProfile {
   return LATEX_COMPILE_PROFILES.find((profile) => profile.id === id) ?? LATEX_COMPILE_PROFILES[0];
+}
+
+/** Describes the provider this profile will use now, without changing provider selection. */
+function getLatexCompileProviderLabel(
+  profile: LatexCompileProfile,
+  companion: CompanionConnectionStatus
+): string {
+  if (
+    selectLatexCompilerProvider({
+      companion,
+      compileDriver: profile.driver
+    }) === "companion"
+  ) {
+    return `Typr Companion server · native pdflatex · ${companion.baseUrl}`;
+  }
+
+  if (profile.driver !== "pdftex_bibtex8") {
+    return "BusyTeX · in browser · Companion currently supports pdfTeX only";
+  }
+
+  if (companion.state === "checking") {
+    return "BusyTeX · in browser · checking Typr Companion";
+  }
+
+  if (companion.state === "incompatible") {
+    return "BusyTeX · in browser · Companion protocol incompatible";
+  }
+
+  return "BusyTeX · in browser";
 }
 
 interface WorkspaceClipboardState {
@@ -3532,6 +3579,58 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
+  const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
+  const [companionConnectionEnabled, setCompanionConnectionEnabled] = useState(
+    isCompanionBaseUrlConfigured
+  );
+  const companionClient = useMemo(
+    () => new CompanionClient({ baseUrl: companionBaseUrl }),
+    [companionBaseUrl]
+  );
+  const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
+    () => ({
+      state: "unavailable",
+      baseUrl: companionClient.baseUrl,
+      message: "Apply a Companion URL to enable connection checks."
+    })
+  );
+  useEffect(() => {
+    if (!companionConnectionEnabled) {
+      setCompanionConnection({
+        state: "unavailable",
+        baseUrl: companionClient.baseUrl,
+        message: "Apply a Companion URL to enable connection checks."
+      });
+      return;
+    }
+    let active = true;
+    const refreshCompanionConnection = async () => {
+      const status = await companionClient.getConnectionStatus();
+      if (active && isMountedRef.current) {
+        setCompanionConnection(status);
+      }
+    };
+
+    setCompanionConnection({ state: "checking", baseUrl: companionClient.baseUrl });
+    void refreshCompanionConnection();
+    const interval = window.setInterval(() => {
+      void refreshCompanionConnection();
+    }, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [companionClient, companionConnectionEnabled, isMountedRef]);
+  const handleCompanionBaseUrlChange = useCallback((baseUrl: string) => {
+    writeStoredCompanionBaseUrl(baseUrl);
+    setCompanionConnectionEnabled(true);
+    setCompanionBaseUrl(baseUrl);
+  }, []);
+  const handleCompanionBaseUrlReset = useCallback(() => {
+    writeStoredCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+    setCompanionConnectionEnabled(true);
+    setCompanionBaseUrl(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
+  }, []);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const matrixCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
   const tableCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
@@ -3667,6 +3766,19 @@ ${nextLine}` : nextLine;
   });
   const selectedLocalFolderSyncState = selectedProjectRepository
     ? localFolderSync.states[selectedProjectRepository.id]
+    : undefined;
+  const companionWorkspaceSync = useCompanionWorkspaceSync({
+    client: companionClient,
+    connection: companionConnection,
+    isHydrated,
+    lifecyclePersistenceRef,
+    persistencePayloadRef,
+    projectStorage,
+    setProjectStorage,
+    setRawSnapshot
+  });
+  const selectedCompanionWorkspaceSyncState = selectedProjectRepository
+    ? companionWorkspaceSync.states[selectedProjectRepository.id]
     : undefined;
   const googleDriveSync = useGoogleDriveSync({
     clientId: import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID ?? "",
@@ -4006,6 +4118,11 @@ ${nextLine}` : nextLine;
         currentSnapshot,
         !currentSnapshot.preferences.liveCompilation
       )
+    );
+  }, []);
+  const handlePreviewModeChange = useCallback((previewMode: "pdf" | "texpresso") => {
+    setSnapshot((currentSnapshot) =>
+      updatePreviewModePreference(currentSnapshot, previewMode)
     );
   }, []);
   const handleLatexMathPreviewToggle = useCallback(() => {
@@ -5085,6 +5202,69 @@ ${nextLine}` : nextLine;
     () => buildDiagramShadowFiles([...savedFigures, diagram]),
     [diagram, savedFigures]
   );
+  const isTexpressoPreviewPreferred = snapshot.preferences.previewMode === "texpresso";
+  const isTexpressoSourceCandidate = Boolean(
+    selectedProjectRepository &&
+    activeSourceLanguage === "latex"
+  );
+  const texpressoProject = useMemo(() => {
+    if (!selectedProjectRepository || !isTexpressoSourceCandidate) {
+      return null;
+    }
+    try {
+      return createTexpressoProjectSnapshot({
+        project: selectedProjectRepository,
+        activeFilePath: activeSourcePath,
+        activeSource: sourceEditorValue,
+        assets: diagramShadowAssets
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    activeSourcePath,
+    diagramShadowAssets,
+    isTexpressoSourceCandidate,
+    selectedProjectRepository,
+    sourceEditorValue
+  ]);
+  const texpressoProjectCompatibilityIssue = texpressoProject
+    ? !isLatexMainSourceFile(texpressoProject.mainFilePath)
+      ? "Live Preview currently requires a LaTeX .tex root document."
+      : getTexpressoProjectCompatibilityIssue(texpressoProject)
+    : "Live Preview currently requires an open LaTeX .tex document.";
+  const isTexpressoProjectSupported = texpressoProjectCompatibilityIssue === null;
+  const isTexpressoPreviewAvailable =
+    companionConnection.state === "available" && isTexpressoProjectSupported;
+  const isTexpressoPreviewRequested =
+    isTexpressoPreviewPreferred && isTexpressoPreviewAvailable;
+  const texpressoSessionKey = texpressoProject && selectedProjectRepository
+    ? `${selectedProjectRepository.id}:${texpressoProject.mainFilePath}`
+    : null;
+  const {
+    snapshot: texpressoSnapshot,
+    acknowledgeVisibleRevision: acknowledgeTexpressoVisibleRevision,
+    sendEditorChanges: sendTexpressoEditorChanges
+  } = useTexpressoLivePreview({
+    enabled: isTexpressoPreviewRequested && isTexpressoProjectSupported,
+    companion: companionConnection,
+    project: texpressoProject,
+    sessionKey: texpressoSessionKey
+  });
+  const handleTexpressoEditorChanges = useCallback((
+    changes: readonly TypstEditorTextChange[],
+    previousValue: string
+  ) => {
+    if (!isTexpressoPreviewRequested || !isTexpressoProjectSupported) {
+      return;
+    }
+    sendTexpressoEditorChanges(activeSourcePath, changes, previousValue);
+  }, [
+    activeSourcePath,
+    isTexpressoPreviewRequested,
+    isTexpressoProjectSupported,
+    sendTexpressoEditorChanges
+  ]);
   const diagramAssetsRevision = useMemo(
     () =>
       [diagram, ...savedFigures].map((asset) => `${asset.id}:${asset.updatedAt}`)
@@ -6666,15 +6846,27 @@ ${nextLine}` : nextLine;
             result = savedResult;
             compileUsedCachedOutput = true;
           } else {
-            result = await compileLatexDocument({
-              mainFilePath: sourcePath,
-              source,
-              project,
-              assets: compileAssets,
-              compileMode: requestedLatexCompileMode,
-              compileDriver: requestedLatexCompileProfile.driver,
-              onStatusChange: handleScopedCompilerStatusChange
-            });
+            result = (await compileLatexWithAutomaticProvider({
+              client: companionClient,
+              companion: companionConnection,
+              options: {
+                mainFilePath: sourcePath,
+                source,
+                project,
+                assets: compileAssets,
+                compileMode: requestedLatexCompileMode,
+                compileDriver: requestedLatexCompileProfile.driver,
+                onStatusChange: handleScopedCompilerStatusChange
+              },
+              onCompanionUnavailable: (error) => {
+                setCompanionConnection({
+                  state: "unavailable",
+                  baseUrl: companionClient.baseUrl,
+                  checkedAt: Date.now(),
+                  message: error.message
+                });
+              }
+            })).result;
 
             if (result.ok && result.output.kind === "pdf") {
               generatedLatexPdf = {
@@ -6925,6 +7117,8 @@ ${nextLine}` : nextLine;
     }
   }, [
     appendBuildLogEntry,
+    companionClient,
+    companionConnection,
     compiler,
     isHydrated,
     openPreviewTab,
@@ -9731,7 +9925,7 @@ ${nextLine}` : nextLine;
       [
         `Delete local Typr project "${projectToDelete.displayName}"?`,
         "This removes its local files, browser git repo, managed repo entries, and stored tokens.",
-        "It does not delete any linked local folder, GitHub repository, or Google Drive folder.",
+        `It does not delete any linked local folder or GitHub repository${__TYPR_GOOGLE_DRIVE_ENABLED__ ? ", or Google Drive folder" : ""}.`,
         "",
         `Type ${projectToDelete.displayName} to confirm.`
       ].join("\n"),
@@ -9755,10 +9949,12 @@ ${nextLine}` : nextLine;
     } catch (error) {
       console.warn("Local folder binding cleanup will retry with project deletion.", error);
     }
-    try {
-      await googleDriveSync.disconnect(projectToDelete.id);
-    } catch (error) {
-      console.warn("Google Drive binding cleanup will retry with project deletion.", error);
+    if (__TYPR_GOOGLE_DRIVE_ENABLED__) {
+      try {
+        await googleDriveSync.disconnect(projectToDelete.id);
+      } catch (error) {
+        console.warn("Google Drive binding cleanup will retry with project deletion.", error);
+      }
     }
 
     const fallbackProject =
@@ -11763,14 +11959,26 @@ ${nextLine}` : nextLine;
     try {
       const result =
         sourceLanguage === "latex"
-          ? await compileLatexDocument({
-              mainFilePath: sourcePath,
-              source,
-              project,
-              assets: compileAssets,
-              compileMode: options.latexMode ?? "full",
-              onStatusChange: handleCompilerStatusChange
-            })
+          ? (await compileLatexWithAutomaticProvider({
+              client: companionClient,
+              companion: companionConnection,
+              options: {
+                mainFilePath: sourcePath,
+                source,
+                project,
+                assets: compileAssets,
+                compileMode: options.latexMode ?? "full",
+                onStatusChange: handleCompilerStatusChange
+              },
+              onCompanionUnavailable: (error) => {
+                setCompanionConnection({
+                  state: "unavailable",
+                  baseUrl: companionClient.baseUrl,
+                  checkedAt: Date.now(),
+                  message: error.message
+                });
+              }
+            })).result
           : await compiler.compileDocument(
               typstCompileSource,
               compileAssets,
@@ -11797,6 +12005,8 @@ ${nextLine}` : nextLine;
       setIsCompiling(false);
     }
   }, [
+    companionClient,
+    companionConnection,
     compiler,
     diagramShadowAssets,
     isPaperView,
@@ -15516,6 +15726,10 @@ ${nextLine}` : nextLine;
     activeDefaultSnippets,
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
+    companionBaseUrl,
+    companionConnection,
+    companionWorkspaceSync,
+    companionWorkspaceSyncState: selectedCompanionWorkspaceSyncState,
     customThemes,
     darkThemes,
     detectedLatexPackages,
@@ -15540,6 +15754,8 @@ ${nextLine}` : nextLine;
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
+    handleCompanionBaseUrlChange,
+    handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
     handleDownloadCustomSnippets,
@@ -15664,7 +15880,7 @@ ${nextLine}` : nextLine;
 
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""} ${showMobileKeyboardExtension ? "app-shell--mobile-keyboard-open" : ""}`}>
-      {googleDriveSync.notice ? (
+      {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveSync.notice ? (
         <>
           <GoogleDriveGlobalNotice
             dismiss={googleDriveSync.dismissNotice}
@@ -15941,7 +16157,7 @@ ${nextLine}` : nextLine;
                       >
                         Import project
                       </button>
-                      <button
+                      {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <button
                         className="pane__button"
                         onClick={() => {
                           void googleDriveSync.importProject();
@@ -15951,7 +16167,7 @@ ${nextLine}` : nextLine;
                         type="button"
                       >
                         Import Drive project
-                      </button>
+                      </button> : null}
                     </div>
                     <div className="project-manager__actions project-manager__actions--github">
                       <button
@@ -15982,14 +16198,15 @@ ${nextLine}` : nextLine;
                         const localFolderConnected = Boolean(
                           localFolderState?.directoryName
                         );
-                        const googleDriveState =
-                          googleDriveSync.states[project.id];
+                        const googleDriveState = __TYPR_GOOGLE_DRIVE_ENABLED__
+                          ? googleDriveSync.states[project.id]
+                          : undefined;
                         const googleDriveStatus =
                           googleDriveState?.status ??
                           (googleDriveSync.configured
                             ? "disconnected"
                             : "unconfigured");
-                        const googleDriveConnected = Boolean(
+                        const googleDriveConnected = __TYPR_GOOGLE_DRIVE_ENABLED__ && Boolean(
                           googleDriveState?.selectedParentName &&
                             googleDriveState?.projectFolderName &&
                             googleDriveState?.projectFolderWebViewLink &&
@@ -16076,7 +16293,7 @@ ${nextLine}` : nextLine;
                                       GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
                                     </span>
                                   ) : null}
-                                  {googleDriveConnected ? (
+                                  {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveConnected ? (
                                     <span
                                       className={`project-manager__summary-badge project-manager__summary-badge--connected ${
                                         googleDriveStatus ===
@@ -16264,7 +16481,7 @@ ${nextLine}` : nextLine;
                                   </div>
                                 </section>
 
-                                <section className="project-manager__connection">
+                                {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
                                     <div>
                                       <strong>Google Drive</strong>
@@ -16309,7 +16526,7 @@ ${nextLine}` : nextLine;
                                       </button>
                                     ) : null}
                                   </div>
-                                </section>
+                                </section> : null}
 
                                 <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
@@ -17807,6 +18024,9 @@ ${nextLine}` : nextLine;
                                   ) : null}
                                 </span>
                                 <small>{profile.description}</small>
+                                <small className="compile-options-menu__provider">
+                                  {getLatexCompileProviderLabel(profile, companionConnection)}
+                                </small>
                               </button>
                             ))}
                           </div>
@@ -17904,6 +18124,7 @@ ${nextLine}` : nextLine;
                 constrainMobileScroll={isMobileWorkspace}
                 theme={theme}
                 onChange={handleDocumentChange}
+                onTextChanges={handleTexpressoEditorChanges}
               />
               <TerminalDrawer
                 isOpen={isTerminalOpen}
@@ -17929,6 +18150,11 @@ ${nextLine}` : nextLine;
           {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) && compileResult && !compileResult.ok ? (
             <div className="source-inline-status source-inline-status--error">
               {formatSourceError(compileResult)}
+            </div>
+          ) : null}
+          {isTexpressoPreviewRequested && texpressoSnapshot.status === "error" && texpressoSnapshot.statusDetail ? (
+            <div className="source-inline-status source-inline-status--error" role="status">
+              Live Preview: {texpressoSnapshot.statusDetail}
             </div>
           ) : null}
         </section>
@@ -17992,6 +18218,22 @@ ${nextLine}` : nextLine;
                   <PreviewStatusIcon kind="compiling" label={visiblePreviewCompilerStatus.label} />
                 </span>
               ) : null}
+              {isTexpressoPreviewAvailable ? (
+                <button
+                  aria-label={isTexpressoPreviewRequested ? "Use PDF preview" : "Use live PDF preview"}
+                  aria-pressed={isTexpressoPreviewRequested}
+                  className="pane__button pane__button--quiet pane__icon-button"
+                  data-preview-mode-toggle="texpresso"
+                  onClick={() => handlePreviewModeChange(isTexpressoPreviewRequested ? "pdf" : "texpresso")}
+                  title={isTexpressoPreviewRequested ? "Use PDF preview" : "Use live PDF preview (experimental)"}
+                  type="button"
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--live-preview" />
+                  <span className="visually-hidden">
+                    {isTexpressoPreviewRequested ? "Use PDF preview" : "Use live PDF preview"}
+                  </span>
+                </button>
+              ) : null}
               <button
                 aria-label={isPaperView ? "Theme contrast" : "Paper contrast"}
                 aria-pressed={isPaperView}
@@ -18054,6 +18296,15 @@ ${nextLine}` : nextLine;
             onClose: handleClosePreviewTab,
             paths: visiblePreviewTabPaths
           })}
+          {isTexpressoPreviewRequested && isTexpressoProjectSupported && texpressoSnapshot.pages.length > 0 ? (
+            <TexpressoPreview
+              onRevisionCommitted={acknowledgeTexpressoVisibleRevision}
+              paperView={isPaperView}
+              snapshot={texpressoSnapshot}
+              zoom={previewZoom}
+            />
+          ) : (
+          <div className="live-preview-fallback">
           <PreviewPane
             activeSource={activePreviewSourcePosition}
             compilerStatus={visiblePreviewCompilerStatus}
@@ -18072,6 +18323,9 @@ ${nextLine}` : nextLine;
             workspacePreview={visibleWorkspacePreview}
             zoom={previewZoom}
           />
+          {isTexpressoPreviewRequested ? <TexpressoPreviewStatus snapshot={texpressoSnapshot} /> : null}
+          </div>
+          )}
         </section>
         ) : null}
       </main>
@@ -18125,6 +18379,15 @@ ${nextLine}` : nextLine;
                 Close
               </button>
             </div>
+            {isTexpressoPreviewRequested && isTexpressoProjectSupported && texpressoSnapshot.pages.length > 0 ? (
+              <TexpressoPreview
+                onRevisionCommitted={acknowledgeTexpressoVisibleRevision}
+                paperView={isPaperView}
+                snapshot={texpressoSnapshot}
+                zoom={previewZoom}
+              />
+            ) : (
+            <div className="live-preview-fallback">
             <PreviewPane
               activeSource={activePreviewSourcePosition}
               compilerStatus={visiblePreviewCompilerStatus}
@@ -18143,6 +18406,9 @@ ${nextLine}` : nextLine;
               workspacePreview={visibleWorkspacePreview}
               zoom={previewZoom}
             />
+            {isTexpressoPreviewRequested ? <TexpressoPreviewStatus snapshot={texpressoSnapshot} /> : null}
+            </div>
+            )}
           </section>
         </div>
       ) : null}

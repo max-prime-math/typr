@@ -1,0 +1,11 @@
+services:
+  typr:
+    environment:
+      TYPR_COMPILER_ASSETS_MODE: local
+    volumes:
+      - type: bind
+        source: ${TYPR_COMPILER_ASSETS_DIR:?set TYPR_COMPILER_ASSETS_DIR to the extracted compiler release directory}
+        target: /compiler-assets
+        read_only: true
+        bind:
+          create_host_path: false

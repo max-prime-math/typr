@@ -608,7 +608,10 @@ describe("remoteGitService", () => {
             committer: { name: string; email: string; date: string };
           };
           const authorTimestamp = Math.floor(new Date(body.author.date).getTime() / 1000);
-          const committerTimestamp = Math.floor(new Date(body.committer.date).getTime() / 1000);
+          // Simulate GitHub normalizing commit metadata to a different object.
+          // Advancing the committer timestamp makes this deterministic even on
+          // CI runners whose local Git timezone is already UTC.
+          const committerTimestamp = Math.floor(new Date(body.committer.date).getTime() / 1000) + 1;
           const remoteObject = [
             `tree ${body.tree}`,
             ...body.parents.map((parent) => `parent ${parent}`),

@@ -18,6 +18,7 @@ import {
   renameDocumentById,
   renameFolderById,
   updateActiveDocument,
+  updatePreviewModePreference,
   type AppSnapshot
 } from "./appState";
 
@@ -72,6 +73,18 @@ describe("appState", () => {
 
     expect(snapshot.preferences.lineWrap).toBe(true);
     expect(normalized.preferences.lineWrap).toBe(true);
+  });
+
+  it("persists the experimental preview mode and safely migrates missing or invalid values", () => {
+    const snapshot = createDefaultSnapshot();
+    const live = updatePreviewModePreference(snapshot, "texpresso");
+    expect(snapshot.preferences.previewMode).toBe("pdf");
+    expect(live.preferences.previewMode).toBe("texpresso");
+    expect(normalizeSnapshot(live).preferences.previewMode).toBe("texpresso");
+    expect(normalizeSnapshot({
+      ...snapshot,
+      preferences: { ...snapshot.preferences, previewMode: "unknown" as "pdf" }
+    }).preferences.previewMode).toBe("pdf");
   });
 
   it("uses previewable Markdown syntax for pasted images and migrates the legacy wrapper", () => {

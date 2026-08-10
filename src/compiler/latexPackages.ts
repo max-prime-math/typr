@@ -1,4 +1,5 @@
 import { listProjectFiles, type TyprProjectRepository } from "../project/projectState";
+import { getBusyTexBasePath } from "./compilerAssetUrls";
 import { getSourceLanguage, normalizeCompilerPath } from "./sourceFileTypes";
 
 export type LatexPackageBundleId = "texlive-basic" | "texlive-recommended" | "texlive-extra";
@@ -163,17 +164,6 @@ export function searchLatexPackageCatalog(
 
 export function formatLatexPackageBundleLabel(bundleId: LatexPackageBundleId): string {
   return LATEX_PACKAGE_BUNDLES.find((bundle) => bundle.id === bundleId)?.label ?? bundleId;
-}
-
-export function getBusyTexBasePath(): string {
-  const normalizedPath = "core/busytex";
-
-  if (import.meta.env.DEV) {
-    return `/${normalizedPath}`;
-  }
-
-  const bundleBase = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
-  return `${bundleBase}../${normalizedPath}`;
 }
 
 async function loadLatexPackageCatalog(): Promise<LatexPackageCatalog> {

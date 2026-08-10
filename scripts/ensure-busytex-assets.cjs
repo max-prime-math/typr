@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const { createHash } = require("node:crypto");
 const path = require("node:path");
-const { downloadAssets } = require("texlyre-busytex/scripts/download-assets.cjs");
+const { Readable, Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
+const tar = require("tar");
 
 const projectRoot = path.resolve(__dirname, "..");
 const publicCoreDir = path.join(projectRoot, "public", "core");
 const busyTexDir = path.join(publicCoreDir, "busytex");
+const busyTexArchiveUrl =
+  "https://github.com/TeXlyre/texlyre-busytex/releases/download/assets-v1.1.1/busytex-assets.tar.gz";
+const busyTexArchiveSha256 = "0950d29a08c0f6000e54ca8279fe365f8013179f595638ed3edeef8c30ea0567";
 const requiredFiles = [
   "busytex_pipeline.js",
   "busytex.js",
@@ -26,6 +32,50 @@ function getMissingAssetFiles() {
       return true;
     }
   });
+}
+
+async function downloadBusyTexAssets() {
+  const archivePath = path.join(publicCoreDir, "busytex-assets-v1.1.1.tar.gz");
+  fs.mkdirSync(publicCoreDir, { recursive: true });
+  fs.rmSync(archivePath, { force: true });
+  const response = await fetch(busyTexArchiveUrl, { redirect: "follow" });
+  if (!response.ok || !response.body) {
+    throw new Error(`BusyTeX asset download failed with HTTP ${response.status}.`);
+  }
+  const hash = createHash("sha256");
+  const hashingStream = new Transform({
+    transform(chunk, _encoding, callback) {
+      hash.update(chunk);
+      callback(null, chunk);
+    }
+  });
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body),
+      hashingStream,
+      fs.createWriteStream(archivePath, { flags: "wx" })
+    );
+    if (hash.digest("hex") !== busyTexArchiveSha256) {
+      throw new Error("BusyTeX asset archive checksum did not match the pinned SHA-256.");
+    }
+    let unsafeEntry = null;
+    await tar.t({
+      file: archivePath,
+      strict: true,
+      onentry(entry) {
+        const segments = entry.path.split("/").filter(Boolean);
+        if ((entry.type !== "File" && entry.type !== "Directory") ||
+            segments[0] !== "busytex" || segments.some((segment) => segment === "." || segment === "..") ||
+            path.posix.isAbsolute(entry.path) || entry.path.includes("\\") || entry.path.includes("\0")) {
+          unsafeEntry = entry.path;
+        }
+      }
+    });
+    if (unsafeEntry) throw new Error(`BusyTeX archive contains an unsafe entry: ${unsafeEntry}`);
+    await tar.x({ file: archivePath, cwd: publicCoreDir, strict: true });
+  } finally {
+    fs.rmSync(archivePath, { force: true });
+  }
 }
 function optimizeBusyTexPipelineMemory() {
   const pipelinePath = path.join(busyTexDir, "busytex_pipeline.js");
@@ -107,6 +157,111 @@ function optimizeBusyTexPipelineMemory() {
   }
 }
 
+function enableBusyTexSyncTexDiscovery() {
+  const pipelinePath = path.join(busyTexDir, "busytex_pipeline.js");
+  const readBytesDeclaration =
+    "        this.read_all_bytes = (FS, pdf_path) => FS.analyzePath(pdf_path).exists ? FS.readFile(pdf_path, { encoding: 'binary' }) : new Uint8Array();";
+  const discoveryHelpers = [
+    readBytesDeclaration,
+    "        this.find_matching_files = (FS, PATH, root, predicate) => {",
+    "            const results = [];",
+    "            const walk = dir => {",
+    "                if (!FS.analyzePath(dir).exists) return;",
+    "                for (const name of FS.readdir(dir)) {",
+    "                    if (name === '.' || name === '..') continue;",
+    "                    const full = PATH.join(dir, name);",
+    "                    const stat = FS.stat(full);",
+    "                    if (FS.isDir(stat.mode)) {",
+    "                        walk(full);",
+    "                    } else if (predicate(full, name)) {",
+    "                        results.push({ path: full.slice(root.length + 1), size: this.read_all_bytes(FS, full).length });",
+    "                    }",
+    "                }",
+    "            };",
+    "            walk(root);",
+    "            return results;",
+    "        };",
+    "        this.find_first_bytes = (FS, PATH, root, predicate) => {",
+    "            const walk = dir => {",
+    "                if (!FS.analyzePath(dir).exists) return null;",
+    "                for (const name of FS.readdir(dir)) {",
+    "                    if (name === '.' || name === '..') continue;",
+    "                    const full = PATH.join(dir, name);",
+    "                    const stat = FS.stat(full);",
+    "                    if (FS.isDir(stat.mode)) {",
+    "                        const nested = walk(full);",
+    "                        if (nested) return nested;",
+    "                    } else if (predicate(full, name)) {",
+    "                        const bytes = this.read_all_bytes(FS, full);",
+    "                        if (bytes && bytes.length > 0) return bytes;",
+    "                    }",
+    "                }",
+    "                return null;",
+    "            };",
+    "            return walk(root) || new Uint8Array();",
+    "        };"
+  ].join("\n");
+  const originalOutputPaths = [
+    "        const [xdv_path, pdf_path, log_path, aux_path, blg_path, bbl_path, idx_path, ind_path, ilg_path] =",
+    "            ['.xdv', '.pdf', '.log', '.aux', '.blg', '.bbl', '.idx', '.ind', '.ilg'].map(ext => tex_path.replace('.tex', ext));"
+  ].join("\n");
+  const discoveredOutputPaths = [
+    "        const output_base_path = tex_path.replace(/\\.(tex|ltx|latex)$/i, '');",
+    "        const [xdv_path, pdf_path, log_path, aux_path, blg_path, bbl_path, idx_path, ind_path, ilg_path] =",
+    "            ['.xdv', '.pdf', '.log', '.aux', '.blg', '.bbl', '.idx', '.ind', '.ilg'].map(ext => output_base_path + ext);"
+  ].join("\n");
+  const originalSyncTex =
+    "        const synctex = exit_code == 0 ? this.read_all_bytes(FS, tex_path.replace('.tex', '.synctex.gz')) : null;";
+  const discoveredSyncTex = [
+    "        const synctex_path = output_base_path + '.synctex.gz';",
+    "        const synctex_files = exit_code == 0 ? this.find_matching_files(FS, PATH, this.project_dir, (_full, name) => name.toLowerCase().includes('synctex')) : [];",
+    "        const synctex = exit_code == 0 ? (",
+    "            this.read_all_bytes(FS, synctex_path).length > 0",
+    "                ? this.read_all_bytes(FS, synctex_path)",
+    "                : this.find_first_bytes(FS, PATH, this.project_dir, (_full, name) => name.endsWith('.synctex.gz'))",
+    "        ) : null;"
+  ].join("\n");
+  const originalReturn =
+    "        return { pdf: pdf, synctex: synctex, log: logcat, exit_code: exit_code, logs: logs };";
+  const discoveredReturn =
+    "        return { pdf: pdf, synctex: synctex, synctex_files: synctex_files, log: logcat, exit_code: exit_code, logs: logs };";
+  let source = fs.readFileSync(pipelinePath, "utf8");
+  let changed = false;
+
+  if (!source.includes(discoveryHelpers)) {
+    if (!source.includes(readBytesDeclaration)) {
+      throw new Error("BusyTeX file-reading helper pattern changed; update the Typr SyncTeX patch.");
+    }
+    source = source.replace(readBytesDeclaration, discoveryHelpers);
+    changed = true;
+  }
+  if (!source.includes(discoveredOutputPaths)) {
+    if (!source.includes(originalOutputPaths)) {
+      throw new Error("BusyTeX output-path pattern changed; update the Typr SyncTeX patch.");
+    }
+    source = source.replace(originalOutputPaths, discoveredOutputPaths);
+    changed = true;
+  }
+  if (!source.includes(discoveredSyncTex)) {
+    if (!source.includes(originalSyncTex)) {
+      throw new Error("BusyTeX SyncTeX result pattern changed; update the Typr SyncTeX patch.");
+    }
+    source = source.replace(originalSyncTex, discoveredSyncTex);
+    changed = true;
+  }
+  if (!source.includes(discoveredReturn)) {
+    if (!source.includes(originalReturn)) {
+      throw new Error("BusyTeX result pattern changed; update the Typr SyncTeX patch.");
+    }
+    source = source.replace(originalReturn, discoveredReturn);
+    changed = true;
+  }
+  if (changed) {
+    fs.writeFileSync(pipelinePath, source);
+    console.log("Applied BusyTeX SyncTeX discovery support.");
+  }
+}
+
 
 function optimizeBusyTexDataPackageMemory() {
   const packageFileNames = ["texlive-basic.js", "texlive-recommended.js", "texlive-extra.js"];
@@ -179,10 +334,19 @@ function optimizeBusyTexDataPackageMemory() {
 
 
 async function main() {
+  if (
+    process.env.TYPR_EXTERNAL_COMPILER_ASSETS === "1" ||
+    process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL?.trim()
+  ) {
+    console.log("External compiler assets enabled; skipping local BusyTeX preparation.");
+    return;
+  }
+
   let missingFiles = getMissingAssetFiles();
 
   if (missingFiles.length === 0) {
     optimizeBusyTexPipelineMemory();
+    enableBusyTexSyncTexDiscovery();
     optimizeBusyTexDataPackageMemory();
     console.log("BusyTeX assets are ready.");
     return;
@@ -196,7 +360,7 @@ async function main() {
   }
 
   console.log("BusyTeX assets are missing; downloading them now.");
-  await downloadAssets(publicCoreDir);
+  await downloadBusyTexAssets();
 
   missingFiles = getMissingAssetFiles();
 
@@ -207,6 +371,7 @@ async function main() {
   }
 
   optimizeBusyTexPipelineMemory();
+  enableBusyTexSyncTexDiscovery();
   optimizeBusyTexDataPackageMemory();
 }
 

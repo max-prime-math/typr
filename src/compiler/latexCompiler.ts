@@ -7,6 +7,7 @@ import {
   type TyprProjectRepository
 } from "../project/projectState";
 import { BusyTexWorkerRunner, type BusyTexCompileResultWithMetadata } from "./busytexWorkerRunner";
+import { getBusyTexBasePath } from "./compilerAssetUrls";
 import type {
   CompileAssetFile,
   CompileFailure,
@@ -17,7 +18,7 @@ import type {
 } from "./types";
 import { normalizeCompilerPath } from "./sourceFileTypes";
 
-const BUSYTEX_REMOTE_ENDPOINT = "https://texlive2026.texlyre.org";
+const BUSYTEX_REMOTE_ENDPOINT = __TYPR_SELF_HOSTED__ ? "" : "https://texlive2026.texlyre.org";
 const BUSYTEX_DATA_PACKAGE_NAMES = ["texlive-basic", "texlive-recommended", "texlive-extra"] as const;
 const BUSYTEX_COMPILE_TIMEOUT_MS = 10 * 60_000;
 const MAX_LATEX_ERROR_LINES = 90;
@@ -208,7 +209,12 @@ export function releaseLatexCompilerMemory(): void {
   sharedBasePath = null;
 }
 
-function collectLatexFiles(
+/**
+ * Produces the complete, safe-to-compile LaTeX project view used by BusyTeX
+ * and by the Companion provider.  Keeping this here means both providers see
+ * the same documents, generated diagram assets, and active-editor override.
+ */
+export function collectLatexFiles(
   project: TyprProjectRepository,
   mainFilePath: string,
   source: string,
@@ -818,17 +824,6 @@ async function getBusyTexRunner(): Promise<BusyTexWorkerRunner> {
 
 function getBusyTexDataPackageUrls(busytexBasePath: string): string[] {
   return BUSYTEX_DATA_PACKAGE_NAMES.map((packageName) => `${busytexBasePath}/${packageName}.js`);
-}
-
-function getBusyTexBasePath(): string {
-  const normalizedPath = "core/busytex";
-
-  if (import.meta.env.DEV) {
-    return `/${normalizedPath}`;
-  }
-
-  const bundleBase = import.meta.url.slice(0, import.meta.url.lastIndexOf("/") + 1);
-  return `${bundleBase}../${normalizedPath}`;
 }
 
 function fail(message: string, path?: string, log?: string, metadata?: CompileMetadata): CompileFailure {

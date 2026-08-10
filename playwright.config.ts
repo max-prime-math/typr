@@ -6,7 +6,7 @@ const firefoxExecutablePath = process.env.PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH;
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: /(cetz-conversion|diagram-lifecycle|firefox-latex-first-compile|git-panel|google-drive-folder-picker|icon-button-layout|markdown-cursor-scroll|markdown-preview|mobile-workspace|modal-controls-docs-icon|preview-zoom|project-creation|settings-build-log)\.spec\.ts/,
+  testMatch: /(cetz-conversion|companion-workspace|diagram-lifecycle|firefox-latex-first-compile|git-panel|google-drive-folder-picker|icon-button-layout|markdown-cursor-scroll|markdown-preview|mobile-workspace|modal-controls-docs-icon|preview-zoom|project-creation|settings-build-log)\.spec\.ts/,
   fullyParallel: true,
   reporter: [["line"]],
   timeout: 90_000,

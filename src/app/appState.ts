@@ -26,6 +26,7 @@ import {
 import { DEFAULT_KEYBINDINGS, normalizeKeybindings, type KeybindingMap } from "./keybindings";
 
 export type ThemePreference = string;
+export type PreviewModePreference = "pdf" | "texpresso";
 export type MobileKeyboardLanguage = "typst" | "latex" | "markdown";
 
 export interface MobileKeyboardPreferences {
@@ -246,6 +247,7 @@ export interface AppPreferences {
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
+  previewMode: PreviewModePreference;
   latexMathPreview: boolean;
   typstMathPreview: boolean;
   autoSyncGitProjects: boolean;
@@ -392,6 +394,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmooth: false,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
+      previewMode: "pdf",
       latexMathPreview: true,
       typstMathPreview: false,
       autoSyncGitProjects: true,
@@ -465,7 +468,10 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
       showSettingsProject:
         (snapshot.preferences as Partial<AppPreferences>).showSettingsProject ?? false,
       theme: normalizeThemeId(snapshot.preferences.theme ?? AUTO_THEME_ID),
-      vimMode: snapshot.preferences.vimMode ?? false,
+      vimMode:
+        typeof snapshot.preferences.vimMode === "boolean"
+          ? snapshot.preferences.vimMode
+          : false,
       vimClipboardSharing:
         (snapshot.preferences as Partial<AppPreferences>).vimClipboardSharing ??
         ((snapshot.preferences as Partial<AppPreferences>).pastedImages as
@@ -482,6 +488,10 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
             ? 0
             : DEFAULT_CURSOR_SMEAR,
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
+      previewMode:
+        (snapshot.preferences as Partial<AppPreferences>).previewMode === "texpresso"
+          ? "texpresso"
+          : "pdf",
       latexMathPreview:
         (snapshot.preferences as Partial<AppPreferences>).latexMathPreview ?? true,
       typstMathPreview:
@@ -2096,6 +2106,19 @@ export function updateLiveCompilationPreference(
     preferences: {
       ...snapshot.preferences,
       liveCompilation
+    }
+  };
+}
+
+export function updatePreviewModePreference(
+  snapshot: AppSnapshot,
+  previewMode: PreviewModePreference
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      previewMode
     }
   };
 }

@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import { renderMarkdownHtml } from "../markdown/markdownParser";
 
 import indexSource from "../../docs/index.md?raw";
-import workspaceSource from "../../docs/user-guide/workspace.md?raw";
+import workspaceSource from "@typr/user-guide-workspace?raw";
 import editingPreviewSource from "../../docs/user-guide/editing-preview.md?raw";
 import keyboardShortcutsSource from "../../docs/user-guide/keyboard-shortcuts.md?raw";
 import workspaceToolsSource from "../../docs/user-guide/workspace-tools.md?raw";
 import diagramsSource from "../../docs/user-guide/diagrams.md?raw";
 import gitSyncSource from "../../docs/user-guide/git-sync.md?raw";
 import packagesShellSource from "../../docs/user-guide/packages-shell.md?raw";
-import settingsSource from "../../docs/user-guide/settings.md?raw";
+import settingsSource from "@typr/user-guide-settings?raw";
 
 interface DocsPanelProps {
   embedded?: boolean;

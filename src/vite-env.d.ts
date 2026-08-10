@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_GOOGLE_PICKER_API_KEY?: string;
   readonly VITE_GOOGLE_CLOUD_PROJECT_NUMBER?: string;
   readonly VITE_TYPR_AUTH_USERS_SHA256?: string;
+  readonly VITE_TYPR_COMPANION_URL?: string;
+  readonly VITE_TYPR_COMPILER_ASSET_BASE_URL?: string;
 }
 
 interface ImportMeta {
@@ -15,6 +17,9 @@ declare const __TYPR_APP_VERSION__: string;
 declare const __TYPR_BUILD_SHA__: string;
 declare const __TYPR_DEPLOYMENT_CHANNEL__: "development" | "beta" | "stable";
 declare const __TYPR_DEPLOYMENT_LABEL__: string;
+declare const __TYPR_SELF_HOSTED__: boolean;
+declare const __TYPR_GOOGLE_DRIVE_ENABLED__: boolean;
+declare const __TYPR_COMPILER_ASSET_RELEASE_ID__: string;
 
 declare module "mitex-wasm/mitex_wasm_bg.js" {
   export function __wbg_set_wasm(wasm: WebAssembly.Exports): void;

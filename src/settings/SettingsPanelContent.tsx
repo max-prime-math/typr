@@ -1,6 +1,12 @@
-import { Fragment } from "react";
-import { GoogleDriveConnectionCard } from "../app/GoogleDriveConnectionCard";
+import { Fragment, useEffect, useState } from "react";
+import { GoogleDriveConnectionCard } from "@typr/google-drive-feature";
 import type { MobileKeyboardLanguage } from "../app/appState";
+import {
+  DEFAULT_COMPANION_BASE_URL,
+  normalizeCompanionBaseUrl,
+  validateCompanionBaseUrl,
+  type CompanionConnectionStatus
+} from "../compiler/companionClient";
 import type {
   EditorFormatterId,
   EditorLinterId,
@@ -26,6 +32,10 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
     customThemes,
+    companionBaseUrl,
+    companionConnection,
+    companionWorkspaceSync,
+    companionWorkspaceSyncState,
     darkThemes,
     detectedLatexPackages,
     documentStats,
@@ -49,6 +59,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
+    handleCompanionBaseUrlChange,
+    handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
     handleDownloadCustomSnippets,
@@ -332,6 +344,101 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 
             <div className="settings-section">
               <div className="settings-section__header">
+                <h3>Companion workspace</h3>
+                <p>
+                  Manually exchange the selected project with one directory
+                  mapped by your self-hosted Companion. Browser storage remains
+                  the primary local copy; no background workspace requests run.
+                </p>
+              </div>
+
+              <div className="sync-settings-project-card">
+                <div>
+                  <span className="sync-settings-project-card__label">
+                    Selected project
+                  </span>
+                  <strong>
+                    {selectedProjectRepository?.displayName ?? "No project selected"}
+                  </strong>
+                  <small>
+                    {companionWorkspaceSyncState?.message ??
+                      (companionWorkspaceSync.capability
+                        ? "No mapped workspace linked. Browser storage remains the default."
+                        : "The current Companion has no mapped workspace. Browser storage remains the default.")}
+                  </small>
+                  {companionWorkspaceSyncState?.lastSyncedAt ? (
+                    <small>
+                      Last synced {new Date(companionWorkspaceSyncState.lastSyncedAt).toLocaleString()}
+                    </small>
+                  ) : null}
+                  {companionWorkspaceSyncState?.conflictPaths?.length ? (
+                    <small>
+                      Review: {companionWorkspaceSyncState.conflictPaths.join(", ")}
+                    </small>
+                  ) : null}
+                </div>
+                {selectedProjectRepository ? (
+                  <div className="sync-settings-project-card__actions">
+                    {companionWorkspaceSyncState?.workspaceId ? (
+                      <>
+                        <button
+                          className="pane__button"
+                          disabled={
+                            companionWorkspaceSyncState.status === "syncing" ||
+                            companionWorkspaceSyncState.status === "restoring" ||
+                            companionWorkspaceSyncState.status === "stale" ||
+                            !companionWorkspaceSync.capability
+                          }
+                          onClick={() => {
+                            void companionWorkspaceSync.syncNow(selectedProjectRepository.id);
+                          }}
+                          type="button"
+                        >
+                          {companionWorkspaceSyncState.status === "syncing"
+                            ? "Syncing…"
+                            : "Sync now"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          disabled={companionWorkspaceSyncState.status === "syncing" || companionWorkspaceSyncState.status === "restoring"}
+                          onClick={() => {
+                            void companionWorkspaceSync.unlink(selectedProjectRepository.id);
+                          }}
+                          type="button"
+                        >
+                          Unlink
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={
+                          !companionWorkspaceSync.capability ||
+                          !companionWorkspaceSyncState ||
+                          companionWorkspaceSyncState.status === "restoring" ||
+                          companionWorkspaceSyncState.status === "error"
+                        }
+                        onClick={() => {
+                          void companionWorkspaceSync.link(selectedProjectRepository.id);
+                        }}
+                        type="button"
+                      >
+                        Link mapped workspace
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <p className="pane__meta">
+                First link is additive and the mapped workspace wins same-path
+                collisions after confirmation. Later two-sided edits stop with
+                exact conflict paths. Unlinking never deletes server files.
+              </p>
+            </div>
+
+            {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <div className="settings-section">
+              <div className="settings-section__header">
                 <h3>Google Drive sync</h3>
                 <p>
                   Keep an independent copy of the selected project in an
@@ -455,7 +562,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                 you connect through Typr. Google access tokens remain in
                 memory and may need to be renewed after a reload or expiry.
               </p>
-            </div>
+            </div> : null}
           </div>
         ) : settingsTab === "git" ? (
           <div className="settings-panel settings-panel--git" role="tabpanel">
@@ -760,7 +867,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     <strong>Show settings files as a project</strong>
                     <small>
                       Create and show a syncable Typr Settings project. Its JSON files can use
-                      the normal GitHub and Google Drive project controls.
+                      the normal GitHub{__TYPR_GOOGLE_DRIVE_ENABLED__ ? " and Google Drive" : ""} project controls.
                     </small>
                     {Object.keys(settingsFiles.errors).length > 0 ? (
                       <small className="settings-file-warning" role="status">
@@ -774,6 +881,13 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     type="checkbox"
                   />
                 </label>
+
+                <CompanionSettingsCard
+                  baseUrl={companionBaseUrl}
+                  connection={companionConnection}
+                  onApply={handleCompanionBaseUrlChange}
+                  onReset={handleCompanionBaseUrlReset}
+                />
 
                 <label className="settings-toggle">
                   <span>
@@ -2005,5 +2119,94 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
           </div>
         ) : null}
     </>
+  );
+}
+
+interface CompanionSettingsCardProps {
+  baseUrl: string;
+  connection: CompanionConnectionStatus;
+  onApply: (baseUrl: string) => void;
+  onReset: () => void;
+}
+
+function CompanionSettingsCard({
+  baseUrl,
+  connection,
+  onApply,
+  onReset
+}: CompanionSettingsCardProps) {
+  const [draft, setDraft] = useState(baseUrl);
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(baseUrl);
+    setValidationMessage(null);
+  }, [baseUrl]);
+
+  const connectionMessage = connection.state === "available"
+    ? `Connected · ${connection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
+    : connection.state === "checking"
+      ? "Checking connection…"
+      : connection.state === "incompatible"
+        ? connection.message ?? "The Companion protocol is incompatible."
+        : `BusyTeX is active${connection.message ? ` · ${connection.message}` : ""}`;
+
+  return (
+    <div className="settings-toggle settings-toggle--stacked companion-settings">
+      <span>
+        <strong>Typr Companion</strong>
+        <small aria-live="polite" role="status">{connectionMessage}</small>
+      </span>
+      <form
+        className="companion-settings__form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const validation = validateCompanionBaseUrl(draft);
+          if (!validation.ok) {
+            setValidationMessage(validation.message);
+            return;
+          }
+          setValidationMessage(null);
+          onApply(validation.value);
+        }}
+      >
+        <label htmlFor="companion-base-url">Companion URL</label>
+        <div className="companion-settings__controls">
+          <input
+            aria-describedby="companion-base-url-help"
+            id="companion-base-url"
+            inputMode="url"
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setValidationMessage(null);
+            }}
+            spellCheck={false}
+            type="url"
+            value={draft}
+          />
+          <button className="pane__button" type="submit">Apply</button>
+          <button
+            className="pane__button pane__button--quiet"
+            disabled={baseUrl === normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL)}
+            onClick={() => {
+              setValidationMessage(null);
+              onReset();
+            }}
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+        <small id="companion-base-url-help">
+          Keep the loopback default for Docker on this device. A Companion on Unraid or another
+          host requires an HTTPS reverse-proxy URL that is reachable from this browser.
+        </small>
+        {validationMessage ? (
+          <small className="companion-settings__error" role="alert">
+            {validationMessage}
+          </small>
+        ) : null}
+      </form>
+    </div>
   );
 }
