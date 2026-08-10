@@ -68,6 +68,10 @@ function assertImageMetadata(image, variant) {
   const inspected = JSON.parse(docker(["image", "inspect", image]).stdout)[0];
   assert.equal(inspected.Config.User, "101:101");
   assert.ok(inspected.Config.Env.includes(`TYPR_IMAGE_VARIANT=${variant}`));
+  docker([
+    "run", "--rm", "--network", "none", "--entrypoint", "sh", image,
+    "-c", "grep -q '^worker_processes 1;$' /etc/nginx/nginx.conf"
+  ]);
   if (variant === "lite") {
     assert.ok(inspected.Size < 200 * 1024 * 1024, `lite image is unexpectedly large: ${inspected.Size}`);
   }
@@ -150,12 +154,12 @@ function assertR2CompilerRuntime(name) {
     "set -eu",
     `wget -q -O /tmp/manifest.json http://127.0.0.1:8080/compiler-assets/${releaseId}/manifest.json`,
     "cmp /tmp/manifest.json /etc/typr/compiler-assets-manifest.json",
-    `printf 'GET /compiler-assets/${releaseId}/core/busytex/busytex_pipeline.js HTTP/1.1\\r\\nHost: localhost\\r\\nRange: bytes=0-31\\r\\nConnection: close\\r\\n\\r\\n' | nc 127.0.0.1 8080 > /tmp/js.response`,
+    `(printf 'GET /compiler-assets/${releaseId}/core/busytex/busytex_pipeline.js HTTP/1.1\\r\\nHost: localhost\\r\\nRange: bytes=0-31\\r\\nConnection: close\\r\\n\\r\\n'; sleep 8) | timeout 12 nc 127.0.0.1 8080 > /tmp/js.response`,
     "grep -a -q 'HTTP/1.1 206' /tmp/js.response",
     "grep -a -qi 'Content-Length: 32' /tmp/js.response",
     "grep -a -qi 'Content-Type: application/javascript' /tmp/js.response",
     "grep -a -qi 'Cache-Control: public, max-age=31536000, immutable' /tmp/js.response",
-    `printf 'GET /compiler-assets/${releaseId}/typst/typst_ts_web_compiler_bg.wasm HTTP/1.1\\r\\nHost: localhost\\r\\nRange: bytes=0-31\\r\\nConnection: close\\r\\n\\r\\n' | nc 127.0.0.1 8080 > /tmp/wasm.response`,
+    `(printf 'GET /compiler-assets/${releaseId}/typst/typst_ts_web_compiler_bg.wasm HTTP/1.1\\r\\nHost: localhost\\r\\nRange: bytes=0-31\\r\\nConnection: close\\r\\n\\r\\n'; sleep 8) | timeout 12 nc 127.0.0.1 8080 > /tmp/wasm.response`,
     "grep -a -q 'HTTP/1.1 206' /tmp/wasm.response",
     "grep -a -qi 'Content-Type: application/wasm' /tmp/wasm.response",
     `printf 'GET /compiler-assets/${releaseId}/missing.wasm HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' | nc 127.0.0.1 8080 > /tmp/compiler-404.response`,

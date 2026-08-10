@@ -28,6 +28,8 @@
     "compiler-assets:verify": "node scripts/prepare-compiler-assets.mjs",
     "compiler-assets:verify-public": "node scripts/verify-compiler-assets.mjs",
     "test:docker:self-hosted": "node scripts/test-typr-docker.mjs",
+    "test:compose:self-hosted": "node scripts/test-typr-compose.mjs",
+    "test:unraid": "node scripts/validate-unraid-template.mjs",
     "test:e2e:diagram": "playwright test --config=playwright.config.ts",
     "test:e2e:pwa": "npm run build && playwright test --config=playwright.pwa.config.ts",
     "test:e2e:texpresso": "playwright test --config=playwright.texpresso.config.ts",

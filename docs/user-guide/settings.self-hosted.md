@@ -26,6 +26,20 @@ Use Themes to choose the app palette or import a custom theme from JSON.
 
 Use Editor settings for source editing, compile behavior, line wrapping, formatting, linting, and browser tooling.
 
+### Typr Companion
+
+Companion is optional and makes no request in a fresh self-hosted browser
+profile. After an administrator installs the separate Companion service, enter
+its browser-reachable URL under **Typr Companion** and select **Apply**. The URL
+is stored only in that browser. It must not be a Docker service name, and a
+hosted or self-hosted HTTPS Typr page cannot call a plain HTTP/WS Companion
+because browsers block mixed content.
+
+For cross-device use, give Companion a client-trusted HTTPS endpoint with
+WebSocket forwarding, restrict it to a trusted LAN/VPN, and include this Typr
+page's exact scheme, host, and port in `TYPR_COMPANION_ALLOWED_ORIGINS`. CORS is
+not authentication; neither service may be exposed to the public Internet.
+
 ### Settings project and external diagnostics
 
 Enable **Show Settings Project** to create a syncable project containing Typr's settings JSON files. It can use the normal GitHub and local synchronization controls; invalid settings files fall back to their defaults and are reported in Settings.
@@ -38,4 +52,4 @@ Use Keybindings to search and change keyboard shortcuts. Use Snippets to inspect
 
 ## Packages
 
-Use Packages to manage offline package caches for Typst and LaTeX. BusyTeX Basic is loaded by default. Recommended and Extra bundles can be cached for offline LaTeX workflows.
+Use Packages to manage offline package caches for Typst and LaTeX. BusyTeX Basic is loaded by default. Recommended and Extra bundles can be cached for offline LaTeX workflows. The full self-hosted image bundles the pinned compiler cores and Typr's BusyTeX bundles, not every possible user package or external document asset.

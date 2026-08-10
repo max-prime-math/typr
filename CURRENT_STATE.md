@@ -283,8 +283,7 @@ root is reachable.
 
 ### Stage 4 — Typr full/lite containers
 
-Status: in progress (implementation and local/offline gates pass; deliberate
-public R2 publication and the live R2 gate remain)
+Status: complete (`63c1997`; immutable asset run `31365938472`)
 
 - [x] Add one digest-pinned, unprivileged static web image with full and lite
   targets, a non-root health check, read-only-root support, dropped
@@ -312,21 +311,35 @@ public R2 publication and the live R2 gate remain)
   uses the versioned same-origin compiler route; Drive is absent; no implicit
   cross-origin or workspace request occurs; browser edits survive reload; old
   compiler caches are removed without affecting IndexedDB; offline reload works.
-- [ ] Publish the exact lock to R2 with the manual immutable workflow, run the
-  byte-for-byte public verifier, then repeat the container and browser gate in
-  live lite/R2 mode. No Typr image or release tag is published by this step.
+- [x] Publish the exact lock to R2 with the manual immutable workflow. GitHub
+  run `31365938472` rebuilt the pack, uploaded the manifest last, and publicly
+  re-downloaded and verified all 20 objects. The exact-commit Docker matrix then
+  passed full, lite/local, lite/R2-offline, and live lite/R2; Chromium and
+  Firefox both completed a real Typst compile through the live same-origin R2
+  proxy. No Typr image or release tag was published.
 
 Gate: clean full and lite builds pass browser smoke tests, including lite in both
 R2 and local-assets modes.
 
 ### Stage 5 — Compose, documentation, and Unraid
 
-Status: pending
+Status: in progress (source/configuration gates pass; exact-commit Docker smoke
+and milestone pushes remain)
 
-- Separate Typr and Companion Compose examples.
-- Add separate Typr and Typr Companion Unraid templates.
-- Document ports, volumes, variants, updates, pinning, rollback, HTTP/HTTPS,
+- [x] Add a separate hardened Typr Compose definition and exact lite/local
+  read-only compiler-asset override; keep projects and appdata out of the web
+  container.
+- [x] Add the separate Typr Unraid template and Community Applications profile
+  with semantic validation. It defaults to the full image and makes lite modes
+  advanced explicit choices.
+- [x] Document ports, volumes, variants, updates, pinning, rollback, HTTP/HTTPS,
   trusted-LAN/VPN boundaries, and the public-exposure prohibition.
+- [x] Integrate the reviewed Companion Compose workspace override, strengthened
+  Companion Unraid template/profile, documentation, workflow checks, and smoke
+  harness into the canonical `typr-server` checkout.
+- [ ] Run both repositories' full Compose smoke matrices with Docker, commit the
+  Stage 4 completion record separately, then commit/push the verified Stage 5
+  milestone in each repository.
 - Validate templates as XML and audit all repository/image URLs.
 
 Gate: examples are internally consistent and both containers pass Compose smoke
@@ -457,10 +470,27 @@ Only these are expected to require the user:
   E2E in Chromium and Firefox. Two independent read-only reviews found no
   remaining Stage 3 blocker after durability, race, limit, and confinement
   fixes.
+- 2026-08-10: Typr commit `63c1997` passed all 91 unit files / 413 tests,
+  typecheck, hosted/self-hosted builds and artifact audits, clean full/lite
+  image builds, full/lite/local/R2/offline container gates, and Chromium/Firefox
+  first-compile, browser-storage, no-Drive/no-implicit-network, cache-upgrade,
+  and offline-reload E2E. Immutable compiler-asset run `31365938472` published
+  and publicly reverified all 20 objects before the live lite/R2 gates passed.
+- 2026-08-10: Typr Stage 5 Compose normalization and semantic Unraid/profile
+  lint pass. Typecheck, all 91 unit files / 413 tests, and a fresh self-hosted
+  build/artifact audit also pass with the embedded administrator guidance. The
+  Docker Compose runtime smoke is implemented but daemon access is awaiting
+  managed command authorization.
+- 2026-08-10: the reviewed Companion Stage 5 patch was integrated byte-for-byte
+  into the canonical `typr-server` checkout. `npm ci`, typecheck, all 8 unit
+  files / 57 tests, Compose normalization, XML/profile semantic lint, and diff
+  checks pass. Exact-commit Compose/native Docker reruns remain before push.
 
 ## Current next action
 
-Commit and push the verified Stage 4 implementation checkpoint. Then publish
-only the exact locked compiler-asset release to R2, publicly verify all 20
-objects, and run the live lite/R2 container and browser gates before marking
-Stage 4 complete. Do not publish Typr images or create release tags yet.
+Commit the reviewed Stage 5 source in both repositories, rebuild from those
+exact commits, and run the Typr full/lite/local/R2 plus Companion
+stateless/workspace Compose and native adversarial gates. Then record the exact
+evidence and push both milestones. Keep real Unraid installation, support
+topics, and Community Applications submission as external gates. Do not publish
+Typr images or create release tags yet.

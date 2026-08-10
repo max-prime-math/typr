@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>Typr</Name>
+  <Repository>ghcr.io/max-prime-math/typr:latest</Repository>
+  <Registry>https://github.com/max-prime-math/typr/pkgs/container/typr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/max-prime-math/typr/issues</Support>
+  <GitHub>https://github.com/max-prime-math/typr</GitHub>
+  <ReadMe>https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md</ReadMe>
+  <Project>https://typr.ca</Project>
+  <Overview>Local-first Typst, LaTeX, and Markdown workspace. The stable full image keeps projects in browser storage and needs no appdata volume. Trusted LAN/VPN use only; never expose it publicly.</Overview>
+  <Description>Typr serves a browser-local writing workspace from the self-contained full image. Projects, settings, browser Git data, and sync bindings remain in each browser origin instead of the container. The optional lite image can use fixed R2 assets or an exact read-only compiler pack. This is an unauthenticated trusted-environment application: never expose it to the public Internet; any client-side sign-in screen is not a network security boundary. Plain LAN HTTP has reduced secure-context/PWA and local-folder features.</Description>
+  <Category>Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/max-prime-math/typr/main/unraid/typr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png</Icon>
+  <ExtraParams>--restart=unless-stopped --user=101:101 --read-only --tmpfs=/tmp:rw,nosuid,nodev,noexec,size=33554432 --cap-drop=ALL --security-opt=no-new-privileges:true --pids-limit=64 --memory=256m --memory-swap=256m --cpus=1</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <Date>2026-08-10</Date>
+  <Changes>2026-08-10: Initial separate Typr full-image template.</Changes>
+  <Beta>False</Beta>
+  <Requires>Use only on a trusted machine, LAN, or private VPN. Never expose this unauthenticated self-hosted application to the public Internet. Plain HTTP on a LAN address is not a secure context and loses service-worker/PWA and local-folder capabilities; use trusted HTTPS for cross-device access. Browser data is isolated by exact scheme, host, and port, so export a backup before changing the URL.</Requires>
+  <Config Name="Web port" Target="8080" Default="8080" Mode="tcp" Description="Host port for the Typr web interface. Container port must remain 8080." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Compiler asset mode" Target="TYPR_COMPILER_ASSETS_MODE" Default="local" Mode="" Description="The full image uses local. For a lite image, use r2 without a mount or local with the exact matching read-only compiler pack." Type="Variable" Display="advanced" Required="true" Mask="false">local</Config>
+  <Config Name="Compiler assets directory" Target="/compiler-assets" Default="" Mode="ro" Description="Optional exact compiler-release directory for lite/local only. Never map /, /mnt, /mnt/user, an appdata root, project files, or the Docker socket." Type="Path" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

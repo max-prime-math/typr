@@ -41,3 +41,10 @@ Preview downloads export rendered output. Source downloads and project exports b
 ## App installation and updates
 
 Typr is a Progressive Web App. Install it from your browser when offered for a more app-like desktop or tablet experience. Secure-context browser features require HTTPS except on localhost; plain HTTP on another LAN host has reduced PWA and local-folder support.
+
+Browser project storage is scoped to the exact scheme, hostname, and port.
+Changing any part of a self-hosted URL opens a different IndexedDB/OPFS and
+service-worker silo; it does not migrate projects. Export a project backup at
+the old origin before changing the URL, browser profile, or device. Replacing or
+updating the container does not itself delete browser projects, while clearing
+site data can remove the only local copy.
