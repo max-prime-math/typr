@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultSnapshot } from "../app/appState";
+import { createDefaultSnapshot, DEFAULT_DOCUMENT_NAME } from "../app/appState";
 import {
   createEmptyProjectRepository,
   createProjectStorageFromSnapshot,
@@ -167,7 +167,7 @@ describe("remoteGitService", () => {
     const commit = await backend.commit(project, { message: "initial commit" });
     expect(commit.ok).toBe(true);
 
-    project = writeProjectFile(project, "main.typ", "dirty\n");
+    project = writeProjectFile(project, DEFAULT_DOCUMENT_NAME, "dirty\n");
     const result = await service.pull(
       project,
       { owner: "owner", repo: "repo", branch: "main", remoteName: "origin" },
