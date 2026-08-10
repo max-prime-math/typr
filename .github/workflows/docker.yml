@@ -511,7 +511,7 @@ jobs:
             for tag in "$@"; do
               target="${GHCR_IMAGE_NAME}:${tag}"
               docker buildx imagetools create --tag "${target}" "${GHCR_IMAGE_NAME}@${source_digest}"
-              resolved="$(docker buildx imagetools inspect "${target}" | awk '$1 == "Digest:" { print $2; exit }')"
+              resolved="$(docker buildx imagetools inspect "${target}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
               test "${resolved}" = "${source_digest}"
             done
           }
@@ -650,7 +650,7 @@ jobs:
             --tag "${GHCR_IMAGE_NAME}:latest" \
             "${GHCR_IMAGE_NAME}@${FULL_DIGEST}"
           for tag in "${MAJOR_MINOR}" "${MAJOR_MINOR}-full" "${MAJOR}-full" "${MAJOR_MINOR}-lite" "${MAJOR}-lite" latest-lite "${MAJOR}" latest-full latest; do
-            resolved="$(docker buildx imagetools inspect "${GHCR_IMAGE_NAME}:${tag}" | awk '$1 == "Digest:" { print $2; exit }')"
+            resolved="$(docker buildx imagetools inspect "${GHCR_IMAGE_NAME}:${tag}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
             case "${tag}" in
               *-lite) test "${resolved}" = "${LITE_DIGEST}" ;;
               *) test "${resolved}" = "${FULL_DIGEST}" ;;
@@ -703,8 +703,8 @@ jobs:
           docker run --rm -v "${HOME}/.docker:/auth:ro" "${skopeo_image}" copy \
             --all --preserve-digests --authfile /auth/config.json \
             "docker://${GHCR_IMAGE_NAME}@${LITE_DIGEST}" "docker://${DESTINATION}:${lite_candidate}"
-          destination_full_digest="$(docker buildx imagetools inspect "${DESTINATION}:${full_candidate}" | awk '$1 == "Digest:" { print $2; exit }')"
-          destination_lite_digest="$(docker buildx imagetools inspect "${DESTINATION}:${lite_candidate}" | awk '$1 == "Digest:" { print $2; exit }')"
+          destination_full_digest="$(docker buildx imagetools inspect "${DESTINATION}:${full_candidate}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
+          destination_lite_digest="$(docker buildx imagetools inspect "${DESTINATION}:${lite_candidate}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
           test "${destination_full_digest}" = "${FULL_DIGEST}"
           test "${destination_lite_digest}" = "${LITE_DIGEST}"
           for digest in "${destination_full_digest}" "${destination_lite_digest}"; do
@@ -761,7 +761,7 @@ jobs:
             for tag in "$@"; do
               target="${DESTINATION}:${tag}"
               docker buildx imagetools create --tag "${target}" "${DESTINATION}@${source_digest}"
-              resolved="$(docker buildx imagetools inspect "${target}" | awk '$1 == "Digest:" { print $2; exit }')"
+              resolved="$(docker buildx imagetools inspect "${target}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
               test "${resolved}" = "${source_digest}"
             done
           }
@@ -852,10 +852,10 @@ jobs:
             --tag "${DESTINATION}:latest" \
             "${DESTINATION}@${FULL_DIGEST}"
           for tag in "${MAJOR_MINOR}" "${MAJOR_MINOR}-full" "${MAJOR}-full" "${MAJOR}" latest-full latest; do
-            resolved="$(docker buildx imagetools inspect "${DESTINATION}:${tag}" | awk '$1 == "Digest:" { print $2; exit }')"
+            resolved="$(docker buildx imagetools inspect "${DESTINATION}:${tag}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
             test "${resolved}" = "${FULL_DIGEST}"
           done
           for tag in "${MAJOR_MINOR}-lite" "${MAJOR}-lite" latest-lite; do
-            resolved="$(docker buildx imagetools inspect "${DESTINATION}:${tag}" | awk '$1 == "Digest:" { print $2; exit }')"
+            resolved="$(docker buildx imagetools inspect "${DESTINATION}:${tag}" | awk '$1 == "Digest:" && resolved == "" { resolved = $2 } END { print resolved }')"
             test "${resolved}" = "${LITE_DIGEST}"
           done
