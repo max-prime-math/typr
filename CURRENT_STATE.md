@@ -374,14 +374,14 @@ the complete local validation stage passes.
 
 ### Stage 7 — Complete validation
 
-Status: in progress (complete locally; branch CI pending)
+Status: complete (`f6bbc40` Typr; `9290941` Companion)
 
-- Run clean installs, typechecks, unit tests, frontend builds, Docker builds,
+- [x] Run clean installs, typechecks, unit tests, frontend builds, Docker builds,
   container integration/adversarial tests, Compose checks, and XML checks.
-- Inspect image users, mounts, ports, labels, sizes, architectures, and contents.
-- Confirm Google Drive is absent from self-hosted output and browser-local storage
+- [x] Inspect image users, mounts, ports, labels, sizes, architectures, and contents.
+- [x] Confirm Google Drive is absent from self-hosted output and browser-local storage
   remains the default.
-- Record limitations and exact evidence here.
+- [x] Record limitations and exact evidence here.
 
 Gate: every automatable check passes, or a documented external/manual gate is
 the only remaining blocker.
@@ -532,14 +532,34 @@ Only these are expected to require the user:
   confinement/recovery harness, persistent TeXpresso POC, page raster, and
   private WebSocket live-preview harness all pass. No Git release tag, GHCR
   candidate, exact tag, floating alias, or Docker Hub artifact was created.
+- 2026-08-10: Companion branch workflow `31390474399` passed at
+  `92909419fa9142327c4dfb2df4c00022cb7405b8` on native amd64 and arm64.
+  Both architectures passed source/audit/unit checks, hardened stateless and
+  mapped-workspace Compose, REST confinement/recovery, persistent TeXpresso,
+  raster rendering, and WebSocket live preview. Branch publication jobs were
+  ineligible.
+- 2026-08-10: Typr branch workflow `31392993660` passed at
+  `f6bbc404d9c5f4c1313af43d43ea4275ab4ecd2a` on native amd64 and arm64.
+  Source checks covered the zero-vulnerability lock, unit/type tests, Unraid and
+  Compose policy fixtures, self-host artifact audit, and the hosted Drive-enabled
+  build. Both architectures passed full/lite builds, exact compiler-pack
+  extraction, adversarial container tests, and production Compose. amd64 also
+  passed full, lite/R2, and lite/local in sequential Chromium and Firefox,
+  including browser-local IndexedDB persistence/offline reload, absent Drive
+  code/network, and no implicit workspace traffic. Branch publication jobs were
+  ineligible.
+- 2026-08-10: GitHub `container-release` environments were created in both
+  repositories with `max-prime-math` as a required reviewer. Candidate
+  publication therefore requires an explicit environment approval even after a
+  valid annotated release tag passes all source and native image gates.
 
 ## Current next action
 
-Push the verified Stage 6 commits and confirm their non-publishing branch CI on
-native amd64 and arm64. Then finish the Stage 7 evidence review. Before any
-release tag, configure the protected `container-release` environments and the
-existing public `typr-server` package's Actions access/linkage; the first Typr
-candidate must also be made Public before anonymous candidate verification can
-continue. Keep real Unraid installation, support topics, Community Applications
-submission, and optional Docker Hub credentials as explicit external gates. Do
-not publish images or create release tags yet.
+Stage 7 is complete. Before any release tag, grant the standalone
+`max-prime-math/typr-server` repository write access to the existing public
+`typr-server` GHCR package and confirm its repository linkage without changing
+visibility. The protected `container-release` environments are already active.
+The first Typr candidate must also be made Public before anonymous candidate
+verification can continue. Keep real Unraid installation, support topics,
+Community Applications submission, and optional Docker Hub credentials as
+explicit external gates. Do not publish images or create release tags yet.
