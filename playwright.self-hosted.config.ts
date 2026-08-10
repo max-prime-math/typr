@@ -10,6 +10,7 @@ export default defineConfig({
   testMatch: /self-hosted\.spec\.ts/,
   reporter: [["line"]],
   timeout: 90_000,
+  workers: 1,
   expect: { timeout: 15_000 },
   use: {
     baseURL,
