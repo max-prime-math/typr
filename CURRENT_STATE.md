@@ -399,10 +399,40 @@ Status: complete for GHCR releases; optional/external distribution gates remain
   digest/platform.
 - [x] Publish Typr only from its separately tested release tag and verify every
   full/lite exact, SHA, and floating alias by public digest.
+- [x] Publish the compatible stateless-Unraid fallback as a new Companion
+  `v0.1.3` patch without moving `v0.1.2`, then verify the exact public image on
+  the real Unraid host.
 - Do not enable Docker Hub or submit Community Applications without the required
   user-owned credentials, environment, support topic, and approval.
 
 Gate: released manifests match the tested commits and no existing tag moved.
+
+### Stage 9 — Real Unraid validation and stateless compatibility
+
+Status: complete for trusted-LAN stateless use; HTTPS/Community Applications
+gates remain external
+
+- [x] Install separate Typr and Typr Companion user templates on Uma
+  (`10.0.0.2`, Unraid `7.3.0-beta.1`, kernel `6.18.18-Unraid`).
+- [x] Validate Typr full, lite/R2, and lite/local under the template hardening,
+  then run Chromium and Firefox against the real LAN HTTP origin. Typst compile,
+  browser-local IndexedDB reload persistence, absent Drive UI/network, and zero
+  implicit workspace traffic pass; the expected insecure-context/service-worker
+  limitations are observed.
+- [x] Establish that Uma's stock kernel does not implement Landlock inside the
+  container. Seccomp changes do not provide it, so a mapped Companion workspace
+  remains correctly unavailable and fail-closed on this host.
+- [x] Add and adversarially test an explicit
+  `TYPR_COMPANION_ALLOW_UNSANDBOXED_STATELESS=1` fallback. It accepts only a
+  volume-free container, audits `/proc/self/mountinfo`, logs a trusted-document
+  warning, and never permits a mapped workspace without Landlock.
+- [x] Publish Companion `v0.1.3`, install the matching updated user template,
+  and verify the exact public image on Uma with a healthy status response,
+  `projectStorage: false`, native PDF compile, and exact LAN-origin CORS.
+
+Gate: the fallback is never described as sandboxed, is restricted to mutually
+trusted documents on a trusted LAN/VPN, and refuses host/data/workspace mounts.
+Public exposure remains prohibited.
 
 ## External/manual gates
 
@@ -410,7 +440,11 @@ Only these are expected to require the user:
 
 - Configure a Docker Hub namespace, public repositories, and access token if the
   optional mirrors are wanted.
-- Provide an Unraid host for real template and remote HTTPS testing.
+- Confirm both templates render correctly through DockerMan's WebGUI and provide
+  the private, client-trusted HTTPS hostnames/certificates used for the final
+  reverse-proxy and WebSocket test.
+- Provide a Landlock-capable Docker host if mapped-workspace validation is wanted;
+  Uma supports only the deliberately stateless fallback.
 - Create/approve support topics and give final Community Applications submission
   approval.
 
@@ -594,12 +628,42 @@ Only these are expected to require the user:
   Independent anonymous inspection confirmed both indexes contain exactly
   amd64/arm64 runtime manifests with matching SBOM/SLSA-v1 attestations. Docker
   Hub mirroring remained disabled.
+- 2026-08-10: real-host validation used Uma (`10.0.0.2`), Unraid
+  `7.3.0-beta.1`, kernel `6.18.18-Unraid`, Docker `29.3.0`, x86_64. Typr full,
+  lite/R2, and lite/local passed under read-only-root/cap-drop/tmpfs limits.
+  Chromium and Firefox at the LAN HTTP origin compiled Typst and preserved
+  browser-local edits across reload with no Drive UI, no implicit cross-origin
+  request, and the documented insecure-context loss of service workers.
+- 2026-08-10: Uma returned `Function not implemented` from the production
+  Landlock probe. Companion commits `c1f2e10` and `dffaeab` added the approved
+  volume-free fallback and prepared v0.1.3. Locally, typecheck, 9 files / 68
+  tests, Unraid validation, and the complete REST/Compose/TeXpresso/raster/
+  WebSocket Docker matrix passed. On Uma the exact candidate compiled a PDF,
+  while no opt-in, an arbitrary `/data` bind, and `/workspace` all failed
+  startup as designed. The installed Companion user-template SHA-256 is
+  `1a909ca4d533663ce7b57829bf38aa3bd69487c3a285c964c47ec7f09a9136db`.
+- 2026-08-10: Companion branch workflows `31415211246` and `31415825840`
+  passed complete native amd64/arm64 matrices before tag creation. Annotated
+  `v0.1.3` is fixed at `dffaeabf8c806ed3706cd2ea3a4f88e3cd6fd43e`.
+  Release workflow `31416317431` passed source/tag provenance, native prepublish
+  suites, anonymous candidate-digest suites, immutable exact/SHA promotion,
+  anonymous exact-tag suites, and downgrade-checked floating promotion. Tags
+  `0.1.3`, `sha-dffaeabf8c80`, `0.1`, `0`, and `latest` all resolve to
+  `sha256:4585f241d91ce06e1b079131905e4b37239a6ca41bdd80e6c9995a1c6b4033c2`;
+  v0.1.2 remains unchanged at
+  `sha256:6e73229ba48f072a1c5e53e57a3bc6d271e077b6112e11e5e60496bb82f643ac`.
+  The exact public v0.1.3 image then passed health, version/revision labels,
+  warned fallback, `projectStorage: false`, native PDF compile, and exact CORS
+  on Uma. Docker Hub remained disabled.
 
 ## Current next action
 
-The split, Companion v0.1.2 release, and Typr v0.1.0 full/lite GHCR release are
-complete. The next required external validation is a real Unraid installation
-of both templates, including trusted-LAN/VPN HTTPS, optional mapped workspace,
-and update/rollback checks. Support topics and Community Applications submission
-remain blocked on that result and explicit user approval; Docker Hub remains an
-optional credential-owned mirror.
+The split, Typr v0.1.0 full/lite GHCR release, Companion v0.1.2 release, and
+Companion v0.1.3 stateless-Unraid compatibility release are complete. Both user
+templates are installed on Uma and the public images pass real-host validation.
+Remaining external work is DockerMan WebGUI rendering confirmation, a
+client-trusted private HTTPS/reverse-proxy test (including Companion WebSockets),
+and optional update/rollback exercises. Uma cannot validate mapped workspaces
+because its kernel lacks Landlock; that feature remains fail-closed. Support
+topics and Community Applications submission still require user-owned setup and
+explicit final approval. Docker Hub remains an optional credential-owned mirror.
