@@ -12,8 +12,8 @@ import {
   type TexpressoPageDescriptor,
   type TexpressoRange,
   type TexpressoServerMessage
-} from "../companion-protocol/texpresso";
-import type { ProjectFile } from "../companion-protocol";
+} from "@max-prime-math/typr-companion-protocol/texpresso";
+import type { ProjectFile } from "@max-prime-math/typr-companion-protocol";
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024;

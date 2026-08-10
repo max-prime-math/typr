@@ -3,7 +3,7 @@ import {
   TYPR_COMPANION_PROTOCOL_VERSION,
   type CompileRequest,
   type ProjectFile
-} from "../companion-protocol";
+} from "@max-prime-math/typr-companion-protocol";
 import type { TyprProjectRepository } from "../project/projectState";
 import {
   CompanionClient,

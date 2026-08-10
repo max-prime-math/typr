@@ -188,10 +188,12 @@ repository audit reveals a conflict.
   Companion-owned paths and their relevant commits. Rename paths into a clean
   standalone layout in the filtered clone. Do not run history rewriting in the
   original Typr checkout.
-- Shared protocol: the Companion repository is authoritative. It exposes a
-  small transport-neutral package/artifact, and Typr pins an immutable Companion
-  commit rather than following a branch or floating version. Lockfile and a
-  verification test make accidental drift visible.
+- Shared protocol: the Companion repository is authoritative. Typr consumes its
+  transport-neutral exports from the immutable full-commit archive URL for
+  `597ba9173df5e07be4a8df17c2353b0b847c1bb8`; `package-lock.json` also pins the
+  archive SHA-512 integrity. `.npmrc` permits URL dependencies only when they are
+  declared by the root project (`allow-remote=root`), leaving transitive remote
+  URLs blocked under npm 12.
 - Workspace: extend the advertised filesystem capability only when a root is
   explicitly configured and mounted. The API operates on project-relative
   paths beneath that root. Disabled is the default.
@@ -250,13 +252,16 @@ and source tests pass.
 
 ### Stage 2 — Frontend consumes pinned protocol
 
-Status: pending
+Status: complete
 
-- Pin the Companion-owned protocol by immutable commit and lock integrity.
-- Switch stable frontend imports/tests to that package.
-- Remove Companion server/build/release ownership from Typr while retaining only
-  frontend integration and Typr-specific documentation.
-- Run typecheck, unit tests, and production build.
+- [x] Pin the Companion-owned protocol by immutable commit archive and lock
+  integrity.
+- [x] Switch stable frontend and experimental TeXpresso imports to the package
+  exports.
+- [x] Remove Companion server/build/release/Compose/Unraid/docs ownership from
+  Typr while retaining only frontend integration and Typr-specific guidance.
+- [x] Run a clean locked install, typecheck, unit tests, production build, and
+  stale ownership/import audit.
 
 Gate: no stable protocol implementation is duplicated in Typr and a clean
 install/build works from the pin.
@@ -394,9 +399,17 @@ Only these are expected to require the user:
 - 2026-08-09: the available CLI token cannot read package metadata (`403`,
   missing `read:packages`). New repository ID `1329393163` is recorded for the
   later GHCR Actions-access setting; no package setting was changed.
+- 2026-08-09: npm 12 rejected Git and URL dependencies by default. A throwaway
+  consumer proved the exact public commit archive works with the narrow
+  `allow-remote=root` policy and typechecked both stable and experimental package
+  exports. Typr's lock records archive integrity
+  `sha512-mEetPhmpagrUymKdGJaBN9p61VoKRcUjZZH/Hcg3hhNbaDR0ptUwkUKFIJPtCQV5rjb9yXr+tEroxAGcv31fPQ==`.
+- 2026-08-09: after removing server-owned paths from Typr, `npm ci`,
+  `npm run typecheck`, all 88 files / 384 frontend tests, and `npm run build`
+  passed. A repository audit found no remaining old relative protocol imports or
+  server Docker/script/config/template references outside this state record.
 
 ## Current next action
 
-Finish clean-install validation of the immutable protocol archive pin, commit
-and push the Stage 2 Typr ownership boundary, then implement the optional mapped
-workspace API in the standalone repository.
+Commit and push the Stage 2 Typr ownership boundary, then implement the optional
+mapped workspace API and compiler confinement in the standalone repository.

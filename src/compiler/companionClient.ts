@@ -5,7 +5,7 @@ import {
   type CompanionStatusResponse,
   type CompileRequest,
   type CompileResult
-} from "../companion-protocol";
+} from "@max-prime-math/typr-companion-protocol";
 
 export const DEFAULT_COMPANION_BASE_URL =
   import.meta.env.VITE_TYPR_COMPANION_URL?.trim() || "http://127.0.0.1:8484";

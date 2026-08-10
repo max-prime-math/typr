@@ -16,7 +16,4 @@ Typr is a local-first browser workspace for writing, previewing, and syncing Typ
 - [GitHub Sync](./user-guide/git-sync.md) — Connect repositories and use commit, pull, push, and merge workflows.
 - [Settings](./user-guide/settings.md) — Configure app, editor, Git, snippet, package, sync, and diagnostic settings.
 - [Packages and Browser Shell](./user-guide/packages-shell.md) — Manage offline package caches and use project-local shell commands.
-- [Typr Companion Protocol](./companion-protocol.md) — The versioned contract and local native-LaTeX Companion server.
-- [Install Typr Companion](./companion-installation.md) — Install, update, pin, roll back, diagnose, and uninstall the Docker Companion.
-- [Install Typr Companion on Unraid](./companion-unraid.md) — Install the Unraid template and connect through a trusted HTTPS reverse proxy.
-- [Release Typr Companion](./companion-release.md) — Maintainer CI, multi-architecture, tagging, metadata, and publication policy.
+- [Typr Companion](https://github.com/max-prime-math/typr-server) — Versioned protocol, native-LaTeX server, Docker installation, Unraid template, and independent release policy.
