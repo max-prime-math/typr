@@ -388,13 +388,15 @@ the only remaining blocker.
 
 ### Stage 8 — Releases and external gates
 
-Status: pending
+Status: in progress (Companion v0.1.2 released; Typr image release pending)
 
-- Commit and push every verified repository milestone.
-- Verify `v0.1.2` does not exist locally or remotely.
-- Verify the new repository can write the existing GHCR package.
-- Create and push one annotated Companion `v0.1.2` tag from the tested commit.
-- Monitor publication and verify public anonymous pulls by digest/platform.
+- [x] Commit and push every verified Companion repository milestone.
+- [x] Verify `v0.1.2` did not exist locally or remotely before release.
+- [x] Verify the new repository can write the existing public GHCR package.
+- [x] Create and push one annotated Companion `v0.1.2` tag from the tested
+  commit without moving either historical Typr tag.
+- [x] Monitor Companion publication and verify public anonymous pulls by
+  digest/platform.
 - Publish Typr only from its separately tested release tag.
 - Do not enable Docker Hub or submit Community Applications without the required
   user-owned credentials, environment, support topic, and approval.
@@ -552,14 +554,31 @@ Only these are expected to require the user:
   repositories with `max-prime-math` as a required reviewer. Candidate
   publication therefore requires an explicit environment approval even after a
   valid annotated release tag passes all source and native image gates.
+- 2026-08-10: the standalone repository was granted Actions write access to the
+  existing public `ghcr.io/max-prime-math/typr-server` package, and the package
+  linkage moved to `max-prime-math/typr-server` without changing public
+  visibility. Annotated tag `v0.1.2` remains fixed at tested commit
+  `92909419fa9142327c4dfb2df4c00022cb7405b8`.
+- 2026-08-10: Companion release recovery run `31402441361` revalidated the
+  immutable tag, candidate index, per-platform SBOM/SLSA-v1 attestations, and
+  full anonymous amd64/arm64 runtime suites before any registry write. It then
+  idempotently promoted and anonymously verified exact tags before applying
+  downgrade-checked floating aliases, with `latest` last. Public tags `0.1.2`,
+  `sha-92909419fa91`, `0.1`, `0`, and `latest` all resolve to verified digest
+  `sha256:6e73229ba48f072a1c5e53e57a3bc6d271e077b6112e11e5e60496bb82f643ac`.
+  Historical `0.1.1` and `sha-37ad4b2` remain unchanged at
+  `sha256:683a0e41834ec064f48ce9dffbf34807f9b59f52310e321f1c30e7a8b1ea783a`.
+- 2026-08-10: workflow digest verification was fixed to consume complete
+  Buildx output under `pipefail` (`abba7cf` Typr; `68e58c0` Companion).
+  Corrective branch runs `31401884066` and `31401896310` passed their complete
+  source and native architecture matrices; publication jobs were ineligible.
 
 ## Current next action
 
-Stage 7 is complete. Before any release tag, grant the standalone
-`max-prime-math/typr-server` repository write access to the existing public
-`typr-server` GHCR package and confirm its repository linkage without changing
-visibility. The protected `container-release` environments are already active.
-The first Typr candidate must also be made Public before anonymous candidate
-verification can continue. Keep real Unraid installation, support topics,
-Community Applications submission, and optional Docker Hub credentials as
-explicit external gates. Do not publish images or create release tags yet.
+Companion v0.1.2 is complete. Integrate the independently tested Typr `dev` line
+into stable `main`, rerun the full source/full/lite/browser matrix on the exact
+stable commit, and only then create annotated tag `typr-v0.1.0`. The first Typr
+candidate package will be private by GitHub default; make it Public before the
+workflow's anonymous candidate verification can continue. Keep real Unraid
+installation, support topics, Community Applications submission, and optional
+Docker Hub credentials as explicit external gates.
