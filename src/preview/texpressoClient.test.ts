@@ -102,7 +102,7 @@ function ready(socket: MockWebSocket, initialCompileMs = 7) {
     sessionId: "session-1",
     revision: 1,
     processId: 42,
-    render: { dpi: 192 },
+    render: { dpi: 240 },
     initialCompileMs
   });
 }
@@ -112,7 +112,7 @@ function emitRevision(socket: MockWebSocket, revision: number, pageCount = 1) {
     page,
     width: 1632,
     height: 2112,
-    dpi: 192,
+    dpi: 240,
     mimeType: "image/png",
     byteLength: PNG.byteLength
   }));
@@ -140,11 +140,11 @@ function emitRevision(socket: MockWebSocket, revision: number, pageCount = 1) {
 }
 
 describe("TeXpresso frontend client", () => {
-  it("initializes the complete project with the detected root, unsaved source, binary assets, and 192 DPI", () => {
+  it("initializes the complete project with the detected root, unsaved source, binary assets, and 240 DPI", () => {
     const harness = createHarness();
     const project = projectSnapshot();
     expect(project.mainFilePath).toBe("main.tex");
-    expect(project.dpi).toBe(192);
+    expect(project.dpi).toBe(240);
     expect(project.files.find((file) => file.path === "sections/one.tex")).toMatchObject({
       kind: "text",
       content: "Unsaved 😀 chapter"
@@ -163,7 +163,7 @@ describe("TeXpresso frontend client", () => {
       protocolVersion: 1,
       revision: 1,
       mainFilePath: "main.tex",
-      render: { dpi: 192 }
+      render: { dpi: 240 }
     });
     expect(initialize.files.map((file: { path: string }) => file.path)).toEqual(
       expect.arrayContaining(["main.tex", "sections/one.tex", "assets/pixel.png"])
@@ -218,11 +218,11 @@ describe("TeXpresso frontend client", () => {
     socket.json({
       type: "document", sessionId: "session-1", revision: 1, lastGoodRevision: 1,
       pageCount: 1,
-      pages: [{ page: 0, width: 100, height: 200, dpi: 192, mimeType: "image/png", byteLength: 8 }]
+      pages: [{ page: 0, width: 100, height: 200, dpi: 240, mimeType: "image/png", byteLength: 8 }]
     });
     socket.json({
       type: "page", sessionId: "session-1", revision: 1,
-      page: 0, width: 100, height: 200, dpi: 192, mimeType: "image/png", byteLength: 8
+      page: 0, width: 100, height: 200, dpi: 240, mimeType: "image/png", byteLength: 8
     });
     socket.binary();
     expect(harness.client.snapshot.pages).toEqual([]);

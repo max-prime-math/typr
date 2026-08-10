@@ -61,7 +61,11 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
   console.log("live-e2e: app loaded");
-  await page.getByRole("treeitem", { name: /README\.md/ }).waitFor();
+  await page.getByRole("treeitem", { name: /markdown\.md/ }).waitFor();
+  const mode = page.locator('[data-preview-mode-toggle="texpresso"]');
+  await expect(mode).toHaveCount(0);
+  await page.getByRole("treeitem", { name: /typst\.typ/ }).click();
+  await expect(mode).toHaveCount(0);
   await page.locator('input[type="file"][multiple]').setInputFiles([
     {
       name: "main.tex",
@@ -81,14 +85,12 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   ]);
   await page.getByRole("treeitem", { name: /main\.tex/ }).dblclick();
   console.log("live-e2e: project imported");
-  const mode = page.locator('select[aria-label="Preview mode"]:visible').first();
-  await page.waitForFunction(() => {
-    const option = document.querySelector<HTMLOptionElement>('select[aria-label="Preview mode"] option[value="texpresso"]');
-    return Boolean(option && !option.disabled);
-  });
+  await expect(mode).toBeVisible();
+  await expect(mode).toHaveAttribute("aria-pressed", "false");
 
   const startupStartedAt = performance.now();
-  await mode.selectOption("texpresso");
+  await mode.click();
+  await expect(mode).toHaveAttribute("aria-pressed", "true");
   console.log("live-e2e: live mode selected");
   await expect(page.locator(".texpresso-page")).toHaveCount(3);
   console.log("live-e2e: initial pages ready");
@@ -165,12 +167,15 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   console.log("live-e2e: reconnect ready");
   await page.screenshot({ path: "test-results/texpresso-live-preview.png", fullPage: true });
 
-  await mode.selectOption("pdf");
+  await mode.click();
+  await expect(mode).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator(".texpresso-preview")).toHaveCount(0);
-  await mode.selectOption("texpresso");
+  await mode.click();
+  await expect(mode).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".texpresso-page img").first()).toBeVisible();
 
-  await mode.selectOption("pdf");
+  await mode.click();
+  await expect(mode).toHaveAttribute("aria-pressed", "false");
   await page.getByRole("treeitem", { name: /main\.tex/ }).dblclick();
   const compileRequest = page.waitForRequest((request) => request.url().includes("/api/v1/compile"));
   const compileResponse = page.waitForResponse((response) => response.url().includes("/api/v1/compile"));
@@ -182,6 +187,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
 
   stopCompanion();
   await page.waitForTimeout(16_000);
+  await expect(mode).toHaveCount(0);
   await page.getByRole("button", { name: "Choose compile mode" }).click();
   const selectedCompileMode = page.getByRole("menuitemradio", { checked: true });
   await expect(selectedCompileMode.locator(".compile-options-menu__provider")).toContainText("BusyTeX");
