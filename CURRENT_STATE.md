@@ -388,7 +388,7 @@ the only remaining blocker.
 
 ### Stage 8 — Releases and external gates
 
-Status: in progress (Companion v0.1.2 released; Typr image release pending)
+Status: complete for GHCR releases; optional/external distribution gates remain
 
 - [x] Commit and push every verified Companion repository milestone.
 - [x] Verify `v0.1.2` did not exist locally or remotely before release.
@@ -397,7 +397,8 @@ Status: in progress (Companion v0.1.2 released; Typr image release pending)
   commit without moving either historical Typr tag.
 - [x] Monitor Companion publication and verify public anonymous pulls by
   digest/platform.
-- Publish Typr only from its separately tested release tag.
+- [x] Publish Typr only from its separately tested release tag and verify every
+  full/lite exact, SHA, and floating alias by public digest.
 - Do not enable Docker Hub or submit Community Applications without the required
   user-owned credentials, environment, support topic, and approval.
 
@@ -409,9 +410,6 @@ Only these are expected to require the user:
 
 - Configure a Docker Hub namespace, public repositories, and access token if the
   optional mirrors are wanted.
-- Grant the new repository Actions write access to the existing
-  `ghcr.io/max-prime-math/typr-server` package if GitHub does not expose an
-  automatable setting with the available credentials.
 - Provide an Unraid host for real template and remote HTTPS testing.
 - Create/approve support topics and give final Community Applications submission
   approval.
@@ -572,13 +570,36 @@ Only these are expected to require the user:
   Buildx output under `pipefail` (`abba7cf` Typr; `68e58c0` Companion).
   Corrective branch runs `31401884066` and `31401896310` passed their complete
   source and native architecture matrices; publication jobs were ineligible.
+- 2026-08-10: the independently tested `dev` line was integrated into stable
+  `main` at merge commit `828c4cad67fcb3a071f6d688f647bb0f566202d1` with
+  no content difference from the tested tree. Stable workflow `31403717303`
+  passed the source, full/lite, adversarial, Compose, and browser matrices after
+  one transient missing-object R2 502 was isolated and the affected native arm64
+  job passed on rerun. Pages workflow `31403717347` also passed.
+- 2026-08-10: fresh annotated frontend tag `typr-v0.1.0` remains fixed at
+  `828c4cad67fcb3a071f6d688f647bb0f566202d1`; historical Companion tags
+  `v0.1.0` and `v0.1.1` remain fixed at `52c5647f4182d2558af137afc40ec61c0517137c`
+  and `37ad4b2b478c7f84bca81517a1cb8e5b41c574fa` respectively.
+- 2026-08-10: Typr release workflow `31405249112` passed all source, dependency,
+  hosted/self-hosted build, native amd64/arm64 container, Compose, compiler-pack,
+  Chromium, and Firefox gates. It anonymously tested candidate digests before
+  creating exact/SHA tags, anonymously tested those tags on both architectures,
+  and only then applied downgrade-checked floating aliases. Full tags `0.1.0`,
+  `0.1.0-full`, `sha-828c4cad67fc`, `sha-828c4cad67fc-full`, `0.1`, `0.1-full`,
+  `0-full`, `0`, `latest-full`, and `latest` all resolve to
+  `sha256:9ad6e4d738746b539c1b0d0da5a9564808b2c93791909b8df872932b6766d27d`.
+  Lite tags `0.1.0-lite`, `sha-828c4cad67fc-lite`, `0.1-lite`, `0-lite`, and
+  `latest-lite` all resolve to
+  `sha256:a8cd1bb6a4c44dadfd450d247e1655355689b3d7846f2f8805f65e5c0f978ecb`.
+  Independent anonymous inspection confirmed both indexes contain exactly
+  amd64/arm64 runtime manifests with matching SBOM/SLSA-v1 attestations. Docker
+  Hub mirroring remained disabled.
 
 ## Current next action
 
-Companion v0.1.2 is complete. Integrate the independently tested Typr `dev` line
-into stable `main`, rerun the full source/full/lite/browser matrix on the exact
-stable commit, and only then create annotated tag `typr-v0.1.0`. The first Typr
-candidate package will be private by GitHub default; make it Public before the
-workflow's anonymous candidate verification can continue. Keep real Unraid
-installation, support topics, Community Applications submission, and optional
-Docker Hub credentials as explicit external gates.
+The split, Companion v0.1.2 release, and Typr v0.1.0 full/lite GHCR release are
+complete. The next required external validation is a real Unraid installation
+of both templates, including trusted-LAN/VPN HTTPS, optional mapped workspace,
+and update/rollback checks. Support topics and Community Applications submission
+remain blocked on that result and explicit user approval; Docker Hub remains an
+optional credential-owned mirror.
