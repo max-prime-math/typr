@@ -39,6 +39,9 @@ For cross-device use, give Companion a client-trusted HTTPS endpoint with
 WebSocket forwarding, restrict it to a trusted LAN/VPN, and include this Typr
 page's exact scheme, host, and port in `TYPR_COMPANION_ALLOWED_ORIGINS`. CORS is
 not authentication; neither service may be exposed to the public Internet.
+On Unraid, use host-level Tailscale Serve rather than the per-container **Use
+Tailscale** hook, keep Funnel disabled, and enter the private tailnet HTTPS Serve
+URL here.
 
 ### Settings project and external diagnostics
 

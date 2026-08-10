@@ -21,9 +21,9 @@
   <PostArgs/>
   <CPUset/>
   <Date>2026-08-10</Date>
-  <Changes>2026-08-10: Initial separate Typr full-image template.</Changes>
+  <Changes>2026-08-10: Document private host-level Tailscale Serve and prohibit the incompatible per-container Tailscale hook.</Changes>
   <Beta>False</Beta>
-  <Requires>Use only on a trusted machine, LAN, or private VPN. Never expose this unauthenticated self-hosted application to the public Internet. Plain HTTP on a LAN address is not a secure context and loses service-worker/PWA and local-folder capabilities; use trusted HTTPS for cross-device access. Browser data is isolated by exact scheme, host, and port, so export a backup before changing the URL.</Requires>
+  <Requires>Use only on a trusted machine, LAN, or private VPN. Never expose this unauthenticated self-hosted application to the public Internet. For Tailscale, keep the container's Use Tailscale switch off and use host-level Tailscale Serve; never use Funnel. Plain HTTP on a LAN address is not a secure context and loses service-worker/PWA and local-folder capabilities; use trusted HTTPS for cross-device access. Browser data is isolated by exact scheme, host, and port, so export a backup before changing the URL.</Requires>
   <Config Name="Web port" Target="8080" Default="8080" Mode="tcp" Description="Host port for the Typr web interface. Container port must remain 8080." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
   <Config Name="Compiler asset mode" Target="TYPR_COMPILER_ASSETS_MODE" Default="local" Mode="" Description="The full image uses local. For a lite image, use r2 without a mount or local with the exact matching read-only compiler pack." Type="Variable" Display="advanced" Required="true" Mask="false">local</Config>
   <Config Name="Compiler assets directory" Target="/compiler-assets" Default="" Mode="ro" Description="Optional exact compiler-release directory for lite/local only. Never map /, /mnt, /mnt/user, an appdata root, project files, or the Docker socket." Type="Path" Display="advanced" Required="false" Mask="false"></Config>

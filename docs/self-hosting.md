@@ -140,6 +140,28 @@ HTTPS endpoints restricted to the LAN/VPN, forward Companion WebSocket upgrades,
 and add the exact Typr origin to the Companion allowlist. HTTPS is not permission
 to expose either endpoint publicly.
 
+### Private HTTPS with Tailscale on Unraid
+
+On Unraid, use the official Tailscale plugin on the **host** and Tailscale Serve
+as the private HTTPS reverse proxy. Keep the per-container **Use Tailscale**
+switch off for both Typr images: Unraid's injected container hook needs a
+different privilege and mount model than these non-root, read-only containers.
+
+For example, if Typr is published on host port `7080`, run this from an Unraid
+terminal:
+
+```bash
+tailscale serve --bg --https=8444 http://127.0.0.1:7080
+tailscale serve status
+```
+
+Open the resulting `https://UNRAID-NAME.TAILNET.ts.net:8444` URL only from a
+device joined to the authorized tailnet. Use a different private HTTPS port for
+Companion as documented in its Unraid guide. Changing from the LAN URL to the
+Tailscale URL creates a new browser-storage origin, so export projects from the
+old origin before moving. Tailscale **Serve** stays within the tailnet;
+**Funnel must remain disabled** because these services must never be public.
+
 ## Optional Typr Companion and mapped workspace
 
 Typr works without Companion. A fresh self-hosted browser profile makes no
@@ -162,6 +184,8 @@ or an exact read-only compiler pack in the advanced fields; never map project
 files or a broad share there. The
 [Typr Companion template](https://github.com/max-prime-math/typr-server/blob/main/unraid/typr-companion.xml)
 is installed independently when native LaTeX or a mapped workspace is wanted.
+For private Tailscale access, leave each container's **Use Tailscale** switch off
+and follow the host-level Serve setup above.
 
 Before Community Applications submission, validate both templates on a real
 Unraid host, including install, health, browser access, update, rollback, and
