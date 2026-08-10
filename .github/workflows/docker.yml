@@ -228,7 +228,8 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/typr-compiler-assets"
           container_id="$(docker create "typr:ci-${{ matrix.arch }}-full")"
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
-          docker cp "${container_id}:/compiler-assets/." "${RUNNER_TEMP}/typr-compiler-assets/"
+          docker cp "${container_id}:/compiler-assets/." - \
+            | tar --extract --file - --directory "${RUNNER_TEMP}/typr-compiler-assets" --no-same-owner
           docker rm "${container_id}"
           trap - EXIT
 
@@ -423,7 +424,8 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/typr-compiler-assets"
           container_id="$(docker create --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}@${{ needs.publish-candidates.outputs.full_digest }}")"
           trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
-          docker cp "${container_id}:/compiler-assets/." "${RUNNER_TEMP}/typr-compiler-assets/"
+          docker cp "${container_id}:/compiler-assets/." - \
+            | tar --extract --file - --directory "${RUNNER_TEMP}/typr-compiler-assets" --no-same-owner
           docker rm "${container_id}"
           trap - EXIT
 
