@@ -15,6 +15,10 @@ interface VisibilityEventTarget extends LifecycleEventTarget {
 export interface LifecyclePersistence<Snapshot, ProjectStorage> {
   update(payload: PersistencePayload<Snapshot, ProjectStorage>): void;
   persistNow(): Promise<void>;
+  persistAtomic(
+    payload: PersistencePayload<Snapshot, ProjectStorage>,
+    save: () => Promise<void>
+  ): Promise<void>;
   hasPendingChanges(): boolean;
   dispose(): void;
 }
@@ -57,6 +61,7 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
   let latestPayload: PersistencePayload<Snapshot, ProjectStorage> | null = null;
   let lastPersistedPayload: PersistencePayload<Snapshot, ProjectStorage> | null = null;
   let lastPersistRequest: Promise<void> | null = null;
+  let atomicRequest: Promise<void> | null = null;
   let debounceHandle: ReturnType<typeof setTimeout> | null = null;
   let saveRequestId = 0;
 
@@ -77,6 +82,9 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
     }
 
     clearPendingDebounce();
+    if (atomicRequest) {
+      return atomicRequest;
+    }
     const payload = readLatestPayload();
     if (payload === null) {
       return Promise.resolve();
@@ -92,10 +100,14 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
 
     let request: Promise<void>;
     try {
-      request = Promise.all([
-        saveSnapshot(payload.snapshot),
-        saveProjectStorage(payload.projectStorage)
-      ]).then(() => undefined);
+      const save = () => Promise.all([
+          saveSnapshot(payload.snapshot),
+          saveProjectStorage(payload.projectStorage)
+        ]).then(() => undefined);
+      const previousRequest = lastPersistRequest;
+      request = previousRequest
+        ? previousRequest.catch(() => undefined).then(save)
+        : save();
     } catch {
       if (isSamePayload(payload, lastPersistedPayload)) {
         lastPersistedPayload = null;
@@ -130,6 +142,45 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
     return request;
   };
 
+  const persistAtomic = (
+    payload: PersistencePayload<Snapshot, ProjectStorage>,
+    save: () => Promise<void>
+  ): Promise<void> => {
+    if (disposed) return Promise.reject(new Error("Workspace persistence is disposed."));
+    if (atomicRequest) return Promise.reject(new Error("Another atomic workspace persistence request is active."));
+
+    clearPendingDebounce();
+    latestPayload = payload;
+    saveRequestId += 1;
+    const requestId = saveRequestId;
+    const previousRequest = lastPersistRequest;
+    onStatusChange?.("saving");
+    const request = Promise.resolve().then(async () => {
+      if (previousRequest) await previousRequest.catch(() => undefined);
+      await save();
+    });
+    atomicRequest = request;
+    lastPersistRequest = request;
+
+    void request.then(
+      () => {
+        lastPersistedPayload = payload;
+        if (!disposed && requestId === saveRequestId) onStatusChange?.("saved");
+      },
+      () => {
+        if (!disposed && requestId === saveRequestId) onStatusChange?.("error");
+      }
+    ).finally(() => {
+      if (atomicRequest === request) atomicRequest = null;
+      if (lastPersistRequest === request) lastPersistRequest = null;
+      if (!disposed && !isSamePayload(readLatestPayload(), lastPersistedPayload)) {
+        clearPendingDebounce();
+        debounceHandle = setTimeout(persistNow, debounceMs);
+      }
+    });
+    return request;
+  };
+
   const handlePageHide = () => {
     persistNow();
   };
@@ -150,6 +201,7 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
 
       latestPayload = payload;
       clearPendingDebounce();
+      if (atomicRequest) return;
       if (isSamePayload(readLatestPayload(), lastPersistedPayload)) {
         return;
       }
@@ -157,10 +209,11 @@ export function createLifecyclePersistence<Snapshot, ProjectStorage>({
       debounceHandle = setTimeout(persistNow, debounceMs);
     },
     persistNow,
+    persistAtomic,
     hasPendingChanges() {
       const payload = readLatestPayload();
       return (
-        lastPersistRequest !== null ||
+        atomicRequest !== null || lastPersistRequest !== null ||
         (payload !== null && !isSamePayload(payload, lastPersistedPayload))
       );
     },

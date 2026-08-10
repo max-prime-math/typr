@@ -1,10 +1,14 @@
 import {
   TYPR_COMPANION_PROTOCOL_VERSION,
   TYPR_COMPANION_ROUTES,
+  TYPR_WORKSPACE_MUTATION_HEADER,
   type CompanionCapabilities,
   type CompanionStatusResponse,
   type CompileRequest,
-  type CompileResult
+  type CompileResult,
+  type WorkspaceFileListResponse,
+  type WorkspaceFileMetadata,
+  type WorkspaceFileResponse
 } from "@max-prime-math/typr-companion-protocol";
 
 export const DEFAULT_COMPANION_BASE_URL =
@@ -31,12 +35,14 @@ export interface CompanionConnectionStatus {
   message?: string;
 }
 
-export type CompanionClientErrorKind = "transport" | "server" | "protocol";
+export type CompanionClientErrorKind = "transport" | "server" | "protocol" | "conflict";
 
 export class CompanionClientError extends Error {
   constructor(
     readonly kind: CompanionClientErrorKind,
-    message: string
+    message: string,
+    readonly status?: number,
+    readonly code?: string
   ) {
     super(message);
     this.name = "CompanionClientError";
@@ -111,6 +117,91 @@ export class CompanionClient {
       throw new CompanionClientError("protocol", parsed.message);
     }
     return parsed.value;
+  }
+
+  async listWorkspaceFiles(): Promise<WorkspaceFileListResponse> {
+    const payload = await this.workspaceRequest(TYPR_COMPANION_ROUTES.workspaceFiles);
+    const parsed = parseWorkspaceFileList(payload);
+    if (!parsed.ok) throw new CompanionClientError("protocol", parsed.message);
+    return parsed.value;
+  }
+
+  async readWorkspaceFile(path: string, maxFileBytes?: number): Promise<WorkspaceFileResponse> {
+    const payload = await this.workspaceRequest(this.workspaceFilePath(path));
+    const parsed = parseWorkspaceFile(payload, maxFileBytes);
+    if (!parsed.ok) throw new CompanionClientError("protocol", parsed.message);
+    return parsed.value;
+  }
+
+  async createWorkspaceFile(path: string, bytes: Uint8Array): Promise<WorkspaceFileMetadata> {
+    return this.writeWorkspaceFile(path, bytes, { "If-None-Match": "*" });
+  }
+
+  async updateWorkspaceFile(path: string, bytes: Uint8Array, etag: string): Promise<WorkspaceFileMetadata> {
+    if (!isStrongEtag(etag)) throw new CompanionClientError("protocol", "Workspace update requires a strong ETag.");
+    return this.writeWorkspaceFile(path, bytes, { "If-Match": etag });
+  }
+
+  async deleteWorkspaceFile(path: string, etag: string): Promise<void> {
+    if (!isStrongEtag(etag)) throw new CompanionClientError("protocol", "Workspace deletion requires a strong ETag.");
+    await this.workspaceRequest(this.workspaceFilePath(path), {
+      method: "DELETE",
+      headers: {
+        [TYPR_WORKSPACE_MUTATION_HEADER]: "1",
+        "If-Match": etag
+      }
+    });
+  }
+
+  private async writeWorkspaceFile(
+    path: string,
+    bytes: Uint8Array,
+    precondition: Record<string, string>
+  ): Promise<WorkspaceFileMetadata> {
+    const payload = await this.workspaceRequest(this.workspaceFilePath(path), {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        [TYPR_WORKSPACE_MUTATION_HEADER]: "1",
+        ...precondition
+      },
+      body: JSON.stringify({ encoding: "base64", content: bytesToBase64(bytes) })
+    });
+    const parsed = parseWorkspaceFileMetadata(payload);
+    if (!parsed.ok) throw new CompanionClientError("protocol", parsed.message);
+    return parsed.value;
+  }
+
+  private async workspaceRequest(path: string, init?: RequestInit): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await this.fetchImplementation(this.url(path), init);
+    } catch (error) {
+      throw new CompanionClientError("transport", formatTransportError(error));
+    }
+    if (response.status === 204 && response.ok) return undefined;
+    const payload = await readJson(response).catch((error: unknown) => {
+      throw new CompanionClientError(
+        "protocol",
+        error instanceof Error ? error.message : "Companion returned invalid JSON."
+      );
+    });
+    if (!response.ok) {
+      const detail = readServerErrorDetail(payload, response.status);
+      throw new CompanionClientError(
+        response.status === 409 || response.status === 412 ? "conflict" : "server",
+        detail.message,
+        response.status,
+        detail.code
+      );
+    }
+    return payload;
+  }
+
+  private workspaceFilePath(path: string): string {
+    const parsed = parseWorkspacePath(path);
+    if (!parsed.ok) throw new CompanionClientError("protocol", parsed.message);
+    return `${TYPR_COMPANION_ROUTES.workspaceFile}?path=${encodeURIComponent(parsed.value)}`;
   }
 
   private status(
@@ -213,10 +304,73 @@ function invalid<T = never>(message: string): Result<T> {
 }
 
 function parseCapabilities(value: unknown): Result<CompanionCapabilities> {
-  if (!isRecord(value) || !isRecord(value.compile) || !Array.isArray(value.compile.engines) || !value.compile.engines.every((engine) => typeof engine === "string") || !isRecord(value.filesystem) || typeof value.filesystem.projectStorage !== "boolean" || !isRecord(value.lsp) || !Array.isArray(value.lsp.languages) || !value.lsp.languages.every((language) => typeof language === "string") || !isRecord(value.git) || typeof value.git.enabled !== "boolean" || !isRecord(value.terminal) || typeof value.terminal.enabled !== "boolean") {
+  if (!isRecord(value) || !isRecord(value.compile) || !Array.isArray(value.compile.engines) || !value.compile.engines.every((engine) => typeof engine === "string") || !isRecord(value.filesystem) || !isFilesystemCapability(value.filesystem) || !isRecord(value.lsp) || !Array.isArray(value.lsp.languages) || !value.lsp.languages.every((language) => typeof language === "string") || !isRecord(value.git) || typeof value.git.enabled !== "boolean" || !isRecord(value.terminal) || typeof value.terminal.enabled !== "boolean") {
     return invalid("Companion status response has invalid capabilities.");
   }
   return { ok: true, value: value as unknown as CompanionCapabilities };
+}
+
+export function parseWorkspaceFileList(value: unknown): Result<WorkspaceFileListResponse> {
+  if (!isRecord(value) || typeof value.workspaceId !== "string" || value.workspaceId.length === 0 || !Array.isArray(value.files)) {
+    return invalid("Companion workspace listing has an invalid shape.");
+  }
+  const files: WorkspaceFileMetadata[] = [];
+  const paths = new Set<string>();
+  for (const candidate of value.files) {
+    const parsed = parseWorkspaceFileMetadata(candidate);
+    if (!parsed.ok) return parsed;
+    if (paths.has(parsed.value.path)) return invalid("Companion workspace listing contains duplicate paths.");
+    paths.add(parsed.value.path);
+    files.push(parsed.value);
+  }
+  return { ok: true, value: { workspaceId: value.workspaceId, files } };
+}
+
+export function parseWorkspaceFile(value: unknown, maxFileBytes?: number): Result<WorkspaceFileResponse> {
+  const metadata = parseWorkspaceFileMetadata(value);
+  if (!metadata.ok || !isRecord(value) || value.encoding !== "base64" || typeof value.content !== "string") {
+    return invalid("Companion workspace file has invalid metadata or content.");
+  }
+  if (maxFileBytes !== undefined && metadata.value.size > maxFileBytes) {
+    return invalid("Companion workspace file exceeds the advertised file-size limit.");
+  }
+  const expectedEncodedLength = Math.ceil(metadata.value.size / 3) * 4;
+  const expectedPadding = metadata.value.size % 3 === 1 ? 2 : metadata.value.size % 3 === 2 ? 1 : 0;
+  if (value.content.length !== expectedEncodedLength ||
+      (expectedPadding === 2 && !value.content.endsWith("==")) ||
+      (expectedPadding === 1 && (!value.content.endsWith("=") || value.content.endsWith("=="))) ||
+      (expectedPadding === 0 && value.content.endsWith("=")) ||
+      !isBase64(value.content)) {
+    return invalid("Companion workspace file has invalid metadata or content.");
+  }
+  const bytes = base64ToBytes(value.content);
+  if (bytes.byteLength !== metadata.value.size) {
+    return invalid("Companion workspace file size does not match its content.");
+  }
+  return { ok: true, value: { ...metadata.value, encoding: "base64", content: value.content } };
+}
+
+export function parseWorkspaceFileMetadata(value: unknown): Result<WorkspaceFileMetadata> {
+  if (!isRecord(value) || typeof value.path !== "string" || !parseWorkspacePath(value.path).ok || !isNonNegativeInteger(value.size) || !isFiniteNumber(value.modifiedAt) || value.modifiedAt < 0 || !isStrongEtag(value.etag)) {
+    return invalid("Companion workspace file metadata is invalid.");
+  }
+  return { ok: true, value: value as unknown as WorkspaceFileMetadata };
+}
+
+function isFilesystemCapability(value: Record<string, unknown>): boolean {
+  if (value.projectStorage === false) return true;
+  return value.projectStorage === true && value.workspaceApiVersion === 1 &&
+    typeof value.workspaceId === "string" && value.workspaceId.length > 0 && value.writable === true &&
+    isRecord(value.limits) && isPositiveInteger(value.limits.maxFileBytes) &&
+    isPositiveInteger(value.limits.maxEntries) && isPositiveInteger(value.limits.maxWorkspaceBytes) &&
+    value.limits.maxFileBytes <= value.limits.maxWorkspaceBytes;
+}
+
+function parseWorkspacePath(value: string): Result<string> {
+  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0") || value.split("/").some((segment) => !segment || segment === "." || segment === ".." || segment === ".git")) {
+    return invalid("Workspace path must be a safe relative POSIX path.");
+  }
+  return { ok: true, value };
 }
 
 function isCompileError(value: unknown): boolean {
@@ -228,7 +382,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value);
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isInteger(value) && value >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return isInteger(value) && value > 0;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -236,7 +398,42 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isBase64(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(value) && value.length % 4 === 0;
+  if (typeof value !== "string" || value.length % 4 !== 0) return false;
+  let paddingStarted = false;
+  let padding = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 61) {
+      paddingStarted = true;
+      padding += 1;
+      if (padding > 2 || index < value.length - 2) return false;
+      continue;
+    }
+    if (paddingStarted || !(
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 43 || code === 47
+    )) return false;
+  }
+  return true;
+}
+
+function isStrongEtag(value: unknown): value is string {
+  return typeof value === "string" && /^"[^"\r\n]+"$/u.test(value);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
+}
+
+export function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -252,6 +449,18 @@ function readServerError(payload: unknown, status: number): string {
     return `Companion server error (${status}): ${payload.error.message}`;
   }
   return `Companion server error (${status}).`;
+}
+
+function readServerErrorDetail(payload: unknown, status: number): { message: string; code?: string } {
+  if (isRecord(payload) && isRecord(payload.error)) {
+    return {
+      message: typeof payload.error.message === "string"
+        ? `Companion server error (${status}): ${payload.error.message}`
+        : `Companion server error (${status}).`,
+      ...(typeof payload.error.code === "string" ? { code: payload.error.code } : {})
+    };
+  }
+  return { message: `Companion server error (${status}).` };
 }
 
 function formatTransportError(error: unknown): string {

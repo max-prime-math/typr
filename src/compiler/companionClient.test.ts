@@ -6,6 +6,8 @@ import {
   DEFAULT_COMPANION_BASE_URL,
   normalizeCompanionBaseUrl,
   parseCompanionStatus,
+  parseWorkspaceFile,
+  parseWorkspaceFileList,
   readStoredCompanionBaseUrl,
   validateCompanionBaseUrl,
   writeStoredCompanionBaseUrl
@@ -78,6 +80,126 @@ describe("CompanionClient", () => {
 
   it("runtime-validates status capabilities", () => {
     expect(parseCompanionStatus({ ...validStatus, capabilities: { compile: {} } }).ok).toBe(false);
+    expect(parseCompanionStatus({
+      ...validStatus,
+      capabilities: {
+        ...validStatus.capabilities,
+        filesystem: {
+          projectStorage: true,
+          workspaceApiVersion: 1,
+          workspaceId: "mapped",
+          writable: true,
+          limits: { maxFileBytes: 16, maxEntries: 4, maxWorkspaceBytes: 64 }
+        }
+      }
+    }).ok).toBe(true);
+    expect(parseCompanionStatus({
+      ...validStatus,
+      capabilities: { ...validStatus.capabilities, filesystem: { projectStorage: true } }
+    }).ok).toBe(false);
+    expect(parseCompanionStatus({
+      ...validStatus,
+      capabilities: {
+        ...validStatus.capabilities,
+        filesystem: {
+          projectStorage: true,
+          workspaceApiVersion: 1,
+          workspaceId: "mapped",
+          writable: true,
+          limits: { maxFileBytes: Number.MAX_SAFE_INTEGER + 1, maxEntries: 4, maxWorkspaceBytes: Number.MAX_SAFE_INTEGER + 1 }
+        }
+      }
+    }).ok).toBe(false);
+  });
+
+  it("uses exact workspace routes, intent headers, and conditional ETags", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const responses = [
+      jsonResponse({ workspaceId: "mapped", files: [{ path: "nested/file.bin", size: 3, modifiedAt: 1, etag: '"sha256-one"' }] }),
+      jsonResponse({ path: "nested/file.bin", size: 3, modifiedAt: 1, etag: '"sha256-one"', encoding: "base64", content: "AAEC" }),
+      jsonResponse({ path: "new.bin", size: 2, modifiedAt: 2, etag: '"sha256-two"' }, 201),
+      jsonResponse({ path: "new.bin", size: 1, modifiedAt: 3, etag: '"sha256-three"' }),
+      new Response(null, { status: 204 })
+    ];
+    const client = new CompanionClient({
+      baseUrl: "http://localhost:8484",
+      fetch: async (input, init) => {
+        requests.push({ url: String(input), init });
+        return responses.shift()!;
+      }
+    });
+
+    await client.listWorkspaceFiles();
+    await client.readWorkspaceFile("nested/file.bin");
+    await client.createWorkspaceFile("new.bin", new Uint8Array([1, 2]));
+    await client.updateWorkspaceFile("new.bin", new Uint8Array([3]), '"sha256-two"');
+    await client.deleteWorkspaceFile("new.bin", '"sha256-three"');
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://localhost:8484/api/v1/workspace/files",
+      "http://localhost:8484/api/v1/workspace/file?path=nested%2Ffile.bin",
+      "http://localhost:8484/api/v1/workspace/file?path=new.bin",
+      "http://localhost:8484/api/v1/workspace/file?path=new.bin",
+      "http://localhost:8484/api/v1/workspace/file?path=new.bin"
+    ]);
+    expect(requests[2].init).toMatchObject({ method: "PUT", headers: expect.objectContaining({ "X-Typr-Workspace-Mutation": "1", "If-None-Match": "*" }) });
+    expect(requests[3].init).toMatchObject({ method: "PUT", headers: expect.objectContaining({ "If-Match": '"sha256-two"' }) });
+    expect(requests[4].init).toMatchObject({ method: "DELETE", headers: expect.objectContaining({ "If-Match": '"sha256-three"' }) });
+  });
+
+  it("maps conditional workspace failures to typed conflicts", async () => {
+    const client = new CompanionClient({
+      fetch: async () => jsonResponse({ error: { code: "workspace-precondition-failed", message: "changed" } }, 412)
+    });
+
+    await expect(client.updateWorkspaceFile("main.typ", new Uint8Array(), '"sha256-old"'))
+      .rejects.toMatchObject({ kind: "conflict", status: 412, code: "workspace-precondition-failed" });
+  });
+
+  it("rejects malformed workspace metadata, duplicate paths, and base64 size mismatches", () => {
+    expect(parseWorkspaceFileList({
+      workspaceId: "mapped",
+      files: [
+        { path: "same", size: 1, modifiedAt: 1, etag: '"one"' },
+        { path: "same", size: 1, modifiedAt: 1, etag: '"two"' }
+      ]
+    }).ok).toBe(false);
+    expect(parseWorkspaceFile({
+      path: "../escape",
+      size: 3,
+      modifiedAt: 1,
+      etag: '"one"',
+      encoding: "base64",
+      content: "AAEC"
+    }).ok).toBe(false);
+    expect(parseWorkspaceFile({
+      path: "file.bin",
+      size: 4,
+      modifiedAt: 1,
+      etag: '"one"',
+      encoding: "base64",
+      content: "AAEC"
+    }).ok).toBe(false);
+    expect(parseWorkspaceFile({
+      path: "file.bin",
+      size: 3,
+      modifiedAt: 1,
+      etag: '"one"',
+      encoding: "base64",
+      content: "AAEC"
+    }, 2).ok).toBe(false);
+    expect(parseWorkspaceFileList({
+      workspaceId: "mapped",
+      files: [{ path: "unsafe.bin", size: Number.MAX_SAFE_INTEGER + 1, modifiedAt: 1, etag: '"one"' }]
+    }).ok).toBe(false);
+    expect(parseWorkspaceFile({
+      path: "large.bin",
+      size: 1,
+      modifiedAt: 1,
+      etag: '"one"',
+      encoding: "base64",
+      content: "A".repeat(1_000_000)
+    }, 16).ok).toBe(false);
   });
 
   it("validates and normalizes user-configured Companion URLs", () => {

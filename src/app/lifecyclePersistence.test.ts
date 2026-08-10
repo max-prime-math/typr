@@ -165,4 +165,67 @@ describe("lifecycle persistence", () => {
     await harness.persistence.persistNow();
     expect(harness.persistence.hasPendingChanges()).toBe(false);
   });
+
+  it("serializes atomic commits after old writes and defers newer edits", async () => {
+    let finishOldSave: (() => void) | undefined;
+    let finishAtomic: (() => void) | undefined;
+    const saveProjectStorage = vi.fn((value: { revision: string }) =>
+      value.revision === "old"
+        ? new Promise<void>((resolve) => { finishOldSave = resolve; })
+        : Promise.resolve()
+    );
+    const saveSnapshot = vi.fn(async () => {});
+    const persistence = createLifecyclePersistence({
+      debounceMs: 250,
+      documentTarget: new VisibilityEventTarget(),
+      saveProjectStorage,
+      saveSnapshot,
+      windowTarget: new EventTarget()
+    });
+    const oldPayload = { projectStorage: { revision: "old" }, snapshot: { revision: "old" } };
+    const atomicPayload = { projectStorage: { revision: "atomic" }, snapshot: { revision: "atomic" } };
+    const newerPayload = { projectStorage: { revision: "newer" }, snapshot: { revision: "newer" } };
+
+    persistence.update(oldPayload);
+    const oldRequest = persistence.persistNow();
+    const atomicSave = vi.fn(() => new Promise<void>((resolve) => { finishAtomic = resolve; }));
+    const atomicRequest = persistence.persistAtomic(atomicPayload, atomicSave);
+    persistence.update(newerPayload);
+    const joinedRequest = persistence.persistNow();
+
+    await Promise.resolve();
+    expect(atomicSave).not.toHaveBeenCalled();
+    expect(joinedRequest).toBe(atomicRequest);
+    finishOldSave?.();
+    await oldRequest;
+    await Promise.resolve();
+    expect(atomicSave).toHaveBeenCalledTimes(1);
+    expect(saveProjectStorage).toHaveBeenCalledTimes(1);
+
+    finishAtomic?.();
+    await atomicRequest;
+    await vi.runAllTimersAsync();
+    expect(saveProjectStorage).toHaveBeenLastCalledWith({ revision: "newer" });
+    expect(saveSnapshot).toHaveBeenLastCalledWith({ revision: "newer" });
+    expect(persistence.hasPendingChanges()).toBe(false);
+  });
+
+  it("does not mark a failed atomic payload as persisted", async () => {
+    const onStatusChange = vi.fn();
+    const persistence = createLifecyclePersistence({
+      debounceMs: 250,
+      documentTarget: new VisibilityEventTarget(),
+      onStatusChange,
+      saveProjectStorage: vi.fn(async () => {}),
+      saveSnapshot: vi.fn(async () => {}),
+      windowTarget: new EventTarget()
+    });
+    const payload = { projectStorage: { revision: "atomic" }, snapshot: { revision: "atomic" } };
+
+    await expect(persistence.persistAtomic(payload, async () => {
+      throw new Error("commit failed");
+    })).rejects.toThrow("commit failed");
+    expect(onStatusChange).toHaveBeenCalledWith("error");
+    expect(persistence.hasPendingChanges()).toBe(true);
+  });
 });

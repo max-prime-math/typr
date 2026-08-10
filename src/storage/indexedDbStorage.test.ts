@@ -10,6 +10,7 @@ const indexedDbHarness = vi.hoisted(() => {
     }
     return store;
   };
+  let failTransactionPut: number | null = null;
   const database = {
     delete: vi.fn(async (storeName: string, key: IDBValidKey) => {
       getStore(storeName).delete(key);
@@ -18,13 +19,39 @@ const indexedDbHarness = vi.hoisted(() => {
     getAllKeys: vi.fn(async (storeName: string) => [...getStore(storeName).keys()]),
     put: vi.fn(async (storeName: string, value: unknown, key: IDBValidKey) => {
       getStore(storeName).set(key, value);
+    }),
+    transaction: vi.fn((storeName: string) => {
+      const staged: Array<{ key: IDBValidKey; value: unknown }> = [];
+      let putCount = 0;
+      let failed = false;
+      const store = {
+        put: vi.fn((value: unknown, key: IDBValidKey) => {
+          putCount += 1;
+          if (failTransactionPut === putCount) {
+            failed = true;
+            return Promise.reject(new Error("injected transaction failure"));
+          }
+          staged.push({ key, value });
+          return Promise.resolve(key);
+        })
+      };
+      return {
+        store,
+        done: Promise.resolve().then(() => {
+          if (failed) throw new Error("injected transaction abort");
+          for (const entry of staged) getStore(storeName).set(entry.key, entry.value);
+        })
+      };
     })
   };
 
   return {
     database,
     openDB: vi.fn(async () => database),
-    stores
+    stores,
+    setFailTransactionPut(value: number | null) {
+      failTransactionPut = value;
+    }
   };
 });
 
@@ -33,6 +60,7 @@ vi.mock("idb", () => ({
 }));
 
 import {
+  commitCompanionWorkspaceSync,
   deleteCloudProjectBinding,
   deleteCloudProjectBindings,
   deleteLocalFolderBinding,
@@ -40,6 +68,8 @@ import {
   deleteProjectGitFiles,
   listProjectGitFiles,
   loadCloudProjectBinding,
+  loadProjectStorage,
+  loadSnapshot,
   loadLocalFolderBinding,
   loadProjectDeletionTombstones,
   readProjectGitFile,
@@ -48,10 +78,13 @@ import {
   saveLocalFolderBinding,
   writeProjectGitFile
 } from "./indexedDbStorage";
+import { createDefaultSnapshot } from "../app/appState";
+import { createProjectStorageFromSnapshot } from "../project/projectState";
 
 describe("IndexedDB project deletion storage", () => {
   beforeEach(() => {
     indexedDbHarness.stores.clear();
+    indexedDbHarness.setFailTransactionPut(null);
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
@@ -148,11 +181,69 @@ describe("IndexedDB project deletion storage", () => {
     expect(
       await loadCloudProjectBinding("google-drive", "project-a")
     ).toBeNull();
+
+    await saveCloudProjectBinding({
+      version: 2,
+      projectId: "project-a",
+      providerId: "typr-companion",
+      remoteRootId: "mapped",
+      remoteRootName: "Mapped workspace",
+      connectedAt: "2026-08-09T12:00:00.000Z",
+      lastSyncedAt: null,
+      syncMode: "manual",
+      syncIntervalMinutes: 15,
+      worktreeSignatures: {},
+      providerData: { baseUrl: "http://localhost:8484", workspaceId: "mapped" }
+    });
+    expect(await loadCloudProjectBinding("typr-companion", "project-a")).toMatchObject({
+      remoteRootId: "mapped",
+      providerData: { workspaceId: "mapped" }
+    });
+    await deleteCloudProjectBinding("typr-companion", "project-a");
+  });
+
+  it("atomically commits the synchronized project, snapshot, metadata, and Companion binding", async () => {
+    const snapshot = createDefaultSnapshot();
+    const storage = createProjectStorageFromSnapshot(snapshot);
+    const binding = {
+      version: 2 as const,
+      projectId: storage.projects[0].id,
+      providerId: "typr-companion" as const,
+      remoteRootId: "mapped",
+      remoteRootName: "Mapped workspace",
+      connectedAt: "2026-08-10T00:00:00.000Z",
+      lastSyncedAt: "2026-08-10T00:01:00.000Z",
+      syncMode: "manual" as const,
+      syncIntervalMinutes: 15,
+      worktreeSignatures: {},
+      providerData: { baseUrl: "http://localhost:8484", workspaceId: "mapped" }
+    };
+
+    await commitCompanionWorkspaceSync({ binding, projectStorage: storage, snapshot });
+    expect(await loadProjectStorage()).toBe(storage);
+    expect(await loadSnapshot()).toBe(snapshot);
+    expect(await loadCloudProjectBinding("typr-companion", binding.projectId)).toBe(binding);
+
+    const previousSnapshot = snapshot;
+    const previousStorage = storage;
+    const nextSnapshot = { ...snapshot, project: { ...snapshot.project, name: "New name" } };
+    const nextStorage = { ...storage, selectedProjectId: storage.selectedProjectId };
+    const nextBinding = { ...binding, lastSyncedAt: "2026-08-10T00:02:00.000Z" };
+    indexedDbHarness.setFailTransactionPut(4);
+
+    await expect(commitCompanionWorkspaceSync({
+      binding: nextBinding,
+      projectStorage: nextStorage,
+      snapshot: nextSnapshot
+    })).rejects.toThrow("injected transaction failure");
+    expect(await loadProjectStorage()).toBe(previousStorage);
+    expect(await loadSnapshot()).toBe(previousSnapshot);
+    expect(await loadCloudProjectBinding("typr-companion", binding.projectId)).toBe(binding);
   });
 
   it("clears every cloud provider binding for one deleted project", async () => {
     const createBinding = (
-      providerId: "google-drive" | "dropbox",
+      providerId: "google-drive" | "dropbox" | "typr-companion",
       projectId: string
     ) => ({
       version: 1 as const,
@@ -173,6 +264,9 @@ describe("IndexedDB project deletion storage", () => {
       createBinding("dropbox", "project-a")
     );
     await saveCloudProjectBinding(
+      createBinding("typr-companion", "project-a")
+    );
+    await saveCloudProjectBinding(
       createBinding("google-drive", "project-b")
     );
 
@@ -183,6 +277,9 @@ describe("IndexedDB project deletion storage", () => {
     ).toBeNull();
     expect(
       await loadCloudProjectBinding("dropbox", "project-a")
+    ).toBeNull();
+    expect(
+      await loadCloudProjectBinding("typr-companion", "project-a")
     ).toBeNull();
     expect(
       await loadCloudProjectBinding("google-drive", "project-b")

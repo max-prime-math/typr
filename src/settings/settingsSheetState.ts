@@ -26,6 +26,8 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
     "google drive",
     "drive",
     "local folder",
+    "companion workspace",
+    "mapped workspace",
     "automatic",
     "compile",
     "interval",

@@ -34,6 +34,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     customThemes,
     companionBaseUrl,
     companionConnection,
+    companionWorkspaceSync,
+    companionWorkspaceSyncState,
     darkThemes,
     detectedLatexPackages,
     documentStats,
@@ -338,6 +340,101 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   <span>minutes</span>
                 </span>
               </label>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section__header">
+                <h3>Companion workspace</h3>
+                <p>
+                  Manually exchange the selected project with one directory
+                  mapped by your self-hosted Companion. Browser storage remains
+                  the primary local copy; no background workspace requests run.
+                </p>
+              </div>
+
+              <div className="sync-settings-project-card">
+                <div>
+                  <span className="sync-settings-project-card__label">
+                    Selected project
+                  </span>
+                  <strong>
+                    {selectedProjectRepository?.displayName ?? "No project selected"}
+                  </strong>
+                  <small>
+                    {companionWorkspaceSyncState?.message ??
+                      (companionWorkspaceSync.capability
+                        ? "No mapped workspace linked. Browser storage remains the default."
+                        : "The current Companion has no mapped workspace. Browser storage remains the default.")}
+                  </small>
+                  {companionWorkspaceSyncState?.lastSyncedAt ? (
+                    <small>
+                      Last synced {new Date(companionWorkspaceSyncState.lastSyncedAt).toLocaleString()}
+                    </small>
+                  ) : null}
+                  {companionWorkspaceSyncState?.conflictPaths?.length ? (
+                    <small>
+                      Review: {companionWorkspaceSyncState.conflictPaths.join(", ")}
+                    </small>
+                  ) : null}
+                </div>
+                {selectedProjectRepository ? (
+                  <div className="sync-settings-project-card__actions">
+                    {companionWorkspaceSyncState?.workspaceId ? (
+                      <>
+                        <button
+                          className="pane__button"
+                          disabled={
+                            companionWorkspaceSyncState.status === "syncing" ||
+                            companionWorkspaceSyncState.status === "restoring" ||
+                            companionWorkspaceSyncState.status === "stale" ||
+                            !companionWorkspaceSync.capability
+                          }
+                          onClick={() => {
+                            void companionWorkspaceSync.syncNow(selectedProjectRepository.id);
+                          }}
+                          type="button"
+                        >
+                          {companionWorkspaceSyncState.status === "syncing"
+                            ? "Syncing…"
+                            : "Sync now"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          disabled={companionWorkspaceSyncState.status === "syncing" || companionWorkspaceSyncState.status === "restoring"}
+                          onClick={() => {
+                            void companionWorkspaceSync.unlink(selectedProjectRepository.id);
+                          }}
+                          type="button"
+                        >
+                          Unlink
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={
+                          !companionWorkspaceSync.capability ||
+                          !companionWorkspaceSyncState ||
+                          companionWorkspaceSyncState.status === "restoring" ||
+                          companionWorkspaceSyncState.status === "error"
+                        }
+                        onClick={() => {
+                          void companionWorkspaceSync.link(selectedProjectRepository.id);
+                        }}
+                        type="button"
+                      >
+                        Link mapped workspace
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <p className="pane__meta">
+                First link is additive and the mapped workspace wins same-path
+                collisions after confirmation. Later two-sided edits stop with
+                exact conflict paths. Unlinking never deletes server files.
+              </p>
             </div>
 
             <div className="settings-section">

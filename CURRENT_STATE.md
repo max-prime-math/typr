@@ -1,6 +1,6 @@
 # Typr repository split and self-hosting current state
 
-Last updated: 2026-08-09 (Canada/Central)
+Last updated: 2026-08-10 (Canada/Central)
 
 This is the durable execution record for splitting Typr Companion into its own
 repository and shipping the Typr frontend as a self-hosted container. Update it
@@ -41,7 +41,7 @@ after every completed stage and before every stage commit.
 - Existing annotated release tags:
   - `v0.1.0` tag object `9a2fb7e`, commit `52c5647`
   - `v0.1.1` tag object `4299932`, commit `37ad4b2`
-- Standalone checkout: `/home/max/dev/typr-server`, clean `main` at `597ba91`.
+- Standalone checkout: `/home/max/dev/typr-server`, clean `main` at `44d0b7d`.
 - GitHub repository: `max-prime-math/typr-server`, public, default `main`.
 - Existing Companion image name: `ghcr.io/max-prime-math/typr-server`.
 - Docker CLI is installed. Access to the host Docker daemon requires an
@@ -268,13 +268,15 @@ install/build works from the pin.
 
 ### Stage 3 — Optional mapped Companion workspace
 
-Status: pending
+Status: complete
 
-- Implement disabled-by-default capability/configuration and confined file API.
-- Add traversal, symlink, size, encoding, conflict, CORS, and method tests.
-- Add an exact-root `rw` workspace mount, isolate compilers from it, and add an
+- [x] Implement disabled-by-default capability/configuration and confined file API.
+- [x] Add traversal, symlink, size, encoding, conflict, CORS, and method tests.
+- [x] Add an exact-root `rw` workspace mount, isolate compilers from it, and add an
   adversarial integration harness. Compiler-asset mounts remain exact-root `ro`.
-- Add frontend opt-in synchronization without changing the browser-local default.
+- [x] Add frontend opt-in manual synchronization without changing the
+  browser-local default, with strict conflict detection and atomic IndexedDB
+  persistence of the browser project, legacy snapshot, and sync baseline.
 
 Gate: unit and container adversarial tests demonstrate that only the configured
 root is reachable.
@@ -408,8 +410,32 @@ Only these are expected to require the user:
   `npm run typecheck`, all 88 files / 384 frontend tests, and `npm run build`
   passed. A repository audit found no remaining old relative protocol imports or
   server Docker/script/config/template references outside this state record.
+- 2026-08-10: standalone Companion commits `f5ddaca` through `44d0b7d` added
+  protocol 1.1.0 workspace routes, an exact-root no-follow file store, strict
+  route-specific CORS and mutation preconditions, bounded native execution,
+  fail-closed Landlock startup probing, and hardened Compose/container limits.
+  No release tag or image alias was published.
+- 2026-08-10: all 8 Companion unit files / 57 tests, typecheck, production and
+  development Compose parsing, Unraid XML parsing, and the production Docker
+  REST/TeXpresso POC/raster/WebSocket adversarial harnesses passed locally.
+  Canaries cover traversal, symlinks, special files, stale/missing conditions,
+  oversized payloads, CORS/method/header rejection, mapped-workspace and
+  application-tree read denial, write/shell/latexmk denial, output/time limits,
+  admission recovery, capability dropping, cleanup, and process-orphan checks.
+- 2026-08-10: standalone GitHub run `31358958726` passed the complete source,
+  metadata, amd64, and arm64 build/adversarial matrix at `44d0b7d`; publish and
+  verification jobs were correctly skipped because no tag was pushed.
+- 2026-08-10: Typr pins the Companion protocol archive at immutable commit
+  `44d0b7d4e773209c21ddba7b15e64a5f236e7c7a` with lock integrity
+  `sha512-7ywq2fN7mS3sPerYu77Qyx2X4S7Q+Q6dp3AAufgHAdW8+6X3pis10+OGz5yrxSKcTfQIGdqXWVIeN20VqUKhzA==`.
+- 2026-08-10: frontend mapped-workspace validation passed typecheck, all 89
+  unit files / 402 tests, production build, and the manual browser-local-first
+  E2E in Chromium and Firefox. Two independent read-only reviews found no
+  remaining Stage 3 blocker after durability, race, limit, and confinement
+  fixes.
 
 ## Current next action
 
-Commit and push the Stage 2 Typr ownership boundary, then implement the optional
-mapped workspace API and compiler confinement in the standalone repository.
+Implement Stage 4 full/lite Typr containers around one versioned same-origin
+compiler-asset route, including the validated local-asset mount and Google Drive
+compile-out profile. Do not publish images or create release tags yet.

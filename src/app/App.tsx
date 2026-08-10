@@ -92,6 +92,7 @@ import {
   GoogleDriveGlobalNotice
 } from "./GoogleDriveConnectionCard";
 import { useLocalFolderSync } from "./useLocalFolderSync";
+import { useCompanionWorkspaceSync } from "./useCompanionWorkspaceSync";
 import {
   areWorkspacePathListsEqual,
   insertWorkspacePathAfterActive,
@@ -3750,6 +3751,19 @@ ${nextLine}` : nextLine;
   });
   const selectedLocalFolderSyncState = selectedProjectRepository
     ? localFolderSync.states[selectedProjectRepository.id]
+    : undefined;
+  const companionWorkspaceSync = useCompanionWorkspaceSync({
+    client: companionClient,
+    connection: companionConnection,
+    isHydrated,
+    lifecyclePersistenceRef,
+    persistencePayloadRef,
+    projectStorage,
+    setProjectStorage,
+    setRawSnapshot
+  });
+  const selectedCompanionWorkspaceSyncState = selectedProjectRepository
+    ? companionWorkspaceSync.states[selectedProjectRepository.id]
     : undefined;
   const googleDriveSync = useGoogleDriveSync({
     clientId: import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID ?? "",
@@ -15697,6 +15711,8 @@ ${nextLine}` : nextLine;
     activeSnippetLanguageLabel,
     companionBaseUrl,
     companionConnection,
+    companionWorkspaceSync,
+    companionWorkspaceSyncState: selectedCompanionWorkspaceSyncState,
     customThemes,
     darkThemes,
     detectedLatexPackages,

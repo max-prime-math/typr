@@ -30,7 +30,6 @@
     "screenshots:readme": "node scripts/capture-readme-screenshots.mjs"
   },
   "dependencies": {
-    "@max-prime-math/typr-companion-protocol": "https://github.com/max-prime-math/typr-server/archive/597ba9173df5e07be4a8df17c2353b0b847c1bb8.tar.gz",
     "@codemirror/autocomplete": "^6.18.6",
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.4",
@@ -39,6 +38,7 @@
     "@codemirror/search": "^6.5.11",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.6",
+    "@max-prime-math/typr-companion-protocol": "https://github.com/max-prime-math/typr-server/archive/44d0b7d4e773209c21ddba7b15e64a5f236e7c7a.tar.gz",
     "@myriaddreamin/typst-ts-renderer": "^0.7.0-rc2",
     "@myriaddreamin/typst-ts-web-compiler": "^0.7.0-rc2",
     "@myriaddreamin/typst.ts": "^0.7.0-rc2",

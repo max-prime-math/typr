@@ -9,7 +9,8 @@ import {
 export type CloudStorageProviderId =
   | "google-drive"
   | "dropbox"
-  | "onedrive";
+  | "onedrive"
+  | "typr-companion";
 
 export type CloudSyncMode =
   | "manual"
