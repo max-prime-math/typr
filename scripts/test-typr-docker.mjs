@@ -68,6 +68,15 @@ function assertImageMetadata(image, variant) {
   const inspected = JSON.parse(docker(["image", "inspect", image]).stdout)[0];
   assert.equal(inspected.Config.User, "101:101");
   assert.ok(inspected.Config.Env.includes(`TYPR_IMAGE_VARIANT=${variant}`));
+  const expectedImageVersion = process.env.TYPR_EXPECTED_IMAGE_VERSION?.trim();
+  if (expectedImageVersion) {
+    assert.equal(inspected.Config.Labels?.["org.opencontainers.image.version"], expectedImageVersion);
+    assert.equal(inspected.Config.Labels?.["org.opencontainers.image.revision"], process.env.TYPR_EXPECTED_BUILD_SHA);
+    assert.equal(inspected.Config.Labels?.["org.opencontainers.image.source"], "https://github.com/max-prime-math/typr");
+    assert.equal(inspected.Config.Labels?.["org.opencontainers.image.licenses"], "AGPL-3.0-or-later");
+    assert.equal(inspected.Config.Labels?.["io.typr.image.variant"], variant);
+    assert.equal(inspected.Config.Labels?.["io.typr.compiler-assets.release"], lock.releaseId);
+  }
   docker([
     "run", "--rm", "--network", "none", "--entrypoint", "sh", image,
     "-c", "grep -q '^worker_processes 1;$' /etc/nginx/nginx.conf"

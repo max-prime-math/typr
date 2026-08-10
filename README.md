@@ -45,6 +45,8 @@ Run them only on a trusted machine, LAN, or private VPN, and never expose them t
 the public Internet. See the [self-hosting guide](docs/self-hosting.md) for
 Compose, variants, pinning, rollback, origin-scoped browser storage, HTTPS/HTTP
 limitations, and the separate Unraid templates.
+The [self-hosted release policy](docs/self-host-release.md) documents the
+separate annotated tag namespace and digest-first full/lite promotion gates.
 
 ## Typr Companion
 

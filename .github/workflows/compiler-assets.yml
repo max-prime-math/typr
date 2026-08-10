@@ -42,6 +42,7 @@ jobs:
           PUBLISH_CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           test "$PUBLISH_CONFIRMATION" = publish-immutable-compiler-assets
+          # shellcheck disable=SC2016
           node -e 'const lock=require("./compiler-assets.lock.json"); if (lock.releaseId !== process.env.REQUESTED_RELEASE_ID) throw new Error(`Requested ${process.env.REQUESTED_RELEASE_ID}; lock is ${lock.releaseId}`)'
 
       - name: Run source and manifest tests

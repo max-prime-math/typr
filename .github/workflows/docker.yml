@@ -1,0 +1,856 @@
+name: Docker Typr
+
+on:
+  pull_request:
+  push:
+    branches: [dev, beta, main]
+    tags: ["typr-v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ startsWith(github.ref, 'refs/tags/typr-v') && 'docker-typr-release' || format('docker-typr-{0}', github.ref) }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/typr-v') }}
+
+env:
+  GHCR_IMAGE_NAME: ghcr.io/max-prime-math/typr
+
+jobs:
+  source-checks:
+    name: Source, distribution, and dependency checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit the locked dependency graph
+        run: npm audit
+
+      - name: Validate distribution metadata
+        run: |
+          npm run test:unraid
+          npm run test:compose:self-hosted -- --config-only
+          node scripts/test-registry-probe-policy.mjs
+          node scripts/test-oci-image-index.mjs
+
+      - name: Typecheck and test
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build and audit the self-hosted application
+        env:
+          TYPR_BUILD_SHA: ${{ github.sha }}
+          TYPR_DEPLOYMENT_CHANNEL: stable
+        run: npm run build:self-hosted
+
+      - name: Build the hosted application with Google Drive enabled
+        env:
+          TYPR_BUILD_SHA: ${{ github.sha }}
+          TYPR_DEPLOYMENT_CHANNEL: stable
+        run: npm run build
+
+  release-metadata:
+    name: Validate Typr release provenance
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v')
+    runs-on: ubuntu-24.04
+    outputs:
+      compiler_release: ${{ steps.release.outputs.compiler_release }}
+      created: ${{ steps.release.outputs.created }}
+      major: ${{ steps.release.outputs.major }}
+      major_minor: ${{ steps.release.outputs.major_minor }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout full annotated-tag history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Validate official annotated release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = max-prime-math/typr
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^typr-v(0|[1-9][0-9]*)\.((0|[1-9][0-9]*))\.((0|[1-9][0-9]*))$ ]]; then
+            echo "Typr container tags must have the exact form typr-vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = tag
+          test "$(git rev-list -n 1 "refs/tags/${GITHUB_REF_NAME}")" = "${GITHUB_SHA}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+
+          version="${GITHUB_REF_NAME#typr-v}"
+          package_version="$(node -p "require('./package.json').version")"
+          test "${package_version}" = "${version}"
+          IFS=. read -r major minor _ <<< "${version}"
+          {
+            echo "version=${version}"
+            echo "major_minor=${major}.${minor}"
+            echo "major=${major}"
+            echo "short_sha=${GITHUB_SHA::12}"
+            echo "compiler_release=$(node -p 'require("./compiler-assets.lock.json").releaseId')"
+            echo "created=$(git show -s --format=%cI HEAD)"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Validate optional Docker Hub configuration
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -eu
+          if [ -n "${DOCKERHUB_NAMESPACE}" ]; then
+            test -n "${DOCKERHUB_USERNAME}"
+            test -n "${DOCKERHUB_TOKEN}"
+          else
+            test -z "${DOCKERHUB_USERNAME}"
+          fi
+
+  test-images:
+    name: Build and test images (${{ matrix.platform }})
+    needs: source-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Prepare development image metadata
+        id: metadata
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")-dev.${GITHUB_SHA::12}"
+          if [[ "${GITHUB_REF_TYPE}" == tag ]]; then version="${GITHUB_REF_NAME#typr-v}"; fi
+          {
+            echo "version=${version}"
+            echo "created=$(git show -s --format=%cI HEAD)"
+            echo "compiler_release=$(node -p 'require("./compiler-assets.lock.json").releaseId')"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build lite architecture image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/typr.Dockerfile
+          target: lite
+          platforms: ${{ matrix.platform }}
+          load: true
+          pull: true
+          tags: typr:ci-${{ matrix.arch }}-lite
+          build-args: |
+            TYPR_DEPLOYMENT_CHANNEL=stable
+            TYPR_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=Typr
+            org.opencontainers.image.description=Typr self-hosted browser editor (lite compiler-assets variant)
+            org.opencontainers.image.url=https://typr.ca
+            org.opencontainers.image.source=https://github.com/max-prime-math/typr
+            org.opencontainers.image.documentation=https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md
+            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+            io.typr.image.variant=lite
+            io.typr.compiler-assets.release=${{ steps.metadata.outputs.compiler_release }}
+          cache-from: type=gha,scope=typr-lite-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=typr-lite-${{ matrix.arch }}
+
+      - name: Build full architecture image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/typr.Dockerfile
+          target: full
+          platforms: ${{ matrix.platform }}
+          load: true
+          pull: true
+          tags: typr:ci-${{ matrix.arch }}-full
+          build-args: |
+            TYPR_DEPLOYMENT_CHANNEL=stable
+            TYPR_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=Typr
+            org.opencontainers.image.description=Typr self-hosted browser editor with bundled compiler assets
+            org.opencontainers.image.url=https://typr.ca
+            org.opencontainers.image.source=https://github.com/max-prime-math/typr
+            org.opencontainers.image.documentation=https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md
+            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+            io.typr.image.variant=full
+            io.typr.compiler-assets.release=${{ steps.metadata.outputs.compiler_release }}
+          cache-from: type=gha,scope=typr-full-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=typr-full-${{ matrix.arch }}
+
+      - name: Extract the exact compiler pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/typr-compiler-assets"
+          container_id="$(docker create "typr:ci-${{ matrix.arch }}-full")"
+          trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
+          docker cp "${container_id}:/compiler-assets/." "${RUNNER_TEMP}/typr-compiler-assets/"
+          docker rm "${container_id}"
+          trap - EXIT
+
+      - name: Run adversarial container matrix
+        env:
+          TYPR_COMPILER_ASSETS_DIR: ${{ runner.temp }}/typr-compiler-assets
+          TYPR_EXPECTED_BUILD_SHA: ${{ github.sha }}
+          TYPR_EXPECTED_CHANNEL: stable
+          TYPR_EXPECTED_IMAGE_VERSION: ${{ steps.metadata.outputs.version }}
+          TYPR_FULL_IMAGE: typr:ci-${{ matrix.arch }}-full
+          TYPR_LITE_IMAGE: typr:ci-${{ matrix.arch }}-lite
+        run: npm run test:docker:self-hosted
+
+      - name: Run production Compose matrix
+        env:
+          TYPR_COMPILER_ASSETS_DIR: ${{ runner.temp }}/typr-compiler-assets
+          TYPR_FULL_IMAGE: typr:ci-${{ matrix.arch }}-full
+          TYPR_LITE_IMAGE: typr:ci-${{ matrix.arch }}-lite
+        run: npm run test:compose:self-hosted
+
+      - name: Install browser engines
+        if: matrix.arch == 'amd64'
+        run: npx playwright install --with-deps chromium firefox
+
+      - name: Test full image in Chromium and Firefox
+        if: matrix.arch == 'amd64'
+        env:
+          TYPR_SELF_HOSTED_IMAGE: typr:ci-amd64-full
+        run: npm run test:e2e:self-hosted
+
+      - name: Test lite R2 image in Chromium and Firefox
+        if: matrix.arch == 'amd64'
+        env:
+          TYPR_SELF_HOSTED_IMAGE: typr:ci-amd64-lite
+        run: npm run test:e2e:self-hosted
+
+      - name: Test lite local-assets image in Chromium and Firefox
+        if: matrix.arch == 'amd64'
+        env:
+          TYPR_COMPILER_ASSETS_DIR: ${{ runner.temp }}/typr-compiler-assets
+          TYPR_SELF_HOSTED_IMAGE: typr:ci-amd64-lite
+        run: npm run test:e2e:self-hosted
+
+  publish-candidates:
+    name: Publish full and lite candidate digests
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v')
+    needs: [source-checks, release-metadata, test-images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: container-release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      full_digest: ${{ steps.full.outputs.digest }}
+      lite_digest: ${{ steps.lite.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish full candidate
+        id: full
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/typr.Dockerfile
+          target: full
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ env.GHCR_IMAGE_NAME }}:candidate-${{ needs.release-metadata.outputs.short_sha }}-${{ github.run_id }}-${{ github.run_attempt }}-full
+          build-args: |
+            TYPR_DEPLOYMENT_CHANNEL=stable
+            TYPR_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=Typr
+            org.opencontainers.image.description=Typr self-hosted browser editor with bundled compiler assets
+            org.opencontainers.image.url=https://typr.ca
+            org.opencontainers.image.source=https://github.com/max-prime-math/typr
+            org.opencontainers.image.documentation=https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md
+            org.opencontainers.image.version=${{ needs.release-metadata.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ needs.release-metadata.outputs.created }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+            io.typr.image.variant=full
+            io.typr.compiler-assets.release=${{ needs.release-metadata.outputs.compiler_release }}
+          cache-from: |
+            type=gha,scope=typr-full-amd64
+            type=gha,scope=typr-full-arm64
+          cache-to: type=gha,mode=max,scope=typr-full-release
+          provenance: mode=max
+          sbom: true
+
+      - name: Build and publish lite candidate
+        id: lite
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/typr.Dockerfile
+          target: lite
+          platforms: linux/amd64,linux/arm64
+          push: true
+          pull: true
+          tags: ${{ env.GHCR_IMAGE_NAME }}:candidate-${{ needs.release-metadata.outputs.short_sha }}-${{ github.run_id }}-${{ github.run_attempt }}-lite
+          build-args: |
+            TYPR_DEPLOYMENT_CHANNEL=stable
+            TYPR_BUILD_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=Typr
+            org.opencontainers.image.description=Typr self-hosted browser editor (lite compiler-assets variant)
+            org.opencontainers.image.url=https://typr.ca
+            org.opencontainers.image.source=https://github.com/max-prime-math/typr
+            org.opencontainers.image.documentation=https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md
+            org.opencontainers.image.version=${{ needs.release-metadata.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ needs.release-metadata.outputs.created }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+            io.typr.image.variant=lite
+            io.typr.compiler-assets.release=${{ needs.release-metadata.outputs.compiler_release }}
+          cache-from: |
+            type=gha,scope=typr-lite-amd64
+            type=gha,scope=typr-lite-arm64
+          cache-to: type=gha,mode=max,scope=typr-lite-release
+          provenance: mode=max
+          sbom: true
+
+      - name: Inspect candidate indexes and attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          for digest in "${{ steps.full.outputs.digest }}" "${{ steps.lite.outputs.digest }}"; do
+            reference="${GHCR_IMAGE_NAME}@${digest}"
+            docker buildx imagetools inspect "${reference}" --raw > /tmp/index.json
+            node scripts/verify-oci-image-index.mjs /tmp/index.json
+            docker buildx imagetools inspect "${reference}" --format '{{ json .SBOM }}' > /tmp/sbom.json
+            docker buildx imagetools inspect "${reference}" --format '{{ json .Provenance }}' > /tmp/provenance.json
+            node -e 'const value=require("/tmp/sbom.json"); for (const p of ["linux/amd64","linux/arm64"]) if (!value?.[p]?.SPDX?.SPDXID) process.exit(1)'
+            node -e 'const value=require("/tmp/provenance.json"); for (const p of ["linux/amd64","linux/arm64"]) if (!value?.[p]?.SLSA?.buildType) process.exit(1)'
+          done
+
+  verify-candidates:
+    name: Verify candidate digests (${{ matrix.platform }})
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v')
+    needs: [publish-candidates, release-metadata]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Pull candidate platform images anonymously
+        run: |
+          docker pull --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}@${{ needs.publish-candidates.outputs.full_digest }}"
+          docker pull --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}@${{ needs.publish-candidates.outputs.lite_digest }}"
+
+      - name: Extract candidate compiler pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/typr-compiler-assets"
+          container_id="$(docker create --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}@${{ needs.publish-candidates.outputs.full_digest }}")"
+          trap 'docker rm -f "${container_id}" >/dev/null 2>&1 || true' EXIT
+          docker cp "${container_id}:/compiler-assets/." "${RUNNER_TEMP}/typr-compiler-assets/"
+          docker rm "${container_id}"
+          trap - EXIT
+
+      - name: Test actual candidate digests
+        env:
+          TYPR_COMPILER_ASSETS_DIR: ${{ runner.temp }}/typr-compiler-assets
+          TYPR_EXPECTED_BUILD_SHA: ${{ github.sha }}
+          TYPR_EXPECTED_CHANNEL: stable
+          TYPR_EXPECTED_IMAGE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          TYPR_FULL_IMAGE: ${{ env.GHCR_IMAGE_NAME }}@${{ needs.publish-candidates.outputs.full_digest }}
+          TYPR_LITE_IMAGE: ${{ env.GHCR_IMAGE_NAME }}@${{ needs.publish-candidates.outputs.lite_digest }}
+        run: |
+          npm run test:docker:self-hosted
+          npm run test:compose:self-hosted
+
+  promote-exact:
+    name: Promote verified exact and SHA tags
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v')
+    needs: [publish-candidates, release-metadata, verify-candidates]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout release policy helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create exact tags without rebuilding
+        shell: bash
+        env:
+          FULL_DIGEST: ${{ needs.publish-candidates.outputs.full_digest }}
+          LITE_DIGEST: ${{ needs.publish-candidates.outputs.lite_digest }}
+          SHORT_SHA: ${{ needs.release-metadata.outputs.short_sha }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKOPEO_IMAGE="quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
+          inspect_digest_or_absent() {
+            local target="$1"
+            local output
+            if output="$(docker run --rm -v "${HOME}/.docker:/auth:ro" "${SKOPEO_IMAGE}" inspect \
+              --authfile /auth/config.json --format '{{.Digest}}' "docker://${target}" 2>/tmp/typr-inspect-error)"; then
+              INSPECTED_DIGEST="${output}"
+              [[ "${INSPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+              return
+            fi
+            if node scripts/classify-registry-probe-error.mjs /tmp/typr-inspect-error; then
+              INSPECTED_DIGEST=""
+              return
+            fi
+            cat /tmp/typr-inspect-error >&2
+            return 1
+          }
+          preflight_exact() {
+            local source_digest="$1"
+            shift
+            local tag target
+            for tag in "$@"; do
+              target="${GHCR_IMAGE_NAME}:${tag}"
+              inspect_digest_or_absent "${target}"
+              if [ -n "${INSPECTED_DIGEST}" ] && [ "${INSPECTED_DIGEST}" != "${source_digest}" ]; then
+                echo "Refusing to overwrite immutable ${target}: ${INSPECTED_DIGEST} != ${source_digest}" >&2
+                exit 1
+              fi
+            done
+          }
+          promote_exact() {
+            source_digest="$1"
+            shift
+            for tag in "$@"; do
+              target="${GHCR_IMAGE_NAME}:${tag}"
+              docker buildx imagetools create --tag "${target}" "${GHCR_IMAGE_NAME}@${source_digest}"
+              resolved="$(docker buildx imagetools inspect "${target}" | awk '$1 == "Digest:" { print $2; exit }')"
+              test "${resolved}" = "${source_digest}"
+            done
+          }
+          preflight_exact "${FULL_DIGEST}" "${VERSION}" "${VERSION}-full" "sha-${SHORT_SHA}" "sha-${SHORT_SHA}-full"
+          preflight_exact "${LITE_DIGEST}" "${VERSION}-lite" "sha-${SHORT_SHA}-lite"
+          promote_exact "${FULL_DIGEST}" "${VERSION}" "${VERSION}-full" "sha-${SHORT_SHA}" "sha-${SHORT_SHA}-full"
+          promote_exact "${LITE_DIGEST}" "${VERSION}-lite" "sha-${SHORT_SHA}-lite"
+
+  verify-exact:
+    name: Verify exact public tags (${{ matrix.platform }})
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v')
+    needs: [promote-exact, publish-candidates, release-metadata]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Pull exact tags anonymously
+        run: |
+          docker pull --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}:${{ needs.release-metadata.outputs.version }}"
+          docker pull --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}:${{ needs.release-metadata.outputs.version }}-lite"
+          docker pull --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}:sha-${{ needs.release-metadata.outputs.short_sha }}"
+          docker pull --platform "${{ matrix.platform }}" "${GHCR_IMAGE_NAME}:sha-${{ needs.release-metadata.outputs.short_sha }}-lite"
+
+      - name: Verify exact tag metadata
+        env:
+          FULL_IMAGE: ${{ env.GHCR_IMAGE_NAME }}:${{ needs.release-metadata.outputs.version }}
+          LITE_IMAGE: ${{ env.GHCR_IMAGE_NAME }}:${{ needs.release-metadata.outputs.version }}-lite
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -eu
+          test "$(docker image inspect "${FULL_IMAGE}" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')" = "${VERSION}"
+          test "$(docker image inspect "${FULL_IMAGE}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "${GITHUB_SHA}"
+          test "$(docker image inspect "${FULL_IMAGE}" --format '{{ index .Config.Labels "io.typr.image.variant" }}')" = full
+          test "$(docker image inspect "${LITE_IMAGE}" --format '{{ index .Config.Labels "io.typr.image.variant" }}')" = lite
+
+  promote-floating:
+    name: Promote verified floating GHCR aliases
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v')
+    needs: [publish-candidates, release-metadata, verify-exact]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout release policy helpers
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preflight every floating alias
+        env:
+          MAJOR: ${{ needs.release-metadata.outputs.major }}
+          MAJOR_MINOR: ${{ needs.release-metadata.outputs.major_minor }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKOPEO_IMAGE="quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
+          probe_manifest() {
+            local target="$1"
+            if PROBED_DIGEST="$(docker run --rm -v "${HOME}/.docker:/auth:ro" "${SKOPEO_IMAGE}" inspect \
+              --authfile /auth/config.json --format '{{.Digest}}' "docker://${target}" 2>/tmp/typr-probe-error)"; then
+              [[ "${PROBED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+              return
+            fi
+            if node scripts/classify-registry-probe-error.mjs /tmp/typr-probe-error; then
+              PROBED_DIGEST=""
+              return
+            fi
+            cat /tmp/typr-probe-error >&2
+            return 1
+          }
+          preflight_alias() {
+            local tag="$1"
+            local expected_variant="$2"
+            local target="${GHCR_IMAGE_NAME}:${tag}"
+            probe_manifest "${target}"
+            if [ -n "${PROBED_DIGEST}" ]; then
+              docker pull "${target}" >/tmp/typr-pull-output
+              current="$(docker image inspect "${target}" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+              variant="$(docker image inspect "${target}" --format '{{ index .Config.Labels "io.typr.image.variant" }}')"
+              if [[ ! "${current}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || [ "${variant}" != "${expected_variant}" ]; then
+                echo "Current ${target} has invalid version/variant metadata: ${current}/${variant}" >&2
+                exit 1
+              fi
+              # shellcheck disable=SC2016
+              node -e 'const p=v=>v.split(".").map(Number); const [a,b]=[p(process.argv[1]),p(process.argv[2])]; for(let i=0;i<3;i++){if(a[i]>b[i]){console.error(`Refusing downgrade from ${process.argv[1]} to ${process.argv[2]}`);process.exit(1)} if(a[i]<b[i])break}' "${current}" "${VERSION}"
+              return
+            fi
+          }
+          for tag in "${MAJOR_MINOR}" "${MAJOR_MINOR}-full" "${MAJOR}-full" "${MAJOR}" latest-full latest; do
+            preflight_alias "${tag}" full
+          done
+          for tag in "${MAJOR_MINOR}-lite" "${MAJOR}-lite" latest-lite; do
+            preflight_alias "${tag}" lite
+          done
+
+      - name: Promote floating aliases from verified digests
+        env:
+          FULL_DIGEST: ${{ needs.publish-candidates.outputs.full_digest }}
+          LITE_DIGEST: ${{ needs.publish-candidates.outputs.lite_digest }}
+          MAJOR: ${{ needs.release-metadata.outputs.major }}
+          MAJOR_MINOR: ${{ needs.release-metadata.outputs.major_minor }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE_NAME}:${MAJOR_MINOR}" \
+            --tag "${GHCR_IMAGE_NAME}:${MAJOR_MINOR}-full" \
+            --tag "${GHCR_IMAGE_NAME}:${MAJOR}-full" \
+            "${GHCR_IMAGE_NAME}@${FULL_DIGEST}"
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE_NAME}:${MAJOR_MINOR}-lite" \
+            --tag "${GHCR_IMAGE_NAME}:${MAJOR}-lite" \
+            --tag "${GHCR_IMAGE_NAME}:latest-lite" \
+            "${GHCR_IMAGE_NAME}@${LITE_DIGEST}"
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE_NAME}:${MAJOR}" \
+            --tag "${GHCR_IMAGE_NAME}:latest-full" \
+            --tag "${GHCR_IMAGE_NAME}:latest" \
+            "${GHCR_IMAGE_NAME}@${FULL_DIGEST}"
+          for tag in "${MAJOR_MINOR}" "${MAJOR_MINOR}-full" "${MAJOR}-full" "${MAJOR_MINOR}-lite" "${MAJOR}-lite" latest-lite "${MAJOR}" latest-full latest; do
+            resolved="$(docker buildx imagetools inspect "${GHCR_IMAGE_NAME}:${tag}" | awk '$1 == "Digest:" { print $2; exit }')"
+            case "${tag}" in
+              *-lite) test "${resolved}" = "${LITE_DIGEST}" ;;
+              *) test "${resolved}" = "${FULL_DIGEST}" ;;
+            esac
+          done
+
+  mirror-dockerhub:
+    name: Mirror verified images to Docker Hub
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/typr-v') && vars.DOCKERHUB_NAMESPACE != ''
+    needs: [publish-candidates, release-metadata, promote-floating]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Stage and verify mirrored candidate digests
+        id: mirror
+        env:
+          DESTINATION: ${{ vars.DOCKERHUB_NAMESPACE }}/typr
+          FULL_DIGEST: ${{ needs.publish-candidates.outputs.full_digest }}
+          LITE_DIGEST: ${{ needs.publish-candidates.outputs.lite_digest }}
+          SHORT_SHA: ${{ needs.release-metadata.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          full_candidate="candidate-${SHORT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-full"
+          lite_candidate="candidate-${SHORT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-lite"
+          skopeo_image="quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
+          docker run --rm -v "${HOME}/.docker:/auth:ro" "${skopeo_image}" copy \
+            --all --preserve-digests --authfile /auth/config.json \
+            "docker://${GHCR_IMAGE_NAME}@${FULL_DIGEST}" "docker://${DESTINATION}:${full_candidate}"
+          docker run --rm -v "${HOME}/.docker:/auth:ro" "${skopeo_image}" copy \
+            --all --preserve-digests --authfile /auth/config.json \
+            "docker://${GHCR_IMAGE_NAME}@${LITE_DIGEST}" "docker://${DESTINATION}:${lite_candidate}"
+          destination_full_digest="$(docker buildx imagetools inspect "${DESTINATION}:${full_candidate}" | awk '$1 == "Digest:" { print $2; exit }')"
+          destination_lite_digest="$(docker buildx imagetools inspect "${DESTINATION}:${lite_candidate}" | awk '$1 == "Digest:" { print $2; exit }')"
+          test "${destination_full_digest}" = "${FULL_DIGEST}"
+          test "${destination_lite_digest}" = "${LITE_DIGEST}"
+          for digest in "${destination_full_digest}" "${destination_lite_digest}"; do
+            docker buildx imagetools inspect "${DESTINATION}@${digest}" --raw > /tmp/dockerhub-index.json
+            node scripts/verify-oci-image-index.mjs /tmp/dockerhub-index.json
+          done
+          {
+            echo "full_digest=${destination_full_digest}"
+            echo "lite_digest=${destination_lite_digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Preflight and create immutable mirror tags
+        env:
+          DESTINATION: ${{ vars.DOCKERHUB_NAMESPACE }}/typr
+          FULL_DIGEST: ${{ steps.mirror.outputs.full_digest }}
+          LITE_DIGEST: ${{ steps.mirror.outputs.lite_digest }}
+          SHORT_SHA: ${{ needs.release-metadata.outputs.short_sha }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKOPEO_IMAGE="quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
+          inspect_digest_or_absent() {
+            local target="$1"
+            local output
+            if output="$(docker run --rm -v "${HOME}/.docker:/auth:ro" "${SKOPEO_IMAGE}" inspect \
+              --authfile /auth/config.json --format '{{.Digest}}' "docker://${target}" 2>/tmp/typr-mirror-inspect-error)"; then
+              INSPECTED_DIGEST="${output}"
+              [[ "${INSPECTED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+              return
+            fi
+            if node scripts/classify-registry-probe-error.mjs /tmp/typr-mirror-inspect-error; then
+              INSPECTED_DIGEST=""
+              return
+            fi
+            cat /tmp/typr-mirror-inspect-error >&2
+            return 1
+          }
+          preflight_exact() {
+            local source_digest="$1"
+            shift
+            local tag target
+            for tag in "$@"; do
+              target="${DESTINATION}:${tag}"
+              inspect_digest_or_absent "${target}"
+              if [ -n "${INSPECTED_DIGEST}" ] && [ "${INSPECTED_DIGEST}" != "${source_digest}" ]; then
+                echo "Refusing to overwrite immutable mirror tag ${target}." >&2
+                exit 1
+              fi
+            done
+          }
+          promote_exact() {
+            source_digest="$1"
+            shift
+            for tag in "$@"; do
+              target="${DESTINATION}:${tag}"
+              docker buildx imagetools create --tag "${target}" "${DESTINATION}@${source_digest}"
+              resolved="$(docker buildx imagetools inspect "${target}" | awk '$1 == "Digest:" { print $2; exit }')"
+              test "${resolved}" = "${source_digest}"
+            done
+          }
+          preflight_exact "${FULL_DIGEST}" "${VERSION}" "${VERSION}-full" "sha-${SHORT_SHA}" "sha-${SHORT_SHA}-full"
+          preflight_exact "${LITE_DIGEST}" "${VERSION}-lite" "sha-${SHORT_SHA}-lite"
+          promote_exact "${FULL_DIGEST}" "${VERSION}" "${VERSION}-full" "sha-${SHORT_SHA}" "sha-${SHORT_SHA}-full"
+          promote_exact "${LITE_DIGEST}" "${VERSION}-lite" "sha-${SHORT_SHA}-lite"
+
+      - name: Log out and verify exact mirror tags anonymously
+        env:
+          DESTINATION: ${{ vars.DOCKERHUB_NAMESPACE }}/typr
+          SHORT_SHA: ${{ needs.release-metadata.outputs.short_sha }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker logout
+          for tag in "${VERSION}" "${VERSION}-lite" "sha-${SHORT_SHA}" "sha-${SHORT_SHA}-lite"; do
+            docker buildx imagetools inspect "${DESTINATION}:${tag}" --raw > /tmp/dockerhub-public-index.json
+            node scripts/verify-oci-image-index.mjs /tmp/dockerhub-public-index.json
+          done
+          docker pull --platform linux/amd64 "${DESTINATION}:${VERSION}"
+          docker pull --platform linux/amd64 "${DESTINATION}:${VERSION}-lite"
+
+      - name: Log back in to Docker Hub for alias promotion
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight and promote floating mirror aliases
+        env:
+          DESTINATION: ${{ vars.DOCKERHUB_NAMESPACE }}/typr
+          FULL_DIGEST: ${{ steps.mirror.outputs.full_digest }}
+          LITE_DIGEST: ${{ steps.mirror.outputs.lite_digest }}
+          MAJOR: ${{ needs.release-metadata.outputs.major }}
+          MAJOR_MINOR: ${{ needs.release-metadata.outputs.major_minor }}
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKOPEO_IMAGE="quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4"
+          probe_manifest() {
+            local target="$1"
+            if PROBED_DIGEST="$(docker run --rm -v "${HOME}/.docker:/auth:ro" "${SKOPEO_IMAGE}" inspect \
+              --authfile /auth/config.json --format '{{.Digest}}' "docker://${target}" 2>/tmp/typr-mirror-probe-error)"; then
+              [[ "${PROBED_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+              return
+            fi
+            if node scripts/classify-registry-probe-error.mjs /tmp/typr-mirror-probe-error; then
+              PROBED_DIGEST=""
+              return
+            fi
+            cat /tmp/typr-mirror-probe-error >&2
+            return 1
+          }
+          preflight_alias() {
+            local tag="$1"
+            local expected_variant="$2"
+            local target="${DESTINATION}:${tag}"
+            probe_manifest "${target}"
+            if [ -n "${PROBED_DIGEST}" ]; then
+              docker pull "${target}" >/tmp/typr-mirror-pull-output
+              current="$(docker image inspect "${target}" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+              variant="$(docker image inspect "${target}" --format '{{ index .Config.Labels "io.typr.image.variant" }}')"
+              if [[ ! "${current}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || [ "${variant}" != "${expected_variant}" ]; then
+                echo "Current ${target} has invalid version/variant metadata: ${current}/${variant}" >&2
+                exit 1
+              fi
+              node -e 'const p=v=>v.split(".").map(Number); const [a,b]=[p(process.argv[1]),p(process.argv[2])]; for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(1); if(a[i]<b[i])break}' "${current}" "${VERSION}"
+              return
+            fi
+          }
+          for tag in "${MAJOR_MINOR}" "${MAJOR_MINOR}-full" "${MAJOR}-full" "${MAJOR}" latest-full latest; do
+            preflight_alias "${tag}" full
+          done
+          for tag in "${MAJOR_MINOR}-lite" "${MAJOR}-lite" latest-lite; do
+            preflight_alias "${tag}" lite
+          done
+          docker buildx imagetools create \
+            --tag "${DESTINATION}:${MAJOR_MINOR}" --tag "${DESTINATION}:${MAJOR_MINOR}-full" \
+            --tag "${DESTINATION}:${MAJOR}-full" \
+            "${DESTINATION}@${FULL_DIGEST}"
+          docker buildx imagetools create \
+            --tag "${DESTINATION}:${MAJOR_MINOR}-lite" --tag "${DESTINATION}:${MAJOR}-lite" \
+            --tag "${DESTINATION}:latest-lite" \
+            "${DESTINATION}@${LITE_DIGEST}"
+          docker buildx imagetools create \
+            --tag "${DESTINATION}:${MAJOR}" --tag "${DESTINATION}:latest-full" \
+            --tag "${DESTINATION}:latest" \
+            "${DESTINATION}@${FULL_DIGEST}"
+          for tag in "${MAJOR_MINOR}" "${MAJOR_MINOR}-full" "${MAJOR}-full" "${MAJOR}" latest-full latest; do
+            resolved="$(docker buildx imagetools inspect "${DESTINATION}:${tag}" | awk '$1 == "Digest:" { print $2; exit }')"
+            test "${resolved}" = "${FULL_DIGEST}"
+          done
+          for tag in "${MAJOR_MINOR}-lite" "${MAJOR}-lite" latest-lite; do
+            resolved="$(docker buildx imagetools inspect "${DESTINATION}:${tag}" | awk '$1 == "Digest:" { print $2; exit }')"
+            test "${resolved}" = "${LITE_DIGEST}"
+          done

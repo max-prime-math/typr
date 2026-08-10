@@ -27,16 +27,20 @@ security boundary.
 The full and lite variants contain the same application files and disable
 Google Drive at build time. Browser-local storage remains the default in both.
 
-| Variant | Moving tag | Compiler assets | Network needed to load the pinned compiler core |
-|---|---|---|---|
-| Full | `latest` | Exact release bundled in the image | No |
-| Lite, R2 | `latest-lite` | Exact release proxied from `assets.typr.ca` through the Typr origin | Yes |
-| Lite, local | `latest-lite` | Exact release mounted read-only at `/compiler-assets` | No |
+| Variant | Moving tag | Exact tag | Compiler assets | Network needed to load the pinned compiler core |
+|---|---|---|---|---|
+| Full | `latest` (`latest-full` is explicit) | `X.Y.Z` or `X.Y.Z-full` | Exact release bundled in the image | No |
+| Lite, R2 | `latest-lite` | `X.Y.Z-lite` | Exact release proxied from `assets.typr.ca` through the Typr origin | Yes |
+| Lite, local | `latest-lite` | `X.Y.Z-lite` | Exact release mounted read-only at `/compiler-assets` | No |
 
 For reproducible deployment and rollback, replace moving tags with the complete
-`X.Y.Z` and `X.Y.Z-lite` tags documented by a future Typr container release. Do not
-mix an asset directory from one release with another image: lite/local validates
-the manifest, exact file set, sizes, and SHA-256 hashes before it becomes healthy.
+`X.Y.Z` and `X.Y.Z-lite` tags or a registry digest. Bare tags always select the
+full image. `X.Y`, `X`, and `latest` are moving full aliases; their `-full` and
+`-lite` forms make the variant explicit. `sha-<12 characters>` is an immutable
+full-image diagnostic alias and the suffixed SHA aliases select an explicit
+variant. Do not mix an asset directory from one release with another image:
+lite/local validates the manifest, exact file set, sizes, and SHA-256 hashes
+before it becomes healthy.
 
 "Full" means the pinned Typst compiler and BusyTeX bundles are included. Some
 user-selected packages, external images, links, GitHub operations, and optional
