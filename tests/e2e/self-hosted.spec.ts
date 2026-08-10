@@ -34,7 +34,6 @@ test("self-hosted image excludes cloud Drive code and keeps browser storage auth
   const appOrigin = new URL(String(testInfo.project.use.baseURL)).origin;
   const unexpectedCrossOriginRequests: string[] = [];
   const workspaceRequests: string[] = [];
-  const compilerAssetRequests: string[] = [];
   let blockNetwork = false;
   await page.route("**/*", async (route) => {
     const request = route.request();
@@ -50,7 +49,6 @@ test("self-hosted image excludes cloud Drive code and keeps browser storage auth
       return;
     }
     if (url.pathname.startsWith("/api/v1/workspace/")) workspaceRequests.push(request.url());
-    if (url.pathname.startsWith("/compiler-assets/")) compilerAssetRequests.push(request.url());
     await route.continue();
   });
 
@@ -61,7 +59,6 @@ test("self-hosted image excludes cloud Drive code and keeps browser storage auth
 
   await page.getByRole("button", { name: "Compile", exact: true }).click();
   await expect(page.getByRole("img", { name: "Typst preview document" })).toBeVisible({ timeout: 60_000 });
-  expect(compilerAssetRequests.some((url) => url.endsWith("/typst/typst_ts_web_compiler_bg.wasm"))).toBe(true);
 
   const editor = page.locator(".cm-content").first();
   await expect(editor).toBeVisible();

@@ -62,7 +62,14 @@ try {
     env: { ...process.env, PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}/` },
     stdio: "inherit"
   });
-  if (result.status !== 0) process.exitCode = result.status ?? 1;
+  if (result.status !== 0) {
+    process.exitCode = result.status ?? 1;
+  } else {
+    const accessLog = run("docker", ["logs", name]).stdout;
+    if (!/\/compiler-assets\/[^ ]+\/typst\/typst_ts_web_compiler_bg\.wasm/.test(accessLog)) {
+      throw new Error("Successful browser compile did not request the pinned Typst compiler from the container.");
+    }
+  }
 } finally {
   run("docker", ["rm", "-f", name], { allowFailure: true });
 }
