@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultSnapshot } from "../app/appState";
+import { createDefaultSnapshot, DEFAULT_DOCUMENT_NAME } from "../app/appState";
 import {
   createProjectStorageFromSnapshot,
   createEmptyProjectRepository,
@@ -58,11 +58,11 @@ describe("repoBackend", () => {
     expect(commit.ok).toBe(true);
     expect(commit.ok && commit.value.shortSha).toHaveLength(7);
 
-    project = writeProjectFile(project, "main.typ", "#set page(width: auto)\nChanged\n");
+    project = writeProjectFile(project, DEFAULT_DOCUMENT_NAME, "#set page(width: auto)\nChanged\n");
     const modified = await backend.status(project);
     expect(modified.ok && modified.value.entries).toEqual([
       {
-        path: "main.typ",
+        path: DEFAULT_DOCUMENT_NAME,
         staged: null,
         worktree: "modified"
       }
