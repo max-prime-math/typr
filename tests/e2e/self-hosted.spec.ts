@@ -63,8 +63,10 @@ test("self-hosted image excludes cloud Drive code and keeps browser storage auth
   const editor = page.locator(".cm-content").first();
   await expect(editor).toBeVisible();
   await editor.click();
-  await page.keyboard.press("Control+End");
-  await page.keyboard.type(`\n${EDIT_MARKER}`);
+  await editor.press("Control+End");
+  await editor.press("Enter");
+  await editor.pressSequentially(EDIT_MARKER);
+  await expect(editor).toContainText(EDIT_MARKER);
   await expect.poll(() => persistedProjectContains(page, EDIT_MARKER)).toBe(true);
 
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
