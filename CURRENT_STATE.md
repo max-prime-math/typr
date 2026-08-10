@@ -348,21 +348,33 @@ tests; real Unraid validation remains an explicit external gate.
 
 ### Stage 6 — Independent publishing workflows
 
-Status: pending
+Status: complete (`46b18a5` + `a9d347a` Typr; `3ba7417` Companion)
 
-- Companion repository publishes only `typr-server` after native amd64/arm64
-  tests, with optional Docker Hub mirror.
-- Typr repository publishes full/lite `typr` manifests after source/container
-  tests, with optional Docker Hub mirror.
-- Add strict tag parsing, semver aliases, OCI metadata, provenance, SBOM,
-  concurrency, and post-publish verification.
+- [x] Make Companion publish only `typr-server` from a fresh annotated
+  `vMAJOR.MINOR.PATCH` tag whose version matches `companion-release.json` and
+  whose commit is reachable from protected `main`.
+- [x] Give Typr a distinct `typr-vMAJOR.MINOR.PATCH` release grammar so the
+  historical Companion `v0.1.0`/`v0.1.1` tags are never moved or reinterpreted.
+- [x] Gate both registries on source checks and native amd64/arm64 production
+  image suites, then publish a run-unique candidate digest with SPDX SBOM and
+  BuildKit provenance, test that digest anonymously, create immutable exact/SHA
+  tags, verify them anonymously, and only then promote every moving alias.
+- [x] Serialize release tags, reject exact-tag collisions and all-alias semantic
+  downgrades fail-closed, and pin every third-party action to a full commit SHA.
+- [x] Implement optional Docker Hub mirroring as a separate downstream step
+  using digest-pinned Skopeo recursive copies. Exact public tags are verified
+  before any Docker Hub floating alias moves; mirror failure cannot roll back
+  or invalidate GHCR.
+- [x] Add strict OCI-index/attestation and registry-error policy fixtures.
+  Only explicit `MANIFEST_UNKNOWN` means a tag is absent; repository, auth,
+  proxy, rate-limit, DNS, TLS, and unclassified failures abort publication.
 
 Gate: workflows lint/review cleanly; no publication trigger is exercised until
 the complete local validation stage passes.
 
 ### Stage 7 — Complete validation
 
-Status: pending
+Status: in progress (complete locally; branch CI pending)
 
 - Run clean installs, typechecks, unit tests, frontend builds, Docker builds,
   container integration/adversarial tests, Compose checks, and XML checks.
@@ -492,13 +504,42 @@ Only these are expected to require the user:
   `0.1.2-dev.87f53e4cb5e2`; stateless/mapped-workspace Compose, REST sandbox,
   TeXpresso POC, raster, and private WebSocket adversarial harnesses all pass.
   The image runs as `node`, and no tag or public image alias was published.
+- 2026-08-10: Stage 6 added independent, fail-closed release workflows at Typr
+  `46b18a554cc73623fbb9f3f29d6430dce31d6174` and Companion
+  `3ba7417e9fc24c9f4d30fe33902fa16a98635dec`. Both workflows pass actionlint
+  1.7.12, YAML parsing, whitespace checks, and three independent read-only
+  release/security reviews. All action references and the recursive Skopeo
+  mirror image are digest/commit pinned. Registry-policy fixtures reject
+  everything except explicit manifest-unknown responses, and OCI fixtures reject
+  missing, duplicate, or unexpected runnable/attestation descriptors.
+- 2026-08-10: dependency remediation reduced Typr and Companion `npm audit` to
+  zero findings. Typr typecheck, all 91 files / 413 tests, the self-hosted build
+  audit, and the hosted Google-Drive-enabled build pass with Vite 7.3.6,
+  Playwright 1.62.1, jsPDF 4.2.1, PDF.js 6.2.108, and SVG-Edit 7.4.2. Companion
+  typecheck and all 8 files / 57 tests pass; its Node base is now pinned by a
+  multi-platform digest.
+- 2026-08-10: the final Typr exact-image checkpoint is
+  `a9d347a370fe215de8154f53231915e98a23e61c`. Full and lite images identify
+  that revision/version/channel and pass the adversarial Docker matrix,
+  production Compose full/lite-R2/lite-local matrix, and Chromium plus Firefox
+  E2E in all three modes. Successful compiler requests are now evidenced by the
+  container access log so Firefox service-worker interception cannot hide them;
+  browser-local persistence, offline reload, no Drive UI/network, and no
+  implicit workspace traffic remain browser assertions.
+- 2026-08-10: the exact Companion image identifies
+  `3ba7417e9fc24c9f4d30fe33902fa16a98635dec` as
+  `0.1.2-dev.3ba7417e9fc2`. Stateless/mapped-workspace Compose, the full REST
+  confinement/recovery harness, persistent TeXpresso POC, page raster, and
+  private WebSocket live-preview harness all pass. No Git release tag, GHCR
+  candidate, exact tag, floating alias, or Docker Hub artifact was created.
 
 ## Current next action
 
-Push both verified Stage 5 milestones and confirm their non-publishing CI. Then
-implement Stage 6 as separate Typr full/lite and Companion publishing workflows
-with immutable action pins, strict tag/version semantics, pre-publish multiarch
-tests, provenance/SBOM, concurrency, and post-publish verification. Keep real
-Unraid installation, support topics, Community Applications submission, Docker
-Hub credentials, and any GHCR package-access change as explicit external gates.
-Do not publish images or create release tags yet.
+Push the verified Stage 6 commits and confirm their non-publishing branch CI on
+native amd64 and arm64. Then finish the Stage 7 evidence review. Before any
+release tag, configure the protected `container-release` environments and the
+existing public `typr-server` package's Actions access/linkage; the first Typr
+candidate must also be made Public before anonymous candidate verification can
+continue. Keep real Unraid installation, support topics, Community Applications
+submission, and optional Docker Hub credentials as explicit external gates. Do
+not publish images or create release tags yet.
