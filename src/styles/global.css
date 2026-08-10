@@ -1774,6 +1774,11 @@ button {
   -webkit-mask-image: url("../icons/toolbar/contrast.svg");
 }
 
+.toolbar-icon--live-preview {
+  mask-image: url("../icons/toolbar/live-preview.svg");
+  -webkit-mask-image: url("../icons/toolbar/live-preview.svg");
+}
+
 .toolbar-icon--pane-hide {
   mask-image: url("../icons/toolbar/pane-hide.svg");
   -webkit-mask-image: url("../icons/toolbar/pane-hide.svg");
@@ -7401,17 +7406,6 @@ button {
   white-space: nowrap;
 }
 
-.preview-mode-select {
-  max-width: 11.5rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-muted);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.72rem;
-  padding: 0.3rem 1.55rem 0.3rem 0.48rem;
-}
-
 .live-preview-fallback {
   position: relative;
   display: flex;
@@ -8475,10 +8469,6 @@ button {
     justify-content: flex-end;
     gap: 0.35rem;
     min-width: 0;
-  }
-
-  .pane__header--preview .preview-mode-select--mobile {
-    width: 7.4rem;
   }
 
   .pane__header--preview .preview-zoom-controls {

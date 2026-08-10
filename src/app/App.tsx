@@ -5173,7 +5173,7 @@ ${nextLine}` : nextLine;
     () => buildDiagramShadowFiles([...savedFigures, diagram]),
     [diagram, savedFigures]
   );
-  const isTexpressoPreviewRequested = snapshot.preferences.previewMode === "texpresso";
+  const isTexpressoPreviewPreferred = snapshot.preferences.previewMode === "texpresso";
   const isTexpressoSourceCandidate = Boolean(
     selectedProjectRepository &&
     activeSourceLanguage === "latex"
@@ -5205,6 +5205,10 @@ ${nextLine}` : nextLine;
       : getTexpressoProjectCompatibilityIssue(texpressoProject)
     : "Live Preview currently requires an open LaTeX .tex document.";
   const isTexpressoProjectSupported = texpressoProjectCompatibilityIssue === null;
+  const isTexpressoPreviewAvailable =
+    companionConnection.state === "available" && isTexpressoProjectSupported;
+  const isTexpressoPreviewRequested =
+    isTexpressoPreviewPreferred && isTexpressoPreviewAvailable;
   const texpressoSessionKey = texpressoProject && selectedProjectRepository
     ? `${selectedProjectRepository.id}:${texpressoProject.mainFilePath}`
     : null;
@@ -5218,13 +5222,6 @@ ${nextLine}` : nextLine;
     project: texpressoProject,
     sessionKey: texpressoSessionKey
   });
-  const texpressoDisplaySnapshot = isTexpressoPreviewRequested && !isTexpressoProjectSupported
-    ? {
-        ...texpressoSnapshot,
-        status: "disconnected" as const,
-        statusDetail: texpressoProjectCompatibilityIssue ?? "This project is not supported by Live Preview."
-      }
-    : texpressoSnapshot;
   const handleTexpressoEditorChanges = useCallback((
     changes: readonly TypstEditorTextChange[],
     previousValue: string
@@ -18170,23 +18167,6 @@ ${nextLine}` : nextLine;
               <h2>Preview</h2>
             </div>
             <div className="pane__header-center pane__header-center--preview-zoom">
-              <select
-                aria-label="Preview mode"
-                className="preview-mode-select"
-                onChange={(event) => handlePreviewModeChange(event.target.value as "pdf" | "texpresso")}
-                title={isTexpressoProjectSupported
-                  ? "Choose authoritative PDF or experimental TeXpresso live preview"
-                  : texpressoProjectCompatibilityIssue ?? "TeXpresso live preview is unavailable for this project"}
-                value={snapshot.preferences.previewMode}
-              >
-                <option value="pdf">PDF Preview</option>
-                <option
-                  disabled={companionConnection.state !== "available" || !isTexpressoProjectSupported}
-                  value="texpresso"
-                >
-                  Live Preview (Experimental)
-                </option>
-              </select>
               <PreviewZoomControls
                 onZoomChange={setPreviewZoom}
                 zoom={previewZoom}
@@ -18194,20 +18174,6 @@ ${nextLine}` : nextLine;
             </div>
             <div className="pane__header-actions">
               <div className="pane__header-mobile-zoom">
-                <select
-                  aria-label="Preview mode"
-                  className="preview-mode-select preview-mode-select--mobile"
-                  onChange={(event) => handlePreviewModeChange(event.target.value as "pdf" | "texpresso")}
-                  value={snapshot.preferences.previewMode}
-                >
-                  <option value="pdf">PDF</option>
-                  <option
-                    disabled={companionConnection.state !== "available" || !isTexpressoProjectSupported}
-                    value="texpresso"
-                  >
-                    Live (Experimental)
-                  </option>
-                </select>
                 <PreviewZoomControls
                   onZoomChange={setPreviewZoom}
                   zoom={previewZoom}
@@ -18217,6 +18183,22 @@ ${nextLine}` : nextLine;
                 <span className="pane__meta pane__meta--status">
                   <PreviewStatusIcon kind="compiling" label={visiblePreviewCompilerStatus.label} />
                 </span>
+              ) : null}
+              {isTexpressoPreviewAvailable ? (
+                <button
+                  aria-label={isTexpressoPreviewRequested ? "Use PDF preview" : "Use live PDF preview"}
+                  aria-pressed={isTexpressoPreviewRequested}
+                  className="pane__button pane__button--quiet pane__icon-button"
+                  data-preview-mode-toggle="texpresso"
+                  onClick={() => handlePreviewModeChange(isTexpressoPreviewRequested ? "pdf" : "texpresso")}
+                  title={isTexpressoPreviewRequested ? "Use PDF preview" : "Use live PDF preview (experimental)"}
+                  type="button"
+                >
+                  <span aria-hidden="true" className="toolbar-icon toolbar-icon--live-preview" />
+                  <span className="visually-hidden">
+                    {isTexpressoPreviewRequested ? "Use PDF preview" : "Use live PDF preview"}
+                  </span>
+                </button>
               ) : null}
               <button
                 aria-label={isPaperView ? "Theme contrast" : "Paper contrast"}
@@ -18307,9 +18289,7 @@ ${nextLine}` : nextLine;
             workspacePreview={visibleWorkspacePreview}
             zoom={previewZoom}
           />
-          {isTexpressoPreviewRequested ? (
-            <TexpressoPreviewStatus snapshot={texpressoDisplaySnapshot} />
-          ) : null}
+          {isTexpressoPreviewRequested ? <TexpressoPreviewStatus snapshot={texpressoSnapshot} /> : null}
           </div>
           )}
         </section>
@@ -18392,9 +18372,7 @@ ${nextLine}` : nextLine;
               workspacePreview={visibleWorkspacePreview}
               zoom={previewZoom}
             />
-            {isTexpressoPreviewRequested ? (
-              <TexpressoPreviewStatus snapshot={texpressoDisplaySnapshot} />
-            ) : null}
+            {isTexpressoPreviewRequested ? <TexpressoPreviewStatus snapshot={texpressoSnapshot} /> : null}
             </div>
             )}
           </section>
