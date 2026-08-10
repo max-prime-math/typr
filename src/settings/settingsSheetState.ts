@@ -23,8 +23,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
 const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
   sync: [
     "sync",
-    "google drive",
-    "drive",
+    ...(__TYPR_GOOGLE_DRIVE_ENABLED__ ? ["google drive", "drive"] : []),
     "local folder",
     "companion workspace",
     "mapped workspace",

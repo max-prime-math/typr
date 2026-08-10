@@ -14,6 +14,9 @@ import {
 export const DEFAULT_COMPANION_BASE_URL =
   import.meta.env.VITE_TYPR_COMPANION_URL?.trim() || "http://127.0.0.1:8484";
 export const COMPANION_BASE_URL_STORAGE_KEY = "typr.companion-base-url.v1";
+const COMPANION_BASE_URL_CONFIGURED_BY_BUILD = Boolean(
+  import.meta.env.VITE_TYPR_COMPANION_URL?.trim()
+);
 
 type CompanionUrlStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -257,6 +260,18 @@ export function readStoredCompanionBaseUrl(
     return stored ? normalizeCompanionBaseUrl(stored) : normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
   } catch {
     return normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+  }
+}
+
+export function isCompanionBaseUrlConfigured(
+  storage: Pick<CompanionUrlStorage, "getItem"> | undefined = getDefaultStorage()
+): boolean {
+  if (COMPANION_BASE_URL_CONFIGURED_BY_BUILD) return true;
+  if (!storage) return false;
+  try {
+    return Boolean(storage.getItem(COMPANION_BASE_URL_STORAGE_KEY));
+  } catch {
+    return false;
   }
 }
 

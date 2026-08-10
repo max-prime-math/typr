@@ -87,10 +87,7 @@ import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
-import { useGoogleDriveSync } from "./useGoogleDriveSync";
-import {
-  GoogleDriveGlobalNotice
-} from "./GoogleDriveConnectionCard";
+import { GoogleDriveGlobalNotice, useGoogleDriveSync } from "@typr/google-drive-feature";
 import { useLocalFolderSync } from "./useLocalFolderSync";
 import { useCompanionWorkspaceSync } from "./useCompanionWorkspaceSync";
 import {
@@ -179,6 +176,7 @@ import {
 import {
   CompanionClient,
   DEFAULT_COMPANION_BASE_URL,
+  isCompanionBaseUrlConfigured,
   normalizeCompanionBaseUrl,
   readStoredCompanionBaseUrl,
   writeStoredCompanionBaseUrl,
@@ -3582,14 +3580,29 @@ ${nextLine}` : nextLine;
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
   const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
+  const [companionConnectionEnabled, setCompanionConnectionEnabled] = useState(
+    isCompanionBaseUrlConfigured
+  );
   const companionClient = useMemo(
     () => new CompanionClient({ baseUrl: companionBaseUrl }),
     [companionBaseUrl]
   );
   const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
-    () => ({ state: "checking", baseUrl: companionClient.baseUrl })
+    () => ({
+      state: "unavailable",
+      baseUrl: companionClient.baseUrl,
+      message: "Apply a Companion URL to enable connection checks."
+    })
   );
   useEffect(() => {
+    if (!companionConnectionEnabled) {
+      setCompanionConnection({
+        state: "unavailable",
+        baseUrl: companionClient.baseUrl,
+        message: "Apply a Companion URL to enable connection checks."
+      });
+      return;
+    }
     let active = true;
     const refreshCompanionConnection = async () => {
       const status = await companionClient.getConnectionStatus();
@@ -3607,13 +3620,15 @@ ${nextLine}` : nextLine;
       active = false;
       window.clearInterval(interval);
     };
-  }, [companionClient, isMountedRef]);
+  }, [companionClient, companionConnectionEnabled, isMountedRef]);
   const handleCompanionBaseUrlChange = useCallback((baseUrl: string) => {
     writeStoredCompanionBaseUrl(baseUrl);
+    setCompanionConnectionEnabled(true);
     setCompanionBaseUrl(baseUrl);
   }, []);
   const handleCompanionBaseUrlReset = useCallback(() => {
     writeStoredCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+    setCompanionConnectionEnabled(true);
     setCompanionBaseUrl(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
   }, []);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
@@ -9910,7 +9925,7 @@ ${nextLine}` : nextLine;
       [
         `Delete local Typr project "${projectToDelete.displayName}"?`,
         "This removes its local files, browser git repo, managed repo entries, and stored tokens.",
-        "It does not delete any linked local folder, GitHub repository, or Google Drive folder.",
+        `It does not delete any linked local folder or GitHub repository${__TYPR_GOOGLE_DRIVE_ENABLED__ ? ", or Google Drive folder" : ""}.`,
         "",
         `Type ${projectToDelete.displayName} to confirm.`
       ].join("\n"),
@@ -9934,10 +9949,12 @@ ${nextLine}` : nextLine;
     } catch (error) {
       console.warn("Local folder binding cleanup will retry with project deletion.", error);
     }
-    try {
-      await googleDriveSync.disconnect(projectToDelete.id);
-    } catch (error) {
-      console.warn("Google Drive binding cleanup will retry with project deletion.", error);
+    if (__TYPR_GOOGLE_DRIVE_ENABLED__) {
+      try {
+        await googleDriveSync.disconnect(projectToDelete.id);
+      } catch (error) {
+        console.warn("Google Drive binding cleanup will retry with project deletion.", error);
+      }
     }
 
     const fallbackProject =
@@ -15863,7 +15880,7 @@ ${nextLine}` : nextLine;
 
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""} ${showMobileKeyboardExtension ? "app-shell--mobile-keyboard-open" : ""}`}>
-      {googleDriveSync.notice ? (
+      {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveSync.notice ? (
         <>
           <GoogleDriveGlobalNotice
             dismiss={googleDriveSync.dismissNotice}
@@ -16140,7 +16157,7 @@ ${nextLine}` : nextLine;
                       >
                         Import project
                       </button>
-                      <button
+                      {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <button
                         className="pane__button"
                         onClick={() => {
                           void googleDriveSync.importProject();
@@ -16150,7 +16167,7 @@ ${nextLine}` : nextLine;
                         type="button"
                       >
                         Import Drive project
-                      </button>
+                      </button> : null}
                     </div>
                     <div className="project-manager__actions project-manager__actions--github">
                       <button
@@ -16181,14 +16198,15 @@ ${nextLine}` : nextLine;
                         const localFolderConnected = Boolean(
                           localFolderState?.directoryName
                         );
-                        const googleDriveState =
-                          googleDriveSync.states[project.id];
+                        const googleDriveState = __TYPR_GOOGLE_DRIVE_ENABLED__
+                          ? googleDriveSync.states[project.id]
+                          : undefined;
                         const googleDriveStatus =
                           googleDriveState?.status ??
                           (googleDriveSync.configured
                             ? "disconnected"
                             : "unconfigured");
-                        const googleDriveConnected = Boolean(
+                        const googleDriveConnected = __TYPR_GOOGLE_DRIVE_ENABLED__ && Boolean(
                           googleDriveState?.selectedParentName &&
                             googleDriveState?.projectFolderName &&
                             googleDriveState?.projectFolderWebViewLink &&
@@ -16275,7 +16293,7 @@ ${nextLine}` : nextLine;
                                       GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
                                     </span>
                                   ) : null}
-                                  {googleDriveConnected ? (
+                                  {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveConnected ? (
                                     <span
                                       className={`project-manager__summary-badge project-manager__summary-badge--connected ${
                                         googleDriveStatus ===
@@ -16463,7 +16481,7 @@ ${nextLine}` : nextLine;
                                   </div>
                                 </section>
 
-                                <section className="project-manager__connection">
+                                {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
                                     <div>
                                       <strong>Google Drive</strong>
@@ -16508,7 +16526,7 @@ ${nextLine}` : nextLine;
                                       </button>
                                     ) : null}
                                   </div>
-                                </section>
+                                </section> : null}
 
                                 <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">

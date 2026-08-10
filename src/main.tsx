@@ -9,6 +9,7 @@ import ReactDOM from "react-dom/client";
 import { App } from "./app/App";
 import { AuthGate } from "./auth/AuthGate";
 import { ThemeProvider } from "./theme/ThemeProvider";
+import { cleanupObsoleteCompilerAssetCaches } from "./update/compilerAssetCacheCleanup";
 import { registerVersionedServiceWorker } from "./update/registerServiceWorker";
 import { updateManager } from "./update/updateManager";
 import "./styles/global.css";
@@ -52,6 +53,15 @@ async function prepareOfflineCompilerAssets() {
 }
 
 if (import.meta.env.PROD) {
+  if ("caches" in window) {
+    void cleanupObsoleteCompilerAssetCaches(
+      window.caches,
+      __TYPR_DEPLOYMENT_CHANNEL__,
+      __TYPR_COMPILER_ASSET_RELEASE_ID__
+    ).catch((error) => {
+      console.warn("typr could not remove obsolete compiler asset caches.", error);
+    });
+  }
   updateManager.initialize(
     registerVersionedServiceWorker,
     () => {

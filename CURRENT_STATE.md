@@ -94,9 +94,9 @@ not rewrite or force-push any Typr branch.
   uses checksum/version keys. A single lite image therefore needs a stable
   same-origin `/compiler-assets/` route whose container runtime selects a
   validated read-only mount or the exact pinned R2 release.
-- “Full” means the compiler assets are bundled; BusyTeX may still retrieve
-  document packages from the pinned TeX Live service when a document needs them.
-  Documentation must not promise a universally offline TeX Live installation.
+- “Full” means the locked compiler assets are bundled. Self-hosted builds also
+  disable BusyTeX's public TeX Live fallback, so their available packages are
+  bounded by the bundled Basic, Recommended, and Extra asset packs.
 - There is no Typr web image today. The current `.dockerignore`, Compose files,
   and Docker workflow are Companion-only and must be replaced or moved during
   the split.
@@ -283,14 +283,38 @@ root is reachable.
 
 ### Stage 4 — Typr full/lite containers
 
-Status: pending
+Status: in progress (implementation and local/offline gates pass; deliberate
+public R2 publication and the live R2 gate remain)
 
-- Add unprivileged static web image and health check.
-- Add full image with compiler assets and lite image with R2 defaults.
-- Support a read-only mapped compiler-assets directory for lite.
-- Compile Google Drive out of both self-hosted variants.
-- Validate PWA routing, MIME types, cache headers, health, assets, and local-only
-  browser storage defaults.
+- [x] Add one digest-pinned, unprivileged static web image with full and lite
+  targets, a non-root health check, read-only-root support, dropped
+  capabilities, and no-new-privileges operation.
+- [x] Commit a deterministic 20-file / 707,826,081-byte compiler lock. The
+  release is `busytex-1.1.1-typr.2-typst-0.7.0-rc2-sha256-6dc1638d51b3ea3131117559`;
+  the manifest SHA-256 is
+  `e42ce8b6a26e45c59cf49881671d8626101bd30698cbf487984aaa7fde4d2744`.
+- [x] Build full with the verified compiler pack and lite without a compiler
+  payload. Lite selects either fixed same-origin R2 routes or an exact read-only
+  `/compiler-assets` mount at startup; missing, extra, corrupt, special,
+  symlinked, top-level RW, and nested RW mounts fail before health.
+- [x] Compile the Google Drive graph, UI, CSS, callback, documentation, and
+  OAuth/network markers out of self-hosted output while retaining hosted Drive
+  behavior and its callback.
+- [x] Keep browser IndexedDB authoritative and make even Companion status
+  polling opt-in: a clean self-hosted profile performs no cross-origin request
+  until a user explicitly applies a Companion URL.
+- [x] Validate local and R2-offline container behavior: byte-identical full/lite
+  app trees, correct real Vite-asset/compiler MIME and status-aware cache
+  headers, Range support, PWA routing, health, bounded no-store R2 failures, and
+  all adversarial mount cases. The final development images were approximately
+  61 MB lite and 580 MB full by Docker's image-size accounting.
+- [x] Validate full and lite/local in Chromium and Firefox: a real Typst compile
+  uses the versioned same-origin compiler route; Drive is absent; no implicit
+  cross-origin or workspace request occurs; browser edits survive reload; old
+  compiler caches are removed without affecting IndexedDB; offline reload works.
+- [ ] Publish the exact lock to R2 with the manual immutable workflow, run the
+  byte-for-byte public verifier, then repeat the container and browser gate in
+  live lite/R2 mode. No Typr image or release tag is published by this step.
 
 Gate: clean full and lite builds pass browser smoke tests, including lite in both
 R2 and local-assets modes.
@@ -436,6 +460,7 @@ Only these are expected to require the user:
 
 ## Current next action
 
-Implement Stage 4 full/lite Typr containers around one versioned same-origin
-compiler-asset route, including the validated local-asset mount and Google Drive
-compile-out profile. Do not publish images or create release tags yet.
+Commit and push the verified Stage 4 implementation checkpoint. Then publish
+only the exact locked compiler-asset release to R2, publicly verify all 20
+objects, and run the live lite/R2 container and browser gates before marking
+Stage 4 complete. Do not publish Typr images or create release tags yet.

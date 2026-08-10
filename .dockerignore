@@ -1,0 +1,13 @@
+.git
+.github
+.agents
+.codex
+.compiler-assets
+dist
+node_modules
+qa-ui-artifacts
+test-results
+playwright-report
+public/core/busytex
+public/core/tikz-editor
+public/core/tylax

@@ -4,6 +4,7 @@ import {
   CompanionClient,
   CompanionClientError,
   DEFAULT_COMPANION_BASE_URL,
+  isCompanionBaseUrlConfigured,
   normalizeCompanionBaseUrl,
   parseCompanionStatus,
   parseWorkspaceFile,
@@ -220,7 +221,10 @@ describe("CompanionClient", () => {
       setItem: (key: string, value: string) => values.set(key, value)
     };
 
+    expect(isCompanionBaseUrlConfigured(storage)).toBe(false);
+
     writeStoredCompanionBaseUrl("https://companion.example.test/", storage);
+    expect(isCompanionBaseUrlConfigured(storage)).toBe(true);
     expect(values.get(COMPANION_BASE_URL_STORAGE_KEY)).toBe("https://companion.example.test");
     expect(readStoredCompanionBaseUrl(storage)).toBe("https://companion.example.test");
 

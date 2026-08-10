@@ -6,7 +6,18 @@ import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
 const INLINE_ASSET_LIMIT = 8 * 1024;
-const externalCompilerAssetBaseUrl = process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL
+const buildTarget = resolveBuildTarget();
+const selfHosted = buildTarget === "self-hosted";
+const compilerAssetLock = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./compiler-assets.lock.json", import.meta.url)), "utf8")
+) as { releaseId?: string };
+if (typeof compilerAssetLock.releaseId !== "string" || !/^[a-zA-Z0-9._-]+$/.test(compilerAssetLock.releaseId)) {
+  throw new Error("compiler-assets.lock.json has an invalid release ID.");
+}
+const compilerAssetReleaseId = compilerAssetLock.releaseId;
+const externalCompilerAssetBaseUrl = (selfHosted
+  ? `/compiler-assets/${compilerAssetReleaseId}`
+  : process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL)
   ?.trim()
   .replace(/\/+$/, "");
 const packageMetadata = JSON.parse(
@@ -21,6 +32,14 @@ const releaseMetadata = JSON.parse(
 };
 
 type DeploymentChannel = "development" | "beta" | "stable";
+
+function resolveBuildTarget(): "hosted" | "self-hosted" {
+  const value = process.env.TYPR_BUILD_TARGET?.trim() || "hosted";
+  if (value !== "hosted" && value !== "self-hosted") {
+    throw new Error("TYPR_BUILD_TARGET must be hosted or self-hosted.");
+  }
+  return value;
+}
 
 function resolveDeploymentChannel(): DeploymentChannel {
   const requestedChannel =
@@ -53,18 +72,23 @@ function resolveCurrentBranch(): string | undefined {
   }
 }
 
-function resolveBuildSha(): string {
+function resolveBuildCommit(): string {
   const environmentSha =
+    process.env.TYPR_BUILD_SHA ??
     process.env.GITHUB_SHA ??
     process.env.VERCEL_GIT_COMMIT_SHA ??
     process.env.CF_PAGES_COMMIT_SHA;
 
   if (environmentSha) {
-    return environmentSha.slice(0, 7);
+    const normalizedSha = environmentSha.trim().toLowerCase();
+    if (!/^[a-f0-9]{7,64}$/.test(normalizedSha)) {
+      throw new Error("TYPR build SHA must be a hexadecimal commit identifier.");
+    }
+    return normalizedSha;
   }
 
   try {
-    return execFileSync("git", ["rev-parse", "--short=7", "HEAD"], {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
       encoding: "utf8"
     }).trim();
   } catch (error) {
@@ -75,7 +99,7 @@ function resolveBuildSha(): string {
         : capturedStdout?.toString("utf8").trim();
 
     if (recoveredSha) {
-      return recoveredSha.slice(0, 7);
+      return recoveredSha;
     }
 
     return "unknown";
@@ -83,13 +107,20 @@ function resolveBuildSha(): string {
 }
 
 const appVersion = packageMetadata.version;
-const buildSha = resolveBuildSha();
+const buildCommit = resolveBuildCommit();
+const buildSha = buildCommit === "unknown" ? buildCommit : buildCommit.slice(0, 7);
 const deploymentChannel = resolveDeploymentChannel();
 const deploymentLabel =
   deploymentChannel.charAt(0).toUpperCase() + deploymentChannel.slice(1);
 
 export default defineConfig(({ command }) => {
-  const base = command === "build" ? DEPLOYED_BASE : "/";
+  const base = command === "build" && !selfHosted ? DEPLOYED_BASE : "/";
+  const buildInputs = {
+    app: fileURLToPath(new URL("./index.html", import.meta.url)),
+    ...(selfHosted ? {} : {
+      googleDriveOAuthCallback: fileURLToPath(new URL("./google-drive-oauth-callback.html", import.meta.url))
+    })
+  };
 
   return {
     base,
@@ -98,7 +129,10 @@ export default defineConfig(({ command }) => {
       __TYPR_APP_VERSION__: JSON.stringify(appVersion),
       __TYPR_BUILD_SHA__: JSON.stringify(buildSha),
       __TYPR_DEPLOYMENT_CHANNEL__: JSON.stringify(deploymentChannel),
-      __TYPR_DEPLOYMENT_LABEL__: JSON.stringify(deploymentLabel)
+      __TYPR_DEPLOYMENT_LABEL__: JSON.stringify(deploymentLabel),
+      __TYPR_SELF_HOSTED__: JSON.stringify(selfHosted),
+      __TYPR_GOOGLE_DRIVE_ENABLED__: JSON.stringify(!selfHosted),
+      __TYPR_COMPILER_ASSET_RELEASE_ID__: JSON.stringify(compilerAssetReleaseId)
     },
     plugins: [
       {
@@ -111,6 +145,7 @@ export default defineConfig(({ command }) => {
               {
                 version: appVersion,
                 build: buildSha,
+                commit: buildCommit,
                 channel: deploymentChannel,
                 breaking: Boolean(releaseMetadata.breaking),
                 backupRecommended: Boolean(releaseMetadata.backupRecommended),
@@ -166,7 +201,7 @@ export default defineConfig(({ command }) => {
             "svgedit/images/**/*"
           ],
           globIgnores: [
-            "google-drive-oauth-callback.html",
+            ...(!selfHosted ? ["google-drive-oauth-callback.html"] : []),
             "assets/binaryInlined-*.js",
             "core/busytex/**",
             "core/tikz-editor/**",
@@ -175,7 +210,7 @@ export default defineConfig(({ command }) => {
           ],
           navigateFallbackDenylist: [
             /\/core\/tikz-editor\//,
-            /\/google-drive-oauth-callback\.html$/
+            ...(!selfHosted ? [/\/google-drive-oauth-callback\.html$/] : [])
           ],
           maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
           runtimeCaching: [
@@ -184,14 +219,14 @@ export default defineConfig(({ command }) => {
                 /\/(?:assets\/.*|typst\/typst_ts_web_compiler_bg)\.(?:wasm|otf|ttf)$/,
               handler: "CacheFirst",
               options: {
-                cacheName: `typr-${deploymentChannel}-compiler-assets`
+                cacheName: `typr-${deploymentChannel}-${compilerAssetReleaseId}-compiler-assets`
               }
             },
             {
               urlPattern: /\/core\/busytex\/.*\.(?:js|wasm)$/,
               handler: "CacheFirst",
               options: {
-                cacheName: `typr-${deploymentChannel}-busytex-assets`
+                cacheName: `typr-${deploymentChannel}-${compilerAssetReleaseId}-busytex-assets`
               }
             },
             {
@@ -236,15 +271,7 @@ export default defineConfig(({ command }) => {
     },
     build: {
       rollupOptions: {
-        input: {
-          app: fileURLToPath(new URL("./index.html", import.meta.url)),
-          googleDriveOAuthCallback: fileURLToPath(
-            new URL(
-              "./google-drive-oauth-callback.html",
-              import.meta.url
-            )
-          )
-        }
+        input: buildInputs
       },
       assetsInlineLimit(filePath, content) {
         if (filePath.endsWith(".svg")) {
@@ -255,9 +282,28 @@ export default defineConfig(({ command }) => {
       }
     },
     resolve: {
-      alias: {
-        "node:zlib": fileURLToPath(new URL("./src/shims/browserZlib.ts", import.meta.url))
-      }
+      alias: [{
+        find: "@typr/google-drive-feature",
+        replacement: fileURLToPath(new URL(
+          selfHosted ? "./src/features/googleDrive/disabled.tsx" : "./src/features/googleDrive/hosted.tsx",
+          import.meta.url
+        ))
+      }, {
+        find: /^@typr\/user-guide-settings\?raw$/,
+        replacement: `${fileURLToPath(new URL(
+          selfHosted ? "./docs/user-guide/settings.self-hosted.md" : "./docs/user-guide/settings.md",
+          import.meta.url
+        ))}?raw`
+      }, {
+        find: /^@typr\/user-guide-workspace\?raw$/,
+        replacement: `${fileURLToPath(new URL(
+          selfHosted ? "./docs/user-guide/workspace.self-hosted.md" : "./docs/user-guide/workspace.md",
+          import.meta.url
+        ))}?raw`
+      }, {
+        find: "node:zlib",
+        replacement: fileURLToPath(new URL("./src/shims/browserZlib.ts", import.meta.url))
+      }]
     },
     server: {
       host: true

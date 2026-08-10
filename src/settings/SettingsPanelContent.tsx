@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { GoogleDriveConnectionCard } from "../app/GoogleDriveConnectionCard";
+import { GoogleDriveConnectionCard } from "@typr/google-drive-feature";
 import type { MobileKeyboardLanguage } from "../app/appState";
 import {
   DEFAULT_COMPANION_BASE_URL,
@@ -437,7 +437,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
               </p>
             </div>
 
-            <div className="settings-section">
+            {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <div className="settings-section">
               <div className="settings-section__header">
                 <h3>Google Drive sync</h3>
                 <p>
@@ -562,7 +562,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                 you connect through Typr. Google access tokens remain in
                 memory and may need to be renewed after a reload or expiry.
               </p>
-            </div>
+            </div> : null}
           </div>
         ) : settingsTab === "git" ? (
           <div className="settings-panel settings-panel--git" role="tabpanel">
@@ -867,7 +867,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     <strong>Show settings files as a project</strong>
                     <small>
                       Create and show a syncable Typr Settings project. Its JSON files can use
-                      the normal GitHub and Google Drive project controls.
+                      the normal GitHub{__TYPR_GOOGLE_DRIVE_ENABLED__ ? " and Google Drive" : ""} project controls.
                     </small>
                     {Object.keys(settingsFiles.errors).length > 0 ? (
                       <small className="settings-file-warning" role="status">
