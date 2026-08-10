@@ -41,8 +41,8 @@ after every completed stage and before every stage commit.
 - Existing annotated release tags:
   - `v0.1.0` tag object `9a2fb7e`, commit `52c5647`
   - `v0.1.1` tag object `4299932`, commit `37ad4b2`
-- Requested repository path `/home/max/dev/typr-server` does not exist.
-- Requested GitHub repository `max-prime-math/typr-server` does not exist.
+- Standalone checkout: `/home/max/dev/typr-server`, clean `main` at `597ba91`.
+- GitHub repository: `max-prime-math/typr-server`, public, default `main`.
 - Existing Companion image name: `ghcr.io/max-prime-math/typr-server`.
 - Docker CLI is installed. Access to the host Docker daemon requires an
   approved unsandboxed command in this environment.
@@ -216,28 +216,34 @@ repository audit reveals a conflict.
 
 ### Stage 0 — Baseline and durable state
 
-Status: in progress
+Status: complete (`12636ae`, pushed to `origin/dev`)
 
 - [x] Confirm the clean local branch and remote branch/tag objects.
 - [x] Confirm GitHub authentication and repository visibility.
 - [x] Confirm the new local/GitHub repository is absent.
 - [x] Complete independent frontend, split/history, and security/Unraid audits;
   material findings are recorded above.
-- [ ] Commit and push this state record to `dev` after audit findings are folded
+- [x] Commit and push the state record to `dev` after audit findings were folded
   in.
 
 Gate: no architectural mutation before all three audits are recorded.
 
 ### Stage 1 — Standalone Companion repository and protocol boundary
 
-Status: pending
+Status: complete (`597ba91`, pushed to standalone `origin/main`)
 
-- Filter relevant history into `/home/max/dev/typr-server`.
-- Normalize the standalone layout, metadata, documentation, CI, and source URLs.
-- Add the authoritative protocol package/artifact and its compatibility tests.
-- Run typecheck/unit tests and a history/path audit.
-- Create the public GitHub repository, push its initial branch without tags, and
-  record the immutable protocol commit for Typr.
+- [x] Filter relevant history into `/home/max/dev/typr-server`.
+- [x] Normalize the standalone metadata, documentation, CI, and source URLs
+  without relocating paths inside historical commits.
+- [x] Export the authoritative `@max-prime-math/typr-companion-protocol`
+  package boundary.
+- [x] Run clean install, typecheck, unit, XML, package, history, Docker build,
+  native compile, TeXpresso POC/render, and WebSocket checks.
+- [x] Create the public GitHub repository and push its initial `main` branch
+  without tags.
+- [x] Record immutable protocol commit
+  `597ba9173df5e07be4a8df17c2353b0b847c1bb8` for Typr.
+- [x] Confirm initial GitHub amd64/arm64 CI run `31353414702` passes.
 
 Gate: public repository exists, history is inspectable, no old tags were copied,
 and source tests pass.
@@ -369,8 +375,28 @@ Only these are expected to require the user:
 - 2026-08-09: sandboxed `npm test` ran 406 tests; 396 passed and the ten tests
   that require a loopback listener failed with `listen EPERM`. The identical
   suite was rerun unsandboxed and all 92 files / 406 tests passed.
+- 2026-08-09: filtered `dev` into seven Companion-relevant commits with no tag
+  refs. Release mappings: `52c5647 → f9abc88`, `67c6327 → f6baa0d`,
+  `37ad4b2 → 5f15073`, and `bca5c31 → 2d2a536`.
+- 2026-08-09: standalone `npm ci`, `npm run typecheck`, XML parsing, protocol
+  package dry-run, and all 4 files / 22 unit tests passed.
+- 2026-08-09: built local image `typr-server:split-stage1` as non-root `node`
+  with source `https://github.com/max-prime-math/typr-server` and version
+  `0.1.2-dev`. Native REST compile, persistent TeXpresso, 144/240/300 DPI
+  raster, and private WebSocket integration harnesses all passed. Observed local
+  amd64 compressed image size: 396.0 MiB.
+- 2026-08-09: committed standalone split as `597ba91`, created public
+  `max-prime-math/typr-server`, pushed only `main`, verified no remote tags, and
+  moved the clean checkout to `/home/max/dev/typr-server`.
+- 2026-08-09: standalone GitHub run `31353414702` passed source/XML checks and
+  the complete native amd64 and arm64 image/harness matrix. Publish jobs were
+  correctly skipped because no tag was pushed.
+- 2026-08-09: the available CLI token cannot read package metadata (`403`,
+  missing `read:packages`). New repository ID `1329393163` is recorded for the
+  later GHCR Actions-access setting; no package setting was changed.
 
 ## Current next action
 
-Commit and push the completed Stage 0 baseline to `dev`, then begin the filtered
-standalone Companion repository in a disposable workspace.
+Finish clean-install validation of the immutable protocol archive pin, commit
+and push the Stage 2 Typr ownership boundary, then implement the optional mapped
+workspace API in the standalone repository.
