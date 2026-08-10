@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -77,13 +77,19 @@ assert.equal(liteConfig.services.typr.volumes, undefined);
 const localConfig = readComposeConfig({ image: liteImage, localAssets: true });
 assertBaseConfig(localConfig, liteImage);
 assert.equal(localConfig.services.typr.environment.TYPR_COMPILER_ASSETS_MODE, "local");
-assert.deepEqual(localConfig.services.typr.volumes, [{
-  type: "bind",
-  source: assetsValue || "/tmp/typr-compiler-assets-contract",
-  target: "/compiler-assets",
-  read_only: true,
-  bind: { create_host_path: false }
-}]);
+const [compilerMount] = localConfig.services.typr.volumes;
+assert.equal(compilerMount.type, "bind");
+assert.equal(compilerMount.source, assetsValue || "/tmp/typr-compiler-assets-contract");
+assert.equal(compilerMount.target, "/compiler-assets");
+assert.equal(compilerMount.read_only, true);
+if (compilerMount.bind && Object.hasOwn(compilerMount.bind, "create_host_path")) {
+  assert.equal(compilerMount.bind.create_host_path, false);
+}
+assert.match(
+  await readFile(path.join(projectRoot, "compose.local-assets.yaml"), "utf8"),
+  /create_host_path:\s*false/,
+  "local-assets Compose source must disable automatic host-path creation"
+);
 
 const missingAssets = run("docker", [
   "compose", ...composeFiles(true), "config", "--quiet"
@@ -100,6 +106,41 @@ if (configOnly) {
 
 if (!assetsValue) {
   throw new Error("TYPR_COMPILER_ASSETS_DIR is required for the full Compose smoke matrix.");
+}
+
+async function assertMissingHostPathFailsClosed() {
+  const missingDirectory = path.join("/tmp", `typr-compose-missing-${process.pid}-${Date.now()}`);
+  const projectName = `typr-compose-missing-${process.pid}-${Date.now()}`.toLowerCase();
+  const files = composeFiles(true);
+  const env = {
+    TYPR_IMAGE: liteImage,
+    TYPR_PORT: "0",
+    TYPR_COMPILER_ASSETS_DIR: missingDirectory
+  };
+  const baseArgs = ["compose", "--project-name", projectName, ...files];
+  try {
+    const result = run("docker", [
+      ...baseArgs,
+      "up", "-d", "--no-build", "--pull", "never"
+    ], {
+      allowFailure: true,
+      env,
+      timeout: 60_000
+    });
+    assert.notEqual(result.status, 0, "Compose must reject a missing compiler-assets host path");
+    await assert.rejects(
+      lstat(missingDirectory),
+      (error) => error?.code === "ENOENT",
+      "Compose must not create a missing compiler-assets host path"
+    );
+  } finally {
+    run("docker", [...baseArgs, "down", "--remove-orphans", "--volumes", "--timeout", "10"], {
+      allowFailure: true,
+      env,
+      timeout: 60_000
+    });
+    await rm(missingDirectory, { recursive: true, force: true });
+  }
 }
 
 function assertRuntime(containerId, { localAssets }) {
@@ -161,6 +202,7 @@ function smokeVariant({ label, image, localAssets = false }) {
   }
 }
 
+await assertMissingHostPathFailsClosed();
 smokeVariant({ label: "full", image: fullImage });
 smokeVariant({ label: "lite-r2", image: liteImage });
 smokeVariant({ label: "lite-local", image: liteImage, localAssets: true });
