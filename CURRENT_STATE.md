@@ -323,8 +323,8 @@ R2 and local-assets modes.
 
 ### Stage 5 — Compose, documentation, and Unraid
 
-Status: in progress (source/configuration gates pass; exact-commit Docker smoke
-and milestone pushes remain)
+Status: complete (`54ccebe` Typr; `87f53e4` Companion; final state record in
+the following Typr checkpoint)
 
 - [x] Add a separate hardened Typr Compose definition and exact lite/local
   read-only compiler-asset override; keep projects and appdata out of the web
@@ -337,10 +337,11 @@ and milestone pushes remain)
 - [x] Integrate the reviewed Companion Compose workspace override, strengthened
   Companion Unraid template/profile, documentation, workflow checks, and smoke
   harness into the canonical `typr-server` checkout.
-- [ ] Run both repositories' full Compose smoke matrices with Docker, commit the
-  Stage 4 completion record separately, then commit/push the verified Stage 5
-  milestone in each repository.
-- Validate templates as XML and audit all repository/image URLs.
+- [x] Run both repositories' full Compose smoke matrices and the exact-commit
+  native/container adversarial gates before pushing either milestone.
+- [x] Validate templates as XML, audit repository/image URLs, and retain an
+  explicit submission-readiness mode that fails until real Unraid forum support
+  topics exist.
 
 Gate: examples are internally consistent and both containers pass Compose smoke
 tests; real Unraid validation remains an explicit external gate.
@@ -477,20 +478,27 @@ Only these are expected to require the user:
   and offline-reload E2E. Immutable compiler-asset run `31365938472` published
   and publicly reverified all 20 objects before the live lite/R2 gates passed.
 - 2026-08-10: Typr Stage 5 Compose normalization and semantic Unraid/profile
-  lint pass. Typecheck, all 91 unit files / 413 tests, and a fresh self-hosted
-  build/artifact audit also pass with the embedded administrator guidance. The
-  Docker Compose runtime smoke is implemented but daemon access is awaiting
-  managed command authorization.
+  lint pass at `54ccebed7fe6c8252fac7c26d8d988ef83e1053d`. Typecheck, all
+  91 unit files / 413 tests, and a fresh self-hosted build/artifact audit pass
+  with the embedded administrator guidance. Exact full and lite images carry
+  that source revision and passed the adversarial Docker matrix, production
+  Compose full/lite-R2/lite-local smoke, and Chromium plus Firefox self-hosted
+  E2E in all three modes.
 - 2026-08-10: the reviewed Companion Stage 5 patch was integrated byte-for-byte
-  into the canonical `typr-server` checkout. `npm ci`, typecheck, all 8 unit
-  files / 57 tests, Compose normalization, XML/profile semantic lint, and diff
-  checks pass. Exact-commit Compose/native Docker reruns remain before push.
+  into the canonical `typr-server` checkout at
+  `87f53e4cb5e2670cfcda274d59db4c247b779fc1`. `npm ci`, typecheck, all 8
+  unit files / 57 tests, Compose normalization, XML/profile semantic lint, and
+  diff checks pass. The exact image identifies that revision and version
+  `0.1.2-dev.87f53e4cb5e2`; stateless/mapped-workspace Compose, REST sandbox,
+  TeXpresso POC, raster, and private WebSocket adversarial harnesses all pass.
+  The image runs as `node`, and no tag or public image alias was published.
 
 ## Current next action
 
-Commit the reviewed Stage 5 source in both repositories, rebuild from those
-exact commits, and run the Typr full/lite/local/R2 plus Companion
-stateless/workspace Compose and native adversarial gates. Then record the exact
-evidence and push both milestones. Keep real Unraid installation, support
-topics, and Community Applications submission as external gates. Do not publish
-Typr images or create release tags yet.
+Push both verified Stage 5 milestones and confirm their non-publishing CI. Then
+implement Stage 6 as separate Typr full/lite and Companion publishing workflows
+with immutable action pins, strict tag/version semantics, pre-publish multiarch
+tests, provenance/SBOM, concurrency, and post-publish verification. Keep real
+Unraid installation, support topics, Community Applications submission, Docker
+Hub credentials, and any GHCR package-access change as explicit external gates.
+Do not publish images or create release tags yet.
