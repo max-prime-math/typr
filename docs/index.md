@@ -4,7 +4,7 @@ slug: /
 sidebar_position: 1
 ---
 
-Typr is a local-first browser workspace for writing, previewing, and syncing Typst, LaTeX, and Markdown projects. This guide covers everyday workflows. For product architecture, storage boundaries, current limitations, and project direction, see the [README](../README.md).
+Typr is a local-first browser workspace for writing, previewing, and syncing Typst, LaTeX, and Markdown projects. This guide covers everyday workflows. For product architecture, storage boundaries, current limitations, and project direction, see the [README](https://github.com/max-prime-math/typr#readme).
 
 ## Table of Contents
 
@@ -16,5 +16,5 @@ Typr is a local-first browser workspace for writing, previewing, and syncing Typ
 - [GitHub Sync](./user-guide/git-sync.md) — Connect repositories and use commit, pull, push, and merge workflows.
 - [Settings](./user-guide/settings.md) — Configure app, editor, Git, snippet, package, sync, and diagnostic settings.
 - [Packages and Browser Shell](./user-guide/packages-shell.md) — Manage offline package caches and use project-local shell commands.
-- [Self-host Typr](https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md) — Run full or lite Docker images, use local compiler assets, and understand trusted-network, HTTPS, storage-origin, and Unraid boundaries.
+- [Self-host Typr](./self-hosting.md) — Run full or lite Docker images, use local compiler assets, and understand trusted-network, HTTPS, storage-origin, and Unraid boundaries.
 - [Typr Companion](https://github.com/max-prime-math/typr-server) — Versioned protocol, native-LaTeX server, Docker installation, Unraid template, and independent release policy.

@@ -10,6 +10,8 @@ import diagramsSource from "../../docs/user-guide/diagrams.md?raw";
 import gitSyncSource from "../../docs/user-guide/git-sync.md?raw";
 import packagesShellSource from "../../docs/user-guide/packages-shell.md?raw";
 import settingsSource from "@typr/user-guide-settings?raw";
+import releaseChannelsSource from "../../docs/release-channels.md?raw";
+import selfHostingSource from "../../docs/self-hosting.md?raw";
 
 interface DocsPanelProps {
   embedded?: boolean;
@@ -51,6 +53,13 @@ const DOCS_SECTIONS: DocsSection[] = [
       { id: "user-guide/git-sync", title: "GitHub Sync", path: "user-guide/git-sync.md", source: gitSyncSource },
       { id: "user-guide/settings", title: "Settings", path: "user-guide/settings.md", source: settingsSource },
       { id: "user-guide/packages-shell", title: "Packages and Browser Shell", path: "user-guide/packages-shell.md", source: packagesShellSource }
+    ]
+  },
+  {
+    title: "Deployment",
+    pages: [
+      { id: "self-hosting", title: "Self-host Typr", path: "self-hosting.md", source: selfHostingSource },
+      { id: "release-channels", title: "Release Channels", path: "release-channels.md", source: releaseChannelsSource }
     ]
   }
 ];
