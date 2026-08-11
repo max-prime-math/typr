@@ -189,8 +189,8 @@ and follow the host-level Serve setup above.
 
 Before Community Applications submission, validate both templates on a real
 Unraid host, including install, health, browser access, update, rollback, and
-removal. Create the maintained Unraid forum support topic, put its identical URL
-in the template's `Support` and profile's `Forum` fields, then run
+removal. Put a maintained support destination in each template's `Support`
+field; an optional profile `Forum` field may point to the same destination. Then run
 `npm run test:unraid -- --submission-ready` plus the portal's Validate and Scan
 actions. Until then these are direct user templates, not Community Applications
 listings.
