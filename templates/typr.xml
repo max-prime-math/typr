@@ -15,7 +15,7 @@
   <Description>Typr serves a browser-local writing workspace from the self-contained full image. Projects, settings, browser Git data, and sync bindings remain in each browser origin instead of the container. The optional lite image can use fixed R2 assets or an exact read-only compiler pack. This is an unauthenticated trusted-environment application: never expose it to the public Internet; any client-side sign-in screen is not a network security boundary. Plain LAN HTTP has reduced secure-context/PWA and local-folder features.</Description>
   <Category>Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/max-prime-math/typr/main/unraid/typr.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png</Icon>
   <ExtraParams>--restart=unless-stopped --user=101:101 --read-only --tmpfs=/tmp:rw,nosuid,nodev,noexec,size=33554432 --cap-drop=ALL --security-opt=no-new-privileges:true --pids-limit=64 --memory=256m --memory-swap=256m --cpus=1</ExtraParams>
   <PostArgs/>

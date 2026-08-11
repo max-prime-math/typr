@@ -15,7 +15,7 @@
   <Description>Typr Companion is installed separately from the browser-local Typr PWA. It runs native latexmk/pdfLaTeX and experimental TeXpresso. On stock Unraid kernels without Landlock, the template permits an explicit stateless fallback only while no host workspace is mounted; use mutually trusted documents only. Browser projects remain authoritative. A mapped workspace still requires a working Landlock launcher and otherwise fails closed. No broad share or appdata root belongs here. The service is unauthenticated and must never be exposed to the public Internet.</Description>
   <Category>Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8484]/api/v1/status</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/max-prime-math/typr/main/unraid/typr-companion.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr-companion.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png</Icon>
   <ExtraParams>--restart=unless-stopped --user=1000:1000 --read-only --tmpfs=/tmp:rw,nosuid,nodev,noexec,size=536870912 --cap-drop=ALL --security-opt=no-new-privileges:true --pids-limit=256 --memory=2g --memory-swap=2g --cpus=2</ExtraParams>
   <PostArgs/>
