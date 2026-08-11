@@ -177,13 +177,15 @@ server files, and browser autosave continues if Companion is unavailable.
 
 ## Unraid
 
-[`unraid/typr.xml`](../unraid/typr.xml) is the separate Typr template. It uses
+[`unraid/typr.xml`](../unraid/typr.xml) is the Typr web template. It uses
 the full image and needs only port 8080; project files are not stored in Unraid
 appdata. To use lite, manually select its Repository tag and then choose R2 mode
 or an exact read-only compiler pack in the advanced fields; never map project
-files or a broad share there. The
-[Typr Companion template](https://github.com/max-prime-math/typr-server/blob/main/unraid/typr-companion.xml)
-is installed independently when native LaTeX or a mapped workspace is wanted.
+files or a broad share there. [`unraid/typr-companion.xml`](../unraid/typr-companion.xml)
+is the canonical Community Applications template for the independently maintained
+[Typr Companion](https://github.com/max-prime-math/typr-server); install it when
+native LaTeX or a mapped workspace is wanted. Keeping both templates in this
+repository groups both apps under one Community Applications repository profile.
 For private Tailscale access, leave each container's **Use Tailscale** switch off
 and follow the host-level Serve setup above.
 
@@ -192,8 +194,8 @@ Unraid host, including install, health, browser access, update, rollback, and
 removal. Put a maintained support destination in each template's `Support`
 field; an optional profile `Forum` field may point to the same destination. Then run
 `npm run test:unraid -- --submission-ready` plus the portal's Validate and Scan
-actions. Until then these are direct user templates, not Community Applications
-listings.
+actions. Portal approval makes them Community Applications listings; the same
+files remain usable as direct user templates before approval.
 
 ## Verify and remove
 

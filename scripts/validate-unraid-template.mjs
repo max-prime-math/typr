@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const templatePath = path.join(projectRoot, "unraid", "typr.xml");
+const companionTemplatePath = path.join(projectRoot, "unraid", "typr-companion.xml");
 const profilePath = path.join(projectRoot, "ca_profile.xml");
 const submissionReady = process.argv.includes("--submission-ready");
 
@@ -83,6 +84,53 @@ assert.equal(compilerPath.text, "");
 const templateSource = await readFile(templatePath, "utf8");
 assert.doesNotMatch(templateSource, /docker\.sock|<Privileged>true<\/Privileged>|<Network>host<\/Network>/i);
 
+const companion = parseXml(companionTemplatePath);
+assert.equal(companion.tag, "Container");
+assert.equal(companion.attributes.version, "2");
+assert.equal(one(companion, "Name").text, "Typr-Companion");
+assert.equal(one(companion, "Repository").text, "ghcr.io/max-prime-math/typr-server:latest");
+assert.equal(one(companion, "Network").text, "bridge");
+assert.equal(one(companion, "Privileged").text, "false");
+assert.equal(one(companion, "Category").text, "Tools:Utilities");
+assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/unraid/typr-companion.xml");
+assert.match(one(companion, "Overview").text, /Stateless by default/i);
+assert.match(one(companion, "Description").text, /never be exposed.+public Internet/i);
+assert.match(one(companion, "Description").text, /stateless fallback/i);
+assert.match(one(companion, "Requires").text, /Never expose.+public Internet/i);
+assert.match(one(companion, "Requires").text, /Landlock/i);
+
+const companionRequiredExtraParams = new Set([
+  "--restart=unless-stopped",
+  "--user=1000:1000",
+  "--read-only",
+  "--tmpfs=/tmp:rw,nosuid,nodev,noexec,size=536870912",
+  "--cap-drop=ALL",
+  "--security-opt=no-new-privileges:true",
+  "--pids-limit=256",
+  "--memory=2g",
+  "--memory-swap=2g",
+  "--cpus=2"
+]);
+const companionExtraParams = new Set(one(companion, "ExtraParams").text.trim().split(/\s+/));
+assert.deepEqual(companionExtraParams, companionRequiredExtraParams);
+
+const companionConfigs = companion.children.filter((child) => child.tag === "Config");
+assert.equal(companionConfigs.length, 6);
+const companionConfigByTarget = new Map(companionConfigs.map((config) => [config.attributes.Target, config]));
+assert.equal(companionConfigByTarget.get("8484")?.attributes.Mode, "tcp");
+assert.equal(companionConfigByTarget.get("8484")?.text, "8484");
+assert.match(companionConfigByTarget.get("TYPR_COMPANION_ALLOWED_ORIGINS")?.attributes.Description || "", /CORS is not authentication/i);
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_ALLOW_UNSANDBOXED_STATELESS")?.text, "1");
+assert.match(companionConfigByTarget.get("TYPR_COMPANION_ALLOW_UNSANDBOXED_STATELESS")?.attributes.Description || "", /no host workspace is mounted/i);
+assert.equal(companionConfigByTarget.get("/workspace")?.attributes.Mode, "rw");
+assert.equal(companionConfigByTarget.get("/workspace")?.attributes.Required, "false");
+assert.equal(companionConfigByTarget.get("/workspace")?.text, "");
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_WORKSPACE_ROOT")?.text, "");
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_WORKSPACE_ID")?.text, "unraid-workspace");
+
+const companionTemplateSource = await readFile(companionTemplatePath, "utf8");
+assert.doesNotMatch(companionTemplateSource, /docker\.sock|<Privileged>true<\/Privileged>|<Network>host<\/Network>/i);
+
 const profile = parseXml(profilePath);
 assert.equal(profile.tag, "CommunityApplications");
 assert.ok(one(profile, "Profile").text.trim().length > 40);
@@ -91,10 +139,12 @@ assert.equal(one(profile, "Icon").text, "https://raw.githubusercontent.com/max-p
 
 if (submissionReady) {
   const support = one(template, "Support").text;
+  const companionSupport = one(companion, "Support").text;
   const forums = profile.children.filter((child) => child.tag === "Forum");
   assert.equal(support, "https://github.com/max-prime-math/typr/issues");
+  assert.equal(companionSupport, "https://github.com/max-prime-math/typr-server/issues");
   assert.ok(forums.length <= 1, "ca_profile.xml may contain at most one optional <Forum> support link");
   if (forums.length === 1) assert.equal(forums[0].text, support);
 }
 
-console.log(`Typr Unraid template and Community Applications profile validation passed${submissionReady ? " for submission" : " (submission support gate not requested)"}.`);
+console.log(`Typr and Typr Companion Unraid templates and Community Applications profile validation passed${submissionReady ? " for submission" : " (submission support gate not requested)"}.`);
