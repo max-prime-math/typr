@@ -10,9 +10,7 @@ Live app: <https://typr.ca/>
 
 ## Screenshots
 
-![Typr editing and previewing the default Markdown welcome file](screenshots/typr-markdown-workspace.png)
-
-![Typr editing and previewing the default Typst welcome file](screenshots/typr-typst-workspace.png)
+![Typr editing and previewing a calculus document in the Ayu Dark theme](screenshots/typr-workspace.png)
 
 ## Release channels
 
