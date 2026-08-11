@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <CommunityApplications>
-  <Profile>Typr provides a local-first browser workspace for Typst, LaTeX, and Markdown. This repository maintains the Community Applications templates for both the Typr web image and the optional Typr Companion native-LaTeX service. Installation documentation and maintained issue support are linked from each app.</Profile>
-  <Icon>https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png</Icon>
-  <WebPage>https://github.com/max-prime-math/typr</WebPage>
+  <Profile>max.prime publishes and maintains open-source, self-hosted tools for Unraid and the web. Current Community Applications include Typr and its optional Typr Companion service; each app listing links to its source, documentation, and maintained issue support.</Profile>
+  <Icon>https://avatars.githubusercontent.com/u/2055716?v=4</Icon>
+  <WebPage>https://github.com/max-prime-math</WebPage>
 </CommunityApplications>

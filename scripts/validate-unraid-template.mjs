@@ -42,6 +42,7 @@ assert.equal(one(template, "Network").text, "bridge");
 assert.equal(one(template, "Privileged").text, "false");
 assert.equal(one(template, "Category").text, "Tools:Utilities");
 assert.equal(one(template, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr.xml");
+assert.equal(one(template, "Icon").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png");
 assert.match(one(template, "Overview").text, /browser storage/i);
 assert.match(one(template, "Description").text, /never expose.+public Internet/i);
 assert.match(one(template, "Description").text, /not a network security boundary/i);
@@ -93,6 +94,7 @@ assert.equal(one(companion, "Network").text, "bridge");
 assert.equal(one(companion, "Privileged").text, "false");
 assert.equal(one(companion, "Category").text, "Tools:Utilities");
 assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr-companion.xml");
+assert.equal(one(companion, "Icon").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png");
 assert.match(one(companion, "Overview").text, /Stateless by default/i);
 assert.match(one(companion, "Description").text, /never be exposed.+public Internet/i);
 assert.match(one(companion, "Description").text, /stateless fallback/i);
@@ -134,8 +136,9 @@ assert.doesNotMatch(companionTemplateSource, /docker\.sock|<Privileged>true<\/Pr
 const profile = parseXml(profilePath);
 assert.equal(profile.tag, "CommunityApplications");
 assert.ok(one(profile, "Profile").text.trim().length > 40);
-assert.equal(one(profile, "WebPage").text, "https://github.com/max-prime-math/typr");
-assert.equal(one(profile, "Icon").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png");
+assert.match(one(profile, "Profile").text, /max\.prime/i);
+assert.equal(one(profile, "WebPage").text, "https://github.com/max-prime-math");
+assert.equal(one(profile, "Icon").text, "https://avatars.githubusercontent.com/u/2055716?v=4");
 
 if (submissionReady) {
   const support = one(template, "Support").text;
