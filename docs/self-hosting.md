@@ -177,11 +177,11 @@ server files, and browser autosave continues if Companion is unavailable.
 
 ## Unraid
 
-[`unraid/typr.xml`](../unraid/typr.xml) is the Typr web template. It uses
+[`templates/typr.xml`](../templates/typr.xml) is the Typr web template. It uses
 the full image and needs only port 8080; project files are not stored in Unraid
 appdata. To use lite, manually select its Repository tag and then choose R2 mode
 or an exact read-only compiler pack in the advanced fields; never map project
-files or a broad share there. [`unraid/typr-companion.xml`](../unraid/typr-companion.xml)
+files or a broad share there. [`templates/typr-companion.xml`](../templates/typr-companion.xml)
 is the canonical Community Applications template for the independently maintained
 [Typr Companion](https://github.com/max-prime-math/typr-server); install it when
 native LaTeX or a mapped workspace is wanted. Keeping both templates in this

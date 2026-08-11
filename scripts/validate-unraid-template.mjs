@@ -6,8 +6,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const templatePath = path.join(projectRoot, "unraid", "typr.xml");
-const companionTemplatePath = path.join(projectRoot, "unraid", "typr-companion.xml");
+const templatePath = path.join(projectRoot, "templates", "typr.xml");
+const companionTemplatePath = path.join(projectRoot, "templates", "typr-companion.xml");
 const profilePath = path.join(projectRoot, "ca_profile.xml");
 const submissionReady = process.argv.includes("--submission-ready");
 
@@ -41,7 +41,7 @@ assert.equal(one(template, "Repository").text, "ghcr.io/max-prime-math/typr:late
 assert.equal(one(template, "Network").text, "bridge");
 assert.equal(one(template, "Privileged").text, "false");
 assert.equal(one(template, "Category").text, "Tools:Utilities");
-assert.equal(one(template, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/unraid/typr.xml");
+assert.equal(one(template, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr.xml");
 assert.match(one(template, "Overview").text, /browser storage/i);
 assert.match(one(template, "Description").text, /never expose.+public Internet/i);
 assert.match(one(template, "Description").text, /not a network security boundary/i);
@@ -92,7 +92,7 @@ assert.equal(one(companion, "Repository").text, "ghcr.io/max-prime-math/typr-ser
 assert.equal(one(companion, "Network").text, "bridge");
 assert.equal(one(companion, "Privileged").text, "false");
 assert.equal(one(companion, "Category").text, "Tools:Utilities");
-assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/unraid/typr-companion.xml");
+assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr-companion.xml");
 assert.match(one(companion, "Overview").text, /Stateless by default/i);
 assert.match(one(companion, "Description").text, /never be exposed.+public Internet/i);
 assert.match(one(companion, "Description").text, /stateless fallback/i);
