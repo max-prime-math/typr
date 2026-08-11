@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <CommunityApplications>
-  <Profile>Typr provides a local-first browser workspace for Typst, LaTeX, and Markdown. This repository maintains the separate Typr web image and full/lite self-hosting template. Installation documentation and maintained issue support are linked from the project page.</Profile>
+  <Profile>Typr provides a local-first browser workspace for Typst, LaTeX, and Markdown. This repository maintains the Community Applications templates for both the Typr web image and the optional Typr Companion native-LaTeX service. Installation documentation and maintained issue support are linked from each app.</Profile>
   <Icon>https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png</Icon>
   <WebPage>https://github.com/max-prime-math/typr</WebPage>
 </CommunityApplications>
