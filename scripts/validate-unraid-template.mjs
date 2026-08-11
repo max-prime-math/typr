@@ -92,10 +92,9 @@ assert.equal(one(profile, "Icon").text, "https://raw.githubusercontent.com/max-p
 if (submissionReady) {
   const support = one(template, "Support").text;
   const forums = profile.children.filter((child) => child.tag === "Forum");
-  assert.equal(forums.length, 1, "submission readiness requires one real <Forum> support topic in ca_profile.xml");
-  const forum = forums[0].text;
-  assert.match(support, /^https:\/\/forums\.unraid\.net\/topic\//);
-  assert.equal(forum, support);
+  assert.equal(support, "https://github.com/max-prime-math/typr/issues");
+  assert.ok(forums.length <= 1, "ca_profile.xml may contain at most one optional <Forum> support link");
+  if (forums.length === 1) assert.equal(forums[0].text, support);
 }
 
-console.log(`Typr Unraid template and Community Applications profile validation passed${submissionReady ? " for submission" : " (submission support-topic gate not requested)"}.`);
+console.log(`Typr Unraid template and Community Applications profile validation passed${submissionReady ? " for submission" : " (submission support gate not requested)"}.`);

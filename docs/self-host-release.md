@@ -100,6 +100,6 @@ tags before retrying. Never put placeholder Docker Hub names in user templates.
 ## External gates
 
 Image publication does not submit Community Applications. A real Unraid install,
-trusted-LAN/VPN and HTTPS tests, a public support topic, completed profile XML,
+trusted-LAN/VPN and HTTPS tests, a public support destination, completed profile XML,
 portal Validate/Scan, and explicit maintainer approval remain separate manual
 gates. Public Internet exposure remains prohibited.
