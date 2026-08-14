@@ -12,6 +12,7 @@ import packagesShellSource from "../../docs/user-guide/packages-shell.md?raw";
 import settingsSource from "@typr/user-guide-settings?raw";
 import releaseChannelsSource from "../../docs/release-channels.md?raw";
 import selfHostingSource from "../../docs/self-hosting.md?raw";
+import typrCompanionSource from "../../docs/typr-companion.md?raw";
 
 interface DocsPanelProps {
   embedded?: boolean;
@@ -59,6 +60,7 @@ const DOCS_SECTIONS: DocsSection[] = [
     title: "Deployment",
     pages: [
       { id: "self-hosting", title: "Self-host Typr", path: "self-hosting.md", source: selfHostingSource },
+      { id: "typr-companion", title: "Typr Companion", path: "typr-companion.md", source: typrCompanionSource },
       { id: "release-channels", title: "Release Channels", path: "release-channels.md", source: releaseChannelsSource }
     ]
   }
