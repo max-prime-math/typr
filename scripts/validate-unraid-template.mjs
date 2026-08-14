@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const templatePath = path.join(projectRoot, "templates", "typr.xml");
-const companionTemplatePath = path.join(projectRoot, "templates", "typr-companion.xml");
+const companionTemplatePath = path.join(projectRoot, "templates", "typr-server.xml");
 const profilePath = path.join(projectRoot, "ca_profile.xml");
 const submissionReady = process.argv.includes("--submission-ready");
 
@@ -88,12 +88,12 @@ assert.doesNotMatch(templateSource, /docker\.sock|<Privileged>true<\/Privileged>
 const companion = parseXml(companionTemplatePath);
 assert.equal(companion.tag, "Container");
 assert.equal(companion.attributes.version, "2");
-assert.equal(one(companion, "Name").text, "Typr-Companion");
+assert.equal(one(companion, "Name").text, "Typr-Server");
 assert.equal(one(companion, "Repository").text, "ghcr.io/max-prime-math/typr-server:latest");
 assert.equal(one(companion, "Network").text, "bridge");
 assert.equal(one(companion, "Privileged").text, "false");
 assert.equal(one(companion, "Category").text, "Tools:Utilities");
-assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr-companion.xml");
+assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr-server.xml");
 assert.equal(one(companion, "Icon").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png");
 assert.match(one(companion, "Overview").text, /Stateless by default/i);
 assert.match(one(companion, "Description").text, /never be exposed.+public Internet/i);
@@ -144,10 +144,10 @@ if (submissionReady) {
   const support = one(template, "Support").text;
   const companionSupport = one(companion, "Support").text;
   const forums = profile.children.filter((child) => child.tag === "Forum");
-  assert.equal(support, "https://github.com/max-prime-math/typr/issues");
-  assert.equal(companionSupport, "https://github.com/max-prime-math/typr-server/issues");
+  assert.equal(support, "https://forums.unraid.net/topic/200226-support-typr-typr-server/");
+  assert.equal(companionSupport, support);
   assert.ok(forums.length <= 1, "ca_profile.xml may contain at most one optional <Forum> support link");
   if (forums.length === 1) assert.equal(forums[0].text, support);
 }
 
-console.log(`Typr and Typr Companion Unraid templates and Community Applications profile validation passed${submissionReady ? " for submission" : " (submission support gate not requested)"}.`);
+console.log(`Typr and Typr Server Unraid templates and Community Applications profile validation passed${submissionReady ? " for submission" : " (submission support gate not requested)"}.`);

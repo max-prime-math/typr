@@ -32,13 +32,13 @@ The detailed documentation lives in [docs/](docs/index.md). Application, build, 
 
 ## Self-hosting
 
-Typr is published separately from Typr Companion in full and lite container
+Typr is published separately from Typr Server in full and lite container
 variants. The full image includes the pinned browser compiler release; lite can
 use the matching immutable R2 release or an exact read-only local asset mount.
 Both keep projects in browser storage by default and compile Google Drive support
 out of the image.
 
-Self-hosted Typr and Companion are unauthenticated trusted-environment services.
+Self-hosted Typr and Typr Server are unauthenticated trusted-environment services.
 Run them only on a trusted machine, LAN, or private VPN, and never expose them to
 the public Internet. See the [self-hosting guide](docs/self-hosting.md) for
 Compose, variants, pinning, rollback, origin-scoped browser storage, HTTPS/HTTP
@@ -47,9 +47,9 @@ templates.
 The [self-hosted release policy](docs/self-host-release.md) documents the
 separate annotated tag namespace and digest-first full/lite promotion gates.
 
-## Typr Companion
+## Typr Server
 
-The optional Docker Companion adds native `latexmk`/pdfLaTeX compilation and experimental TeXpresso live preview while preserving Typr's in-browser BusyTeX fallback. Its source, installation guide, release workflow, Compose file, and Unraid template now live in the public [Typr Companion repository](https://github.com/max-prime-math/typr-server). The published image remains `ghcr.io/max-prime-math/typr-server` for `linux/amd64` and `linux/arm64`.
+The optional Typr Server Docker service adds native `latexmk`/pdfLaTeX compilation and experimental TeXpresso live preview while preserving Typr's in-browser BusyTeX fallback. Its source, installation guide, release workflow, Compose file, and Unraid template now live in the public [Typr Server repository](https://github.com/max-prime-math/typr-server). The published image remains `ghcr.io/max-prime-math/typr-server` for `linux/amd64` and `linux/arm64`.
 
 ## Alternatives
 

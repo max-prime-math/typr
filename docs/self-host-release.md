@@ -5,11 +5,11 @@ title: Release self-hosted Typr
 # Release self-hosted Typr
 
 This is the maintainer policy for `ghcr.io/max-prime-math/typr`. It is separate
-from hosted PWA channel promotion and from Typr Companion releases.
+from hosted PWA channel promotion and from Typr Server releases.
 
 ## Tag namespace and provenance
 
-The original `v0.1.0` and `v0.1.1` refs are immutable historical Companion
+The original `v0.1.0` and `v0.1.1` refs are immutable historical Typr Server
 releases from before the repository split. Never move, copy, or reinterpret
 them as frontend releases. Self-hosted Typr uses annotated tags with the exact
 form `typr-vMAJOR.MINOR.PATCH`; the numeric version must equal `package.json`.

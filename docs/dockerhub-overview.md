@@ -36,7 +36,7 @@ Non-loopback HTTP is not a secure browser context, so PWA/offline and local-fold
 ## Documentation
 
 - [Self-hosting guide](https://github.com/max-prime-math/typr/blob/main/docs/self-hosting.md)
-- [Companion integration](https://github.com/max-prime-math/typr/blob/main/docs/user-guide/settings.self-hosted.md)
+- [Typr Server integration](https://github.com/max-prime-math/typr/blob/main/docs/user-guide/settings.self-hosted.md)
 - [Typr repository](https://github.com/max-prime-math/typr)
 
 Typr is licensed under AGPL-3.0-or-later.

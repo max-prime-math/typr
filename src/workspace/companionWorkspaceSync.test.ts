@@ -21,7 +21,7 @@ import {
 
 const LIMITS = { maxFileBytes: 1024 * 1024, maxEntries: 512, maxWorkspaceBytes: 25 * 1024 * 1024 };
 
-describe("Companion mapped-workspace synchronization", () => {
+describe("Typr Server mapped-workspace synchronization", () => {
   it("performs an additive first link with workspace-wins collisions and binary round trips", async () => {
     let project = createEmptyProjectRepository({
       displayName: "Mapped",

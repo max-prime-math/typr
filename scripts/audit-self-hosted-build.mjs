@@ -8,9 +8,9 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const distRoot = path.join(projectRoot, "dist");
 const lock = JSON.parse(await readFile(path.join(projectRoot, "compiler-assets.lock.json"), "utf8"));
 const forbidden = [
-  "google-drive-oauth-callback",
+  // Keep these markers specific to executable hosted-only integrations. Broad
+  // product names and filenames also appear in the bundled deployment docs.
   ".google-drive-",
-  "Google Drive",
   "typr.google-drive.oauth-pending.v2",
   "typr.google-drive.oauth-result.v2",
   "accounts.google.com",

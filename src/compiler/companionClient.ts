@@ -57,7 +57,7 @@ export interface CompanionClientOptions {
   fetch?: typeof fetch;
 }
 
-/** The only browser-facing HTTP boundary for the Companion protocol. */
+/** The only browser-facing HTTP boundary for the Typr Server protocol. */
 export class CompanionClient {
   readonly baseUrl: string;
   private readonly fetchImplementation: typeof fetch;
@@ -73,7 +73,7 @@ export class CompanionClient {
     try {
       const response = await this.fetchImplementation(this.url(TYPR_COMPANION_ROUTES.status));
       if (!response.ok) {
-        return this.status("unavailable", `Companion status request failed (${response.status}).`);
+        return this.status("unavailable", `Typr Server status request failed (${response.status}).`);
       }
 
       const payload = await readJson(response);
@@ -84,7 +84,7 @@ export class CompanionClient {
       if (parsed.value.protocolVersion !== TYPR_COMPANION_PROTOCOL_VERSION) {
         return this.status(
           "incompatible",
-          `Companion protocol ${parsed.value.protocolVersion} is incompatible with Typr protocol ${TYPR_COMPANION_PROTOCOL_VERSION}.`,
+          `Typr Server protocol ${parsed.value.protocolVersion} is incompatible with Typr protocol ${TYPR_COMPANION_PROTOCOL_VERSION}.`,
           parsed.value
         );
       }
@@ -109,7 +109,7 @@ export class CompanionClient {
     const payload = await readJson(response).catch((error: unknown) => {
       throw new CompanionClientError(
         "protocol",
-        error instanceof Error ? error.message : "Companion returned invalid JSON."
+        error instanceof Error ? error.message : "Typr Server returned invalid JSON."
       );
     });
     if (!response.ok) {
@@ -186,7 +186,7 @@ export class CompanionClient {
     const payload = await readJson(response).catch((error: unknown) => {
       throw new CompanionClientError(
         "protocol",
-        error instanceof Error ? error.message : "Companion returned invalid JSON."
+        error instanceof Error ? error.message : "Typr Server returned invalid JSON."
       );
     });
     if (!response.ok) {
@@ -230,23 +230,23 @@ export function normalizeCompanionBaseUrl(value: string): string {
 export function validateCompanionBaseUrl(value: string): CompanionBaseUrlValidation {
   const trimmed = value.trim();
   if (!trimmed) {
-    return { ok: false, message: "Enter the HTTP or HTTPS URL of Typr Companion." };
+    return { ok: false, message: "Enter the HTTP or HTTPS URL of Typr Server." };
   }
 
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return { ok: false, message: "The Companion URL must start with http:// or https://." };
+      return { ok: false, message: "The Typr Server URL must start with http:// or https://." };
     }
     if (parsed.username || parsed.password) {
-      return { ok: false, message: "The Companion URL must not contain credentials." };
+      return { ok: false, message: "The Typr Server URL must not contain credentials." };
     }
     if (parsed.search || parsed.hash) {
-      return { ok: false, message: "The Companion URL must not contain a query string or fragment." };
+      return { ok: false, message: "The Typr Server URL must not contain a query string or fragment." };
     }
     return { ok: true, value: parsed.toString().replace(/\/$/, "") };
   } catch {
-    return { ok: false, message: "Enter a valid Companion URL." };
+    return { ok: false, message: "Enter a valid Typr Server URL." };
   }
 }
 
@@ -288,7 +288,7 @@ function getDefaultStorage(): CompanionUrlStorage | undefined {
 
 export function parseCompanionStatus(value: unknown): Result<CompanionStatusResponse> {
   if (!isRecord(value) || !isInteger(value.protocolVersion) || typeof value.serverVersion !== "string") {
-    return invalid("Companion status response is missing protocolVersion or serverVersion.");
+    return invalid("Typr Server status response is missing protocolVersion or serverVersion.");
   }
   const capabilities = parseCapabilities(value.capabilities);
   return capabilities.ok
@@ -298,16 +298,16 @@ export function parseCompanionStatus(value: unknown): Result<CompanionStatusResp
 
 export function parseCompileResult(value: unknown): Result<CompileResult> {
   if (!isRecord(value) || typeof value.ok !== "boolean" || typeof value.engine !== "string" || typeof value.log !== "string") {
-    return invalid("Companion compile response has an invalid shape.");
+    return invalid("Typr Server compile response has an invalid shape.");
   }
   if (value.ok) {
     if (!isRecord(value.output) || value.output.mediaType !== "application/pdf" || value.output.encoding !== "base64" || typeof value.output.path !== "string" || !isBase64(value.output.content) || !isFiniteNumber(value.durationMs)) {
-      return invalid("Companion success response is missing a valid PDF output.");
+      return invalid("Typr Server success response is missing a valid PDF output.");
     }
     return { ok: true, value: value as unknown as CompileResult };
   }
   if (!Array.isArray(value.errors) || !value.errors.every(isCompileError) || (value.durationMs !== undefined && !isFiniteNumber(value.durationMs))) {
-    return invalid("Companion failure response has invalid errors.");
+    return invalid("Typr Server failure response has invalid errors.");
   }
   return { ok: true, value: value as unknown as CompileResult };
 }
@@ -320,21 +320,21 @@ function invalid<T = never>(message: string): Result<T> {
 
 function parseCapabilities(value: unknown): Result<CompanionCapabilities> {
   if (!isRecord(value) || !isRecord(value.compile) || !Array.isArray(value.compile.engines) || !value.compile.engines.every((engine) => typeof engine === "string") || !isRecord(value.filesystem) || !isFilesystemCapability(value.filesystem) || !isRecord(value.lsp) || !Array.isArray(value.lsp.languages) || !value.lsp.languages.every((language) => typeof language === "string") || !isRecord(value.git) || typeof value.git.enabled !== "boolean" || !isRecord(value.terminal) || typeof value.terminal.enabled !== "boolean") {
-    return invalid("Companion status response has invalid capabilities.");
+    return invalid("Typr Server status response has invalid capabilities.");
   }
   return { ok: true, value: value as unknown as CompanionCapabilities };
 }
 
 export function parseWorkspaceFileList(value: unknown): Result<WorkspaceFileListResponse> {
   if (!isRecord(value) || typeof value.workspaceId !== "string" || value.workspaceId.length === 0 || !Array.isArray(value.files)) {
-    return invalid("Companion workspace listing has an invalid shape.");
+    return invalid("Typr Server workspace listing has an invalid shape.");
   }
   const files: WorkspaceFileMetadata[] = [];
   const paths = new Set<string>();
   for (const candidate of value.files) {
     const parsed = parseWorkspaceFileMetadata(candidate);
     if (!parsed.ok) return parsed;
-    if (paths.has(parsed.value.path)) return invalid("Companion workspace listing contains duplicate paths.");
+    if (paths.has(parsed.value.path)) return invalid("Typr Server workspace listing contains duplicate paths.");
     paths.add(parsed.value.path);
     files.push(parsed.value);
   }
@@ -344,10 +344,10 @@ export function parseWorkspaceFileList(value: unknown): Result<WorkspaceFileList
 export function parseWorkspaceFile(value: unknown, maxFileBytes?: number): Result<WorkspaceFileResponse> {
   const metadata = parseWorkspaceFileMetadata(value);
   if (!metadata.ok || !isRecord(value) || value.encoding !== "base64" || typeof value.content !== "string") {
-    return invalid("Companion workspace file has invalid metadata or content.");
+    return invalid("Typr Server workspace file has invalid metadata or content.");
   }
   if (maxFileBytes !== undefined && metadata.value.size > maxFileBytes) {
-    return invalid("Companion workspace file exceeds the advertised file-size limit.");
+    return invalid("Typr Server workspace file exceeds the advertised file-size limit.");
   }
   const expectedEncodedLength = Math.ceil(metadata.value.size / 3) * 4;
   const expectedPadding = metadata.value.size % 3 === 1 ? 2 : metadata.value.size % 3 === 2 ? 1 : 0;
@@ -356,18 +356,18 @@ export function parseWorkspaceFile(value: unknown, maxFileBytes?: number): Resul
       (expectedPadding === 1 && (!value.content.endsWith("=") || value.content.endsWith("=="))) ||
       (expectedPadding === 0 && value.content.endsWith("=")) ||
       !isBase64(value.content)) {
-    return invalid("Companion workspace file has invalid metadata or content.");
+    return invalid("Typr Server workspace file has invalid metadata or content.");
   }
   const bytes = base64ToBytes(value.content);
   if (bytes.byteLength !== metadata.value.size) {
-    return invalid("Companion workspace file size does not match its content.");
+    return invalid("Typr Server workspace file size does not match its content.");
   }
   return { ok: true, value: { ...metadata.value, encoding: "base64", content: value.content } };
 }
 
 export function parseWorkspaceFileMetadata(value: unknown): Result<WorkspaceFileMetadata> {
   if (!isRecord(value) || typeof value.path !== "string" || !parseWorkspacePath(value.path).ok || !isNonNegativeInteger(value.size) || !isFiniteNumber(value.modifiedAt) || value.modifiedAt < 0 || !isStrongEtag(value.etag)) {
-    return invalid("Companion workspace file metadata is invalid.");
+    return invalid("Typr Server workspace file metadata is invalid.");
   }
   return { ok: true, value: value as unknown as WorkspaceFileMetadata };
 }
@@ -455,30 +455,30 @@ async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new Error("Companion returned invalid JSON.");
+    throw new Error("Typr Server returned invalid JSON.");
   }
 }
 
 function readServerError(payload: unknown, status: number): string {
   if (isRecord(payload) && isRecord(payload.error) && typeof payload.error.message === "string") {
-    return `Companion server error (${status}): ${payload.error.message}`;
+    return `Typr Server error (${status}): ${payload.error.message}`;
   }
-  return `Companion server error (${status}).`;
+  return `Typr Server error (${status}).`;
 }
 
 function readServerErrorDetail(payload: unknown, status: number): { message: string; code?: string } {
   if (isRecord(payload) && isRecord(payload.error)) {
     return {
       message: typeof payload.error.message === "string"
-        ? `Companion server error (${status}): ${payload.error.message}`
-        : `Companion server error (${status}).`,
+        ? `Typr Server error (${status}): ${payload.error.message}`
+        : `Typr Server error (${status}).`,
       ...(typeof payload.error.code === "string" ? { code: payload.error.code } : {})
     };
   }
-  return { message: `Companion server error (${status}).` };
+  return { message: `Typr Server error (${status}).` };
 }
 
 function formatTransportError(error: unknown): string {
   const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
-  return `Typr Companion is unavailable${detail}`;
+  return `Typr Server is unavailable${detail}`;
 }

@@ -14,11 +14,11 @@ Each project appears as a compact card showing its file count, last edit time, a
 
 Git status, history, branches, upstream information, and repository storage measurements are loaded when you open the Git pane instead of during every project switch.
 
-Project names are local Typr labels. Deleting a project removes local Typr data for that project and its managed browser git data. It does not delete a GitHub repository or files in an explicitly linked folder or Companion workspace.
+Project names are local Typr labels. Deleting a project removes local Typr data for that project and its managed browser git data. It does not delete a GitHub repository or files in an explicitly linked folder or Typr Server workspace.
 
-### Companion mapped workspace
+### Typr Server mapped workspace
 
-When the self-hosted administrator maps a workspace into Typr Companion, use **Settings → Sync** to link the selected project and run a manual synchronization. Browser storage remains the primary local copy. Linking and unlinking never selects arbitrary server paths, and unlinking does not delete the mapped files.
+When the self-hosted administrator maps a workspace into Typr Server, use **Settings → Sync** to link the selected project and run a manual synchronization. Browser storage remains the primary local copy. Linking and unlinking never selects arbitrary server paths, and unlinking does not delete the mapped files.
 
 ### Local folder sync in Chromium
 

@@ -50,7 +50,7 @@ export const busyTexProvider: LatexCompilerProvider = {
 export function createCompanionProvider(client: CompanionClient): LatexCompilerProvider {
   return {
     id: "companion",
-    label: "Typr Companion",
+    label: "Typr Server",
     isAvailable: companionProvider.isAvailable,
     compile: (options) => compileWithCompanion(client, options)
   };
@@ -70,13 +70,13 @@ export async function compileWithCompanion(
   options.onStatusChange?.({
     phase: "compiling",
     mode: "worker",
-    label: "Compiling with Typr Companion",
+    label: "Compiling with Typr Server",
     detail: `Sending complete project to ${client.baseUrl}`
   });
   const request = createCompanionCompileRequest(options);
   const result = await client.compile(request);
   const metadata = {
-    timings: [{ label: "Typr Companion execution", durationMs: result.durationMs ?? 0 }],
+    timings: [{ label: "Typr Server execution", durationMs: result.durationMs ?? 0 }],
     strategy: {
       requestedMode: options.compileMode ?? "quick",
       effectiveMode: "full",
@@ -84,7 +84,7 @@ export async function compileWithCompanion(
       previewKind: "document",
       activeFilePath: options.mainFilePath,
       mainFilePath: request.mainFilePath,
-      reason: "Native compilation through Typr Companion"
+      reason: "Native compilation through Typr Server"
     }
   };
   if (result.ok) {
@@ -161,7 +161,7 @@ export async function compileLatexWithAutomaticProvider({
       options.onStatusChange?.({
         phase: "error",
         mode: "worker",
-        label: "Typr Companion error",
+        label: "Typr Server error",
         detail: error.message
       });
       return {
@@ -181,7 +181,7 @@ export async function compileLatexWithAutomaticProvider({
     options.onStatusChange?.({
       phase: "compiling",
       mode: "worker",
-      label: "Companion unavailable; using BusyTeX",
+      label: "Typr Server unavailable; using BusyTeX",
       detail: error.message
     });
     return { result: await busyProvider.compile(options), provider: "busytex" };

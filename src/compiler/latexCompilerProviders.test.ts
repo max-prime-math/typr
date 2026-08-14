@@ -42,7 +42,7 @@ function fixtureProject() {
 }
 
 describe("LaTeX compiler providers", () => {
-  it("selects Companion only for an advertised compatible engine and preserves BusyTeX", () => {
+  it("selects Typr Server only for an advertised compatible engine and preserves BusyTeX", () => {
     expect(selectLatexCompilerProvider({ companion: availableConnection, compileDriver: "pdftex_bibtex8" })).toBe("companion");
     expect(selectLatexCompilerProvider({ companion: availableConnection, compileDriver: "luatex_bibtex8" })).toBe("busytex");
     expect(selectLatexCompilerProvider({ companion: { ...availableConnection, state: "unavailable" }, compileDriver: "pdftex_bibtex8" })).toBe("busytex");
@@ -68,7 +68,7 @@ describe("LaTeX compiler providers", () => {
     });
   });
 
-  it("converts a Companion PDF success and typed LaTeX failure into Typr's existing result shape", async () => {
+  it("converts a Typr Server PDF success and typed LaTeX failure into Typr's existing result shape", async () => {
     const options = {
       project: fixtureProject(),
       mainFilePath: "main.tex",
@@ -102,7 +102,7 @@ describe("LaTeX compiler providers", () => {
     expect(!failure.ok && failure.output?.content).toContain("Undefined control sequence");
   });
 
-  it("falls back to the existing BusyTeX provider when Companion disappears", async () => {
+  it("falls back to the existing BusyTeX provider when Typr Server disappears", async () => {
     const fallbackResult = {
       ok: true as const,
       engine: "busytex" as const,
@@ -124,7 +124,7 @@ describe("LaTeX compiler providers", () => {
     expect(outcome).toEqual({ result: fallbackResult, provider: "busytex" });
   });
 
-  it("surfaces Companion HTTP failures without mislabelling them as BusyTeX errors", async () => {
+  it("surfaces Typr Server HTTP failures without mislabelling them as BusyTeX errors", async () => {
     const outcome = await compileLatexWithAutomaticProvider({
       client: new CompanionClient({ fetch: async () => jsonResponse({ error: { message: "unsupported protocol" } }, 500) }),
       companion: availableConnection,

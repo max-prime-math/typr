@@ -50,7 +50,7 @@ describe("CompanionClient", () => {
     });
   });
 
-  it("keeps an unreachable Companion non-fatal", async () => {
+  it("keeps an unreachable Typr Server non-fatal", async () => {
     const client = new CompanionClient({
       fetch: async () => { throw new TypeError("connection refused"); }
     });
@@ -203,7 +203,7 @@ describe("CompanionClient", () => {
     }, 16).ok).toBe(false);
   });
 
-  it("validates and normalizes user-configured Companion URLs", () => {
+  it("validates and normalizes user-configured Typr Server URLs", () => {
     expect(validateCompanionBaseUrl(" https://companion.example.test/typr/ ")).toEqual({
       ok: true,
       value: "https://companion.example.test/typr"
@@ -214,7 +214,7 @@ describe("CompanionClient", () => {
     expect(normalizeCompanionBaseUrl("not a URL")).toBe(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
   });
 
-  it("persists a validated Companion URL and safely ignores invalid stored data", () => {
+  it("persists a validated Typr Server URL and safely ignores invalid stored data", () => {
     const values = new Map<string, string>();
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,

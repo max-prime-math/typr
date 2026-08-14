@@ -93,7 +93,7 @@ export function validateCompanionWorkspaceBinding(
       binding.providerData?.baseUrl !== client.baseUrl ||
       binding.providerData?.workspaceId !== workspaceId ||
       binding.remoteRootId !== workspaceId || binding.syncMode !== "manual") {
-    throw new Error("Mapped workspace binding does not match the current Companion URL and workspace identity.");
+    throw new Error("Mapped workspace binding does not match the current Typr Server URL and workspace identity.");
   }
 }
 
@@ -163,7 +163,7 @@ async function synchronizeCompanionWorkspaceAttempt(options: SyncOptions): Promi
     const verification = await options.client.listWorkspaceFiles();
     enforceListingLimits(verification.files, options.limits);
     if (verification.workspaceId !== options.workspaceId) {
-      throw new Error("Companion workspace identity changed during synchronization.");
+      throw new Error("Typr Server workspace identity changed during synchronization.");
     }
     const actualEtags = new Map(verification.files.map((file) => [file.path, file.etag]));
     const changedPaths = [...new Set([...actualEtags.keys(), ...expectedEtags.keys()])]
@@ -210,7 +210,7 @@ async function readWorkspaceSnapshot(
 ): Promise<CompanionWorkspaceSnapshot> {
   const listing = await client.listWorkspaceFiles();
   if (listing.workspaceId !== expectedWorkspaceId) {
-    throw new Error("Companion workspace identity changed; unlink it before connecting another workspace.");
+    throw new Error("Typr Server workspace identity changed; unlink it before connecting another workspace.");
   }
   enforceListingLimits(listing.files, limits);
   const files = await mapWithConcurrency(listing.files, 8, (metadata) => client.readWorkspaceFile(metadata.path, limits.maxFileBytes));

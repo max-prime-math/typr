@@ -202,7 +202,7 @@ describe("IndexedDB project deletion storage", () => {
     await deleteCloudProjectBinding("typr-companion", "project-a");
   });
 
-  it("atomically commits the synchronized project, snapshot, metadata, and Companion binding", async () => {
+  it("atomically commits the synchronized project, snapshot, metadata, and Typr Server binding", async () => {
     const snapshot = createDefaultSnapshot();
     const storage = createProjectStorageFromSnapshot(snapshot);
     const binding = {

@@ -69,8 +69,8 @@ export function useTexpressoLivePreview({
         preserveVisible: true,
         status: "disconnected",
         detail: companion.state === "checking"
-          ? "Waiting for Typr Companion."
-          : companion.message ?? "Typr Companion is unavailable."
+          ? "Waiting for Typr Server."
+          : companion.message ?? "Typr Server is unavailable."
       });
       return;
     }

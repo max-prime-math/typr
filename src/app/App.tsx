@@ -892,19 +892,19 @@ function getLatexCompileProviderLabel(
       compileDriver: profile.driver
     }) === "companion"
   ) {
-    return `Typr Companion server · native pdflatex · ${companion.baseUrl}`;
+    return `Typr Server · native pdflatex · ${companion.baseUrl}`;
   }
 
   if (profile.driver !== "pdftex_bibtex8") {
-    return "BusyTeX · in browser · Companion currently supports pdfTeX only";
+    return "BusyTeX · in browser · Typr Server currently supports pdfTeX only";
   }
 
   if (companion.state === "checking") {
-    return "BusyTeX · in browser · checking Typr Companion";
+    return "BusyTeX · in browser · checking Typr Server";
   }
 
   if (companion.state === "incompatible") {
-    return "BusyTeX · in browser · Companion protocol incompatible";
+    return "BusyTeX · in browser · Typr Server protocol incompatible";
   }
 
   return "BusyTeX · in browser";
@@ -3591,7 +3591,7 @@ ${nextLine}` : nextLine;
     () => ({
       state: "unavailable",
       baseUrl: companionClient.baseUrl,
-      message: "Apply a Companion URL to enable connection checks."
+      message: "Apply a Typr Server URL to enable connection checks."
     })
   );
   useEffect(() => {
@@ -3599,7 +3599,7 @@ ${nextLine}` : nextLine;
       setCompanionConnection({
         state: "unavailable",
         baseUrl: companionClient.baseUrl,
-        message: "Apply a Companion URL to enable connection checks."
+        message: "Apply a Typr Server URL to enable connection checks."
       });
       return;
     }

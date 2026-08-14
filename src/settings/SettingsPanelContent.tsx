@@ -344,10 +344,10 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 
             <div className="settings-section">
               <div className="settings-section__header">
-                <h3>Companion workspace</h3>
+                <h3>Typr Server workspace</h3>
                 <p>
                   Manually exchange the selected project with one directory
-                  mapped by your self-hosted Companion. Browser storage remains
+                  mapped by your self-hosted Typr Server. Browser storage remains
                   the primary local copy; no background workspace requests run.
                 </p>
               </div>
@@ -364,7 +364,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     {companionWorkspaceSyncState?.message ??
                       (companionWorkspaceSync.capability
                         ? "No mapped workspace linked. Browser storage remains the default."
-                        : "The current Companion has no mapped workspace. Browser storage remains the default.")}
+                        : "The current Typr Server has no mapped workspace. Browser storage remains the default.")}
                   </small>
                   {companionWorkspaceSyncState?.lastSyncedAt ? (
                     <small>
@@ -2148,13 +2148,13 @@ function CompanionSettingsCard({
     : connection.state === "checking"
       ? "Checking connection…"
       : connection.state === "incompatible"
-        ? connection.message ?? "The Companion protocol is incompatible."
+        ? connection.message ?? "The Typr Server protocol is incompatible."
         : `BusyTeX is active${connection.message ? ` · ${connection.message}` : ""}`;
 
   return (
     <div className="settings-toggle settings-toggle--stacked companion-settings">
       <span>
-        <strong>Typr Companion</strong>
+        <strong>Typr Server</strong>
         <small aria-live="polite" role="status">{connectionMessage}</small>
       </span>
       <form
@@ -2170,7 +2170,7 @@ function CompanionSettingsCard({
           onApply(validation.value);
         }}
       >
-        <label htmlFor="companion-base-url">Companion URL</label>
+        <label htmlFor="companion-base-url">Typr Server URL</label>
         <div className="companion-settings__controls">
           <input
             aria-describedby="companion-base-url-help"
@@ -2198,7 +2198,7 @@ function CompanionSettingsCard({
           </button>
         </div>
         <small id="companion-base-url-help">
-          Keep the loopback default for Docker on this device. A Companion on Unraid or another
+          Keep the loopback default for Docker on this device. A Typr Server on Unraid or another
           host requires an HTTPS reverse-proxy URL that is reachable from this browser.
         </small>
         {validationMessage ? (

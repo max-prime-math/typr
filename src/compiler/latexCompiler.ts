@@ -211,7 +211,7 @@ export function releaseLatexCompilerMemory(): void {
 
 /**
  * Produces the complete, safe-to-compile LaTeX project view used by BusyTeX
- * and by the Companion provider.  Keeping this here means both providers see
+ * and by the Typr Server provider.  Keeping this here means both providers see
  * the same documents, generated diagram assets, and active-editor override.
  */
 export function collectLatexFiles(

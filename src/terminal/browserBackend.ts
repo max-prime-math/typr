@@ -68,7 +68,7 @@ export function createLocalAgentBackendPlaceholder() {
     {
       id: "local-agent",
       label: "Local Agent unavailable",
-      detail: "Companion process not connected",
+      detail: "Typr Server process not connected",
       available: false
     },
     "TODO: add an opt-in localhost transport that is scoped to the selected project root."

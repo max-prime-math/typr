@@ -9,10 +9,10 @@ server. Projects, settings, browser Git data, and sync bindings remain in each
 browser's IndexedDB and OPFS by default. The container has no project or appdata
 volume, and replacing it does not migrate or delete browser data.
 
-Self-hosted Typr and Typr Companion are separate images and repositories:
+Self-hosted Typr and Typr Server are separate images and repositories:
 
 - `ghcr.io/max-prime-math/typr` serves the Typr PWA.
-- `ghcr.io/max-prime-math/typr-server` is the optional native Companion.
+- `ghcr.io/max-prime-math/typr-server` is the optional native Typr Server.
 
 Both are unauthenticated trusted-environment services. Run them only on a
 trusted machine, trusted LAN, or private VPN. **Never expose either service to
@@ -134,10 +134,10 @@ hostname creates a different storage silo. Export a Typr project backup from the
 old origin before changing the URL, then import it at the new origin. Clearing
 site data can remove the browser's only project copy.
 
-An HTTPS Typr page cannot call a plain HTTP/WS Companion because the browser
-blocks mixed content. For cross-device Companion use, give both services trusted
-HTTPS endpoints restricted to the LAN/VPN, forward Companion WebSocket upgrades,
-and add the exact Typr origin to the Companion allowlist. HTTPS is not permission
+An HTTPS Typr page cannot call a plain HTTP/WS Typr Server because the browser
+blocks mixed content. For cross-device Typr Server use, give both services trusted
+HTTPS endpoints restricted to the LAN/VPN, forward Typr Server WebSocket upgrades,
+and add the exact Typr origin to the Typr Server allowlist. HTTPS is not permission
 to expose either endpoint publicly.
 
 ### Private HTTPS with Tailscale on Unraid
@@ -157,23 +157,23 @@ tailscale serve status
 
 Open the resulting `https://UNRAID-NAME.TAILNET.ts.net:8444` URL only from a
 device joined to the authorized tailnet. Use a different private HTTPS port for
-Companion as documented in its Unraid guide. Changing from the LAN URL to the
+Typr Server as documented in its Unraid guide. Changing from the LAN URL to the
 Tailscale URL creates a new browser-storage origin, so export projects from the
 old origin before moving. Tailscale **Serve** stays within the tailnet;
 **Funnel must remain disabled** because these services must never be public.
 
-## Optional Typr Companion and mapped workspace
+## Optional Typr Server and mapped workspace
 
-Typr works without Companion. A fresh self-hosted browser profile makes no
-Companion or mapped-workspace request. To opt in, install Companion from its
+Typr works without Typr Server. A fresh self-hosted browser profile makes no
+Typr Server or mapped-workspace request. To opt in, install Typr Server from its
 [separate repository](https://github.com/max-prime-math/typr-server), enter its
-URL under **Settings → Editor → Typr Companion**, and apply it.
+URL under **Settings → Editor → Typr Server**, and apply it.
 
-The optional host workspace is mounted into the Companion container—not the Typr
+The optional host workspace is mounted into the Typr Server container—not the Typr
 web container. When an administrator enables that single scoped directory, a
 user may explicitly link the selected browser-local project under
 **Settings → Sync** and run a manual synchronization. Unlinking never deletes
-server files, and browser autosave continues if Companion is unavailable.
+server files, and browser autosave continues if Typr Server is unavailable.
 
 ## Unraid
 
@@ -181,9 +181,9 @@ server files, and browser autosave continues if Companion is unavailable.
 the full image and needs only port 8080; project files are not stored in Unraid
 appdata. To use lite, manually select its Repository tag and then choose R2 mode
 or an exact read-only compiler pack in the advanced fields; never map project
-files or a broad share there. [`templates/typr-companion.xml`](https://github.com/max-prime-math/typr/blob/main/templates/typr-companion.xml)
+files or a broad share there. [`templates/typr-server.xml`](https://github.com/max-prime-math/typr/blob/main/templates/typr-server.xml)
 is the canonical Community Applications template for the independently maintained
-[Typr Companion](https://github.com/max-prime-math/typr-server); install it when
+[Typr Server](https://github.com/max-prime-math/typr-server); install it when
 native LaTeX or a mapped workspace is wanted. Keeping both templates in this
 repository groups both apps under one Community Applications repository profile.
 For private Tailscale access, leave each container's **Use Tailscale** switch off

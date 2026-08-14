@@ -97,7 +97,7 @@ export async function commitCompanionWorkspaceSync(options: {
 }): Promise<void> {
   if (options.binding.providerId !== "typr-companion" ||
       !options.projectStorage.projects.some((project) => project.id === options.binding.projectId)) {
-    throw new Error("A Companion workspace commit requires a matching project and binding.");
+    throw new Error("A Typr Server workspace commit requires a matching project and binding.");
   }
   const database = await getDatabase();
   const transaction = database.transaction(STORE_NAME, "readwrite");

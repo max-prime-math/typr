@@ -195,7 +195,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await replaceEditor(page, [
     "\\documentclass{article}",
     "\\begin{document}",
-    "BusyTeX fallback compile after Companion loss.",
+    "BusyTeX fallback compile after Typr Server loss.",
     "\\end{document}",
     ""
   ].join("\n"));

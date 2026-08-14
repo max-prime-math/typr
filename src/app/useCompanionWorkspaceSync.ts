@@ -82,7 +82,7 @@ export function useCompanionWorkspaceSync(options: {
         status: "unavailable",
         workspaceId: binding.remoteRootId,
         lastSyncedAt: binding.lastSyncedAt,
-        message: "The current Companion does not expose a mapped workspace. Browser storage is unchanged."
+        message: "The current Typr Server does not expose a mapped workspace. Browser storage is unchanged."
       };
     }
     if (binding.providerData?.baseUrl !== client.baseUrl || binding.remoteRootId !== workspaceId) {
@@ -90,7 +90,7 @@ export function useCompanionWorkspaceSync(options: {
         status: "stale",
         workspaceId: binding.remoteRootId,
         lastSyncedAt: binding.lastSyncedAt,
-        message: "This link belongs to a different Companion URL or workspace. Unlink it before reconnecting."
+        message: "This link belongs to a different Typr Server URL or workspace. Unlink it before reconnecting."
       };
     }
     return {
@@ -245,7 +245,7 @@ export function useCompanionWorkspaceSync(options: {
   const link = useCallback(async (projectId: string): Promise<void> => {
     if (!capability || !restoredProjectIdsRef.current.has(projectId)) return;
     const confirmed = window.confirm(
-      "Link this project to the mapped Companion workspace? The first sync is additive: files from both sides are kept, and mapped-workspace content wins same-path collisions. Browser storage remains the primary local copy."
+      "Link this project to the mapped Typr Server workspace? The first sync is additive: files from both sides are kept, and mapped-workspace content wins same-path collisions. Browser storage remains the primary local copy."
     );
     if (!confirmed) return;
     const binding = createCompanionWorkspaceBinding({
