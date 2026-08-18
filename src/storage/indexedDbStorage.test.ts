@@ -68,14 +68,16 @@ import {
   deleteProjectGitFiles,
   listProjectGitFiles,
   loadCloudProjectBinding,
+  loadCompanionBaseUrlSetting,
+  loadLocalFolderBinding,
   loadProjectStorage,
   loadSnapshot,
-  loadLocalFolderBinding,
   loadProjectDeletionTombstones,
   readProjectGitFile,
   saveCloudProjectBinding,
-  saveProjectDeletionTombstone,
+  saveCompanionBaseUrlSetting,
   saveLocalFolderBinding,
+  saveProjectDeletionTombstone,
   writeProjectGitFile
 } from "./indexedDbStorage";
 import { createDefaultSnapshot } from "../app/appState";
@@ -92,6 +94,17 @@ describe("IndexedDB project deletion storage", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("persists the Companion URL independently of the workspace snapshot", async () => {
+    expect(await loadCompanionBaseUrlSetting()).toBeNull();
+
+    await saveCompanionBaseUrlSetting("https://companion.example.test/typr");
+
+    expect(await loadCompanionBaseUrlSetting()).toBe(
+      "https://companion.example.test/typr"
+    );
+    expect(await loadSnapshot()).toBeNull();
   });
 
   it("persists, lists, and clears independent project deletion tombstones", async () => {

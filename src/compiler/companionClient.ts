@@ -279,7 +279,11 @@ export function writeStoredCompanionBaseUrl(
   value: string,
   storage: Pick<CompanionUrlStorage, "setItem"> | undefined = getDefaultStorage()
 ): void {
-  storage?.setItem(COMPANION_BASE_URL_STORAGE_KEY, normalizeCompanionBaseUrl(value));
+  try {
+    storage?.setItem(COMPANION_BASE_URL_STORAGE_KEY, normalizeCompanionBaseUrl(value));
+  } catch {
+    // IndexedDB remains the durable source when localStorage is unavailable.
+  }
 }
 
 function getDefaultStorage(): CompanionUrlStorage | undefined {

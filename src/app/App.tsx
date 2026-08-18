@@ -309,12 +309,14 @@ import {
   deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
+  loadCompanionBaseUrlSetting,
   loadGitWorkspace,
   loadGitHubConfig,
   loadProjectDeletionTombstones,
   loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
+  saveCompanionBaseUrlSetting,
   saveGitWorkspace,
   saveGitHubConfig,
   saveProjectDeletionTombstone,
@@ -3622,14 +3624,22 @@ ${nextLine}` : nextLine;
     };
   }, [companionClient, companionConnectionEnabled, isMountedRef]);
   const handleCompanionBaseUrlChange = useCallback((baseUrl: string) => {
-    writeStoredCompanionBaseUrl(baseUrl);
+    const normalizedBaseUrl = normalizeCompanionBaseUrl(baseUrl);
+    writeStoredCompanionBaseUrl(normalizedBaseUrl);
+    void saveCompanionBaseUrlSetting(normalizedBaseUrl).catch((error) => {
+      console.warn("Typr could not persist the Companion URL.", error);
+    });
     setCompanionConnectionEnabled(true);
-    setCompanionBaseUrl(baseUrl);
+    setCompanionBaseUrl(normalizedBaseUrl);
   }, []);
   const handleCompanionBaseUrlReset = useCallback(() => {
-    writeStoredCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+    const normalizedBaseUrl = normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+    writeStoredCompanionBaseUrl(normalizedBaseUrl);
+    void saveCompanionBaseUrlSetting(normalizedBaseUrl).catch((error) => {
+      console.warn("Typr could not persist the default Companion URL.", error);
+    });
     setCompanionConnectionEnabled(true);
-    setCompanionBaseUrl(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
+    setCompanionBaseUrl(normalizedBaseUrl);
   }, []);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const matrixCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
@@ -5684,14 +5694,16 @@ ${nextLine}` : nextLine;
           storedGitWorkspace,
           storedGitHubConfig,
           storedGitCredentials,
-          storedProjectDeletionTombstones
+          storedProjectDeletionTombstones,
+          storedCompanionBaseUrl
         ] = await Promise.all([
           loadSnapshot(),
           loadProjectStorage(),
           loadGitWorkspace(),
           loadGitHubConfig(),
           loadGitCredentialMap(),
-          loadProjectDeletionTombstones()
+          loadProjectDeletionTombstones(),
+          loadCompanionBaseUrlSetting()
         ]);
         reportBootProgress(0.58);
         const storedSnippets = await loadCustomSnippets();
@@ -5699,6 +5711,22 @@ ${nextLine}` : nextLine;
 
         if (cancelled) {
           return;
+        }
+
+        const browserCompanionBaseUrl = readStoredCompanionBaseUrl();
+        const companionBaseUrlWasConfigured = isCompanionBaseUrlConfigured();
+        const persistentCompanionBaseUrl = storedCompanionBaseUrl
+          ? normalizeCompanionBaseUrl(storedCompanionBaseUrl)
+          : browserCompanionBaseUrl;
+        setCompanionBaseUrl(persistentCompanionBaseUrl);
+        setCompanionConnectionEnabled(
+          Boolean(storedCompanionBaseUrl) || companionBaseUrlWasConfigured
+        );
+        writeStoredCompanionBaseUrl(persistentCompanionBaseUrl);
+        if (!storedCompanionBaseUrl && companionBaseUrlWasConfigured) {
+          void saveCompanionBaseUrlSetting(persistentCompanionBaseUrl).catch((error) => {
+            console.warn("Typr could not migrate the saved Companion URL.", error);
+          });
         }
 
         const nextSnapshot = storedSnapshot

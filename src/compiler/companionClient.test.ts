@@ -231,6 +231,16 @@ describe("CompanionClient", () => {
     values.set(COMPANION_BASE_URL_STORAGE_KEY, "javascript:alert(1)");
     expect(readStoredCompanionBaseUrl(storage)).toBe(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
   });
+
+  it("keeps applying a Companion URL when localStorage is unavailable", () => {
+    expect(() =>
+      writeStoredCompanionBaseUrl("https://companion.example.test", {
+        setItem: () => {
+          throw new DOMException("Storage is unavailable", "SecurityError");
+        }
+      })
+    ).not.toThrow();
+  });
 });
 
 function jsonResponse(value: unknown, status = 200): Response {
