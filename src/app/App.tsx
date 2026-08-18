@@ -5722,8 +5722,9 @@ ${nextLine}` : nextLine;
         setCompanionConnectionEnabled(
           Boolean(storedCompanionBaseUrl) || companionBaseUrlWasConfigured
         );
-        writeStoredCompanionBaseUrl(persistentCompanionBaseUrl);
-        if (!storedCompanionBaseUrl && companionBaseUrlWasConfigured) {
+        if (storedCompanionBaseUrl) {
+          writeStoredCompanionBaseUrl(persistentCompanionBaseUrl);
+        } else if (companionBaseUrlWasConfigured) {
           void saveCompanionBaseUrlSetting(persistentCompanionBaseUrl).catch((error) => {
             console.warn("Typr could not migrate the saved Companion URL.", error);
           });
