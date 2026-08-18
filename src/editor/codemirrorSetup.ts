@@ -30,7 +30,6 @@ import {
   EditorView,
   highlightActiveLineGutter,
   keymap,
-  lineNumbers,
   rectangularSelection,
   scrollPastEnd,
   type Command,
@@ -331,18 +330,6 @@ export function createEditorExtensions({
     registerVimCloseCommands(onCloseRequested);
   }
 
-  const lineNumberExtension = lineNumbers({
-    formatNumber: (lineNumber, state) => {
-      if (!relativeLineNumbers) {
-        return String(lineNumber);
-      }
-
-      const activeLine = state.doc.lineAt(state.selection.main.head).number;
-      const delta = Math.abs(lineNumber - activeLine);
-      return delta === 0 ? String(lineNumber) : String(delta);
-    }
-  });
-
   const keymaps = [
     { key: toCodeMirrorKeybinding(keybindings.openSearch), run: () => {
       onSearchRequested();
@@ -425,9 +412,8 @@ export function createEditorExtensions({
       eventFilter: isRectangularSelectionGesture
     }),
     crosshairCursor({ key: "Alt" }),
-    lineNumberExtension,
     diagnosticsCompartment.of(
-      createEditorDiagnosticExtensions(diagnostics, highlightErrors)
+      createEditorDiagnosticExtensions(diagnostics, highlightErrors, relativeLineNumbers)
     ),
     highlightActiveLineGutter(),
     drawSelection(),

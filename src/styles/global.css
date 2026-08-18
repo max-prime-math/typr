@@ -3058,30 +3058,14 @@ button {
   height: 2px;
 }
 
-.editor-root .cm-diagnostic-gutter {
-  width: 1.2rem;
-}
-
-.editor-root .cm-diagnostic-marker {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 0.95rem;
-  height: 0.95rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.editor-root .cm-diagnostic-marker--error {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
+.editor-root .cm-diagnostic-line-number--error {
   color: var(--danger);
+  cursor: help;
 }
 
-.editor-root .cm-diagnostic-marker--warning {
-  background: color-mix(in srgb, var(--warning) 18%, transparent);
+.editor-root .cm-diagnostic-line-number--warning {
   color: var(--warning);
+  cursor: help;
 }
 
 .editor-root .cm-line.cm-diagnostic-line--error {
