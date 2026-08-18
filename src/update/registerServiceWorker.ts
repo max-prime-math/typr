@@ -11,6 +11,21 @@ export function getVersionedServiceWorkerUrl(baseUrl: string, buildSha: string):
   return serviceWorkerUrl.href;
 }
 
+export function shouldReloadAfterServiceWorkerUpdate(
+  controllerScriptUrl: string | null,
+  currentBuildSha: string
+): boolean {
+  if (!controllerScriptUrl) {
+    return true;
+  }
+
+  try {
+    return new URL(controllerScriptUrl).searchParams.get("build") === currentBuildSha;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * GitHub Pages serves sw.js with a long CDN cache lifetime. Giving each build a
  * distinct script URL ensures the browser fetches the worker that matches the
@@ -47,8 +62,17 @@ export const registerVersionedServiceWorker: RegisterServiceWorker = (
         }
 
         refreshPrompted = true;
+        // A deployed worker is first discovered by the old application, using
+        // its old build-stamped URL. After that worker activates, the new page
+        // registers the identical script under its new build-stamped URL. The
+        // second activation does not need another page reload because this page
+        // is already running the target build.
+        const reloadAfterUpdate = shouldReloadAfterServiceWorkerUpdate(
+          navigator.serviceWorker.controller?.scriptURL ?? null,
+          TYPR_BUILD_INFO.buildSha
+        );
         workbox?.addEventListener("controlling", (event) => {
-          if (event.isUpdate) {
+          if (event.isUpdate && reloadAfterUpdate) {
             window.location.reload();
           }
         });
