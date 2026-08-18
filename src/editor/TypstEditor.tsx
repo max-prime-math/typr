@@ -848,7 +848,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     diagnosticsSignatureRef.current = nextSignature;
     view.dispatch({
       effects: diagnosticsCompartment.reconfigure(
-        createEditorDiagnosticExtensions(diagnostics, highlightErrors)
+        createEditorDiagnosticExtensions(diagnostics, highlightErrors, relativeLineNumbers)
       )
     });
     view.dispatch(setDiagnostics(view.state, toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors)));

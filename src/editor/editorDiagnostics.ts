@@ -1,8 +1,14 @@
-import { StateField } from "@codemirror/state";
+import { RangeSet, StateField } from "@codemirror/state";
 import type { EditorState, Extension } from "@codemirror/state";
-import { lintGutter, linter } from "@codemirror/lint";
+import { linter } from "@codemirror/lint";
 import type { Diagnostic as CodeMirrorDiagnostic } from "@codemirror/lint";
-import { Decoration, EditorView, GutterMarker, gutter } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  GutterMarker,
+  lineNumberMarkers,
+  lineNumbers
+} from "@codemirror/view";
 import type { CompileDiagnostic } from "../compiler/types";
 
 interface EditorDiagnosticLine {
@@ -11,27 +17,23 @@ interface EditorDiagnosticLine {
   message: string;
 }
 
-class DiagnosticMarker extends GutterMarker {
-  constructor(
-    private readonly severity: "error" | "warning",
-    private readonly message: string
-  ) {
+class DiagnosticLineNumberMarker extends GutterMarker {
+  readonly elementClass: string;
+
+  constructor(private readonly severity: "error" | "warning") {
     super();
+    this.elementClass = `cm-diagnostic-line-number cm-diagnostic-line-number--${severity}`;
   }
 
-  override toDOM(): HTMLElement {
-    const marker = document.createElement("span");
-    marker.className = `cm-diagnostic-marker cm-diagnostic-marker--${this.severity}`;
-    marker.textContent = this.severity === "error" ? "!" : "•";
-    marker.title = this.message;
-    marker.setAttribute("aria-label", this.message);
-    return marker;
+  override eq(other: DiagnosticLineNumberMarker): boolean {
+    return this.severity === other.severity;
   }
 }
 
 export function createEditorDiagnosticExtensions(
   diagnostics: CompileDiagnostic[],
-  highlightErrors: boolean
+  highlightErrors: boolean,
+  relativeLineNumbers: boolean
 ): Extension[] {
   const lines = collectDiagnosticLines(diagnostics, highlightErrors);
   const decorationField = StateField.define({
@@ -40,44 +42,87 @@ export function createEditorDiagnosticExtensions(
       createDiagnosticDecorations(transaction.state, lines, diagnostics, highlightErrors),
     provide: (field) => EditorView.decorations.from(field)
   });
-
-  const lineMap = new Map<number, EditorDiagnosticLine>();
-
-  for (const diagnosticLine of lines) {
-    lineMap.set(diagnosticLine.line, diagnosticLine);
-  }
-
-  const diagnosticGutters: Extension[] = lineMap.size > 0
-    ? [
-        lintGutter({
-          markerFilter: (codeMirrorDiagnostics) =>
-            codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message)),
-          tooltipFilter: (codeMirrorDiagnostics) =>
-            codeMirrorDiagnostics.filter((diagnostic) => !isHarperDiagnosticMessage(diagnostic.message))
-        }),
-        gutter({
-          class: "cm-diagnostic-gutter",
-          lineMarker(view, line) {
-            const diagnosticLine = lineMap.get(view.state.doc.lineAt(line.from).number);
-
-            if (!diagnosticLine) {
-              return null;
-            }
-
-            return new DiagnosticMarker(diagnosticLine.severity, diagnosticLine.message);
-          },
-          initialSpacer() {
-            return new DiagnosticMarker("warning", "Diagnostic");
-          }
-        })
-      ]
-    : [];
+  const lineNumberMarkerField = StateField.define({
+    create: (state) => createDiagnosticLineNumberMarkers(state, lines),
+    update: (_value, transaction) =>
+      createDiagnosticLineNumberMarkers(transaction.state, lines),
+    provide: (field) => lineNumberMarkers.from(field)
+  });
 
   return [
+    createDiagnosticLineNumbers(lines, relativeLineNumbers),
+    lineNumberMarkerField,
     linter((view) => toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors), { delay: 120 }),
-    decorationField,
-    ...diagnosticGutters
+    decorationField
   ];
+}
+
+function createDiagnosticLineNumbers(
+  lines: EditorDiagnosticLine[],
+  relativeLineNumbers: boolean
+): Extension {
+  const lineMap = new Map(lines.map((line) => [line.line, line]));
+
+  return lineNumbers({
+    formatNumber: (lineNumber, state) => {
+      if (!relativeLineNumbers) {
+        return String(lineNumber);
+      }
+
+      const activeLine = state.doc.lineAt(state.selection.main.head).number;
+      const delta = Math.abs(lineNumber - activeLine);
+      return delta === 0 ? String(lineNumber) : String(delta);
+    },
+    domEventHandlers: {
+      mouseover(view, line, event) {
+        const target = event.target;
+
+        if (!(target instanceof Element)) {
+          return false;
+        }
+
+        const gutterElement = target.closest<HTMLElement>(".cm-gutterElement");
+
+        if (!gutterElement?.closest(".cm-lineNumbers")) {
+          return false;
+        }
+
+        const lineNumber = view.state.doc.lineAt(line.from).number;
+        const diagnosticLine = lineMap.get(lineNumber);
+
+        if (diagnosticLine) {
+          gutterElement.title = diagnosticLine.message;
+          gutterElement.setAttribute(
+            "aria-label",
+            `Line ${lineNumber}: ${diagnosticLine.message}`
+          );
+        } else {
+          gutterElement.removeAttribute("title");
+          gutterElement.removeAttribute("aria-label");
+        }
+
+        return false;
+      }
+    }
+  });
+}
+
+function createDiagnosticLineNumberMarkers(
+  state: EditorState,
+  lines: EditorDiagnosticLine[]
+) {
+  return RangeSet.of(
+    lines.map((diagnosticLine) => {
+      const lineNumber = Math.min(
+        Math.max(1, diagnosticLine.line),
+        state.doc.lines
+      );
+      return new DiagnosticLineNumberMarker(diagnosticLine.severity).range(
+        state.doc.line(lineNumber).from
+      );
+    }),
+    true
+  );
 }
 
 export function toCodeMirrorDiagnostics(
