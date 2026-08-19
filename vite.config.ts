@@ -6,6 +6,11 @@ import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
 const INLINE_ASSET_LIMIT = 8 * 1024;
+const HOSTED_CHANNEL_ORIGINS = [
+  "https://typr.ca",
+  "https://beta.typr.ca",
+  "https://dev.typr.ca"
+] as const;
 const externalCompilerAssetBaseUrl = process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL
   ?.trim()
   .replace(/\/+$/, "");
@@ -98,7 +103,8 @@ export default defineConfig(({ command }) => {
       __TYPR_APP_VERSION__: JSON.stringify(appVersion),
       __TYPR_BUILD_SHA__: JSON.stringify(buildSha),
       __TYPR_DEPLOYMENT_CHANNEL__: JSON.stringify(deploymentChannel),
-      __TYPR_DEPLOYMENT_LABEL__: JSON.stringify(deploymentLabel)
+      __TYPR_DEPLOYMENT_LABEL__: JSON.stringify(deploymentLabel),
+      __TYPR_SELF_HOSTED__: JSON.stringify(false)
     },
     plugins: [
       {
@@ -117,6 +123,19 @@ export default defineConfig(({ command }) => {
                 notes: Array.isArray(releaseMetadata.notes)
                   ? releaseMetadata.notes.filter((note) => typeof note === "string")
                   : []
+              },
+              null,
+              2
+            )
+          });
+          this.emitFile({
+            type: "asset",
+            fileName: ".well-known/web-app-origin-association",
+            source: JSON.stringify(
+              {
+                web_apps: HOSTED_CHANNEL_ORIGINS.map((origin) => ({
+                  web_app_identity: `${origin}/`
+                }))
               },
               null,
               2
@@ -143,6 +162,7 @@ export default defineConfig(({ command }) => {
           display: "standalone",
           scope: base,
           start_url: base,
+          scope_extensions: HOSTED_CHANNEL_ORIGINS.map((origin) => ({ origin })),
           icons: [
             {
               src: `${base}icons/icon-192.png`,
@@ -243,7 +263,8 @@ export default defineConfig(({ command }) => {
               "./google-drive-oauth-callback.html",
               import.meta.url
             )
-          )
+          ),
+          channelTransfer: fileURLToPath(new URL("./channel-transfer.html", import.meta.url))
         }
       },
       assetsInlineLimit(filePath, content) {

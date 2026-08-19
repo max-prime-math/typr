@@ -36,6 +36,29 @@ Use separate origins instead. The cleanest option is branch deployments on a hos
 
 Keep Google Drive OAuth configuration separate per environment: each deployment URL needs its own authorized JavaScript origin and callback URL. Use GitHub Environment-scoped variables and secrets so Development, Beta, and Stable never accidentally share production credentials or auth user lists.
 
+## In-app channel switching
+
+Hosted builds expose Stable, Beta, and Dev in the App Info panel. A regular
+browser navigation opens the selected channel at its own origin and leaves the
+current origin's workspace untouched. In standalone display mode, Typr first
+saves the active workspace and makes a best-effort copy to the selected origin
+before navigating the existing app window.
+
+The hosted build emits both `channel-transfer.html` and
+`/.well-known/web-app-origin-association`. Its manifest also declares all three
+origins through `scope_extensions`, allowing supporting desktop PWA runtimes to
+treat cross-channel navigation as in scope. Deploy this feature to all three
+origins before relying on workspace handoff; older destination builds do not
+have the transfer receiver. If a hosting security policy sets `frame-ancestors`,
+it must allow the three Typr origins to embed the receiver.
+
+The handoff copies project storage, browser Git files, preferences, custom
+themes/snippets, and other non-secret Typr settings. It deliberately does not
+copy GitHub credentials, OAuth callback data, or local-folder handles, because
+those are credentials or permissions bound to the source origin. Browsers that
+do not support PWA scope extensions may show out-of-scope browser UI, but the
+channel link still works.
+
 ## Recommended Cloudflare Pages rollout
 
 The lowest-risk migration keeps the working Stable GitHub Pages deployment in place while Development and Beta are introduced as two Cloudflare Pages projects connected to this repository:
