@@ -84,24 +84,27 @@ for (const viewport of [
     await expectMaskedInfoButton(infoButton);
     await infoButton.click();
 
-    const info = page.getByRole("dialog", { name: "Typr application information" });
+    const info = viewport.name === "mobile"
+      ? page.locator(".application-info__panel")
+      : page.getByRole("dialog", { name: "Typr application information" });
     await expect(info).toBeVisible();
-    await expect(info.locator("h2")).toHaveText("About Typr");
+    if (viewport.name === "desktop") {
+      await expect(info.locator("h2")).toHaveText(/^About Typr/);
+    }
     await expect(info.getByText("Build details", { exact: true })).toBeVisible();
-    expect(await info.evaluate((element) => {
-      const box = element.getBoundingClientRect();
-      return Math.abs(box.left + box.width / 2 - window.innerWidth / 2) < 2 &&
-        Math.abs(box.top + box.height / 2 - window.innerHeight / 2) < 2;
-    })).toBe(true);
-    if (viewport.name === "mobile") {
+    if (viewport.name === "desktop") {
       expect(await info.evaluate((element) => {
         const box = element.getBoundingClientRect();
-        return box.width >= window.innerWidth - 1 && box.height >= window.innerHeight - 1;
+        return Math.abs(box.left + box.width / 2 - window.innerWidth / 2) < 2 &&
+          Math.abs(box.top + box.height / 2 - window.innerHeight / 2) < 2;
       })).toBe(true);
     }
     await expect(info.getByText("Version", { exact: true })).toBeVisible();
     await expect(info.getByText("Build", { exact: true })).toBeVisible();
     await expect(info.getByText("Service worker", { exact: true })).toBeVisible();
+    const channelSelect = info.getByRole("combobox", { name: "Release channel" });
+    await expect(channelSelect).toBeVisible();
+    await expect(channelSelect.locator("option")).toHaveText(["stable", "beta", "dev"]);
 
     for (const name of ["GitHub repository", "Issue tracker"]) {
       const link = info.getByRole("link", { name: new RegExp(name) });

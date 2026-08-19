@@ -836,6 +836,36 @@ button {
   font-size: 0.85rem;
 }
 
+.application-info__channel-control {
+  display: inline-flex;
+  align-items: center;
+}
+
+.application-info__channel-select {
+  max-width: 8rem;
+  min-height: 1.65rem;
+  padding: 0.12rem 1.45rem 0.12rem 0.42rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background-color: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+
+.application-info__channel-select:hover,
+.application-info__channel-select:focus-visible {
+  border-color: var(--border);
+  background-color: var(--surface-muted);
+  outline: none;
+}
+
+.application-info__channel-select:disabled {
+  color: var(--text-muted);
+  cursor: progress;
+}
+
 .application-info__links {
   display: grid;
   gap: 0.2rem;
