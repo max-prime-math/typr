@@ -367,6 +367,7 @@ import { loadGitCredentialMap, redactGitSecrets, saveGitCredentialMap } from "..
 import {
   type RemoteGitConfig
 } from "../git/remoteService";
+import { GitWorkspace } from "../git/GitWorkspace";
 import {
   createInitialGitHubCloneState,
   useGitPanelController,
@@ -3326,6 +3327,7 @@ export function App() {
     () => storedLeftPane.activeSidebarTool === "settings"
   );
   const [isDocsOpen, setIsDocsOpen] = useState(false);
+  const [isGitWorkspaceOpen, setIsGitWorkspaceOpen] = useState(false);
   const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
   const [previewDownloadMode, setPreviewDownloadMode] = useState<PreviewDownloadMode>("output");
   const [selectedLatexCompileProfileId, setSelectedLatexCompileProfileId] = useState<LatexCompileProfileId>("pdftex-quick");
@@ -3335,6 +3337,9 @@ export function App() {
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>(
     storedLeftPane.activeSidebarTool
   );
+  useEffect(() => {
+    if (activeSidebarTool !== "sync") setIsGitWorkspaceOpen(false);
+  }, [activeSidebarTool]);
   const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("draw");
   const [selectedTikzPath, setSelectedTikzPath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
@@ -3725,6 +3730,7 @@ ${nextLine}` : nextLine;
     remoteConfig,
     pullRemote: runPullRemote,
     pushRemote: runPushRemote,
+    refreshLocalRepoState,
     remoteGitService,
     removeSelectedGitProject: handleRemoveSelectedGitProject,
     repoBackend,
@@ -3757,7 +3763,7 @@ ${nextLine}` : nextLine;
     updateSelectedGitProject,
     upstreamTracking
   } = useGitPanelController({
-    isGitPanelActive: activeSidebarTool === "sync",
+    isGitPanelActive: activeSidebarTool === "sync" || isGitWorkspaceOpen,
     isHydrated,
     selectedProjectRepository,
     fallbackProjectId: snapshot.project.id,
@@ -4863,6 +4869,7 @@ ${nextLine}` : nextLine;
   const hasModalUpdateBlocker =
     isSettingsOpen ||
     isDocsOpen ||
+    isGitWorkspaceOpen ||
     isPreviewPopupOpen ||
     pendingKeybindingConflict !== null ||
     recordingKeybindingId !== null ||
@@ -12899,6 +12906,7 @@ ${nextLine}` : nextLine;
         !isSidebarCollapsed &&
         workspaceMode === "split" &&
         (
+          (activeSidebarTool === "sync" && isGitWorkspaceOpen) ||
           (activeSidebarTool === "sync" && Boolean(activeMergeState) && gitMergePaneMode !== "sidebar")
         );
       const previewExpandedDuringResize =
@@ -13050,6 +13058,7 @@ ${nextLine}` : nextLine;
       activeMergeState,
       activeSidebarTool,
       gitMergePaneMode,
+      isGitWorkspaceOpen,
       isPreviewCollapsed,
       isSidebarCollapsed,
       isSourceFileEditable,
@@ -13536,7 +13545,9 @@ ${nextLine}` : nextLine;
     Boolean(activeMergeState) &&
     gitMergePaneMode !== "sidebar";
   const isGitMergePreviewExpanded = isGitMergeInlineExpanded && gitMergePaneMode === "preview";
-  const isSidebarInlineExpanded = isGitMergeInlineExpanded;
+  const isGitWorkspaceInlineExpanded =
+    showDesktopSidebar && activeSidebarTool === "sync" && isGitWorkspaceOpen;
+  const isSidebarInlineExpanded = isGitMergeInlineExpanded || isGitWorkspaceInlineExpanded;
   const isSettingsProjectSelected = isSettingsProject(selectedProjectRepository);
   const activeSettingsFileError = isSettingsProjectSelected
     ? (settingsFilesController.errors as Record<string, string | undefined>)[activeSourcePath]
@@ -13552,6 +13563,7 @@ ${nextLine}` : nextLine;
     !isZenMode &&
     !isSettingsProjectSelected &&
     !isGitMergePreviewExpanded &&
+    !isGitWorkspaceInlineExpanded &&
     (isMobileWorkspace || !isPreviewCollapsed);
   useEffect(() => {
     if (isSettingsProjectSelected && mobileWorkspaceTab === "preview") {
@@ -17154,10 +17166,55 @@ ${nextLine}` : nextLine;
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--sync ${
                     activeMergeState ? "sidebar-section--git-merge" : ""
                   } ${
-                    isGitMergeInlineExpanded ? "sidebar-section--pane-expanded" : ""
+                    isSidebarInlineExpanded ? "sidebar-section--pane-expanded" : ""
+                  } ${
+                    isGitWorkspaceOpen ? "sidebar-section--git-workspace" : ""
                   }`}
                   onScroll={handleLeftPaneScroll}
                 >
+                  {isGitWorkspaceOpen ? (
+                    <GitWorkspace
+                      branches={gitBranches}
+                      canPull={canPullRemote}
+                      canPush={canPushRemote}
+                      changes={gitWorkingTreeEntries}
+                      commits={localGitCommits}
+                      isLoading={isGitStatusLoading}
+                      isSyncing={isSyncing}
+                      managedProject={selectedGitProject}
+                      mergeState={activeMergeState}
+                      onClose={() => setIsGitWorkspaceOpen(false)}
+                      onCommit={() => {
+                        void handleCommitGitChanges();
+                      }}
+                      onDraftCommitMessageChange={(draftCommitMessage) =>
+                        updateSelectedGitProject((project) => ({ ...project, draftCommitMessage }))
+                      }
+                      onOpenSettings={() => {
+                        setIsGitWorkspaceOpen(false);
+                        handleOpenSettingsTab("git");
+                      }}
+                      onPull={() => {
+                        void handlePullRemote();
+                      }}
+                      onPush={() => {
+                        void handlePushRemote();
+                      }}
+                      onRefresh={() => {
+                        void refreshLocalRepoState();
+                      }}
+                      onStage={(paths) => {
+                        void handleStageGitPaths(paths);
+                      }}
+                      onStageAll={handleStageAllGitChanges}
+                      onUnstage={(path) => {
+                        void handleUnstageGitPath(path);
+                      }}
+                      project={selectedProjectRepository}
+                      status={localRepoStatus}
+                      upstream={upstreamTracking}
+                    />
+                  ) : (
                   <div className="sync-stack">
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
@@ -17197,6 +17254,14 @@ ${nextLine}` : nextLine;
                         </div>
                       ) : null}
                       <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={!selectedGitProject}
+                          onClick={() => setIsGitWorkspaceOpen(true)}
+                          type="button"
+                        >
+                          Open Git Workspace
+                        </button>
                         <button
                           className="pane__button pane__button--compact"
                           onClick={() => handleOpenSettingsTab("git")}
@@ -17696,6 +17761,7 @@ ${nextLine}` : nextLine;
                       </div>
                     </div>
                   </div>
+                  )}
                 </section>
               ) : null}
 
