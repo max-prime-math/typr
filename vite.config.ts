@@ -6,6 +6,11 @@ import { VitePWA } from "vite-plugin-pwa";
 
 const DEPLOYED_BASE = "./";
 const INLINE_ASSET_LIMIT = 8 * 1024;
+const HOSTED_CHANNEL_ORIGINS = [
+  "https://typr.ca",
+  "https://beta.typr.ca",
+  "https://dev.typr.ca"
+] as const;
 const buildTarget = resolveBuildTarget();
 const selfHosted = buildTarget === "self-hosted";
 const compilerAssetLock = JSON.parse(
@@ -118,7 +123,8 @@ export default defineConfig(({ command }) => {
   const buildInputs = {
     app: fileURLToPath(new URL("./index.html", import.meta.url)),
     ...(selfHosted ? {} : {
-      googleDriveOAuthCallback: fileURLToPath(new URL("./google-drive-oauth-callback.html", import.meta.url))
+      googleDriveOAuthCallback: fileURLToPath(new URL("./google-drive-oauth-callback.html", import.meta.url)),
+      channelTransfer: fileURLToPath(new URL("./channel-transfer.html", import.meta.url))
     })
   };
 
@@ -157,6 +163,21 @@ export default defineConfig(({ command }) => {
               2
             )
           });
+          if (!selfHosted) {
+            this.emitFile({
+              type: "asset",
+              fileName: ".well-known/web-app-origin-association",
+              source: JSON.stringify(
+                {
+                  web_apps: HOSTED_CHANNEL_ORIGINS.map((origin) => ({
+                    web_app_identity: `${origin}/`
+                  }))
+                },
+                null,
+                2
+              )
+            });
+          }
         }
       },
       VitePWA({
@@ -178,6 +199,9 @@ export default defineConfig(({ command }) => {
           display: "standalone",
           scope: base,
           start_url: base,
+          ...(!selfHosted ? {
+            scope_extensions: HOSTED_CHANNEL_ORIGINS.map((origin) => ({ origin }))
+          } : {}),
           icons: [
             {
               src: `${base}icons/icon-192.png`,

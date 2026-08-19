@@ -16007,7 +16007,7 @@ ${nextLine}` : nextLine;
               <span aria-hidden="true" className="activity-icon activity-icon--docs" />
               <span className="visually-hidden">Docs</span>
             </button>
-            <ApplicationInfoButton />
+            <ApplicationInfoButton onBeforeChannelSwitch={prepareWorkspaceForUpdate} />
             <button
               aria-label="Settings"
               className="activity-bar__button"
@@ -16104,6 +16104,7 @@ ${nextLine}` : nextLine;
                 <ApplicationInfoButton
                   active={activeSidebarTool === "app-info"}
                   mobile
+                  onBeforeChannelSwitch={prepareWorkspaceForUpdate}
                   onOpen={() => handleOpenSidebarTool("app-info")}
                 />
               </div>
@@ -16933,7 +16934,10 @@ ${nextLine}` : nextLine;
                   className="sidebar-section sidebar-section--scrollable application-info__pane"
                   onScroll={handleLeftPaneScroll}
                 >
-                  <ApplicationInfoPanel onClose={() => handleOpenSidebarTool("files")} />
+                  <ApplicationInfoPanel
+                    onBeforeChannelSwitch={prepareWorkspaceForUpdate}
+                    onClose={() => handleOpenSidebarTool("files")}
+                  />
                 </section>
               ) : null}
 

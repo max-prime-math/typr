@@ -2,6 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { TYPR_BUILD_INFO } from "./buildInfo";
 import {
+  getChannelDestination,
+  getTyprChannelOption,
+  isInstalledPwa,
+  isTyprChannelOrigin,
+  TYPR_CHANNELS,
+  type TyprChannel
+} from "./channelSwitch";
+import { transferWorkspaceToChannel } from "./channelTransfer";
+import {
   updateManager,
   useUpdateManagerState,
   type UpdateManagerState
@@ -46,11 +55,13 @@ function getServiceWorkerLabel(state: UpdateManagerState): string {
 export function ApplicationInfoButton({
   mobile = false,
   active = false,
-  onOpen
+  onOpen,
+  onBeforeChannelSwitch
 }: {
   mobile?: boolean;
   active?: boolean;
   onOpen?: () => void;
+  onBeforeChannelSwitch?: () => Promise<void>;
 }) {
   const state = useUpdateManagerState();
   const [isOpen, setIsOpen] = useState(false);
@@ -152,7 +163,9 @@ export function ApplicationInfoButton({
               </div>
               <div>
                 <dt>Channel</dt>
-                <dd>{TYPR_BUILD_INFO.channel}</dd>
+                <dd>
+                  <ChannelSelector onBeforeSwitch={onBeforeChannelSwitch} />
+                </dd>
               </div>
               <div>
                 <dt>Service worker</dt>
@@ -279,7 +292,12 @@ export function ApplicationInfoButton({
               </button>
             </header>
 
-            <ApplicationInfoContents state={state} updateReady={updateReady} onClose={() => setIsOpen(false)} />
+            <ApplicationInfoContents
+              state={state}
+              updateReady={updateReady}
+              onBeforeChannelSwitch={onBeforeChannelSwitch}
+              onClose={() => setIsOpen(false)}
+            />
           </section>
         </>,
         document.body
@@ -288,21 +306,34 @@ export function ApplicationInfoButton({
   );
 }
 
-export function ApplicationInfoPanel({ onClose }: { onClose: () => void }) {
+export function ApplicationInfoPanel({
+  onClose,
+  onBeforeChannelSwitch
+}: {
+  onClose: () => void;
+  onBeforeChannelSwitch?: () => Promise<void>;
+}) {
   const state = useUpdateManagerState();
   return <div className="application-info__panel">
-    <ApplicationInfoContents state={state} updateReady={state.phase === "ready"} onClose={onClose} />
+    <ApplicationInfoContents
+      state={state}
+      updateReady={state.phase === "ready"}
+      onBeforeChannelSwitch={onBeforeChannelSwitch}
+      onClose={onClose}
+    />
   </div>;
 }
 
 function ApplicationInfoContents({
   state,
   updateReady,
-  onClose
+  onClose,
+  onBeforeChannelSwitch
 }: {
   state: UpdateManagerState;
   updateReady: boolean;
   onClose: () => void;
+  onBeforeChannelSwitch?: () => Promise<void>;
 }) {
   return <>
     <section className="application-info__section" aria-labelledby="application-build-heading">
@@ -310,7 +341,7 @@ function ApplicationInfoContents({
       <dl className="application-info__details">
         <div><dt>Version</dt><dd>{TYPR_BUILD_INFO.version}</dd></div>
         <div><dt>Build</dt><dd>{TYPR_BUILD_INFO.buildSha}</dd></div>
-        <div><dt>Channel</dt><dd>{TYPR_BUILD_INFO.channel}</dd></div>
+        <div><dt>Channel</dt><dd><ChannelSelector onBeforeSwitch={onBeforeChannelSwitch} /></dd></div>
         <div><dt>Service worker</dt><dd>{getServiceWorkerLabel(state)}</dd></div>
       </dl>
     </section>
@@ -334,4 +365,72 @@ function ApplicationInfoContents({
         : <div className="application-info__current"><p>Typr is up to date.</p><button className="pane__button pane__button--compact" disabled={state.serviceWorkerStatus === "unavailable"} onClick={() => { void updateManager.checkForUpdates(true); }} type="button">Check for updates</button></div>}
     </section>
   </>;
+}
+
+function ChannelSelector({
+  onBeforeSwitch
+}: {
+  onBeforeSwitch?: () => Promise<void>;
+}) {
+  const currentChannel = TYPR_BUILD_INFO.channel;
+  const [switchingTo, setSwitchingTo] = useState<TyprChannel | null>(null);
+
+  if (__TYPR_SELF_HOSTED__) {
+    return getTyprChannelOption(currentChannel).shortLabel;
+  }
+
+  const handleChange = async (channel: TyprChannel) => {
+    if (channel === currentChannel || switchingTo) {
+      return;
+    }
+
+    setSwitchingTo(channel);
+    const destination = getChannelDestination(channel);
+
+    try {
+      await onBeforeSwitch?.();
+
+      if (isInstalledPwa() && isTyprChannelOrigin(window.location.origin)) {
+        try {
+          await transferWorkspaceToChannel(new URL(destination).origin);
+        } catch (error) {
+          console.warn(
+            "Typr could not carry this workspace to the selected channel; switching without it.",
+            error
+          );
+        }
+      }
+
+      window.location.assign(destination);
+    } catch (error) {
+      console.error("Typr could not save the workspace before switching channels.", error);
+      setSwitchingTo(null);
+    }
+  };
+
+  return (
+    <span className="application-info__channel-control">
+      <select
+        aria-label="Release channel"
+        className="application-info__channel-select"
+        disabled={switchingTo !== null}
+        onChange={(event) => {
+          void handleChange(event.target.value as TyprChannel);
+        }}
+        title={
+          isInstalledPwa()
+            ? "Switch channel and carry this workspace when possible"
+            : "Open this Typr channel"
+        }
+        value={switchingTo ?? currentChannel}
+      >
+        {TYPR_CHANNELS.map((channel) => (
+          <option key={channel.id} value={channel.id}>
+            {channel.shortLabel}
+          </option>
+        ))}
+      </select>
+      {switchingTo ? <span className="visually-hidden" role="status">Switching to {getTyprChannelOption(switchingTo).label}.</span> : null}
+    </span>
+  );
 }
