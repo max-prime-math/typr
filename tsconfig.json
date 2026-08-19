@@ -15,7 +15,13 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@typr/google-drive-feature": ["src/features/googleDrive/hosted.tsx"],
+      "@typr/user-guide-settings": ["docs/user-guide/settings.md"],
+      "@typr/user-guide-workspace": ["docs/user-guide/workspace.md"]
+    }
   },
   "include": ["src"]
 }

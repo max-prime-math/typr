@@ -6,6 +6,7 @@ import {
   getLocalFolderDirectoryFingerprint,
   readLocalFolderDirectory,
   resolveSyncTrees,
+  resolveSyncTreesStrict,
   updateProjectGitMetadataFromTree,
   writeLocalFolderDirectory,
   type LocalFolderSyncEntry,
@@ -211,6 +212,42 @@ describe("local folder sync reconciliation", () => {
     });
 
     expect(text(result.desired.get("main.typ"))).toBe("edited");
+  });
+
+  it("reports a same-path two-sided edit instead of trusting unrelated clocks", () => {
+    const original = tree(file("main.typ", "old"));
+    const baseline = resolveSyncTrees({ baseline: {}, browser: original, local: original }).signatures;
+
+    const result = resolveSyncTreesStrict({
+      baseline,
+      browser: tree(file("main.typ", "browser edit", 10_000)),
+      local: tree(file("main.typ", "workspace edit", 1))
+    });
+
+    expect(result).toEqual({ ok: false, conflicts: ["main.typ"] });
+  });
+
+  it("keeps first-link workspace-wins behavior explicit in strict mode", () => {
+    const result = resolveSyncTreesStrict({
+      baseline: {},
+      browser: tree(file("shared.typ", "browser"), file("browser.typ", "browser only")),
+      local: tree(file("shared.typ", "workspace"), file("workspace.typ", "workspace only"))
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(text(result.desired.get("shared.typ"))).toBe("workspace");
+    expect([...result.desired.keys()].sort()).toEqual(["browser.typ", "shared.typ", "workspace.typ"]);
+  });
+
+  it("reports structural file-folder conflicts even on first link", () => {
+    const result = resolveSyncTreesStrict({
+      baseline: {},
+      browser: tree(file("chapter/main.typ", "browser")),
+      local: tree(file("chapter", "workspace file"))
+    });
+
+    expect(result).toEqual({ ok: false, conflicts: ["chapter"] });
   });
 
   it("does not overwrite an editor change made while folder I/O was in flight", () => {

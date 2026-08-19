@@ -18,7 +18,7 @@ const availableConnection = {
     serverVersion: "0.1.0",
     capabilities: {
       compile: { engines: ["pdflatex"] },
-      filesystem: { projectStorage: false },
+      filesystem: { projectStorage: false as const },
       lsp: { languages: [] },
       git: { enabled: false },
       terminal: { enabled: false }

@@ -43,6 +43,30 @@ export const DEFAULT_MOBILE_KEYBOARD_PREFERENCES: MobileKeyboardPreferences = {
   }
 };
 
+export interface VimLatexPreferences {
+  enabled: boolean;
+  textObjects: boolean;
+  motions: boolean;
+  structuralEditing: boolean;
+  completion: boolean;
+  projectNavigation: boolean;
+  diagnosticNavigation: boolean;
+  folding: boolean;
+  packageIntelligence: boolean;
+}
+
+export const DEFAULT_VIM_LATEX_PREFERENCES: VimLatexPreferences = {
+  enabled: false,
+  textObjects: true,
+  motions: true,
+  structuralEditing: true,
+  completion: true,
+  projectNavigation: true,
+  diagnosticNavigation: true,
+  folding: true,
+  packageIntelligence: true
+};
+
 export interface TypstDocumentFile {
   id: string;
   name: string;
@@ -242,6 +266,7 @@ export interface AppPreferences {
   theme: ThemePreference;
   vimMode: boolean;
   vimClipboardSharing: boolean;
+  vimLatex: VimLatexPreferences;
   relativeLineNumbers: boolean;
   lineWrap: boolean;
   cursorSmooth: boolean;
@@ -389,6 +414,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       theme: AUTO_THEME_ID,
       vimMode: false,
       vimClipboardSharing: false,
+      vimLatex: DEFAULT_VIM_LATEX_PREFERENCES,
       relativeLineNumbers: false,
       lineWrap: true,
       cursorSmooth: false,
@@ -478,6 +504,9 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
           | (Partial<PastedImagePreferences> & { clipboardSharing?: boolean })
           | undefined)?.clipboardSharing ??
         false,
+      vimLatex: normalizeVimLatexPreferences(
+        (snapshot.preferences as Partial<AppPreferences>).vimLatex
+      ),
       relativeLineNumbers: snapshot.preferences.relativeLineNumbers ?? false,
       lineWrap: snapshot.preferences.lineWrap ?? true,
       cursorSmooth: snapshot.preferences.cursorSmooth ?? false,
@@ -1928,6 +1957,48 @@ function normalizeMobileKeyboardPreferences(value: unknown): MobileKeyboardPrefe
   };
 }
 
+export function normalizeVimLatexPreferences(value: unknown): VimLatexPreferences {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return DEFAULT_VIM_LATEX_PREFERENCES;
+  }
+
+  const candidate = value as Partial<VimLatexPreferences>;
+
+  return {
+    enabled: normalizeBooleanPreference(candidate.enabled, DEFAULT_VIM_LATEX_PREFERENCES.enabled),
+    textObjects: normalizeBooleanPreference(
+      candidate.textObjects,
+      DEFAULT_VIM_LATEX_PREFERENCES.textObjects
+    ),
+    motions: normalizeBooleanPreference(candidate.motions, DEFAULT_VIM_LATEX_PREFERENCES.motions),
+    structuralEditing: normalizeBooleanPreference(
+      candidate.structuralEditing,
+      DEFAULT_VIM_LATEX_PREFERENCES.structuralEditing
+    ),
+    completion: normalizeBooleanPreference(
+      candidate.completion,
+      DEFAULT_VIM_LATEX_PREFERENCES.completion
+    ),
+    projectNavigation: normalizeBooleanPreference(
+      candidate.projectNavigation,
+      DEFAULT_VIM_LATEX_PREFERENCES.projectNavigation
+    ),
+    diagnosticNavigation: normalizeBooleanPreference(
+      candidate.diagnosticNavigation,
+      DEFAULT_VIM_LATEX_PREFERENCES.diagnosticNavigation
+    ),
+    folding: normalizeBooleanPreference(candidate.folding, DEFAULT_VIM_LATEX_PREFERENCES.folding),
+    packageIntelligence: normalizeBooleanPreference(
+      candidate.packageIntelligence,
+      DEFAULT_VIM_LATEX_PREFERENCES.packageIntelligence
+    )
+  };
+}
+
+function normalizeBooleanPreference(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 function normalizeMobileKeyboardKeyLabels(value: unknown, fallback: string[]): string[] {
   if (!Array.isArray(value)) {
     return fallback;
@@ -1976,6 +2047,22 @@ export function updateVimClipboardSharingPreference(
     preferences: {
       ...snapshot.preferences,
       vimClipboardSharing
+    }
+  };
+}
+
+export function updateVimLatexPreference(
+  snapshot: AppSnapshot,
+  vimLatex: Partial<VimLatexPreferences>
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      vimLatex: normalizeVimLatexPreferences({
+        ...snapshot.preferences.vimLatex,
+        ...vimLatex
+      })
     }
   };
 }

@@ -1,6 +1,13 @@
-import { Fragment } from "react";
-import { GoogleDriveConnectionCard } from "../app/GoogleDriveConnectionCard";
+import { Fragment, useEffect, useState } from "react";
+import { GoogleDriveConnectionCard } from "@typr/google-drive-feature";
 import type { MobileKeyboardLanguage } from "../app/appState";
+import {
+  DEFAULT_COMPANION_BASE_URL,
+  normalizeCompanionBaseUrl,
+  validateCompanionApiKey,
+  validateCompanionBaseUrl,
+  type CompanionConnectionStatus
+} from "../compiler/companionClient";
 import type {
   EditorFormatterId,
   EditorLinterId,
@@ -26,7 +33,11 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
     customThemes,
+    companionApiKey,
+    companionBaseUrl,
     companionConnection,
+    companionWorkspaceSync,
+    companionWorkspaceSyncState,
     darkThemes,
     detectedLatexPackages,
     documentStats,
@@ -50,6 +61,8 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
+    handleCompanionConnectionChange,
+    handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
     handleDownloadCustomSnippets,
@@ -93,6 +106,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleSnippetLanguageChange,
     handleTypstMathPreviewToggle,
     handleVimClipboardSharingToggle,
+    handleVimLatexPreferenceChange,
     handleVimToggle,
     handleWhackKeybindingConflicts,
     installedPackageKeys,
@@ -333,6 +347,101 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 
             <div className="settings-section">
               <div className="settings-section__header">
+                <h3>Companion workspace</h3>
+                <p>
+                  Manually exchange the selected project with one directory
+                  mapped by your self-hosted Companion. Browser storage remains
+                  the primary local copy; no background workspace requests run.
+                </p>
+              </div>
+
+              <div className="sync-settings-project-card">
+                <div>
+                  <span className="sync-settings-project-card__label">
+                    Selected project
+                  </span>
+                  <strong>
+                    {selectedProjectRepository?.displayName ?? "No project selected"}
+                  </strong>
+                  <small>
+                    {companionWorkspaceSyncState?.message ??
+                      (companionWorkspaceSync.capability
+                        ? "No mapped workspace linked. Browser storage remains the default."
+                        : "The current Companion has no mapped workspace. Browser storage remains the default.")}
+                  </small>
+                  {companionWorkspaceSyncState?.lastSyncedAt ? (
+                    <small>
+                      Last synced {new Date(companionWorkspaceSyncState.lastSyncedAt).toLocaleString()}
+                    </small>
+                  ) : null}
+                  {companionWorkspaceSyncState?.conflictPaths?.length ? (
+                    <small>
+                      Review: {companionWorkspaceSyncState.conflictPaths.join(", ")}
+                    </small>
+                  ) : null}
+                </div>
+                {selectedProjectRepository ? (
+                  <div className="sync-settings-project-card__actions">
+                    {companionWorkspaceSyncState?.workspaceId ? (
+                      <>
+                        <button
+                          className="pane__button"
+                          disabled={
+                            companionWorkspaceSyncState.status === "syncing" ||
+                            companionWorkspaceSyncState.status === "restoring" ||
+                            companionWorkspaceSyncState.status === "stale" ||
+                            !companionWorkspaceSync.capability
+                          }
+                          onClick={() => {
+                            void companionWorkspaceSync.syncNow(selectedProjectRepository.id);
+                          }}
+                          type="button"
+                        >
+                          {companionWorkspaceSyncState.status === "syncing"
+                            ? "Syncing…"
+                            : "Sync now"}
+                        </button>
+                        <button
+                          className="pane__button"
+                          disabled={companionWorkspaceSyncState.status === "syncing" || companionWorkspaceSyncState.status === "restoring"}
+                          onClick={() => {
+                            void companionWorkspaceSync.unlink(selectedProjectRepository.id);
+                          }}
+                          type="button"
+                        >
+                          Unlink
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="pane__button"
+                        disabled={
+                          !companionWorkspaceSync.capability ||
+                          !companionWorkspaceSyncState ||
+                          companionWorkspaceSyncState.status === "restoring" ||
+                          companionWorkspaceSyncState.status === "error"
+                        }
+                        onClick={() => {
+                          void companionWorkspaceSync.link(selectedProjectRepository.id);
+                        }}
+                        type="button"
+                      >
+                        Link mapped workspace
+                      </button>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+
+              <p className="pane__meta">
+                First link is additive and the mapped workspace wins same-path
+                collisions after confirmation. Later two-sided edits stop with
+                exact conflict paths. Unlinking never deletes server files.
+              </p>
+            </div>
+
+            {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <div className="settings-section">
+              <div className="settings-section__header">
                 <h3>Google Drive sync</h3>
                 <p>
                   Keep an independent copy of the selected project in an
@@ -456,7 +565,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                 you connect through Typr. Google access tokens remain in
                 memory and may need to be renewed after a reload or expiry.
               </p>
-            </div>
+            </div> : null}
           </div>
         ) : settingsTab === "git" ? (
           <div className="settings-panel settings-panel--git" role="tabpanel">
@@ -761,7 +870,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                     <strong>Show settings files as a project</strong>
                     <small>
                       Create and show a syncable Typr Settings project. Its JSON files can use
-                      the normal GitHub and Google Drive project controls.
+                      the normal GitHub{__TYPR_GOOGLE_DRIVE_ENABLED__ ? " and Google Drive" : ""} project controls.
                     </small>
                     {Object.keys(settingsFiles.errors).length > 0 ? (
                       <small className="settings-file-warning" role="status">
@@ -776,20 +885,13 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   />
                 </label>
 
-                <div className="settings-toggle settings-toggle--stacked" role="status">
-                  <span>
-                    <strong>Typr Companion</strong>
-                    <small>
-                      {companionConnection?.state === "available"
-                        ? `Connected to ${companionConnection.baseUrl} · ${companionConnection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
-                        : companionConnection?.state === "checking"
-                          ? `Checking ${companionConnection.baseUrl}…`
-                        : companionConnection?.state === "incompatible"
-                          ? companionConnection.message
-                          : `BusyTeX is active${companionConnection?.message ? ` · ${companionConnection.message}` : ""}`}
-                    </small>
-                  </span>
-                </div>
+                <CompanionSettingsCard
+                  apiKey={companionApiKey}
+                  baseUrl={companionBaseUrl}
+                  connection={companionConnection}
+                  onApply={handleCompanionConnectionChange}
+                  onReset={handleCompanionBaseUrlReset}
+                />
 
                 <label className="settings-toggle">
                   <span>
@@ -856,6 +958,100 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                           type="checkbox"
                         />
                       </label>
+                      <label className="sync-field sync-field--checkbox">
+                        <span>Vim-LaTeX enhancements</span>
+                        <input
+                          checked={snapshot.preferences.vimLatex.enabled}
+                          onChange={(event) =>
+                            handleVimLatexPreferenceChange("enabled", event.target.checked)
+                          }
+                          type="checkbox"
+                        />
+                      </label>
+                      {snapshot.preferences.vimLatex.enabled ? (
+                        <>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>LaTeX text objects</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.textObjects}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("textObjects", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>LaTeX motions</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.motions}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("motions", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Structural editing</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.structuralEditing}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("structuralEditing", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Semantic completion</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.completion}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("completion", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Project navigation</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.projectNavigation}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("projectNavigation", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Diagnostic navigation</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.diagnosticNavigation}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("diagnosticNavigation", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>LaTeX folding</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.folding}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("folding", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Package intelligence</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.packageIntelligence}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("packageIntelligence", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -2021,5 +2217,135 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
           </div>
         ) : null}
     </>
+  );
+}
+
+interface CompanionSettingsCardProps {
+  apiKey: string;
+  baseUrl: string;
+  connection: CompanionConnectionStatus;
+  onApply: (baseUrl: string, apiKey: string) => void;
+  onReset: () => void;
+}
+
+function CompanionSettingsCard({
+  apiKey,
+  baseUrl,
+  connection,
+  onApply,
+  onReset
+}: CompanionSettingsCardProps) {
+  const [draft, setDraft] = useState(baseUrl);
+  const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(baseUrl);
+    setApiKeyDraft(apiKey);
+    setShowApiKey(false);
+    setValidationMessage(null);
+  }, [apiKey, baseUrl]);
+
+  const connectionMessage = connection.state === "available"
+    ? `Connected · ${connection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
+    : connection.state === "checking"
+      ? "Checking connection…"
+      : connection.state === "incompatible"
+        ? connection.message ?? "The Companion protocol is incompatible."
+        : `BusyTeX is active${connection.message ? ` · ${connection.message}` : ""}`;
+
+  return (
+    <div className="settings-toggle settings-toggle--stacked companion-settings">
+      <span>
+        <strong>Typr Companion</strong>
+        <small aria-live="polite" role="status">{connectionMessage}</small>
+      </span>
+      <form
+        className="companion-settings__form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const validation = validateCompanionBaseUrl(draft);
+          if (!validation.ok) {
+            setValidationMessage(validation.message);
+            return;
+          }
+          const apiKeyValidation = validateCompanionApiKey(apiKeyDraft);
+          if (!apiKeyValidation.ok) {
+            setValidationMessage(apiKeyValidation.message);
+            return;
+          }
+          setValidationMessage(null);
+          onApply(validation.value, apiKeyValidation.value);
+        }}
+      >
+        <label htmlFor="companion-base-url">Companion URL</label>
+        <div className="companion-settings__controls">
+          <input
+            aria-describedby="companion-base-url-help"
+            id="companion-base-url"
+            inputMode="url"
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setValidationMessage(null);
+            }}
+            spellCheck={false}
+            type="url"
+            value={draft}
+          />
+          <button className="pane__button" type="submit">Apply</button>
+          <button
+            className="pane__button pane__button--quiet"
+            disabled={baseUrl === normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL)}
+            onClick={() => {
+              setValidationMessage(null);
+              onReset();
+            }}
+            type="button"
+          >
+            Reset
+          </button>
+        </div>
+        <label htmlFor="companion-api-key">API key</label>
+        <div className="companion-settings__controls companion-settings__controls--key">
+          <input
+            aria-describedby="companion-api-key-help"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            id="companion-api-key"
+            onChange={(event) => {
+              setApiKeyDraft(event.target.value);
+              setValidationMessage(null);
+            }}
+            placeholder="Optional typr_ key"
+            spellCheck={false}
+            type={showApiKey ? "text" : "password"}
+            value={apiKeyDraft}
+          />
+          <button
+            className="pane__button pane__button--quiet"
+            disabled={!apiKeyDraft}
+            onClick={() => setShowApiKey((visible) => !visible)}
+            type="button"
+          >
+            {showApiKey ? "Hide" : "Show"}
+          </button>
+        </div>
+        <small id="companion-api-key-help">
+          Paste the complete key, then Apply. Typr stores it in this browser's IndexedDB and
+          sends it only to the configured Companion as a bearer credential.
+        </small>
+        <small id="companion-base-url-help">
+          Keep the loopback default for Docker on this device. A Companion on Unraid or another
+          host requires an HTTPS reverse-proxy URL that is reachable from this browser.
+        </small>
+        {validationMessage ? (
+          <small className="companion-settings__error" role="alert">
+            {validationMessage}
+          </small>
+        ) : null}
+      </form>
+    </div>
   );
 }

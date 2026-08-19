@@ -12,11 +12,13 @@ import {
   type TexpressoPageDescriptor,
   type TexpressoRange,
   type TexpressoServerMessage
-} from "../companion-protocol/texpresso";
-import type { ProjectFile } from "../companion-protocol";
+} from "@max-prime-math/typr-companion-protocol/texpresso";
+import type { ProjectFile } from "@max-prime-math/typr-companion-protocol";
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024;
+const COMPANION_WEBSOCKET_PROTOCOL = "typr-companion-v1";
+const COMPANION_API_KEY_PROTOCOL_PREFIX = "typr-api-key.";
 
 export type TexpressoLiveStatus =
   | "inactive"
@@ -68,7 +70,7 @@ interface WebSocketLike {
 }
 
 export interface TexpressoClientOptions {
-  webSocketFactory?: (url: string) => WebSocketLike;
+  webSocketFactory?: (url: string, protocols?: string | string[]) => WebSocketLike;
   createObjectUrl?: (blob: Blob) => string;
   revokeObjectUrl?: (url: string) => void;
   onSnapshot?: (snapshot: TexpressoLiveSnapshot) => void;
@@ -209,8 +211,23 @@ export function createTexpressoWebSocketUrl(baseUrl: string): string {
   return url.toString();
 }
 
+export function createTexpressoWebSocketProtocols(apiKey: string): string[] | undefined {
+  const trimmed = apiKey.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const encodedKey = btoa(trimmed)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  return [
+    COMPANION_WEBSOCKET_PROTOCOL,
+    `${COMPANION_API_KEY_PROTOCOL_PREFIX}${encodedKey}`
+  ];
+}
+
 export class TexpressoClient {
-  private readonly webSocketFactory: (url: string) => WebSocketLike;
+  private readonly webSocketFactory: (url: string, protocols?: string | string[]) => WebSocketLike;
   private readonly createObjectUrl: (blob: Blob) => string;
   private readonly revokeObjectUrl: (url: string) => void;
   private readonly onSnapshot?: (snapshot: TexpressoLiveSnapshot) => void;
@@ -235,7 +252,9 @@ export class TexpressoClient {
   };
 
   constructor(options: TexpressoClientOptions = {}) {
-    this.webSocketFactory = options.webSocketFactory ?? ((url) => new WebSocket(url));
+    this.webSocketFactory = options.webSocketFactory ?? (
+      (url, protocols) => protocols ? new WebSocket(url, protocols) : new WebSocket(url)
+    );
     this.createObjectUrl = options.createObjectUrl ?? ((blob) => URL.createObjectURL(blob));
     this.revokeObjectUrl = options.revokeObjectUrl ?? ((url) => URL.revokeObjectURL(url));
     this.onSnapshot = options.onSnapshot;
@@ -245,7 +264,7 @@ export class TexpressoClient {
     return this.state;
   }
 
-  start(baseUrl: string, project: TexpressoProjectSnapshot): void {
+  start(baseUrl: string, project: TexpressoProjectSnapshot, apiKey = ""): void {
     this.closeSocket(false);
     this.clearStaged();
     this.project = cloneProject(project);
@@ -268,7 +287,10 @@ export class TexpressoClient {
 
     let socket: WebSocketLike;
     try {
-      socket = this.webSocketFactory(createTexpressoWebSocketUrl(baseUrl));
+      socket = this.webSocketFactory(
+        createTexpressoWebSocketUrl(baseUrl),
+        createTexpressoWebSocketProtocols(apiKey)
+      );
     } catch (error) {
       this.handleConnectionFailure(formatError(error));
       return;

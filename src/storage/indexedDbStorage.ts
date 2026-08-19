@@ -29,6 +29,8 @@ const GIT_WORKSPACE_KEY = "git-workspace";
 const GIT_CREDENTIALS_KEY = "git-credentials";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
+const COMPANION_BASE_URL_KEY = "companion-base-url";
+const COMPANION_API_KEY_KEY = "companion-api-key";
 
 export interface LegacyGitHubRemoteConfig {
   owner: string;
@@ -75,6 +77,33 @@ export async function saveSnapshot(snapshot: AppSnapshot): Promise<void> {
   await database.put(STORE_NAME, snapshot, SNAPSHOT_KEY);
 }
 
+export async function loadCompanionBaseUrlSetting(): Promise<string | null> {
+  const database = await getDatabase();
+  const value = await database.get(STORE_NAME, COMPANION_BASE_URL_KEY);
+  return typeof value === "string" ? value : null;
+}
+
+export async function saveCompanionBaseUrlSetting(baseUrl: string): Promise<void> {
+  const database = await getDatabase();
+  await database.put(STORE_NAME, baseUrl, COMPANION_BASE_URL_KEY);
+}
+
+export async function loadCompanionApiKeySetting(): Promise<string | null> {
+  const database = await getDatabase();
+  const value = await database.get(STORE_NAME, COMPANION_API_KEY_KEY);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export async function saveCompanionApiKeySetting(apiKey: string): Promise<void> {
+  const database = await getDatabase();
+  const trimmed = apiKey.trim();
+  if (!trimmed) {
+    await database.delete(STORE_NAME, COMPANION_API_KEY_KEY);
+    return;
+  }
+  await database.put(STORE_NAME, trimmed, COMPANION_API_KEY_KEY);
+}
+
 export async function loadProjectStorage(): Promise<TyprProjectStorageState | null> {
   const database = await getDatabase();
   return (await database.get(STORE_NAME, PROJECT_STORAGE_KEY)) ?? null;
@@ -82,20 +111,45 @@ export async function loadProjectStorage(): Promise<TyprProjectStorageState | nu
 
 export async function saveProjectStorage(storage: TyprProjectStorageState): Promise<void> {
   const database = await getDatabase();
+  const transaction = database.transaction(STORE_NAME, "readwrite");
   await Promise.all([
-    database.put(STORE_NAME, storage, PROJECT_STORAGE_KEY),
-    database.put(
-      STORE_NAME,
-      {
-        version: storage.version,
-        selectedProjectId: storage.selectedProjectId,
-        projectCount: storage.projects.length,
-        savedAt: new Date().toISOString(),
-        legacySnapshotRetained: storage.migration.legacySnapshotRetained
-      },
-      PROJECT_STORAGE_METADATA_KEY
-    )
+    transaction.store.put(storage, PROJECT_STORAGE_KEY),
+    transaction.store.put(createProjectStorageMetadata(storage), PROJECT_STORAGE_METADATA_KEY),
+    transaction.done
   ]);
+}
+
+export async function commitCompanionWorkspaceSync(options: {
+  projectStorage: TyprProjectStorageState;
+  snapshot: AppSnapshot;
+  binding: CloudProjectBindingRecord;
+}): Promise<void> {
+  if (options.binding.providerId !== "typr-companion" ||
+      !options.projectStorage.projects.some((project) => project.id === options.binding.projectId)) {
+    throw new Error("A Companion workspace commit requires a matching project and binding.");
+  }
+  const database = await getDatabase();
+  const transaction = database.transaction(STORE_NAME, "readwrite");
+  await Promise.all([
+    transaction.store.put(options.projectStorage, PROJECT_STORAGE_KEY),
+    transaction.store.put(createProjectStorageMetadata(options.projectStorage), PROJECT_STORAGE_METADATA_KEY),
+    transaction.store.put(options.snapshot, SNAPSHOT_KEY),
+    transaction.store.put(
+      options.binding,
+      getCloudProjectBindingKey(options.binding.providerId, options.binding.projectId)
+    ),
+    transaction.done
+  ]);
+}
+
+function createProjectStorageMetadata(storage: TyprProjectStorageState) {
+  return {
+    version: storage.version,
+    selectedProjectId: storage.selectedProjectId,
+    projectCount: storage.projects.length,
+    savedAt: new Date().toISOString(),
+    legacySnapshotRetained: storage.migration.legacySnapshotRetained
+  };
 }
 
 export async function loadLocalFolderBinding(

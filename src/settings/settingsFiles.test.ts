@@ -4,7 +4,8 @@ import {
   createSettingsProject,
   isSettingsProject,
   parseSettingsFile,
-  readSettingsProjectFile
+  readSettingsProjectFile,
+  serializeSettingsFile
 } from "./settingsFiles";
 
 describe("settings files", () => {
@@ -31,6 +32,7 @@ describe("settings files", () => {
     const project = createSettingsProject(defaults);
     expect(isSettingsProject(project)).toBe(true);
     expect(readSettingsProjectFile(project, "editor.json")).toContain('"vimMode"');
+    expect(readSettingsProjectFile(project, "editor.json")).toContain('"vimLatex"');
     expect(project.selection.activeFilePath).toBe("editor.json");
   });
 
@@ -45,5 +47,39 @@ describe("settings files", () => {
     const result = parseSettingsFile("editor.json", '{"vimMode": "yes"}', snapshot);
     expect(result.error).toContain("vimMode");
     expect(result.preferences.vimMode).toBe(false);
+  });
+
+  it("fills omitted Vim-LaTeX child preferences and preserves explicit choices", () => {
+    const snapshot = createDefaultSnapshot();
+    const result = parseSettingsFile(
+      "editor.json",
+      '{"vimLatex":{"enabled":true,"folding":false}}',
+      snapshot
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.preferences.vimLatex.enabled).toBe(true);
+    expect(result.preferences.vimLatex.folding).toBe(false);
+    expect(result.preferences.vimLatex.textObjects).toBe(true);
+    expect(result.preferences.vimLatex.packageIntelligence).toBe(true);
+  });
+
+  it("reports the path of an invalid Vim-LaTeX child preference", () => {
+    const snapshot = createDefaultSnapshot();
+    const result = parseSettingsFile(
+      "editor.json",
+      '{"vimLatex":{"enabled":"yes"}}',
+      snapshot
+    );
+
+    expect(result.error).toContain("vimLatex.enabled");
+    expect(result.preferences.vimLatex.enabled).toBe(false);
+  });
+
+  it("serializes Vim-LaTeX preferences with the editor settings group", () => {
+    const preferences = createDefaultSnapshot().preferences;
+    const serialized = JSON.parse(serializeSettingsFile("editor.json", preferences));
+
+    expect(serialized.vimLatex).toEqual(preferences.vimLatex);
   });
 });

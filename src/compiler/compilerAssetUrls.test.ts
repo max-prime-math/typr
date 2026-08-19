@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { resolveBusyTexBasePath } from "./compilerAssetUrls";
 
 describe("resolveBusyTexBasePath", () => {
+  it("uses the versioned same-origin self-hosted route", () => {
+    expect(resolveBusyTexBasePath({
+      selfHostedAssetBaseUrl: "/compiler-assets/release-sha256-123",
+      externalAssetBaseUrl: "https://ignored.example.test",
+      dev: false,
+      moduleUrl: "http://typr.local/assets/app.js"
+    })).toBe("/compiler-assets/release-sha256-123/core/busytex");
+  });
+
   it("uses an immutable external compiler asset release when configured", () => {
     expect(
       resolveBusyTexBasePath({

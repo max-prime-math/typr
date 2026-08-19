@@ -61,6 +61,78 @@ test("Settings controls remain within the mobile pane", async ({ page }) => {
   )).toBe(true);
 });
 
+test("Companion API key stays masked, persists, and authenticates connection checks", async ({ page }) => {
+  const apiKey = `typr_${"k".repeat(43)}`;
+  let authorization: string | undefined;
+  await page.route("http://127.0.0.1:8484/**", async (route) => {
+    const request = route.request();
+    if (request.method() === "OPTIONS") {
+      await route.fulfill({
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Headers": "Authorization, Content-Type",
+          "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+          "Access-Control-Allow-Origin": "http://127.0.0.1:5174"
+        }
+      });
+      return;
+    }
+    authorization = request.headers().authorization;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "http://127.0.0.1:5174" },
+      body: JSON.stringify({
+        protocolVersion: 1,
+        serverVersion: "test",
+        capabilities: {
+          compile: { engines: ["pdflatex"] },
+          filesystem: { projectStorage: false },
+          lsp: { languages: [] },
+          git: { enabled: false },
+          terminal: { enabled: false }
+        }
+      })
+    });
+  });
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const settings = page.getByRole("region", { name: "Typr settings" });
+  await settings.getByRole("tab", { name: "Editor", exact: true }).click();
+  const apiKeyField = settings.getByLabel("API key");
+  await expect(apiKeyField).toHaveAttribute("type", "password");
+  await apiKeyField.fill(apiKey);
+  await settings.getByRole("button", { name: "Show", exact: true }).click();
+  await expect(apiKeyField).toHaveAttribute("type", "text");
+  await settings.getByRole("button", { name: "Hide", exact: true }).click();
+  await settings.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect.poll(() => authorization).toBe(`Bearer ${apiKey}`);
+  await expect.poll(() => page.evaluate(async () => {
+    const request = indexedDB.open("typr");
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("app", "readonly");
+    const getRequest = transaction.objectStore("app").get("companion-api-key");
+    const value = await new Promise<unknown>((resolve, reject) => {
+      getRequest.onsuccess = () => resolve(getRequest.result);
+      getRequest.onerror = () => reject(getRequest.error);
+    });
+    database.close();
+    return value;
+  })).toBe(apiKey);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const reloadedSettings = page.getByRole("region", { name: "Typr settings" });
+  await reloadedSettings.getByRole("tab", { name: "Editor", exact: true }).click();
+  const reloadedApiKeyField = reloadedSettings.getByLabel("API key");
+  await expect(reloadedApiKeyField).toHaveAttribute("type", "password");
+  await expect(reloadedApiKeyField).toHaveValue(apiKey);
+});
+
 test("Build Log renders, filters, and clears compile history", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));

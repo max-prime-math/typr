@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 2,
+  "releaseId": "busytex-1.1.1-typr.2-typst-0.7.0-rc2-sha256-6dc1638d51b3ea3131117559",
+  "contentDigest": "6dc1638d51b3ea3131117559468ce8d79a1681f993040fa017f813ab55ea7ceb",
+  "components": {
+    "busytex": {
+      "package": "texlyre-busytex",
+      "version": "1.1.1",
+      "assetTag": "assets-v1.1.1",
+      "typrPatchRevision": 2
+    },
+    "typstCompiler": {
+      "package": "@myriaddreamin/typst-ts-web-compiler",
+      "version": "0.7.0-rc2"
+    }
+  },
+  "totalSize": 707826081,
+  "files": [
+    {
+      "path": "core/busytex/busytex.js",
+      "size": 269928,
+      "sha256": "4805cdef93e8c2423ef46fe6b2a6f4cc553dd8ebccc044d622f6905b9c8cee54",
+      "contentType": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/busytex.wasm",
+      "size": 32501898,
+      "sha256": "f7e455623f8ac5438abfd4c89db50b0f17f1a8285731e5c9eab8e7b8eabc5d78",
+      "contentType": "application/wasm"
+    },
+    {
+      "path": "core/busytex/busytex_pipeline.js",
+      "size": 35977,
+      "sha256": "933cdbbd4dba22d35890ce5077cae057b54604ba473b863159f69cf4912ea32f",
+      "contentType": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/busytex_worker.js",
+      "size": 2494,
+      "sha256": "754d478c4fed8bb3211feb74767d4fcc1333ffedd38be22f2940003c62f823f7",
+      "contentType": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-basic.data",
+      "size": 90782222,
+      "sha256": "efaa2aadaf6312e5fad5e337599e01cda2fa42f4a584b98a2c783ea2f4a95ea4",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "path": "core/busytex/texlive-basic.js",
+      "size": 2049522,
+      "sha256": "7917d95a6bac254e9df40b22899c3e2554816fa2d0ea21333b05a34c537fde6c",
+      "contentType": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-basic.js.providespackage.txt",
+      "size": 17646,
+      "sha256": "189ded33156e092c568547cf06d30d645bed0615ba4f317e3c472313268df1b6",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-basic.profile",
+      "size": 553,
+      "sha256": "013db046f620d6f2e534583ece98b601f49fd889f3ebfa0e03cfeb1aaf8bff28",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "path": "core/busytex/texlive-basic.txt",
+      "size": 545452,
+      "sha256": "2530b96404fce90ffcb7281dedbc251e871d27ab6396129278314482b6f04675",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-extra.data",
+      "size": 339645840,
+      "sha256": "c3019a74656e884222eee8cf54242931a88434b0233abdda9976dfa0a85e3215",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "path": "core/busytex/texlive-extra.js",
+      "size": 7302742,
+      "sha256": "f575e9a25c630c1a6b460347c760b529c2928343ea3241d4d6578c32cf32ecd1",
+      "contentType": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-extra.js.providespackage.txt",
+      "size": 153961,
+      "sha256": "591294c767998099d614107e80f2b7a753be8ad4edcb962227e55f6c994fac7e",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-extra.profile",
+      "size": 639,
+      "sha256": "fe9ce035e04dd2ff523606556ec2fc15e7419321e26f09590596c6c3f13281f5",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "path": "core/busytex/texlive-extra.txt",
+      "size": 1864342,
+      "sha256": "675f6b7c56c50ab23ba5dad0067d86512422fcd8dd5858fad299472b214dd6a6",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-recommended.data",
+      "size": 199280147,
+      "sha256": "af3253ed13b85027a5f0bed14088a5e193507d46a2257e78c3c870da7fa4bc99",
+      "contentType": "application/octet-stream"
+    },
+    {
+      "path": "core/busytex/texlive-recommended.js",
+      "size": 3886149,
+      "sha256": "a8342c517dea8b6b0d3a68cfd4939d34664d099d927dd04f6a237b895e1b4a47",
+      "contentType": "application/javascript; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-recommended.js.providespackage.txt",
+      "size": 27453,
+      "sha256": "9578eba21a22b1d46dc2b3647f8adb0a9b77f403b401927aeacb71df600281dc",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/texlive-recommended.txt",
+      "size": 1081332,
+      "sha256": "0912a6613a4be4e9a5d6e3f4f9c1218fc67ca0f7f483edcecdda5838e1f3b43c",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "core/busytex/versions.txt",
+      "size": 408,
+      "sha256": "450d4981014e7ce56b693db321418f7cf62e849765f468cbd7e177e9a7fa19e7",
+      "contentType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "typst/typst_ts_web_compiler_bg.wasm",
+      "size": 28377376,
+      "sha256": "acac51459fa84907843d7a1927ae7b6fc5c743d5de4f61473c866829c9c46e2d",
+      "contentType": "application/wasm"
+    }
+  ]
+}

@@ -27,14 +27,15 @@ async function listFiles(directory) {
 
 async function main() {
   const externalBaseUrl = process.env.VITE_TYPR_COMPILER_ASSET_BASE_URL?.trim();
+  const selfHosted = process.env.TYPR_BUILD_TARGET === "self-hosted";
   const externalAssetsRequested =
-    process.env.TYPR_EXTERNAL_COMPILER_ASSETS === "1" || Boolean(externalBaseUrl);
+    selfHosted || process.env.TYPR_EXTERNAL_COMPILER_ASSETS === "1" || Boolean(externalBaseUrl);
 
   if (!externalAssetsRequested) {
     return;
   }
 
-  if (!externalBaseUrl) {
+  if (!externalBaseUrl && !selfHosted) {
     throw new Error(
       "VITE_TYPR_COMPILER_ASSET_BASE_URL is required for an external compiler asset build."
     );
@@ -69,7 +70,7 @@ async function main() {
   }
 
   console.log(
-    `External compiler asset build is ready (${externalBaseUrl}); all deploy files are at most 25 MiB.`
+    `${selfHosted ? "Self-hosted" : "External compiler asset"} build is ready${externalBaseUrl ? ` (${externalBaseUrl})` : ""}; all deploy files are at most 25 MiB.`
   );
 }
 

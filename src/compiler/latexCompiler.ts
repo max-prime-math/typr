@@ -18,7 +18,7 @@ import type {
 } from "./types";
 import { normalizeCompilerPath } from "./sourceFileTypes";
 
-const BUSYTEX_REMOTE_ENDPOINT = "https://texlive2026.texlyre.org";
+const BUSYTEX_REMOTE_ENDPOINT = __TYPR_SELF_HOSTED__ ? "" : "https://texlive2026.texlyre.org";
 const BUSYTEX_DATA_PACKAGE_NAMES = ["texlive-basic", "texlive-recommended", "texlive-extra"] as const;
 const BUSYTEX_COMPILE_TIMEOUT_MS = 10 * 60_000;
 const MAX_LATEX_ERROR_LINES = 90;

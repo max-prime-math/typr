@@ -21,6 +21,11 @@ import { areBytesEqual } from "../utils/bytes";
 import { DocsModal, DocsPanel } from "./DocsModal";
 import { SettingsSheet } from "../settings/SettingsSheet";
 import { SettingsPanelContent } from "../settings/SettingsPanelContent";
+import {
+  buildLatexProjectIndex,
+  resolveLatexFileReferenceAt,
+  type LatexProjectFile
+} from "../editor/latexProjectIntelligence";
 import { useSettingsSheetController } from "../settings/useSettingsSheetController";
 import { useSettingsFiles } from "../settings/useSettingsFiles";
 import { isSettingsProject, SETTINGS_PROJECT_MARKER_PATH } from "../settings/settingsFiles";
@@ -69,10 +74,12 @@ import {
   updateThemePreference,
   updateTypstMathPreviewPreference,
   updateVimClipboardSharingPreference,
+  updateVimLatexPreference,
   updateVimPreference,
   type AppSnapshot,
   type MobileKeyboardLanguage,
-  type ThemePreference
+  type ThemePreference,
+  type VimLatexPreferences
 } from "./appState";
 import {
   getWorkspaceRenameDraft,
@@ -87,11 +94,9 @@ import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
-import { useGoogleDriveSync } from "./useGoogleDriveSync";
-import {
-  GoogleDriveGlobalNotice
-} from "./GoogleDriveConnectionCard";
+import { GoogleDriveGlobalNotice, useGoogleDriveSync } from "@typr/google-drive-feature";
 import { useLocalFolderSync } from "./useLocalFolderSync";
+import { useCompanionWorkspaceSync } from "./useCompanionWorkspaceSync";
 import {
   areWorkspacePathListsEqual,
   insertWorkspacePathAfterActive,
@@ -177,6 +182,11 @@ import {
 } from "../compiler/latexCompiler";
 import {
   CompanionClient,
+  DEFAULT_COMPANION_BASE_URL,
+  isCompanionBaseUrlConfigured,
+  normalizeCompanionBaseUrl,
+  readStoredCompanionBaseUrl,
+  writeStoredCompanionBaseUrl,
   type CompanionConnectionStatus
 } from "../compiler/companionClient";
 import {
@@ -306,12 +316,16 @@ import {
   deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
+  loadCompanionApiKeySetting,
+  loadCompanionBaseUrlSetting,
   loadGitWorkspace,
   loadGitHubConfig,
   loadProjectDeletionTombstones,
   loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
+  saveCompanionApiKeySetting,
+  saveCompanionBaseUrlSetting,
   saveGitWorkspace,
   saveGitHubConfig,
   saveProjectDeletionTombstone,
@@ -330,6 +344,7 @@ import {
   GENERATED_LATEX_SYNCTEX_SOURCE_ID,
   getSelectedProjectRepository,
   listProjectEntries,
+  listProjectFiles,
   normalizeProjectStorageState,
   projectRepositoryToLegacyProject,
   readProjectFileBytes,
@@ -362,6 +377,7 @@ import { loadGitCredentialMap, redactGitSecrets, saveGitCredentialMap } from "..
 import {
   type RemoteGitConfig
 } from "../git/remoteService";
+import { GitWorkspace } from "../git/GitWorkspace";
 import {
   createInitialGitHubCloneState,
   useGitPanelController,
@@ -1039,6 +1055,7 @@ interface StoredPanelLayout {
 interface OutlineEntry {
   level: number;
   lineNumber: number;
+  path?: string;
   title: string;
 }
 
@@ -3321,6 +3338,7 @@ export function App() {
     () => storedLeftPane.activeSidebarTool === "settings"
   );
   const [isDocsOpen, setIsDocsOpen] = useState(false);
+  const [isGitWorkspaceOpen, setIsGitWorkspaceOpen] = useState(false);
   const [keybindingSearchQuery, setKeybindingSearchQuery] = useState("");
   const [previewDownloadMode, setPreviewDownloadMode] = useState<PreviewDownloadMode>("output");
   const [selectedLatexCompileProfileId, setSelectedLatexCompileProfileId] = useState<LatexCompileProfileId>("pdftex-quick");
@@ -3330,6 +3348,9 @@ export function App() {
   const [activeSidebarTool, setActiveSidebarTool] = useState<SidebarTool>(
     storedLeftPane.activeSidebarTool
   );
+  useEffect(() => {
+    if (activeSidebarTool !== "sync") setIsGitWorkspaceOpen(false);
+  }, [activeSidebarTool]);
   const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("draw");
   const [selectedTikzPath, setSelectedTikzPath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
@@ -3576,24 +3597,72 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
-  const companionClient = useMemo(() => new CompanionClient(), []);
-  const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
-    () => ({ state: "checking", baseUrl: companionClient.baseUrl })
+  const [companionApiKey, setCompanionApiKey] = useState("");
+  const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
+  const [companionConnectionEnabled, setCompanionConnectionEnabled] = useState(
+    isCompanionBaseUrlConfigured
   );
-  const refreshCompanionConnection = useCallback(async () => {
-    const status = await companionClient.getConnectionStatus();
-    if (isMountedRef.current) {
-      setCompanionConnection(status);
-    }
-    return status;
-  }, [companionClient, isMountedRef]);
+  const companionClient = useMemo(
+    () => new CompanionClient({ baseUrl: companionBaseUrl, apiKey: companionApiKey }),
+    [companionApiKey, companionBaseUrl]
+  );
+  const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
+    () => ({
+      state: "unavailable",
+      baseUrl: companionClient.baseUrl,
+      message: "Apply a Companion URL to enable connection checks."
+    })
+  );
   useEffect(() => {
+    if (!companionConnectionEnabled) {
+      setCompanionConnection({
+        state: "unavailable",
+        baseUrl: companionClient.baseUrl,
+        message: "Apply a Companion URL to enable connection checks."
+      });
+      return;
+    }
+    let active = true;
+    const refreshCompanionConnection = async () => {
+      const status = await companionClient.getConnectionStatus();
+      if (active && isMountedRef.current) {
+        setCompanionConnection(status);
+      }
+    };
+
+    setCompanionConnection({ state: "checking", baseUrl: companionClient.baseUrl });
     void refreshCompanionConnection();
     const interval = window.setInterval(() => {
       void refreshCompanionConnection();
     }, 15_000);
-    return () => window.clearInterval(interval);
-  }, [refreshCompanionConnection]);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [companionClient, companionConnectionEnabled, isMountedRef]);
+  const handleCompanionConnectionChange = useCallback((baseUrl: string, apiKey: string) => {
+    const normalizedBaseUrl = normalizeCompanionBaseUrl(baseUrl);
+    const normalizedApiKey = apiKey.trim();
+    writeStoredCompanionBaseUrl(normalizedBaseUrl);
+    void Promise.all([
+      saveCompanionBaseUrlSetting(normalizedBaseUrl),
+      saveCompanionApiKeySetting(normalizedApiKey)
+    ]).catch((error) => {
+      console.warn("Typr could not persist the Companion connection settings.", error);
+    });
+    setCompanionConnectionEnabled(true);
+    setCompanionApiKey(normalizedApiKey);
+    setCompanionBaseUrl(normalizedBaseUrl);
+  }, []);
+  const handleCompanionBaseUrlReset = useCallback(() => {
+    const normalizedBaseUrl = normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
+    writeStoredCompanionBaseUrl(normalizedBaseUrl);
+    void saveCompanionBaseUrlSetting(normalizedBaseUrl).catch((error) => {
+      console.warn("Typr could not persist the default Companion URL.", error);
+    });
+    setCompanionConnectionEnabled(true);
+    setCompanionBaseUrl(normalizedBaseUrl);
+  }, []);
   const workspaceHoverExpandTimerRef = useRef<number | null>(null);
   const matrixCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
   const tableCellRefs = useRef<Array<Array<HTMLInputElement | null>>>([]);
@@ -3678,6 +3747,7 @@ ${nextLine}` : nextLine;
     remoteConfig,
     pullRemote: runPullRemote,
     pushRemote: runPushRemote,
+    refreshLocalRepoState,
     remoteGitService,
     removeSelectedGitProject: handleRemoveSelectedGitProject,
     repoBackend,
@@ -3710,7 +3780,7 @@ ${nextLine}` : nextLine;
     updateSelectedGitProject,
     upstreamTracking
   } = useGitPanelController({
-    isGitPanelActive: activeSidebarTool === "sync",
+    isGitPanelActive: activeSidebarTool === "sync" || isGitWorkspaceOpen,
     isHydrated,
     selectedProjectRepository,
     fallbackProjectId: snapshot.project.id,
@@ -3729,6 +3799,19 @@ ${nextLine}` : nextLine;
   });
   const selectedLocalFolderSyncState = selectedProjectRepository
     ? localFolderSync.states[selectedProjectRepository.id]
+    : undefined;
+  const companionWorkspaceSync = useCompanionWorkspaceSync({
+    client: companionClient,
+    connection: companionConnection,
+    isHydrated,
+    lifecyclePersistenceRef,
+    persistencePayloadRef,
+    projectStorage,
+    setProjectStorage,
+    setRawSnapshot
+  });
+  const selectedCompanionWorkspaceSyncState = selectedProjectRepository
+    ? companionWorkspaceSync.states[selectedProjectRepository.id]
     : undefined;
   const googleDriveSync = useGoogleDriveSync({
     clientId: import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID ?? "",
@@ -4111,6 +4194,14 @@ ${nextLine}` : nextLine;
       )
     );
   }, []);
+  const handleVimLatexPreferenceChange = useCallback(
+    (key: keyof VimLatexPreferences, enabled: boolean) => {
+      setSnapshot((currentSnapshot) =>
+        updateVimLatexPreference(currentSnapshot, { [key]: enabled })
+      );
+    },
+    []
+  );
   const handlePastedImagePrefixChange = useCallback((fileNamePrefix: string) => {
     setSnapshot((currentSnapshot) =>
       updatePastedImagePreference(currentSnapshot, { fileNamePrefix })
@@ -4803,6 +4894,7 @@ ${nextLine}` : nextLine;
   const hasModalUpdateBlocker =
     isSettingsOpen ||
     isDocsOpen ||
+    isGitWorkspaceOpen ||
     isPreviewPopupOpen ||
     pendingKeybindingConflict !== null ||
     recordingKeybindingId !== null ||
@@ -5198,6 +5290,7 @@ ${nextLine}` : nextLine;
   } = useTexpressoLivePreview({
     enabled: isTexpressoPreviewRequested && isTexpressoProjectSupported,
     companion: companionConnection,
+    apiKey: companionApiKey,
     project: texpressoProject,
     sessionKey: texpressoSessionKey
   });
@@ -5634,14 +5727,18 @@ ${nextLine}` : nextLine;
           storedGitWorkspace,
           storedGitHubConfig,
           storedGitCredentials,
-          storedProjectDeletionTombstones
+          storedProjectDeletionTombstones,
+          storedCompanionBaseUrl,
+          storedCompanionApiKey
         ] = await Promise.all([
           loadSnapshot(),
           loadProjectStorage(),
           loadGitWorkspace(),
           loadGitHubConfig(),
           loadGitCredentialMap(),
-          loadProjectDeletionTombstones()
+          loadProjectDeletionTombstones(),
+          loadCompanionBaseUrlSetting(),
+          loadCompanionApiKeySetting()
         ]);
         reportBootProgress(0.58);
         const storedSnippets = await loadCustomSnippets();
@@ -5649,6 +5746,24 @@ ${nextLine}` : nextLine;
 
         if (cancelled) {
           return;
+        }
+
+        const browserCompanionBaseUrl = readStoredCompanionBaseUrl();
+        const companionBaseUrlWasConfigured = isCompanionBaseUrlConfigured();
+        const persistentCompanionBaseUrl = storedCompanionBaseUrl
+          ? normalizeCompanionBaseUrl(storedCompanionBaseUrl)
+          : browserCompanionBaseUrl;
+        setCompanionApiKey(storedCompanionApiKey?.trim() ?? "");
+        setCompanionBaseUrl(persistentCompanionBaseUrl);
+        setCompanionConnectionEnabled(
+          Boolean(storedCompanionBaseUrl) || companionBaseUrlWasConfigured
+        );
+        if (storedCompanionBaseUrl) {
+          writeStoredCompanionBaseUrl(persistentCompanionBaseUrl);
+        } else if (companionBaseUrlWasConfigured) {
+          void saveCompanionBaseUrlSetting(persistentCompanionBaseUrl).catch((error) => {
+            console.warn("Typr could not migrate the saved Companion URL.", error);
+          });
         }
 
         const nextSnapshot = storedSnapshot
@@ -9875,7 +9990,7 @@ ${nextLine}` : nextLine;
       [
         `Delete local Typr project "${projectToDelete.displayName}"?`,
         "This removes its local files, browser git repo, managed repo entries, and stored tokens.",
-        "It does not delete any linked local folder, GitHub repository, or Google Drive folder.",
+        `It does not delete any linked local folder or GitHub repository${__TYPR_GOOGLE_DRIVE_ENABLED__ ? ", or Google Drive folder" : ""}.`,
         "",
         `Type ${projectToDelete.displayName} to confirm.`
       ].join("\n"),
@@ -9899,10 +10014,12 @@ ${nextLine}` : nextLine;
     } catch (error) {
       console.warn("Local folder binding cleanup will retry with project deletion.", error);
     }
-    try {
-      await googleDriveSync.disconnect(projectToDelete.id);
-    } catch (error) {
-      console.warn("Google Drive binding cleanup will retry with project deletion.", error);
+    if (__TYPR_GOOGLE_DRIVE_ENABLED__) {
+      try {
+        await googleDriveSync.disconnect(projectToDelete.id);
+      } catch (error) {
+        console.warn("Google Drive binding cleanup will retry with project deletion.", error);
+      }
     }
 
     const fallbackProject =
@@ -12818,6 +12935,7 @@ ${nextLine}` : nextLine;
         !isSidebarCollapsed &&
         workspaceMode === "split" &&
         (
+          (activeSidebarTool === "sync" && isGitWorkspaceOpen) ||
           (activeSidebarTool === "sync" && Boolean(activeMergeState) && gitMergePaneMode !== "sidebar")
         );
       const previewExpandedDuringResize =
@@ -12969,6 +13087,7 @@ ${nextLine}` : nextLine;
       activeMergeState,
       activeSidebarTool,
       gitMergePaneMode,
+      isGitWorkspaceOpen,
       isPreviewCollapsed,
       isSidebarCollapsed,
       isSourceFileEditable,
@@ -13280,6 +13399,16 @@ ${nextLine}` : nextLine;
       lintDiagnostics
     ]
   );
+  const activeEditorDiagnostics = useMemo(
+    () => editorDiagnostics.filter((diagnostic) => {
+      if (!diagnostic.path) {
+        return true;
+      }
+
+      return normalizeWorkspacePath(diagnostic.path) === normalizedActiveSourcePath;
+    }),
+    [editorDiagnostics, normalizedActiveSourcePath]
+  );
   const debugOutputResult = compileResult?.ok ? compileResult : lastSuccessfulResult;
   const hasLiveCompileOutput = Boolean(isCompiling && hasActiveCompileWork && liveBuildOutput);
   const debugOutputContent = hasLiveCompileOutput
@@ -13367,6 +13496,53 @@ ${nextLine}` : nextLine;
 
     return [...packageNames].sort((left, right) => left.localeCompare(right));
   }, [activeSourceLanguage, selectedProjectRepository, sourceEditorValue]);
+  const vimLatexProjectFiles = useMemo(() => {
+    const needsProjectIntelligence =
+      snapshot.preferences.vimMode &&
+      snapshot.preferences.vimLatex.enabled &&
+      (snapshot.preferences.vimLatex.completion ||
+        snapshot.preferences.vimLatex.packageIntelligence ||
+        snapshot.preferences.vimLatex.projectNavigation);
+
+    if (
+      !needsProjectIntelligence ||
+      !selectedProjectRepository ||
+      activeSourceLanguage !== "latex"
+    ) {
+      return [];
+    }
+
+    const files = listProjectFiles(selectedProjectRepository).map((entry) => ({
+      path: entry.path,
+      content: typeof entry.content === "string" ? entry.content : ""
+    }));
+    const activeFileIndex = files.findIndex(
+      (file) => normalizeWorkspacePath(file.path) === normalizedActiveSourcePath
+    );
+
+    if (activeFileIndex >= 0) {
+      files[activeFileIndex] = {
+        path: files[activeFileIndex].path,
+        content: sourceEditorValue
+      };
+    }
+
+    return files;
+  }, [
+    activeSourceLanguage,
+    normalizedActiveSourcePath,
+    selectedProjectRepository,
+    snapshot.preferences.vimLatex.completion,
+    snapshot.preferences.vimLatex.enabled,
+    snapshot.preferences.vimLatex.packageIntelligence,
+    snapshot.preferences.vimLatex.projectNavigation,
+    snapshot.preferences.vimMode,
+    sourceEditorValue
+  ]);
+  const vimLatexPackageNames = useMemo(
+    () => latexPackageCatalog ? [...latexPackageCatalog.packages.keys()] : [],
+    [latexPackageCatalog]
+  );
   const detectedLatexPackages = useMemo(
     () =>
       latexPackageCatalog
@@ -13416,10 +13592,32 @@ ${nextLine}` : nextLine;
       )
       .sort((left, right) => left.name.localeCompare(right.name));
   }, [cachedLatexPackageNames, latexBundleCacheById, latexPackageCatalog]);
-  const flatOutlineEntries = useMemo(
-    () => collectOutlineEntries(outlineSourceContent, activeSourceLanguage),
-    [activeSourceLanguage, outlineSourceContent]
-  );
+  const flatOutlineEntries = useMemo(() => {
+    if (
+      activeSourceLanguage === "latex" &&
+      snapshot.preferences.vimMode &&
+      snapshot.preferences.vimLatex.enabled &&
+      snapshot.preferences.vimLatex.projectNavigation
+    ) {
+      return collectLatexProjectOutlineEntries(
+        vimLatexProjectFiles,
+        normalizedActiveSourcePath
+      );
+    }
+
+    return collectOutlineEntries(outlineSourceContent, activeSourceLanguage).map((entry) => ({
+      ...entry,
+      path: normalizedActiveSourcePath
+    }));
+  }, [
+    activeSourceLanguage,
+    normalizedActiveSourcePath,
+    outlineSourceContent,
+    snapshot.preferences.vimLatex.enabled,
+    snapshot.preferences.vimLatex.projectNavigation,
+    snapshot.preferences.vimMode,
+    vimLatexProjectFiles
+  ]);
   const documentStats = useMemo(
     () => collectDocumentStats(outlineSourceContent, activeSourceLanguage),
     [activeSourceLanguage, outlineSourceContent]
@@ -13429,9 +13627,15 @@ ${nextLine}` : nextLine;
     [flatOutlineEntries]
   );
   const activeOutlineEntryId = useMemo(() => {
-    const activeEntry = findActiveOutlineEntry(flatOutlineEntries, currentEditorLineNumber);
-    return activeEntry ? `${activeEntry.lineNumber}:${activeEntry.level}:${activeEntry.title}` : null;
-  }, [currentEditorLineNumber, flatOutlineEntries]);
+    const activeEntry = findActiveOutlineEntry(
+      flatOutlineEntries,
+      currentEditorLineNumber,
+      normalizedActiveSourcePath
+    );
+    return activeEntry
+      ? `${activeEntry.path ?? ""}:${activeEntry.lineNumber}:${activeEntry.level}:${activeEntry.title}`
+      : null;
+  }, [currentEditorLineNumber, flatOutlineEntries, normalizedActiveSourcePath]);
   const lightThemes = builtinThemes
     .filter((themeDefinition) => themeDefinition.mode === "light")
     .sort(compareThemesByDisplayOrder);
@@ -13455,7 +13659,9 @@ ${nextLine}` : nextLine;
     Boolean(activeMergeState) &&
     gitMergePaneMode !== "sidebar";
   const isGitMergePreviewExpanded = isGitMergeInlineExpanded && gitMergePaneMode === "preview";
-  const isSidebarInlineExpanded = isGitMergeInlineExpanded;
+  const isGitWorkspaceInlineExpanded =
+    showDesktopSidebar && activeSidebarTool === "sync" && isGitWorkspaceOpen;
+  const isSidebarInlineExpanded = isGitMergeInlineExpanded || isGitWorkspaceInlineExpanded;
   const isSettingsProjectSelected = isSettingsProject(selectedProjectRepository);
   const activeSettingsFileError = isSettingsProjectSelected
     ? (settingsFilesController.errors as Record<string, string | undefined>)[activeSourcePath]
@@ -13471,6 +13677,7 @@ ${nextLine}` : nextLine;
     !isZenMode &&
     !isSettingsProjectSelected &&
     !isGitMergePreviewExpanded &&
+    !isGitWorkspaceInlineExpanded &&
     (isMobileWorkspace || !isPreviewCollapsed);
   useEffect(() => {
     if (isSettingsProjectSelected && mobileWorkspaceTab === "preview") {
@@ -14365,6 +14572,26 @@ ${nextLine}` : nextLine;
     },
     [isMobileWorkspace]
   );
+  const focusOutlineEntry = useCallback((entry: OutlineEntry) => {
+    const targetPath = normalizeWorkspacePath(entry.path ?? normalizedActiveSourcePath);
+    const targetDocument = snapshot.project.documents.find(
+      (document) => normalizeWorkspacePath(document.name) === targetPath
+    );
+
+    if (!targetDocument) {
+      return;
+    }
+
+    if (targetPath !== normalizedActiveSourcePath) {
+      openSourceTab(targetPath);
+    }
+    focusDocumentLocation(targetDocument.id, entry.lineNumber, 1, { focusEditor: false });
+  }, [
+    focusDocumentLocation,
+    normalizedActiveSourcePath,
+    openSourceTab,
+    snapshot.project.documents
+  ]);
   const jumpToDiagnostic = useCallback((diagnostic: CompileDiagnostic, fallbackPath: string) => {
     if (!diagnostic.line) {
       return;
@@ -14384,6 +14611,76 @@ ${nextLine}` : nextLine;
       focusDocumentLocation(matchingNode.source.id, diagnostic.line, column);
     }
   }, [focusDocumentLocation, visibleWorkspaceTree]);
+  const handleVimLatexOpenPath = useCallback((path: string) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+    const targetDocument = snapshot.project.documents.find(
+      (document) => normalizeWorkspacePath(document.name) === normalizedPath
+    );
+
+    if (!normalizedPath) {
+      return;
+    }
+
+    handleOpenWorkspaceFile(normalizedPath, { pinSourceTab: true });
+    if (targetDocument) {
+      focusDocumentLocation(targetDocument.id, 1, 1);
+    }
+  }, [focusDocumentLocation, handleOpenWorkspaceFile, snapshot.project.documents]);
+  const handleVimLatexNavigateDiagnostic = useCallback((direction: -1 | 1) => {
+    const navigableDiagnostics = editorDiagnostics
+      .filter((diagnostic) => Boolean(diagnostic.line))
+      .map((diagnostic, index) => ({
+        diagnostic,
+        index,
+        path: normalizeWorkspacePath(diagnostic.path ?? normalizedActiveSourcePath)
+      }))
+      .sort((left, right) =>
+        left.path.localeCompare(right.path) ||
+        (left.diagnostic.line ?? 0) - (right.diagnostic.line ?? 0) ||
+        (left.diagnostic.column ?? 0) - (right.diagnostic.column ?? 0) ||
+        left.index - right.index
+      );
+
+    if (navigableDiagnostics.length === 0) {
+      return;
+    }
+
+    const currentPath = normalizedActiveSourcePath;
+    const currentLine = currentEditorLineNumber;
+    let candidateIndex = -1;
+
+    if (direction > 0) {
+      candidateIndex = navigableDiagnostics.findIndex((entry) =>
+        entry.path > currentPath ||
+        (entry.path === currentPath && (entry.diagnostic.line ?? 0) > currentLine)
+      );
+    } else {
+      for (let index = navigableDiagnostics.length - 1; index >= 0; index -= 1) {
+        const entry = navigableDiagnostics[index];
+
+        if (
+          entry.path < currentPath ||
+          (entry.path === currentPath && (entry.diagnostic.line ?? 0) < currentLine)
+        ) {
+          candidateIndex = index;
+          break;
+        }
+      }
+    }
+    const wrappedIndex = candidateIndex >= 0
+      ? candidateIndex
+      : direction > 0
+        ? 0
+        : navigableDiagnostics.length - 1;
+    const target = navigableDiagnostics[wrappedIndex];
+
+    jumpToDiagnostic(target.diagnostic, target.path);
+  }, [
+    currentEditorLineNumber,
+    editorDiagnostics,
+    jumpToDiagnostic,
+    normalizedActiveSourcePath
+  ]);
 
   const rerunBuildLogEntry = useCallback((entry: BuildLogEntry) => {
     const targetPath = normalizeWorkspacePath(entry.sourcePath);
@@ -15674,7 +15971,11 @@ ${nextLine}` : nextLine;
     activeDefaultSnippets,
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
+    companionApiKey,
+    companionBaseUrl,
     companionConnection,
+    companionWorkspaceSync,
+    companionWorkspaceSyncState: selectedCompanionWorkspaceSyncState,
     customThemes,
     darkThemes,
     detectedLatexPackages,
@@ -15699,6 +16000,8 @@ ${nextLine}` : nextLine;
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
+    handleCompanionConnectionChange,
+    handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
     handleDownloadCustomSnippets,
@@ -15742,6 +16045,7 @@ ${nextLine}` : nextLine;
     handleSnippetLanguageChange,
     handleTypstMathPreviewToggle,
     handleVimClipboardSharingToggle,
+    handleVimLatexPreferenceChange,
     handleVimToggle,
     handleWhackKeybindingConflicts,
     installedPackageKeys,
@@ -15823,7 +16127,7 @@ ${nextLine}` : nextLine;
 
   return (
     <div className={`app-shell ${isZenMode ? "app-shell--zen" : ""} ${isMobileEditorFullscreen ? "app-shell--editor-fullscreen" : ""} ${showMobileKeyboardExtension ? "app-shell--mobile-keyboard-open" : ""}`}>
-      {googleDriveSync.notice ? (
+      {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveSync.notice ? (
         <>
           <GoogleDriveGlobalNotice
             dismiss={googleDriveSync.dismissNotice}
@@ -16101,7 +16405,7 @@ ${nextLine}` : nextLine;
                       >
                         Import project
                       </button>
-                      <button
+                      {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <button
                         className="pane__button"
                         onClick={() => {
                           void googleDriveSync.importProject();
@@ -16111,7 +16415,7 @@ ${nextLine}` : nextLine;
                         type="button"
                       >
                         Import Drive project
-                      </button>
+                      </button> : null}
                     </div>
                     <div className="project-manager__actions project-manager__actions--github">
                       <button
@@ -16142,14 +16446,15 @@ ${nextLine}` : nextLine;
                         const localFolderConnected = Boolean(
                           localFolderState?.directoryName
                         );
-                        const googleDriveState =
-                          googleDriveSync.states[project.id];
+                        const googleDriveState = __TYPR_GOOGLE_DRIVE_ENABLED__
+                          ? googleDriveSync.states[project.id]
+                          : undefined;
                         const googleDriveStatus =
                           googleDriveState?.status ??
                           (googleDriveSync.configured
                             ? "disconnected"
                             : "unconfigured");
-                        const googleDriveConnected = Boolean(
+                        const googleDriveConnected = __TYPR_GOOGLE_DRIVE_ENABLED__ && Boolean(
                           googleDriveState?.selectedParentName &&
                             googleDriveState?.projectFolderName &&
                             googleDriveState?.projectFolderWebViewLink &&
@@ -16236,7 +16541,7 @@ ${nextLine}` : nextLine;
                                       GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
                                     </span>
                                   ) : null}
-                                  {googleDriveConnected ? (
+                                  {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveConnected ? (
                                     <span
                                       className={`project-manager__summary-badge project-manager__summary-badge--connected ${
                                         googleDriveStatus ===
@@ -16424,7 +16729,7 @@ ${nextLine}` : nextLine;
                                   </div>
                                 </section>
 
-                                <section className="project-manager__connection">
+                                {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
                                     <div>
                                       <strong>Google Drive</strong>
@@ -16469,7 +16774,7 @@ ${nextLine}` : nextLine;
                                       </button>
                                     ) : null}
                                   </div>
-                                </section>
+                                </section> : null}
 
                                 <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
@@ -16976,11 +17281,10 @@ ${nextLine}` : nextLine;
                     <div className="outline-list" role="list">
                       {renderOutlineEntries(
                         outlineEntries,
-                        activeDocument?.id ?? "",
                         activeOutlineEntryId,
                         collapsedOutlineEntries,
                         setCollapsedOutlineEntries,
-                        focusDocumentLocation
+                        focusOutlineEntry
                       )}
                     </div>
                   ) : (
@@ -17071,10 +17375,55 @@ ${nextLine}` : nextLine;
                   className={`sidebar-section sidebar-section--scrollable sidebar-section--sync ${
                     activeMergeState ? "sidebar-section--git-merge" : ""
                   } ${
-                    isGitMergeInlineExpanded ? "sidebar-section--pane-expanded" : ""
+                    isSidebarInlineExpanded ? "sidebar-section--pane-expanded" : ""
+                  } ${
+                    isGitWorkspaceOpen ? "sidebar-section--git-workspace" : ""
                   }`}
                   onScroll={handleLeftPaneScroll}
                 >
+                  {isGitWorkspaceOpen ? (
+                    <GitWorkspace
+                      branches={gitBranches}
+                      canPull={canPullRemote}
+                      canPush={canPushRemote}
+                      changes={gitWorkingTreeEntries}
+                      commits={localGitCommits}
+                      isLoading={isGitStatusLoading}
+                      isSyncing={isSyncing}
+                      managedProject={selectedGitProject}
+                      mergeState={activeMergeState}
+                      onClose={() => setIsGitWorkspaceOpen(false)}
+                      onCommit={() => {
+                        void handleCommitGitChanges();
+                      }}
+                      onDraftCommitMessageChange={(draftCommitMessage) =>
+                        updateSelectedGitProject((project) => ({ ...project, draftCommitMessage }))
+                      }
+                      onOpenSettings={() => {
+                        setIsGitWorkspaceOpen(false);
+                        handleOpenSettingsTab("git");
+                      }}
+                      onPull={() => {
+                        void handlePullRemote();
+                      }}
+                      onPush={() => {
+                        void handlePushRemote();
+                      }}
+                      onRefresh={() => {
+                        void refreshLocalRepoState();
+                      }}
+                      onStage={(paths) => {
+                        void handleStageGitPaths(paths);
+                      }}
+                      onStageAll={handleStageAllGitChanges}
+                      onUnstage={(path) => {
+                        void handleUnstageGitPath(path);
+                      }}
+                      project={selectedProjectRepository}
+                      status={localRepoStatus}
+                      upstream={upstreamTracking}
+                    />
+                  ) : (
                   <div className="sync-stack">
                     <div className="sidebar-card">
                       <div className="sidebar-card__row">
@@ -17114,6 +17463,14 @@ ${nextLine}` : nextLine;
                         </div>
                       ) : null}
                       <div className="sidebar-card__actions">
+                        <button
+                          className="pane__button pane__button--compact"
+                          disabled={!selectedGitProject}
+                          onClick={() => setIsGitWorkspaceOpen(true)}
+                          type="button"
+                        >
+                          Open Git Workspace
+                        </button>
                         <button
                           className="pane__button pane__button--compact"
                           onClick={() => handleOpenSettingsTab("git")}
@@ -17613,6 +17970,7 @@ ${nextLine}` : nextLine;
                       </div>
                     </div>
                   </div>
+                  )}
                 </section>
               ) : null}
 
@@ -18037,7 +18395,7 @@ ${nextLine}` : nextLine;
             <>
               <TypstEditor
                 ref={editorRef}
-                diagnostics={editorDiagnostics}
+                diagnostics={activeEditorDiagnostics}
                 highlightErrors={isErrorSettled}
                 language={activeSourceLanguage}
                 snippets={
@@ -18055,6 +18413,12 @@ ${nextLine}` : nextLine;
                 onFocusChange={setIsEditorFocused}
                 imagePasteInVim={snapshot.preferences.pastedImages.enabled}
                 vimClipboardSharing={snapshot.preferences.vimClipboardSharing}
+                vimLatex={snapshot.preferences.vimLatex}
+                sourcePath={normalizedActiveSourcePath}
+                latexProjectFiles={vimLatexProjectFiles}
+                latexPackageNames={vimLatexPackageNames}
+                onVimLatexOpenPath={handleVimLatexOpenPath}
+                onVimLatexNavigateDiagnostic={handleVimLatexNavigateDiagnostic}
                 onImagePaste={snapshot.preferences.pastedImages.enabled ? handleSourceImagePaste : undefined}
                 onImageRenameKey={handlePastedImageRenameKey}
                 value={sourceEditorValue}
@@ -20634,6 +20998,103 @@ function collectOutlineEntries(content: string, language: SourceLanguage): Outli
   return collectTypstOutlineEntries(content);
 }
 
+function collectLatexProjectOutlineEntries(
+  files: readonly LatexProjectFile[],
+  activePath: string
+): OutlineEntry[] {
+  const index = buildLatexProjectIndex(files);
+  const fileByPath = new Map(index.files.map((file) => [file.path, file]));
+  const includedByPath = new Map<string, Array<{ path: string; offset: number }>>();
+
+  for (const file of index.files) {
+    if (!/\.(?:tex|ltx|latex)$/i.test(file.path)) {
+      continue;
+    }
+
+    const included: Array<{ path: string; offset: number }> = [];
+    const includePattern = /\\(?:input|include|subfile)\*?(?:\s*\[[^\]]*])?\s*\{[^{}]+\}/g;
+
+    for (const match of file.content.matchAll(includePattern)) {
+      const cursor = match.index + Math.floor(match[0].length / 2);
+      const resolved = resolveLatexFileReferenceAt(file.content, cursor, file.path, index);
+      if (resolved && !included.some((entry) => entry.path === resolved.path)) {
+        included.push({ path: resolved.path, offset: match.index });
+      }
+    }
+    includedByPath.set(file.path, included);
+  }
+
+  const parents = new Map<string, string>();
+  for (const [parent, children] of includedByPath) {
+    for (const child of children) {
+      if (!parents.has(child.path)) {
+        parents.set(child.path, parent);
+      }
+    }
+  }
+
+  let rootPath = normalizeWorkspacePath(activePath);
+  const rootGuard = new Set<string>();
+  while (parents.has(rootPath) && !rootGuard.has(rootPath)) {
+    rootGuard.add(rootPath);
+    rootPath = parents.get(rootPath) as string;
+  }
+
+  const sectionsByPath = new Map<string, OutlineEntry[]>();
+  for (const section of index.sections) {
+    const entries = sectionsByPath.get(section.location.path) ?? [];
+    entries.push({
+      level: section.level,
+      lineNumber: section.location.line,
+      path: section.location.path,
+      title: section.title
+    });
+    sectionsByPath.set(section.location.path, entries);
+  }
+
+  const result: OutlineEntry[] = [];
+  const visited = new Set<string>();
+  const visit = (path: string) => {
+    if (visited.has(path) || !fileByPath.has(path)) {
+      return;
+    }
+    visited.add(path);
+    const events = [
+      ...(sectionsByPath.get(path) ?? []).map((entry) => ({
+        kind: "section" as const,
+        offset: index.sections.find(
+          (section) =>
+            section.location.path === entry.path &&
+            section.location.line === entry.lineNumber &&
+            section.title === entry.title
+        )?.location.offset ?? 0,
+        entry
+      })),
+      ...(includedByPath.get(path) ?? []).map((entry) => ({
+        kind: "include" as const,
+        offset: entry.offset,
+        path: entry.path
+      }))
+    ].sort((left, right) => left.offset - right.offset);
+
+    for (const event of events) {
+      if (event.kind === "section") {
+        result.push(event.entry);
+      } else {
+        visit(event.path);
+      }
+    }
+  };
+  visit(rootPath);
+
+  return result.length > 0
+    ? result
+    : collectLatexOutlineEntries(fileByPath.get(rootPath)?.content ?? "").map((entry) => ({
+        ...entry,
+        path: rootPath
+      }));
+}
+
 function collectTypstOutlineEntries(content: string): OutlineEntry[] {
   return content
     .split("\n")
@@ -20725,7 +21186,7 @@ function buildOutlineTree(entries: OutlineEntry[]): OutlineTreeEntry[] {
   for (const entry of entries) {
     const node: OutlineTreeEntry = {
       ...entry,
-      id: `${entry.lineNumber}:${entry.level}:${entry.title}`,
+      id: `${entry.path ?? ""}:${entry.lineNumber}:${entry.level}:${entry.title}`,
       children: []
     };
 
@@ -20747,11 +21208,14 @@ function buildOutlineTree(entries: OutlineEntry[]): OutlineTreeEntry[] {
 
 function findActiveOutlineEntry(
   entries: OutlineEntry[],
-  currentLineNumber: number
+  currentLineNumber: number,
+  activePath?: string
 ): OutlineEntry | null {
   let activeEntry: OutlineEntry | null = null;
 
-  for (const entry of entries) {
+  for (const entry of entries.filter(
+    (candidate) => !activePath || normalizeWorkspacePath(candidate.path ?? activePath) === activePath
+  )) {
     if (entry.lineNumber > currentLineNumber) {
       break;
     }
@@ -20810,16 +21274,10 @@ function formatInteger(value: number): string {
 
 function renderOutlineEntries(
   entries: OutlineTreeEntry[],
-  documentId: string,
   activeEntryId: string | null,
   collapsedEntries: Record<string, boolean>,
   setCollapsedEntries: Dispatch<SetStateAction<Record<string, boolean>>>,
-  focusDocumentLocation: (
-    documentId: string,
-    line: number,
-    column: number,
-    options?: { focusEditor?: boolean }
-  ) => void,
+  focusOutlineEntry: (entry: OutlineEntry) => void,
   depth = 0
 ): ReactNode {
   return entries.map((entry) => {
@@ -20867,7 +21325,8 @@ function renderOutlineEntries(
 
           <button
             className="outline-row__link"
-            onClick={() => focusDocumentLocation(documentId, entry.lineNumber, 1, { focusEditor: false })}
+            onClick={() => focusOutlineEntry(entry)}
+            title={entry.path}
             type="button"
           >
             <span className="outline-row__title">{entry.title}</span>
@@ -20878,11 +21337,10 @@ function renderOutlineEntries(
           <div className="outline-children" role="list">
             {renderOutlineEntries(
               entry.children,
-              documentId,
               activeEntryId,
               collapsedEntries,
               setCollapsedEntries,
-              focusDocumentLocation,
+              focusOutlineEntry,
               depth + 1
             )}
           </div>

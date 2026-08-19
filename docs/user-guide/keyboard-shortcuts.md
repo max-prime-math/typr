@@ -30,6 +30,30 @@ Open **Settings → Keybindings** to view, search, change, reset, or resolve con
 | Add all matching selections | <kbd>Mod</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> |
 | Add cursors to line ends | <kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>I</kbd> |
 
+## Vim-LaTeX enhancements
+
+These commands are available in LaTeX files when Vim mode and **Settings → Editor → Vim-LaTeX enhancements** are enabled. Each feature group can be switched off independently.
+
+| Action | Vim command |
+|---|---|
+| Inner/around command | `ic` / `ac` |
+| Inner/around environment | `ie` / `ae` |
+| Inner/around math | `i$` / `a$` |
+| Inner/around section | `iP` / `aP` |
+| Inner/around list item | `im` / `am` |
+| Previous/next section | `[[` / `]]` |
+| Previous/next environment | `[m` / `]m` |
+| Previous/next math region | `[n` / `]n` |
+| Delete surrounding command/environment/math delimiters | `dsc` / `dse` / `ds$` |
+| Toggle command star/environment star/inline-display math | `gsc` / `gse` / `gs$` |
+| Open the referenced project file | `gf` |
+| Previous/next project diagnostic | `[q` / `]q` |
+| Close/open/toggle fold | `zc` / `zo` / `za` |
+| Close/open all folds | `zM` / `zR` |
+| Open contextual command or environment help | `K` |
+
+The `sc`, `se`, and `s$` structural motions also compose with other Vim operators, such as `c` and `y`.
+
 ## Workspace layout and navigation
 
 | Action | Default |

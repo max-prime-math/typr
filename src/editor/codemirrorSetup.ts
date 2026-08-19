@@ -15,7 +15,7 @@ import {
   historyKeymap,
   indentMore
 } from "@codemirror/commands";
-import { bracketMatching, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import {
   search as searchExtension,
   searchKeymap,
@@ -37,7 +37,7 @@ import {
 } from "@codemirror/view";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { markdown } from "@codemirror/lang-markdown";
-import { latex } from "codemirror-lang-latex";
+import { latex, latexCompletionSource } from "codemirror-lang-latex";
 import type { StyleSpec } from "style-mod";
 import { tags } from "@lezer/highlight";
 import type { KeybindingMap } from "../app/keybindings";
@@ -53,6 +53,8 @@ import { smoothCursor } from "./smoothCursor";
 import { EDITOR_INDENT, getSmartNewlineInsertion } from "./editorWhitespace";
 import { typstLanguage } from "./typstLanguage";
 import type { ThemeDefinition } from "../theme/themes";
+import type { VimLatexPreferences } from "../app/appState";
+import { createVimLatexExtension } from "./latexVim";
 
 interface EditorSetupOptions {
   onChange: (update: ViewUpdate) => void;
@@ -74,6 +76,11 @@ interface EditorSetupOptions {
   highlightErrors: boolean;
   language: SourceLanguage;
   snippetSource: CompletionSource;
+  latexProjectCompletionSource: CompletionSource;
+  vimLatex: VimLatexPreferences;
+  onVimLatexOpenFile: (reference: string) => void;
+  onVimLatexNavigateDiagnostic: (direction: -1 | 1) => void;
+  onVimLatexContextHelp: (query: string) => void;
   onSearchRequested: () => void;
   onCompileRequested: () => void;
   onFormatRequested: () => void;
@@ -317,6 +324,11 @@ export function createEditorExtensions({
   highlightErrors,
   language,
   snippetSource,
+  latexProjectCompletionSource,
+  vimLatex,
+  onVimLatexOpenFile,
+  onVimLatexNavigateDiagnostic,
+  onVimLatexContextHelp,
   onSearchRequested,
   onCompileRequested,
   onFormatRequested,
@@ -422,10 +434,28 @@ export function createEditorExtensions({
     bracketMatching(),
     searchExtension(),
     autocompletion({
-      override: [snippetSource]
+      override:
+        language === "latex" &&
+        vimMode &&
+        vimLatex.enabled &&
+        (vimLatex.completion || vimLatex.packageIntelligence)
+          ? [
+              latexProjectCompletionSource,
+              ...(vimLatex.completion
+                ? [createLatexLanguageCompletionSource(vimLatex.packageIntelligence)]
+                : []),
+              snippetSource
+            ]
+          : [snippetSource]
     }),
     syntaxHighlighting(editorHighlightStyle, { fallback: true }),
-    createLanguageExtension(language),
+    createLanguageExtension(
+      language,
+      vimMode && vimLatex.enabled && vimLatex.packageIntelligence
+    ),
+    ...(language === "latex" && vimMode && vimLatex.enabled && vimLatex.folding
+      ? [foldGutter()]
+      : []),
     ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
     ...(language === "typst" && typstMathPreviewEnabled ? [typstMathPreview()] : []),
     keymap.of([
@@ -454,8 +484,38 @@ export function createEditorExtensions({
         onFocusChange(update.view.hasFocus);
       }
     }),
-    ...(vimMode ? [vim()] : [])
+    ...(vimMode
+      ? [
+          ...(language === "latex" && vimLatex.enabled
+            ? [
+                createVimLatexExtension(vimLatex, {
+                  onContextHelp: onVimLatexContextHelp,
+                  onNavigateDiagnostic: onVimLatexNavigateDiagnostic,
+                  onOpenFile: onVimLatexOpenFile
+                })
+              ]
+            : []),
+          vim()
+        ]
+      : [])
   ];
+}
+
+function createLatexLanguageCompletionSource(
+  includePackageCompletions: boolean
+): CompletionSource {
+  const source = latexCompletionSource(false);
+
+  if (includePackageCompletions) {
+    return source;
+  }
+
+  return (context) => {
+    const before = context.state.sliceDoc(0, context.pos);
+    return /\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*])?\s*\{[^{}]*$/.test(before)
+      ? null
+      : source(context);
+  };
 }
 
 function createSmartNewlineCommand(language: SourceLanguage): Command {
@@ -509,13 +569,16 @@ function createMobileScrollConstraint(): Extension {
   });
 }
 
-function createLanguageExtension(language: SourceLanguage): Extension {
+function createLanguageExtension(
+  language: SourceLanguage,
+  enableLatexTooltips = false
+): Extension {
   if (language === "latex") {
     return latex({
       autoCloseTags: false,
       enableAutocomplete: false,
       enableLinting: false,
-      enableTooltips: false,
+      enableTooltips: enableLatexTooltips,
       autoCloseBrackets: false
     });
   }

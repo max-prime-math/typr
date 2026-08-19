@@ -12,6 +12,7 @@ import {
   DEFAULT_MARKDOWN_DOCUMENT_CONTENT,
   DEFAULT_MARKDOWN_DOCUMENT_NAME,
   DEFAULT_PASTED_IMAGE_PREFERENCES,
+  DEFAULT_VIM_LATEX_PREFERENCES,
   getActiveDocument,
   normalizeSnapshot,
   renameActiveDocument,
@@ -19,6 +20,7 @@ import {
   renameFolderById,
   updateActiveDocument,
   updatePreviewModePreference,
+  updateVimLatexPreference,
   type AppSnapshot
 } from "./appState";
 
@@ -73,6 +75,81 @@ describe("appState", () => {
 
     expect(snapshot.preferences.lineWrap).toBe(true);
     expect(normalized.preferences.lineWrap).toBe(true);
+  });
+
+  it("keeps Vim-LaTeX enhancements opt-in while defaulting each child feature on", () => {
+    const snapshot = createDefaultSnapshot();
+
+    expect(snapshot.preferences.vimLatex).toEqual(DEFAULT_VIM_LATEX_PREFERENCES);
+    expect(snapshot.preferences.vimLatex.enabled).toBe(false);
+    expect(Object.entries(snapshot.preferences.vimLatex))
+      .toEqual(expect.arrayContaining([
+        ["textObjects", true],
+        ["motions", true],
+        ["structuralEditing", true],
+        ["completion", true],
+        ["projectNavigation", true],
+        ["diagnosticNavigation", true],
+        ["folding", true],
+        ["packageIntelligence", true]
+      ]));
+  });
+
+  it("normalizes missing, partial, and malformed Vim-LaTeX preferences", () => {
+    const snapshot = createDefaultSnapshot();
+    const missing = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        vimLatex: undefined as unknown as typeof snapshot.preferences.vimLatex
+      }
+    });
+    const partial = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        vimLatex: {
+          enabled: true,
+          folding: false
+        } as typeof snapshot.preferences.vimLatex
+      }
+    });
+    const malformed = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        vimLatex: {
+          ...snapshot.preferences.vimLatex,
+          enabled: "yes" as unknown as boolean,
+          motions: null as unknown as boolean
+        }
+      }
+    });
+
+    expect(missing.preferences.vimLatex).toEqual(DEFAULT_VIM_LATEX_PREFERENCES);
+    expect(partial.preferences.vimLatex).toEqual({
+      ...DEFAULT_VIM_LATEX_PREFERENCES,
+      enabled: true,
+      folding: false
+    });
+    expect(malformed.preferences.vimLatex.enabled).toBe(false);
+    expect(malformed.preferences.vimLatex.motions).toBe(true);
+  });
+
+  it("updates one Vim-LaTeX preference without mutating the source snapshot", () => {
+    const snapshot = createDefaultSnapshot();
+    const updated = updateVimLatexPreference(snapshot, {
+      enabled: true,
+      diagnosticNavigation: false
+    });
+
+    expect(snapshot.preferences.vimLatex).toEqual(DEFAULT_VIM_LATEX_PREFERENCES);
+    expect(updated.preferences.vimLatex).toEqual({
+      ...DEFAULT_VIM_LATEX_PREFERENCES,
+      enabled: true,
+      diagnosticNavigation: false
+    });
+    expect(updated.preferences.vimLatex).not.toBe(snapshot.preferences.vimLatex);
   });
 
   it("persists the experimental preview mode and safely migrates missing or invalid values", () => {
