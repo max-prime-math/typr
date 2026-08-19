@@ -22,11 +22,13 @@ const INITIAL_STATE: TexpressoLiveSnapshot = {
 export function useTexpressoLivePreview({
   enabled,
   companion,
+  apiKey,
   project,
   sessionKey
 }: {
   enabled: boolean;
   companion: CompanionConnectionStatus;
+  apiKey: string;
   project: TexpressoProjectSnapshot | null;
   sessionKey: string | null;
 }) {
@@ -54,8 +56,8 @@ export function useTexpressoLivePreview({
       return;
     }
     clearRetry();
-    client.start(companion.baseUrl, currentProject);
-  }, [clearRetry, client, companion.baseUrl, companion.state, enabled]);
+    client.start(companion.baseUrl, currentProject, apiKey);
+  }, [apiKey, clearRetry, client, companion.baseUrl, companion.state, enabled]);
 
   useEffect(() => {
     if (!enabled || !project || !sessionKey) {
@@ -97,9 +99,9 @@ export function useTexpressoLivePreview({
     }
     const result = client.synchronizeProject(project);
     if (result === "restart-required") {
-      client.start(companion.baseUrl, project);
+      client.start(companion.baseUrl, project, apiKey);
     }
-  }, [client, companion.baseUrl, companion.state, enabled, project, snapshot.status]);
+  }, [apiKey, client, companion.baseUrl, companion.state, enabled, project, snapshot.status]);
 
   useEffect(() => {
     const reconnectableFailure = snapshot.status === "disconnected" || (

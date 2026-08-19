@@ -30,15 +30,21 @@ Use Editor settings for source editing, compile behavior, line wrapping, formatt
 
 Typr Server is optional and makes no request in a fresh self-hosted browser
 profile. After an administrator installs the separate Typr Server service, enter
-its browser-reachable URL under **Typr Server** and select **Apply**. The URL
-is stored only in that browser. It must not be a Docker service name, and a
-hosted or self-hosted HTTPS Typr page cannot call a plain HTTP/WS Typr Server
+its browser-reachable URL under **Typr Server**. If the administrator has
+enabled API-key enforcement, paste the complete `typr_` key shown when it was
+created, then select **Apply**. The URL and masked key are stored only in that
+browser; the key is kept in IndexedDB rather than local storage. Typr sends it
+as a bearer credential on Typr Server HTTP requests and through the server's
+dedicated WebSocket subprotocol for live preview. The URL must not be a Docker
+service name, and a hosted or self-hosted HTTPS Typr page cannot call a plain
+HTTP/WS Typr Server
 because browsers block mixed content.
 
 For cross-device use, give Typr Server a client-trusted HTTPS endpoint with
 WebSocket forwarding, restrict it to a trusted LAN/VPN, and include this Typr
 page's exact scheme, host, and port in `TYPR_COMPANION_ALLOWED_ORIGINS`. CORS is
-not authentication; neither service may be exposed to the public Internet.
+not authentication; enable Typr Server API-key enforcement for shared hosts,
+and do not expose either service directly to the public Internet.
 On Unraid, use host-level Tailscale Serve rather than the per-container **Use
 Tailscale** hook, keep Funnel disabled, and enter the private tailnet HTTPS Serve
 URL here.

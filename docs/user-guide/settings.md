@@ -49,6 +49,8 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 
 | Setting | What it changes |
 |---|---|
+| Typr Server URL | Connects Typr to the optional native Typr Server service. |
+| Typr Server API key | Authenticates status, compilation, workspace, and live-preview requests when Typr Server requires API keys. The masked secret is stored in this browser's IndexedDB. |
 | Live compilation | Recompiles the active Typst document automatically while editing. |
 | Lint while editing | Shows browser-available diagnostics in the source editor. |
 | Format on compile | Runs the selected formatter before compile or Markdown preview. |

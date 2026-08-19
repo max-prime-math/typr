@@ -167,7 +167,10 @@ old origin before moving. Tailscale **Serve** stays within the tailnet;
 Typr works without Typr Server. A fresh self-hosted browser profile makes no
 Typr Server or mapped-workspace request. To opt in, install Typr Server from its
 [separate repository](https://github.com/max-prime-math/typr-server), enter its
-URL under **Settings → Editor → Typr Server**, and apply it.
+URL under **Settings → Editor → Typr Server**, paste its API key when the
+server requires one, and apply the connection settings. The key is masked in
+Settings, stored in that browser's IndexedDB, and attached to HTTP and live-preview
+WebSocket connections without being placed in the Typr Server URL.
 
 The optional host workspace is mounted into the Typr Server container—not the Typr
 web container. When an administrator enables that single scoped directory, a

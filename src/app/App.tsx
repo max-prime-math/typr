@@ -309,12 +309,16 @@ import {
   deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
+  loadCompanionApiKeySetting,
+  loadCompanionBaseUrlSetting,
   loadGitWorkspace,
   loadGitHubConfig,
   loadProjectDeletionTombstones,
   loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
+  saveCompanionApiKeySetting,
+  saveCompanionBaseUrlSetting,
   saveGitWorkspace,
   saveGitHubConfig,
   saveProjectDeletionTombstone,
@@ -3579,13 +3583,14 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
+  const [companionApiKey, setCompanionApiKey] = useState("");
   const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
   const [companionConnectionEnabled, setCompanionConnectionEnabled] = useState(
     isCompanionBaseUrlConfigured
   );
   const companionClient = useMemo(
-    () => new CompanionClient({ baseUrl: companionBaseUrl }),
-    [companionBaseUrl]
+    () => new CompanionClient({ baseUrl: companionBaseUrl, apiKey: companionApiKey }),
+    [companionApiKey, companionBaseUrl]
   );
   const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
     () => ({
@@ -3621,10 +3626,19 @@ ${nextLine}` : nextLine;
       window.clearInterval(interval);
     };
   }, [companionClient, companionConnectionEnabled, isMountedRef]);
-  const handleCompanionBaseUrlChange = useCallback((baseUrl: string) => {
-    writeStoredCompanionBaseUrl(baseUrl);
+  const handleCompanionConnectionChange = useCallback((baseUrl: string, apiKey: string) => {
+    const normalizedBaseUrl = normalizeCompanionBaseUrl(baseUrl);
+    const normalizedApiKey = apiKey.trim();
+    writeStoredCompanionBaseUrl(normalizedBaseUrl);
+    void Promise.all([
+      saveCompanionBaseUrlSetting(normalizedBaseUrl),
+      saveCompanionApiKeySetting(normalizedApiKey)
+    ]).catch((error) => {
+      console.warn("Typr could not persist the Companion connection settings.", error);
+    });
     setCompanionConnectionEnabled(true);
-    setCompanionBaseUrl(baseUrl);
+    setCompanionApiKey(normalizedApiKey);
+    setCompanionBaseUrl(normalizedBaseUrl);
   }, []);
   const handleCompanionBaseUrlReset = useCallback(() => {
     writeStoredCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL);
@@ -5248,6 +5262,7 @@ ${nextLine}` : nextLine;
   } = useTexpressoLivePreview({
     enabled: isTexpressoPreviewRequested && isTexpressoProjectSupported,
     companion: companionConnection,
+    apiKey: companionApiKey,
     project: texpressoProject,
     sessionKey: texpressoSessionKey
   });
@@ -5684,14 +5699,18 @@ ${nextLine}` : nextLine;
           storedGitWorkspace,
           storedGitHubConfig,
           storedGitCredentials,
-          storedProjectDeletionTombstones
+          storedProjectDeletionTombstones,
+          storedCompanionBaseUrl,
+          storedCompanionApiKey
         ] = await Promise.all([
           loadSnapshot(),
           loadProjectStorage(),
           loadGitWorkspace(),
           loadGitHubConfig(),
           loadGitCredentialMap(),
-          loadProjectDeletionTombstones()
+          loadProjectDeletionTombstones(),
+          loadCompanionBaseUrlSetting(),
+          loadCompanionApiKeySetting()
         ]);
         reportBootProgress(0.58);
         const storedSnippets = await loadCustomSnippets();
@@ -5699,6 +5718,24 @@ ${nextLine}` : nextLine;
 
         if (cancelled) {
           return;
+        }
+
+        const browserCompanionBaseUrl = readStoredCompanionBaseUrl();
+        const companionBaseUrlWasConfigured = isCompanionBaseUrlConfigured();
+        const persistentCompanionBaseUrl = storedCompanionBaseUrl
+          ? normalizeCompanionBaseUrl(storedCompanionBaseUrl)
+          : browserCompanionBaseUrl;
+        setCompanionApiKey(storedCompanionApiKey?.trim() ?? "");
+        setCompanionBaseUrl(persistentCompanionBaseUrl);
+        setCompanionConnectionEnabled(
+          Boolean(storedCompanionBaseUrl) || companionBaseUrlWasConfigured
+        );
+        if (storedCompanionBaseUrl) {
+          writeStoredCompanionBaseUrl(persistentCompanionBaseUrl);
+        } else if (companionBaseUrlWasConfigured) {
+          void saveCompanionBaseUrlSetting(persistentCompanionBaseUrl).catch((error) => {
+            console.warn("Typr could not migrate the saved Companion URL.", error);
+          });
         }
 
         const nextSnapshot = storedSnapshot
@@ -15726,6 +15763,7 @@ ${nextLine}` : nextLine;
     activeDefaultSnippets,
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
+    companionApiKey,
     companionBaseUrl,
     companionConnection,
     companionWorkspaceSync,
@@ -15754,7 +15792,7 @@ ${nextLine}` : nextLine;
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
-    handleCompanionBaseUrlChange,
+    handleCompanionConnectionChange,
     handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,

@@ -68,12 +68,16 @@ import {
   deleteProjectGitFiles,
   listProjectGitFiles,
   loadCloudProjectBinding,
+  loadCompanionApiKeySetting,
+  loadCompanionBaseUrlSetting,
   loadProjectStorage,
   loadSnapshot,
   loadLocalFolderBinding,
   loadProjectDeletionTombstones,
   readProjectGitFile,
   saveCloudProjectBinding,
+  saveCompanionApiKeySetting,
+  saveCompanionBaseUrlSetting,
   saveProjectDeletionTombstone,
   saveLocalFolderBinding,
   writeProjectGitFile
@@ -92,6 +96,29 @@ describe("IndexedDB project deletion storage", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("persists the Companion URL independently of the workspace snapshot", async () => {
+    expect(await loadCompanionBaseUrlSetting()).toBeNull();
+
+    await saveCompanionBaseUrlSetting("https://companion.example.test/typr");
+
+    expect(await loadCompanionBaseUrlSetting()).toBe(
+      "https://companion.example.test/typr"
+    );
+    expect(await loadSnapshot()).toBeNull();
+  });
+
+  it("stores the Companion API key independently and deletes it when cleared", async () => {
+    const apiKey = `typr_${"a".repeat(43)}`;
+    expect(await loadCompanionApiKeySetting()).toBeNull();
+
+    await saveCompanionApiKeySetting(` ${apiKey} `);
+    expect(await loadCompanionApiKeySetting()).toBe(apiKey);
+
+    await saveCompanionApiKeySetting("  ");
+    expect(await loadCompanionApiKeySetting()).toBeNull();
+    expect(await loadSnapshot()).toBeNull();
   });
 
   it("persists, lists, and clears independent project deletion tombstones", async () => {
