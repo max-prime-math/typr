@@ -68,6 +68,7 @@ import {
   deleteProjectGitFiles,
   listProjectGitFiles,
   loadCloudProjectBinding,
+  loadCompanionApiKeySetting,
   loadCompanionBaseUrlSetting,
   loadLocalFolderBinding,
   loadProjectStorage,
@@ -75,6 +76,7 @@ import {
   loadProjectDeletionTombstones,
   readProjectGitFile,
   saveCloudProjectBinding,
+  saveCompanionApiKeySetting,
   saveCompanionBaseUrlSetting,
   saveLocalFolderBinding,
   saveProjectDeletionTombstone,
@@ -104,6 +106,18 @@ describe("IndexedDB project deletion storage", () => {
     expect(await loadCompanionBaseUrlSetting()).toBe(
       "https://companion.example.test/typr"
     );
+    expect(await loadSnapshot()).toBeNull();
+  });
+
+  it("stores the Companion API key independently and deletes it when cleared", async () => {
+    const apiKey = `typr_${"a".repeat(43)}`;
+    expect(await loadCompanionApiKeySetting()).toBeNull();
+
+    await saveCompanionApiKeySetting(` ${apiKey} `);
+    expect(await loadCompanionApiKeySetting()).toBe(apiKey);
+
+    await saveCompanionApiKeySetting("  ");
+    expect(await loadCompanionApiKeySetting()).toBeNull();
     expect(await loadSnapshot()).toBeNull();
   });
 

@@ -32,15 +32,20 @@ Vim mode includes an opt-in **Vim-LaTeX enhancements** suite for LaTeX files. It
 
 Companion is optional and makes no request in a fresh self-hosted browser
 profile. After an administrator installs the separate Companion service, enter
-its browser-reachable URL under **Typr Companion** and select **Apply**. The URL
-is stored only in that browser. It must not be a Docker service name, and a
+its browser-reachable URL under **Typr Companion**. If the administrator has
+enabled API-key enforcement, paste the complete `typr_` key shown when it was
+created, then select **Apply**. The URL and masked key are stored only in that
+browser; the key is kept in IndexedDB rather than local storage. Typr sends it
+as a bearer credential on Companion HTTP requests and through the Companion's
+dedicated WebSocket subprotocol for live preview. The URL must not be a Docker service name, and a
 hosted or self-hosted HTTPS Typr page cannot call a plain HTTP/WS Companion
 because browsers block mixed content.
 
 For cross-device use, give Companion a client-trusted HTTPS endpoint with
 WebSocket forwarding, restrict it to a trusted LAN/VPN, and include this Typr
 page's exact scheme, host, and port in `TYPR_COMPANION_ALLOWED_ORIGINS`. CORS is
-not authentication; neither service may be exposed to the public Internet.
+not authentication; enable Companion API-key enforcement for shared hosts, and
+do not expose either service directly to the public Internet.
 
 ### Settings project and external diagnostics
 

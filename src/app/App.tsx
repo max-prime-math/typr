@@ -316,6 +316,7 @@ import {
   deleteLocalFolderBinding,
   deleteProjectDeletionTombstone,
   deleteProjectGitFiles,
+  loadCompanionApiKeySetting,
   loadCompanionBaseUrlSetting,
   loadGitWorkspace,
   loadGitHubConfig,
@@ -323,6 +324,7 @@ import {
   loadProjectStorage,
   loadSnapshot,
   loadCustomSnippets,
+  saveCompanionApiKeySetting,
   saveCompanionBaseUrlSetting,
   saveGitWorkspace,
   saveGitHubConfig,
@@ -3595,13 +3597,14 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
+  const [companionApiKey, setCompanionApiKey] = useState("");
   const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
   const [companionConnectionEnabled, setCompanionConnectionEnabled] = useState(
     isCompanionBaseUrlConfigured
   );
   const companionClient = useMemo(
-    () => new CompanionClient({ baseUrl: companionBaseUrl }),
-    [companionBaseUrl]
+    () => new CompanionClient({ baseUrl: companionBaseUrl, apiKey: companionApiKey }),
+    [companionApiKey, companionBaseUrl]
   );
   const [companionConnection, setCompanionConnection] = useState<CompanionConnectionStatus>(
     () => ({
@@ -3637,13 +3640,18 @@ ${nextLine}` : nextLine;
       window.clearInterval(interval);
     };
   }, [companionClient, companionConnectionEnabled, isMountedRef]);
-  const handleCompanionBaseUrlChange = useCallback((baseUrl: string) => {
+  const handleCompanionConnectionChange = useCallback((baseUrl: string, apiKey: string) => {
     const normalizedBaseUrl = normalizeCompanionBaseUrl(baseUrl);
+    const normalizedApiKey = apiKey.trim();
     writeStoredCompanionBaseUrl(normalizedBaseUrl);
-    void saveCompanionBaseUrlSetting(normalizedBaseUrl).catch((error) => {
-      console.warn("Typr could not persist the Companion URL.", error);
+    void Promise.all([
+      saveCompanionBaseUrlSetting(normalizedBaseUrl),
+      saveCompanionApiKeySetting(normalizedApiKey)
+    ]).catch((error) => {
+      console.warn("Typr could not persist the Companion connection settings.", error);
     });
     setCompanionConnectionEnabled(true);
+    setCompanionApiKey(normalizedApiKey);
     setCompanionBaseUrl(normalizedBaseUrl);
   }, []);
   const handleCompanionBaseUrlReset = useCallback(() => {
@@ -5282,6 +5290,7 @@ ${nextLine}` : nextLine;
   } = useTexpressoLivePreview({
     enabled: isTexpressoPreviewRequested && isTexpressoProjectSupported,
     companion: companionConnection,
+    apiKey: companionApiKey,
     project: texpressoProject,
     sessionKey: texpressoSessionKey
   });
@@ -5719,7 +5728,8 @@ ${nextLine}` : nextLine;
           storedGitHubConfig,
           storedGitCredentials,
           storedProjectDeletionTombstones,
-          storedCompanionBaseUrl
+          storedCompanionBaseUrl,
+          storedCompanionApiKey
         ] = await Promise.all([
           loadSnapshot(),
           loadProjectStorage(),
@@ -5727,7 +5737,8 @@ ${nextLine}` : nextLine;
           loadGitHubConfig(),
           loadGitCredentialMap(),
           loadProjectDeletionTombstones(),
-          loadCompanionBaseUrlSetting()
+          loadCompanionBaseUrlSetting(),
+          loadCompanionApiKeySetting()
         ]);
         reportBootProgress(0.58);
         const storedSnippets = await loadCustomSnippets();
@@ -5742,6 +5753,7 @@ ${nextLine}` : nextLine;
         const persistentCompanionBaseUrl = storedCompanionBaseUrl
           ? normalizeCompanionBaseUrl(storedCompanionBaseUrl)
           : browserCompanionBaseUrl;
+        setCompanionApiKey(storedCompanionApiKey?.trim() ?? "");
         setCompanionBaseUrl(persistentCompanionBaseUrl);
         setCompanionConnectionEnabled(
           Boolean(storedCompanionBaseUrl) || companionBaseUrlWasConfigured
@@ -15959,6 +15971,7 @@ ${nextLine}` : nextLine;
     activeDefaultSnippets,
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
+    companionApiKey,
     companionBaseUrl,
     companionConnection,
     companionWorkspaceSync,
@@ -15987,7 +16000,7 @@ ${nextLine}` : nextLine;
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
-    handleCompanionBaseUrlChange,
+    handleCompanionConnectionChange,
     handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,

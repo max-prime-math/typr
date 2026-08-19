@@ -14,6 +14,7 @@ import {
 export const DEFAULT_COMPANION_BASE_URL =
   import.meta.env.VITE_TYPR_COMPANION_URL?.trim() || "http://127.0.0.1:8484";
 export const COMPANION_BASE_URL_STORAGE_KEY = "typr.companion-base-url.v1";
+export const COMPANION_API_KEY_PREFIX = "typr_";
 const COMPANION_BASE_URL_CONFIGURED_BY_BUILD = Boolean(
   import.meta.env.VITE_TYPR_COMPANION_URL?.trim()
 );
@@ -21,6 +22,10 @@ const COMPANION_BASE_URL_CONFIGURED_BY_BUILD = Boolean(
 type CompanionUrlStorage = Pick<Storage, "getItem" | "setItem">;
 
 export type CompanionBaseUrlValidation =
+  | { ok: true; value: string }
+  | { ok: false; message: string };
+
+export type CompanionApiKeyValidation =
   | { ok: true; value: string }
   | { ok: false; message: string };
 
@@ -54,16 +59,19 @@ export class CompanionClientError extends Error {
 
 export interface CompanionClientOptions {
   baseUrl?: string;
+  apiKey?: string;
   fetch?: typeof fetch;
 }
 
 /** The only browser-facing HTTP boundary for the Companion protocol. */
 export class CompanionClient {
   readonly baseUrl: string;
+  private readonly apiKey: string;
   private readonly fetchImplementation: typeof fetch;
 
   constructor(options: CompanionClientOptions = {}) {
     this.baseUrl = normalizeCompanionBaseUrl(options.baseUrl ?? DEFAULT_COMPANION_BASE_URL);
+    this.apiKey = options.apiKey?.trim() ?? "";
     // Firefox's native fetch verifies its Window receiver. Keep the browser
     // global call bound while still permitting an injected mock in tests.
     this.fetchImplementation = options.fetch ?? ((input, init) => fetch(input, init));
@@ -71,8 +79,14 @@ export class CompanionClient {
 
   async getConnectionStatus(): Promise<CompanionConnectionStatus> {
     try {
-      const response = await this.fetchImplementation(this.url(TYPR_COMPANION_ROUTES.status));
+      const response = await this.fetchImplementation(
+        this.url(TYPR_COMPANION_ROUTES.status),
+        this.authenticatedRequest()
+      );
       if (!response.ok) {
+        if (response.status === 401) {
+          return this.status("unavailable", "The Companion API key is missing or was rejected.");
+        }
         return this.status("unavailable", `Companion status request failed (${response.status}).`);
       }
 
@@ -97,11 +111,11 @@ export class CompanionClient {
   async compile(request: CompileRequest): Promise<CompileResult> {
     let response: Response;
     try {
-      response = await this.fetchImplementation(this.url(TYPR_COMPANION_ROUTES.compile), {
+      response = await this.fetchImplementation(this.url(TYPR_COMPANION_ROUTES.compile), this.authenticatedRequest({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request)
-      });
+      }));
     } catch (error) {
       throw new CompanionClientError("transport", formatTransportError(error));
     }
@@ -178,7 +192,7 @@ export class CompanionClient {
   private async workspaceRequest(path: string, init?: RequestInit): Promise<unknown> {
     let response: Response;
     try {
-      response = await this.fetchImplementation(this.url(path), init);
+      response = await this.fetchImplementation(this.url(path), this.authenticatedRequest(init));
     } catch (error) {
       throw new CompanionClientError("transport", formatTransportError(error));
     }
@@ -218,6 +232,15 @@ export class CompanionClient {
   private url(path: string): string {
     return `${this.baseUrl}${path}`;
   }
+
+  private authenticatedRequest(init: RequestInit = {}): RequestInit {
+    if (!this.apiKey) {
+      return init;
+    }
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${this.apiKey}`);
+    return { ...init, headers };
+  }
 }
 
 export function normalizeCompanionBaseUrl(value: string): string {
@@ -248,6 +271,20 @@ export function validateCompanionBaseUrl(value: string): CompanionBaseUrlValidat
   } catch {
     return { ok: false, message: "Enter a valid Companion URL." };
   }
+}
+
+export function validateCompanionApiKey(value: string): CompanionApiKeyValidation {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { ok: true, value: "" };
+  }
+  if (!/^typr_[A-Za-z0-9_-]{43}$/.test(trimmed)) {
+    return {
+      ok: false,
+      message: `The Companion API key must be the complete ${COMPANION_API_KEY_PREFIX} key shown when it was created.`
+    };
+  }
+  return { ok: true, value: trimmed };
 }
 
 export function readStoredCompanionBaseUrl(

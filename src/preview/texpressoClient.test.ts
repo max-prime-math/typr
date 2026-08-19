@@ -10,6 +10,7 @@ import {
   createMinimalTexpressoChange,
   createTexpressoProjectSnapshot,
   createTexpressoRangeFromOffsets,
+  createTexpressoWebSocketProtocols,
   createTexpressoWebSocketUrl,
   getTexpressoProjectCompatibilityIssue,
   sourceOffsetToTexpressoPosition,
@@ -71,11 +72,13 @@ function fixtureProject() {
 
 function createHarness() {
   const sockets: MockWebSocket[] = [];
+  const connections: Array<{ url: string; protocols?: string | string[] }> = [];
   const snapshots: TexpressoLiveSnapshot[] = [];
   const revoked: string[] = [];
   let urlIndex = 0;
   const client = new TexpressoClient({
-    webSocketFactory: () => {
+    webSocketFactory: (url, protocols) => {
+      connections.push({ url, protocols });
       const socket = new MockWebSocket();
       sockets.push(socket);
       return socket;
@@ -84,7 +87,7 @@ function createHarness() {
     revokeObjectUrl: (url) => revoked.push(url),
     onSnapshot: (snapshot) => snapshots.push(snapshot)
   });
-  return { client, sockets, snapshots, revoked };
+  return { client, connections, sockets, snapshots, revoked };
 }
 
 function projectSnapshot() {
@@ -382,5 +385,25 @@ describe("TeXpresso frontend client", () => {
   it("constructs ws and wss endpoint URLs without changing the private route", () => {
     expect(createTexpressoWebSocketUrl("http://localhost:8484")).toBe("ws://localhost:8484/ws/texpresso");
     expect(createTexpressoWebSocketUrl("https://companion.example/base/")).toBe("wss://companion.example/base/ws/texpresso");
+  });
+
+  it("authenticates WebSockets with a non-echoed API-key subprotocol", () => {
+    const apiKey = `typr_${"z".repeat(43)}`;
+    expect(createTexpressoWebSocketProtocols(" ")).toBeUndefined();
+    const protocols = createTexpressoWebSocketProtocols(apiKey);
+    expect(protocols?.[0]).toBe("typr-companion-v1");
+    expect(protocols?.[1]).toMatch(/^typr-api-key\.[A-Za-z0-9_-]+$/);
+
+    const encoded = protocols![1]!.slice("typr-api-key.".length);
+    const padded = encoded.replace(/-/g, "+").replace(/_/g, "/")
+      .padEnd(encoded.length + (4 - encoded.length % 4) % 4, "=");
+    expect(atob(padded)).toBe(apiKey);
+
+    const harness = createHarness();
+    harness.client.start("http://localhost:8484", projectSnapshot(), apiKey);
+    expect(harness.connections[0]).toEqual({
+      url: "ws://localhost:8484/ws/texpresso",
+      protocols
+    });
   });
 });

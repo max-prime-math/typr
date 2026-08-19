@@ -49,6 +49,8 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 
 | Setting | What it changes |
 |---|---|
+| Typr Companion URL | Connects Typr to the optional native Companion service. |
+| Typr Companion API key | Authenticates status, compilation, workspace, and live-preview requests when the Companion requires API keys. The masked secret is stored in this browser's IndexedDB. |
 | Live compilation | Recompiles the active Typst document automatically while editing. |
 | Lint while editing | Shows browser-available diagnostics in the source editor. |
 | Format on compile | Runs the selected formatter before compile or Markdown preview. |

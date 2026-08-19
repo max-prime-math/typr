@@ -10,6 +10,7 @@ import {
   parseWorkspaceFile,
   parseWorkspaceFileList,
   readStoredCompanionBaseUrl,
+  validateCompanionApiKey,
   validateCompanionBaseUrl,
   writeStoredCompanionBaseUrl
 } from "./companionClient";
@@ -28,9 +29,15 @@ const validStatus = {
 
 describe("CompanionClient", () => {
   it("accepts a valid compatible status response", async () => {
+    let capturedInit: RequestInit | undefined;
+    const apiKey = `typr_${"a".repeat(43)}`;
     const client = new CompanionClient({
       baseUrl: "http://localhost:8484/",
-      fetch: async () => jsonResponse(validStatus)
+      apiKey,
+      fetch: async (_input, init) => {
+        capturedInit = init;
+        return jsonResponse(validStatus);
+      }
     });
 
     await expect(client.getConnectionStatus()).resolves.toMatchObject({
@@ -38,6 +45,22 @@ describe("CompanionClient", () => {
       baseUrl: "http://localhost:8484",
       status: validStatus
     });
+    expect(new Headers(capturedInit?.headers).get("Authorization")).toBe(`Bearer ${apiKey}`);
+  });
+
+  it("reports a rejected API key without exposing it in the connection message", async () => {
+    const apiKey = `typr_${"b".repeat(43)}`;
+    const client = new CompanionClient({
+      apiKey,
+      fetch: async () => jsonResponse({ error: { message: "unauthorized" } }, 401)
+    });
+
+    const status = await client.getConnectionStatus();
+    expect(status).toMatchObject({
+      state: "unavailable",
+      message: "The Companion API key is missing or was rejected."
+    });
+    expect(status.message).not.toContain(apiKey);
   });
 
   it("rejects an incompatible protocol without treating the server as available", async () => {
@@ -69,8 +92,18 @@ describe("CompanionClient", () => {
       log: "! Undefined control sequence.",
       durationMs: 12
     };
-    const client = new CompanionClient({ fetch: async () => jsonResponse(compileFailure) });
+    let compileInit: RequestInit | undefined;
+    const apiKey = `typr_${"d".repeat(43)}`;
+    const client = new CompanionClient({
+      apiKey,
+      fetch: async (_input, init) => {
+        compileInit = init;
+        return jsonResponse(compileFailure);
+      }
+    });
     await expect(client.compile({ protocolVersion: 1, engine: "pdflatex", mainFilePath: "main.tex", files: [] })).resolves.toEqual(compileFailure);
+    expect(new Headers(compileInit?.headers).get("Authorization")).toBe(`Bearer ${apiKey}`);
+    expect(new Headers(compileInit?.headers).get("content-type")).toBe("application/json");
 
     const serverFailure = new CompanionClient({
       fetch: async () => jsonResponse({ error: { message: "bad request" } }, 400)
@@ -122,8 +155,10 @@ describe("CompanionClient", () => {
       jsonResponse({ path: "new.bin", size: 1, modifiedAt: 3, etag: '"sha256-three"' }),
       new Response(null, { status: 204 })
     ];
+    const apiKey = `typr_${"c".repeat(43)}`;
     const client = new CompanionClient({
       baseUrl: "http://localhost:8484",
+      apiKey,
       fetch: async (input, init) => {
         requests.push({ url: String(input), init });
         return responses.shift()!;
@@ -143,9 +178,16 @@ describe("CompanionClient", () => {
       "http://localhost:8484/api/v1/workspace/file?path=new.bin",
       "http://localhost:8484/api/v1/workspace/file?path=new.bin"
     ]);
-    expect(requests[2].init).toMatchObject({ method: "PUT", headers: expect.objectContaining({ "X-Typr-Workspace-Mutation": "1", "If-None-Match": "*" }) });
-    expect(requests[3].init).toMatchObject({ method: "PUT", headers: expect.objectContaining({ "If-Match": '"sha256-two"' }) });
-    expect(requests[4].init).toMatchObject({ method: "DELETE", headers: expect.objectContaining({ "If-Match": '"sha256-three"' }) });
+    expect(requests[2].init).toMatchObject({ method: "PUT" });
+    expect(requests[3].init).toMatchObject({ method: "PUT" });
+    expect(requests[4].init).toMatchObject({ method: "DELETE" });
+    expect(new Headers(requests[2].init?.headers).get("X-Typr-Workspace-Mutation")).toBe("1");
+    expect(new Headers(requests[2].init?.headers).get("If-None-Match")).toBe("*");
+    expect(new Headers(requests[3].init?.headers).get("If-Match")).toBe('"sha256-two"');
+    expect(new Headers(requests[4].init?.headers).get("If-Match")).toBe('"sha256-three"');
+    for (const request of requests) {
+      expect(new Headers(request.init?.headers).get("Authorization")).toBe(`Bearer ${apiKey}`);
+    }
   });
 
   it("maps conditional workspace failures to typed conflicts", async () => {
@@ -212,6 +254,14 @@ describe("CompanionClient", () => {
     expect(validateCompanionBaseUrl("https://user:secret@companion.example.test")).toMatchObject({ ok: false });
     expect(validateCompanionBaseUrl("https://companion.example.test?token=secret")).toMatchObject({ ok: false });
     expect(normalizeCompanionBaseUrl("not a URL")).toBe(normalizeCompanionBaseUrl(DEFAULT_COMPANION_BASE_URL));
+  });
+
+  it("accepts blank or complete Companion API keys and rejects partial secrets", () => {
+    const key = `typr_${"A0_-".repeat(10)}A0_`;
+    expect(validateCompanionApiKey("  ")).toEqual({ ok: true, value: "" });
+    expect(validateCompanionApiKey(` ${key} `)).toEqual({ ok: true, value: key });
+    expect(validateCompanionApiKey("typr_partial")).toMatchObject({ ok: false });
+    expect(validateCompanionApiKey("not-a-companion-key")).toMatchObject({ ok: false });
   });
 
   it("persists a validated Companion URL and safely ignores invalid stored data", () => {

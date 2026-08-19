@@ -145,7 +145,10 @@ to expose either endpoint publicly.
 Typr works without Companion. A fresh self-hosted browser profile makes no
 Companion or mapped-workspace request. To opt in, install Companion from its
 [separate repository](https://github.com/max-prime-math/typr-server), enter its
-URL under **Settings → Editor → Typr Companion**, and apply it.
+URL under **Settings → Editor → Typr Companion**, paste its API key when the
+server requires one, and apply the connection settings. The key is masked in
+Settings, stored in that browser's IndexedDB, and attached to HTTP and live-preview
+WebSocket connections without being placed in the Companion URL.
 
 The optional host workspace is mounted into the Companion container—not the Typr
 web container. When an administrator enables that single scoped directory, a

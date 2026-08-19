@@ -30,6 +30,7 @@ const GIT_CREDENTIALS_KEY = "git-credentials";
 const CUSTOM_THEMES_KEY = "custom-themes";
 const CUSTOM_SNIPPETS_KEY = "custom-snippets";
 const COMPANION_BASE_URL_KEY = "companion-base-url";
+const COMPANION_API_KEY_KEY = "companion-api-key";
 
 export interface LegacyGitHubRemoteConfig {
   owner: string;
@@ -85,6 +86,22 @@ export async function loadCompanionBaseUrlSetting(): Promise<string | null> {
 export async function saveCompanionBaseUrlSetting(baseUrl: string): Promise<void> {
   const database = await getDatabase();
   await database.put(STORE_NAME, baseUrl, COMPANION_BASE_URL_KEY);
+}
+
+export async function loadCompanionApiKeySetting(): Promise<string | null> {
+  const database = await getDatabase();
+  const value = await database.get(STORE_NAME, COMPANION_API_KEY_KEY);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export async function saveCompanionApiKeySetting(apiKey: string): Promise<void> {
+  const database = await getDatabase();
+  const trimmed = apiKey.trim();
+  if (!trimmed) {
+    await database.delete(STORE_NAME, COMPANION_API_KEY_KEY);
+    return;
+  }
+  await database.put(STORE_NAME, trimmed, COMPANION_API_KEY_KEY);
 }
 
 export async function loadProjectStorage(): Promise<TyprProjectStorageState | null> {

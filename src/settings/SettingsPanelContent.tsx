@@ -4,6 +4,7 @@ import type { MobileKeyboardLanguage } from "../app/appState";
 import {
   DEFAULT_COMPANION_BASE_URL,
   normalizeCompanionBaseUrl,
+  validateCompanionApiKey,
   validateCompanionBaseUrl,
   type CompanionConnectionStatus
 } from "../compiler/companionClient";
@@ -32,6 +33,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     activeSnippetLanguage,
     activeSnippetLanguageLabel,
     customThemes,
+    companionApiKey,
     companionBaseUrl,
     companionConnection,
     companionWorkspaceSync,
@@ -59,7 +61,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleClearLatexBundles,
     handleClearTypstPackages,
     handleColorfulFileTreeIconsToggle,
-    handleCompanionBaseUrlChange,
+    handleCompanionConnectionChange,
     handleCompanionBaseUrlReset,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
@@ -884,9 +886,10 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                 </label>
 
                 <CompanionSettingsCard
+                  apiKey={companionApiKey}
                   baseUrl={companionBaseUrl}
                   connection={companionConnection}
-                  onApply={handleCompanionBaseUrlChange}
+                  onApply={handleCompanionConnectionChange}
                   onReset={handleCompanionBaseUrlReset}
                 />
 
@@ -2218,25 +2221,31 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 }
 
 interface CompanionSettingsCardProps {
+  apiKey: string;
   baseUrl: string;
   connection: CompanionConnectionStatus;
-  onApply: (baseUrl: string) => void;
+  onApply: (baseUrl: string, apiKey: string) => void;
   onReset: () => void;
 }
 
 function CompanionSettingsCard({
+  apiKey,
   baseUrl,
   connection,
   onApply,
   onReset
 }: CompanionSettingsCardProps) {
   const [draft, setDraft] = useState(baseUrl);
+  const [apiKeyDraft, setApiKeyDraft] = useState(apiKey);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setDraft(baseUrl);
+    setApiKeyDraft(apiKey);
+    setShowApiKey(false);
     setValidationMessage(null);
-  }, [baseUrl]);
+  }, [apiKey, baseUrl]);
 
   const connectionMessage = connection.state === "available"
     ? `Connected · ${connection.status?.capabilities.compile.engines.join(", ") || "no native engines"}`
@@ -2261,8 +2270,13 @@ function CompanionSettingsCard({
             setValidationMessage(validation.message);
             return;
           }
+          const apiKeyValidation = validateCompanionApiKey(apiKeyDraft);
+          if (!apiKeyValidation.ok) {
+            setValidationMessage(apiKeyValidation.message);
+            return;
+          }
           setValidationMessage(null);
-          onApply(validation.value);
+          onApply(validation.value, apiKeyValidation.value);
         }}
       >
         <label htmlFor="companion-base-url">Companion URL</label>
@@ -2292,6 +2306,36 @@ function CompanionSettingsCard({
             Reset
           </button>
         </div>
+        <label htmlFor="companion-api-key">API key</label>
+        <div className="companion-settings__controls companion-settings__controls--key">
+          <input
+            aria-describedby="companion-api-key-help"
+            autoCapitalize="none"
+            autoComplete="off"
+            autoCorrect="off"
+            id="companion-api-key"
+            onChange={(event) => {
+              setApiKeyDraft(event.target.value);
+              setValidationMessage(null);
+            }}
+            placeholder="Optional typr_ key"
+            spellCheck={false}
+            type={showApiKey ? "text" : "password"}
+            value={apiKeyDraft}
+          />
+          <button
+            className="pane__button pane__button--quiet"
+            disabled={!apiKeyDraft}
+            onClick={() => setShowApiKey((visible) => !visible)}
+            type="button"
+          >
+            {showApiKey ? "Hide" : "Show"}
+          </button>
+        </div>
+        <small id="companion-api-key-help">
+          Paste the complete key, then Apply. Typr stores it in this browser's IndexedDB and
+          sends it only to the configured Companion as a bearer credential.
+        </small>
         <small id="companion-base-url-help">
           Keep the loopback default for Docker on this device. A Companion on Unraid or another
           host requires an HTTPS reverse-proxy URL that is reachable from this browser.

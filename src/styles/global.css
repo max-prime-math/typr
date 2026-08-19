@@ -6634,6 +6634,10 @@ button.git-workspace__row:focus-visible {
   gap: 0.5rem;
 }
 
+.companion-settings__controls--key {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .companion-settings__controls input {
   min-width: 0;
   min-height: 2.35rem;
