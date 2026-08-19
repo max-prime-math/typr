@@ -104,6 +104,7 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleSnippetLanguageChange,
     handleTypstMathPreviewToggle,
     handleVimClipboardSharingToggle,
+    handleVimLatexPreferenceChange,
     handleVimToggle,
     handleWhackKeybindingConflicts,
     installedPackageKeys,
@@ -954,6 +955,100 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                           type="checkbox"
                         />
                       </label>
+                      <label className="sync-field sync-field--checkbox">
+                        <span>Vim-LaTeX enhancements</span>
+                        <input
+                          checked={snapshot.preferences.vimLatex.enabled}
+                          onChange={(event) =>
+                            handleVimLatexPreferenceChange("enabled", event.target.checked)
+                          }
+                          type="checkbox"
+                        />
+                      </label>
+                      {snapshot.preferences.vimLatex.enabled ? (
+                        <>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>LaTeX text objects</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.textObjects}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("textObjects", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>LaTeX motions</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.motions}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("motions", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Structural editing</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.structuralEditing}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("structuralEditing", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Semantic completion</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.completion}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("completion", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Project navigation</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.projectNavigation}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("projectNavigation", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Diagnostic navigation</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.diagnosticNavigation}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("diagnosticNavigation", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>LaTeX folding</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.folding}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("folding", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                          <label className="sync-field sync-field--checkbox">
+                            <span>Package intelligence</span>
+                            <input
+                              checked={snapshot.preferences.vimLatex.packageIntelligence}
+                              onChange={(event) =>
+                                handleVimLatexPreferenceChange("packageIntelligence", event.target.checked)
+                              }
+                              type="checkbox"
+                            />
+                          </label>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

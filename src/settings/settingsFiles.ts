@@ -39,6 +39,7 @@ const GROUP_KEYS: Record<SettingsFileName, readonly (keyof AppPreferences)[]> = 
   "editor.json": [
     "vimMode",
     "vimClipboardSharing",
+    "vimLatex",
     "relativeLineNumbers",
     "lineWrap",
     "liveCompilation",

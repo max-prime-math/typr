@@ -32,8 +32,19 @@ import { smoothCursorJumpEffect } from "./smoothCursor";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
+import { normalizeRelativePath } from "../utils/relativePath";
 import type { KeybindingMap } from "../app/keybindings";
+import {
+  DEFAULT_VIM_LATEX_PREFERENCES,
+  type VimLatexPreferences
+} from "../app/appState";
 import { createEditorDiagnosticExtensions, toCodeMirrorDiagnostics } from "./editorDiagnostics";
+import {
+  buildLatexProjectIndex,
+  createLatexProjectCompletionSource,
+  type LatexProjectFile,
+  type LatexProjectIndex
+} from "./latexProjectIntelligence";
 import {
   createLanguageSnippetCompletionSource,
   isSnippetLanguage,
@@ -76,6 +87,12 @@ interface TypstEditorProps {
   onFocusChange?: (focused: boolean) => void;
   imagePasteInVim?: boolean;
   vimClipboardSharing?: boolean;
+  vimLatex?: VimLatexPreferences;
+  sourcePath?: string;
+  latexProjectFiles?: LatexProjectFile[];
+  latexPackageNames?: string[];
+  onVimLatexOpenPath?: (path: string) => void;
+  onVimLatexNavigateDiagnostic?: (direction: -1 | 1) => void;
   onImagePaste?: (file: File) => Promise<boolean> | boolean;
   onImageRenameKey?: (
     event: KeyboardEvent,
@@ -213,6 +230,12 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   onFocusChange,
   imagePasteInVim = false,
   vimClipboardSharing = false,
+  vimLatex = DEFAULT_VIM_LATEX_PREFERENCES,
+  sourcePath = "",
+  latexProjectFiles = [],
+  latexPackageNames = [],
+  onVimLatexOpenPath,
+  onVimLatexNavigateDiagnostic,
   onImagePaste,
   onImageRenameKey,
   onChange,
@@ -236,6 +259,12 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const latestOnFormatRequestedRef = useRef(onFormatRequested);
   const latestOnCloseRequestedRef = useRef(onCloseRequested);
   const snippetsRef = useRef(snippets);
+  const sourcePathRef = useRef(sourcePath);
+  const latexProjectFilesRef = useRef(latexProjectFiles);
+  const latexPackageNamesRef = useRef(latexPackageNames);
+  const vimLatexRef = useRef(vimLatex);
+  const latestOnVimLatexOpenPathRef = useRef(onVimLatexOpenPath);
+  const latestOnVimLatexNavigateDiagnosticRef = useRef(onVimLatexNavigateDiagnostic);
   const preservedViewStateRef = useRef<PreservedEditorViewState | null>(null);
   const diagnosticsSignatureRef = useRef(createDiagnosticsSignature(diagnostics, highlightErrors));
   const snippetCompletionSource = useMemo<CompletionSource>(
@@ -244,6 +273,51 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       return (context) => createLanguageSnippetCompletionSource(snippetLanguage, snippetsRef.current)(context);
     },
     [language]
+  );
+  const latexProjectCompletionSource = useMemo<CompletionSource>(
+    () => {
+      let cache: {
+        activePath: string;
+        activeSource: string;
+        files: readonly LatexProjectFile[];
+        index: LatexProjectIndex;
+      } | null = null;
+
+      return (context) => {
+        const activePath = sourcePathRef.current;
+        const activeSource = context.state.doc.toString();
+        const projectFiles = latexProjectFilesRef.current;
+        let index = cache?.files === projectFiles &&
+          cache.activePath === activePath &&
+          cache.activeSource === activeSource
+          ? cache.index
+          : null;
+
+        if (!index) {
+          let foundActiveFile = false;
+          const files = projectFiles.map((file) => {
+            if (normalizeRelativePath(file.path) !== normalizeRelativePath(activePath)) {
+              return file;
+            }
+            foundActiveFile = true;
+            return { ...file, content: activeSource };
+          });
+          if (activePath && !foundActiveFile) {
+            files.push({ path: activePath, content: activeSource });
+          }
+          index = buildLatexProjectIndex(files);
+          cache = { activePath, activeSource, files: projectFiles, index };
+        }
+
+        return createLatexProjectCompletionSource(index, {
+          activePath,
+          packageNames: latexPackageNamesRef.current,
+          semanticCompletion: vimLatexRef.current.completion,
+          packageCompletion: vimLatexRef.current.packageIntelligence
+        })(context);
+      };
+    },
+    []
   );
 
   useEffect(() => {
@@ -302,6 +376,22 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   useEffect(() => {
     snippetsRef.current = snippets;
   }, [snippets]);
+
+  useEffect(() => {
+    sourcePathRef.current = sourcePath;
+    latexProjectFilesRef.current = latexProjectFiles;
+    latexPackageNamesRef.current = latexPackageNames;
+    vimLatexRef.current = vimLatex;
+    latestOnVimLatexOpenPathRef.current = onVimLatexOpenPath;
+    latestOnVimLatexNavigateDiagnosticRef.current = onVimLatexNavigateDiagnostic;
+  }, [
+    latexPackageNames,
+    latexProjectFiles,
+    onVimLatexNavigateDiagnostic,
+    onVimLatexOpenPath,
+    sourcePath,
+    vimLatex
+  ]);
 
   useImperativeHandle(
     ref,
@@ -665,6 +755,30 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         highlightErrors,
         language,
         snippetSource: snippetCompletionSource,
+        latexProjectCompletionSource,
+        vimLatex,
+        onVimLatexOpenFile: (reference) => {
+          const path = resolveVimLatexProjectPath(
+            reference,
+            sourcePathRef.current,
+            latexProjectFilesRef.current
+          );
+          if (path) {
+            latestOnVimLatexOpenPathRef.current?.(path);
+          }
+        },
+        onVimLatexNavigateDiagnostic: (direction) =>
+          latestOnVimLatexNavigateDiagnosticRef.current?.(direction),
+        onVimLatexContextHelp: (query) => {
+          const searchTerm = query.replace(/^\\/, "").trim();
+          if (searchTerm) {
+            window.open(
+              `https://ctan.org/search?phrase=${encodeURIComponent(searchTerm)}`,
+              "_blank",
+              "noopener,noreferrer"
+            );
+          }
+        },
         onSearchRequested: () => latestOnSearchRequestedRef.current(),
         onCompileRequested: () => latestOnCompileRequestedRef.current(),
         onFormatRequested: () => latestOnFormatRequestedRef.current(),
@@ -792,6 +906,8 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     theme,
     vimMode,
     snippetCompletionSource,
+    latexProjectCompletionSource,
+    vimLatex,
     onToggleLineWrap
   ]);
 
@@ -1458,6 +1574,39 @@ function clampLineNumber(view: EditorView, lineNumber: number): number {
 
 function clampColumn(column: number, lineLength: number): number {
   return Math.max(0, Math.min(Math.max(column, 1) - 1, lineLength));
+}
+
+function resolveVimLatexProjectPath(
+  reference: string,
+  activePath: string,
+  files: readonly LatexProjectFile[]
+): string | null {
+  const normalizedActivePath = normalizeRelativePath(activePath);
+  const activeSegments = normalizedActivePath.split("/").filter(Boolean);
+  activeSegments.pop();
+  const normalizedReference = normalizeRelativePath(
+    reference.startsWith("/")
+      ? reference.slice(1)
+      : [...activeSegments, reference].filter(Boolean).join("/")
+  );
+  const paths = new Set(files.map((file) => normalizeRelativePath(file.path)));
+
+  if (paths.has(normalizedReference)) {
+    return normalizedReference;
+  }
+
+  if (normalizedReference.split("/").at(-1)?.includes(".")) {
+    return null;
+  }
+
+  for (const extension of ["tex", "ltx", "latex", "bib", "pdf", "png", "jpg", "jpeg", "svg", "eps"]) {
+    const candidate = `${normalizedReference}.${extension}`;
+    if (paths.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function getClipboardImageFile(clipboardData: DataTransfer | null): File | null {

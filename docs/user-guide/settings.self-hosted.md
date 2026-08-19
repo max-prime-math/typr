@@ -26,6 +26,8 @@ Use Themes to choose the app palette or import a custom theme from JSON.
 
 Use Editor settings for source editing, compile behavior, line wrapping, formatting, linting, and browser tooling.
 
+Vim mode includes an opt-in **Vim-LaTeX enhancements** suite for LaTeX files. Its text objects, motions, structural editing, semantic completion, project navigation, diagnostic navigation, folding, and package intelligence can each be toggled independently. The suite is off by default so existing Vim mappings and editing behavior remain unchanged until it is enabled.
+
 ### Typr Companion
 
 Companion is optional and makes no request in a fresh self-hosted browser

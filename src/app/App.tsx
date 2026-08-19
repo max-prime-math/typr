@@ -21,6 +21,11 @@ import { areBytesEqual } from "../utils/bytes";
 import { DocsModal, DocsPanel } from "./DocsModal";
 import { SettingsSheet } from "../settings/SettingsSheet";
 import { SettingsPanelContent } from "../settings/SettingsPanelContent";
+import {
+  buildLatexProjectIndex,
+  resolveLatexFileReferenceAt,
+  type LatexProjectFile
+} from "../editor/latexProjectIntelligence";
 import { useSettingsSheetController } from "../settings/useSettingsSheetController";
 import { useSettingsFiles } from "../settings/useSettingsFiles";
 import { isSettingsProject, SETTINGS_PROJECT_MARKER_PATH } from "../settings/settingsFiles";
@@ -69,10 +74,12 @@ import {
   updateThemePreference,
   updateTypstMathPreviewPreference,
   updateVimClipboardSharingPreference,
+  updateVimLatexPreference,
   updateVimPreference,
   type AppSnapshot,
   type MobileKeyboardLanguage,
-  type ThemePreference
+  type ThemePreference,
+  type VimLatexPreferences
 } from "./appState";
 import {
   getWorkspaceRenameDraft,
@@ -335,6 +342,7 @@ import {
   GENERATED_LATEX_SYNCTEX_SOURCE_ID,
   getSelectedProjectRepository,
   listProjectEntries,
+  listProjectFiles,
   normalizeProjectStorageState,
   projectRepositoryToLegacyProject,
   readProjectFileBytes,
@@ -1045,6 +1053,7 @@ interface StoredPanelLayout {
 interface OutlineEntry {
   level: number;
   lineNumber: number;
+  path?: string;
   title: string;
 }
 
@@ -4177,6 +4186,14 @@ ${nextLine}` : nextLine;
       )
     );
   }, []);
+  const handleVimLatexPreferenceChange = useCallback(
+    (key: keyof VimLatexPreferences, enabled: boolean) => {
+      setSnapshot((currentSnapshot) =>
+        updateVimLatexPreference(currentSnapshot, { [key]: enabled })
+      );
+    },
+    []
+  );
   const handlePastedImagePrefixChange = useCallback((fileNamePrefix: string) => {
     setSnapshot((currentSnapshot) =>
       updatePastedImagePreference(currentSnapshot, { fileNamePrefix })
@@ -13370,6 +13387,16 @@ ${nextLine}` : nextLine;
       lintDiagnostics
     ]
   );
+  const activeEditorDiagnostics = useMemo(
+    () => editorDiagnostics.filter((diagnostic) => {
+      if (!diagnostic.path) {
+        return true;
+      }
+
+      return normalizeWorkspacePath(diagnostic.path) === normalizedActiveSourcePath;
+    }),
+    [editorDiagnostics, normalizedActiveSourcePath]
+  );
   const debugOutputResult = compileResult?.ok ? compileResult : lastSuccessfulResult;
   const hasLiveCompileOutput = Boolean(isCompiling && hasActiveCompileWork && liveBuildOutput);
   const debugOutputContent = hasLiveCompileOutput
@@ -13457,6 +13484,53 @@ ${nextLine}` : nextLine;
 
     return [...packageNames].sort((left, right) => left.localeCompare(right));
   }, [activeSourceLanguage, selectedProjectRepository, sourceEditorValue]);
+  const vimLatexProjectFiles = useMemo(() => {
+    const needsProjectIntelligence =
+      snapshot.preferences.vimMode &&
+      snapshot.preferences.vimLatex.enabled &&
+      (snapshot.preferences.vimLatex.completion ||
+        snapshot.preferences.vimLatex.packageIntelligence ||
+        snapshot.preferences.vimLatex.projectNavigation);
+
+    if (
+      !needsProjectIntelligence ||
+      !selectedProjectRepository ||
+      activeSourceLanguage !== "latex"
+    ) {
+      return [];
+    }
+
+    const files = listProjectFiles(selectedProjectRepository).map((entry) => ({
+      path: entry.path,
+      content: typeof entry.content === "string" ? entry.content : ""
+    }));
+    const activeFileIndex = files.findIndex(
+      (file) => normalizeWorkspacePath(file.path) === normalizedActiveSourcePath
+    );
+
+    if (activeFileIndex >= 0) {
+      files[activeFileIndex] = {
+        path: files[activeFileIndex].path,
+        content: sourceEditorValue
+      };
+    }
+
+    return files;
+  }, [
+    activeSourceLanguage,
+    normalizedActiveSourcePath,
+    selectedProjectRepository,
+    snapshot.preferences.vimLatex.completion,
+    snapshot.preferences.vimLatex.enabled,
+    snapshot.preferences.vimLatex.packageIntelligence,
+    snapshot.preferences.vimLatex.projectNavigation,
+    snapshot.preferences.vimMode,
+    sourceEditorValue
+  ]);
+  const vimLatexPackageNames = useMemo(
+    () => latexPackageCatalog ? [...latexPackageCatalog.packages.keys()] : [],
+    [latexPackageCatalog]
+  );
   const detectedLatexPackages = useMemo(
     () =>
       latexPackageCatalog
@@ -13506,10 +13580,32 @@ ${nextLine}` : nextLine;
       )
       .sort((left, right) => left.name.localeCompare(right.name));
   }, [cachedLatexPackageNames, latexBundleCacheById, latexPackageCatalog]);
-  const flatOutlineEntries = useMemo(
-    () => collectOutlineEntries(outlineSourceContent, activeSourceLanguage),
-    [activeSourceLanguage, outlineSourceContent]
-  );
+  const flatOutlineEntries = useMemo(() => {
+    if (
+      activeSourceLanguage === "latex" &&
+      snapshot.preferences.vimMode &&
+      snapshot.preferences.vimLatex.enabled &&
+      snapshot.preferences.vimLatex.projectNavigation
+    ) {
+      return collectLatexProjectOutlineEntries(
+        vimLatexProjectFiles,
+        normalizedActiveSourcePath
+      );
+    }
+
+    return collectOutlineEntries(outlineSourceContent, activeSourceLanguage).map((entry) => ({
+      ...entry,
+      path: normalizedActiveSourcePath
+    }));
+  }, [
+    activeSourceLanguage,
+    normalizedActiveSourcePath,
+    outlineSourceContent,
+    snapshot.preferences.vimLatex.enabled,
+    snapshot.preferences.vimLatex.projectNavigation,
+    snapshot.preferences.vimMode,
+    vimLatexProjectFiles
+  ]);
   const documentStats = useMemo(
     () => collectDocumentStats(outlineSourceContent, activeSourceLanguage),
     [activeSourceLanguage, outlineSourceContent]
@@ -13519,9 +13615,15 @@ ${nextLine}` : nextLine;
     [flatOutlineEntries]
   );
   const activeOutlineEntryId = useMemo(() => {
-    const activeEntry = findActiveOutlineEntry(flatOutlineEntries, currentEditorLineNumber);
-    return activeEntry ? `${activeEntry.lineNumber}:${activeEntry.level}:${activeEntry.title}` : null;
-  }, [currentEditorLineNumber, flatOutlineEntries]);
+    const activeEntry = findActiveOutlineEntry(
+      flatOutlineEntries,
+      currentEditorLineNumber,
+      normalizedActiveSourcePath
+    );
+    return activeEntry
+      ? `${activeEntry.path ?? ""}:${activeEntry.lineNumber}:${activeEntry.level}:${activeEntry.title}`
+      : null;
+  }, [currentEditorLineNumber, flatOutlineEntries, normalizedActiveSourcePath]);
   const lightThemes = builtinThemes
     .filter((themeDefinition) => themeDefinition.mode === "light")
     .sort(compareThemesByDisplayOrder);
@@ -14458,6 +14560,26 @@ ${nextLine}` : nextLine;
     },
     [isMobileWorkspace]
   );
+  const focusOutlineEntry = useCallback((entry: OutlineEntry) => {
+    const targetPath = normalizeWorkspacePath(entry.path ?? normalizedActiveSourcePath);
+    const targetDocument = snapshot.project.documents.find(
+      (document) => normalizeWorkspacePath(document.name) === targetPath
+    );
+
+    if (!targetDocument) {
+      return;
+    }
+
+    if (targetPath !== normalizedActiveSourcePath) {
+      openSourceTab(targetPath);
+    }
+    focusDocumentLocation(targetDocument.id, entry.lineNumber, 1, { focusEditor: false });
+  }, [
+    focusDocumentLocation,
+    normalizedActiveSourcePath,
+    openSourceTab,
+    snapshot.project.documents
+  ]);
   const jumpToDiagnostic = useCallback((diagnostic: CompileDiagnostic, fallbackPath: string) => {
     if (!diagnostic.line) {
       return;
@@ -14477,6 +14599,76 @@ ${nextLine}` : nextLine;
       focusDocumentLocation(matchingNode.source.id, diagnostic.line, column);
     }
   }, [focusDocumentLocation, visibleWorkspaceTree]);
+  const handleVimLatexOpenPath = useCallback((path: string) => {
+    const normalizedPath = normalizeWorkspacePath(path);
+    const targetDocument = snapshot.project.documents.find(
+      (document) => normalizeWorkspacePath(document.name) === normalizedPath
+    );
+
+    if (!normalizedPath) {
+      return;
+    }
+
+    handleOpenWorkspaceFile(normalizedPath, { pinSourceTab: true });
+    if (targetDocument) {
+      focusDocumentLocation(targetDocument.id, 1, 1);
+    }
+  }, [focusDocumentLocation, handleOpenWorkspaceFile, snapshot.project.documents]);
+  const handleVimLatexNavigateDiagnostic = useCallback((direction: -1 | 1) => {
+    const navigableDiagnostics = editorDiagnostics
+      .filter((diagnostic) => Boolean(diagnostic.line))
+      .map((diagnostic, index) => ({
+        diagnostic,
+        index,
+        path: normalizeWorkspacePath(diagnostic.path ?? normalizedActiveSourcePath)
+      }))
+      .sort((left, right) =>
+        left.path.localeCompare(right.path) ||
+        (left.diagnostic.line ?? 0) - (right.diagnostic.line ?? 0) ||
+        (left.diagnostic.column ?? 0) - (right.diagnostic.column ?? 0) ||
+        left.index - right.index
+      );
+
+    if (navigableDiagnostics.length === 0) {
+      return;
+    }
+
+    const currentPath = normalizedActiveSourcePath;
+    const currentLine = currentEditorLineNumber;
+    let candidateIndex = -1;
+
+    if (direction > 0) {
+      candidateIndex = navigableDiagnostics.findIndex((entry) =>
+        entry.path > currentPath ||
+        (entry.path === currentPath && (entry.diagnostic.line ?? 0) > currentLine)
+      );
+    } else {
+      for (let index = navigableDiagnostics.length - 1; index >= 0; index -= 1) {
+        const entry = navigableDiagnostics[index];
+
+        if (
+          entry.path < currentPath ||
+          (entry.path === currentPath && (entry.diagnostic.line ?? 0) < currentLine)
+        ) {
+          candidateIndex = index;
+          break;
+        }
+      }
+    }
+    const wrappedIndex = candidateIndex >= 0
+      ? candidateIndex
+      : direction > 0
+        ? 0
+        : navigableDiagnostics.length - 1;
+    const target = navigableDiagnostics[wrappedIndex];
+
+    jumpToDiagnostic(target.diagnostic, target.path);
+  }, [
+    currentEditorLineNumber,
+    editorDiagnostics,
+    jumpToDiagnostic,
+    normalizedActiveSourcePath
+  ]);
 
   const rerunBuildLogEntry = useCallback((entry: BuildLogEntry) => {
     const targetPath = normalizeWorkspacePath(entry.sourcePath);
@@ -15840,6 +16032,7 @@ ${nextLine}` : nextLine;
     handleSnippetLanguageChange,
     handleTypstMathPreviewToggle,
     handleVimClipboardSharingToggle,
+    handleVimLatexPreferenceChange,
     handleVimToggle,
     handleWhackKeybindingConflicts,
     installedPackageKeys,
@@ -17075,11 +17268,10 @@ ${nextLine}` : nextLine;
                     <div className="outline-list" role="list">
                       {renderOutlineEntries(
                         outlineEntries,
-                        activeDocument?.id ?? "",
                         activeOutlineEntryId,
                         collapsedOutlineEntries,
                         setCollapsedOutlineEntries,
-                        focusDocumentLocation
+                        focusOutlineEntry
                       )}
                     </div>
                   ) : (
@@ -18190,7 +18382,7 @@ ${nextLine}` : nextLine;
             <>
               <TypstEditor
                 ref={editorRef}
-                diagnostics={editorDiagnostics}
+                diagnostics={activeEditorDiagnostics}
                 highlightErrors={isErrorSettled}
                 language={activeSourceLanguage}
                 snippets={
@@ -18208,6 +18400,12 @@ ${nextLine}` : nextLine;
                 onFocusChange={setIsEditorFocused}
                 imagePasteInVim={snapshot.preferences.pastedImages.enabled}
                 vimClipboardSharing={snapshot.preferences.vimClipboardSharing}
+                vimLatex={snapshot.preferences.vimLatex}
+                sourcePath={normalizedActiveSourcePath}
+                latexProjectFiles={vimLatexProjectFiles}
+                latexPackageNames={vimLatexPackageNames}
+                onVimLatexOpenPath={handleVimLatexOpenPath}
+                onVimLatexNavigateDiagnostic={handleVimLatexNavigateDiagnostic}
                 onImagePaste={snapshot.preferences.pastedImages.enabled ? handleSourceImagePaste : undefined}
                 onImageRenameKey={handlePastedImageRenameKey}
                 value={sourceEditorValue}
@@ -20787,6 +20985,103 @@ function collectOutlineEntries(content: string, language: SourceLanguage): Outli
   return collectTypstOutlineEntries(content);
 }
 
+function collectLatexProjectOutlineEntries(
+  files: readonly LatexProjectFile[],
+  activePath: string
+): OutlineEntry[] {
+  const index = buildLatexProjectIndex(files);
+  const fileByPath = new Map(index.files.map((file) => [file.path, file]));
+  const includedByPath = new Map<string, Array<{ path: string; offset: number }>>();
+
+  for (const file of index.files) {
+    if (!/\.(?:tex|ltx|latex)$/i.test(file.path)) {
+      continue;
+    }
+
+    const included: Array<{ path: string; offset: number }> = [];
+    const includePattern = /\\(?:input|include|subfile)\*?(?:\s*\[[^\]]*])?\s*\{[^{}]+\}/g;
+
+    for (const match of file.content.matchAll(includePattern)) {
+      const cursor = match.index + Math.floor(match[0].length / 2);
+      const resolved = resolveLatexFileReferenceAt(file.content, cursor, file.path, index);
+      if (resolved && !included.some((entry) => entry.path === resolved.path)) {
+        included.push({ path: resolved.path, offset: match.index });
+      }
+    }
+    includedByPath.set(file.path, included);
+  }
+
+  const parents = new Map<string, string>();
+  for (const [parent, children] of includedByPath) {
+    for (const child of children) {
+      if (!parents.has(child.path)) {
+        parents.set(child.path, parent);
+      }
+    }
+  }
+
+  let rootPath = normalizeWorkspacePath(activePath);
+  const rootGuard = new Set<string>();
+  while (parents.has(rootPath) && !rootGuard.has(rootPath)) {
+    rootGuard.add(rootPath);
+    rootPath = parents.get(rootPath) as string;
+  }
+
+  const sectionsByPath = new Map<string, OutlineEntry[]>();
+  for (const section of index.sections) {
+    const entries = sectionsByPath.get(section.location.path) ?? [];
+    entries.push({
+      level: section.level,
+      lineNumber: section.location.line,
+      path: section.location.path,
+      title: section.title
+    });
+    sectionsByPath.set(section.location.path, entries);
+  }
+
+  const result: OutlineEntry[] = [];
+  const visited = new Set<string>();
+  const visit = (path: string) => {
+    if (visited.has(path) || !fileByPath.has(path)) {
+      return;
+    }
+    visited.add(path);
+    const events = [
+      ...(sectionsByPath.get(path) ?? []).map((entry) => ({
+        kind: "section" as const,
+        offset: index.sections.find(
+          (section) =>
+            section.location.path === entry.path &&
+            section.location.line === entry.lineNumber &&
+            section.title === entry.title
+        )?.location.offset ?? 0,
+        entry
+      })),
+      ...(includedByPath.get(path) ?? []).map((entry) => ({
+        kind: "include" as const,
+        offset: entry.offset,
+        path: entry.path
+      }))
+    ].sort((left, right) => left.offset - right.offset);
+
+    for (const event of events) {
+      if (event.kind === "section") {
+        result.push(event.entry);
+      } else {
+        visit(event.path);
+      }
+    }
+  };
+  visit(rootPath);
+
+  return result.length > 0
+    ? result
+    : collectLatexOutlineEntries(fileByPath.get(rootPath)?.content ?? "").map((entry) => ({
+        ...entry,
+        path: rootPath
+      }));
+}
+
 function collectTypstOutlineEntries(content: string): OutlineEntry[] {
   return content
     .split("\n")
@@ -20878,7 +21173,7 @@ function buildOutlineTree(entries: OutlineEntry[]): OutlineTreeEntry[] {
   for (const entry of entries) {
     const node: OutlineTreeEntry = {
       ...entry,
-      id: `${entry.lineNumber}:${entry.level}:${entry.title}`,
+      id: `${entry.path ?? ""}:${entry.lineNumber}:${entry.level}:${entry.title}`,
       children: []
     };
 
@@ -20900,11 +21195,14 @@ function buildOutlineTree(entries: OutlineEntry[]): OutlineTreeEntry[] {
 
 function findActiveOutlineEntry(
   entries: OutlineEntry[],
-  currentLineNumber: number
+  currentLineNumber: number,
+  activePath?: string
 ): OutlineEntry | null {
   let activeEntry: OutlineEntry | null = null;
 
-  for (const entry of entries) {
+  for (const entry of entries.filter(
+    (candidate) => !activePath || normalizeWorkspacePath(candidate.path ?? activePath) === activePath
+  )) {
     if (entry.lineNumber > currentLineNumber) {
       break;
     }
@@ -20963,16 +21261,10 @@ function formatInteger(value: number): string {
 
 function renderOutlineEntries(
   entries: OutlineTreeEntry[],
-  documentId: string,
   activeEntryId: string | null,
   collapsedEntries: Record<string, boolean>,
   setCollapsedEntries: Dispatch<SetStateAction<Record<string, boolean>>>,
-  focusDocumentLocation: (
-    documentId: string,
-    line: number,
-    column: number,
-    options?: { focusEditor?: boolean }
-  ) => void,
+  focusOutlineEntry: (entry: OutlineEntry) => void,
   depth = 0
 ): ReactNode {
   return entries.map((entry) => {
@@ -21020,7 +21312,8 @@ function renderOutlineEntries(
 
           <button
             className="outline-row__link"
-            onClick={() => focusDocumentLocation(documentId, entry.lineNumber, 1, { focusEditor: false })}
+            onClick={() => focusOutlineEntry(entry)}
+            title={entry.path}
             type="button"
           >
             <span className="outline-row__title">{entry.title}</span>
@@ -21031,11 +21324,10 @@ function renderOutlineEntries(
           <div className="outline-children" role="list">
             {renderOutlineEntries(
               entry.children,
-              documentId,
               activeEntryId,
               collapsedEntries,
               setCollapsedEntries,
-              focusDocumentLocation,
+              focusOutlineEntry,
               depth + 1
             )}
           </div>

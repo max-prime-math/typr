@@ -36,7 +36,13 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
   ],
   git: ["git", "github", "token", "remote", "owner", "repo", "repository", "branch", "gitignore", "status", "push", "sync", "commit"],
   themes: ["theme", "themes", "light", "dark", "system", "import", "palette", "cursor", "smear cursor", "intensity", "follow system default"],
-  editor: ["editor", "settings project", "settings files", "json", "vim", "format", "formatter", "lint", "linter", "diagnostics", "harper", "lsp", "language server", "websocket", "local lsp", "remote lsp", "compile", "live", "companion", "server", "url", "docker", "unraid"],
+  editor: [
+    "editor", "settings project", "settings files", "json", "vim", "vimtex", "vim latex",
+    "latex motions", "text objects", "structural editing", "citations", "labels", "folding",
+    "diagnostic navigation", "format", "formatter", "lint", "linter", "diagnostics", "harper",
+    "lsp", "language server", "websocket", "local lsp", "remote lsp", "compile", "live",
+    "companion", "server", "url", "docker", "unraid"
+  ],
   keybindings: [
     "keybindings", "keys", "shortcuts", "hotkeys", "vim", "layout", "preview", "multi cursor",
     "snippets", "typst", "latex", "markdown", "autocomplete", "import", "json", "template",

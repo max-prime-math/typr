@@ -49,6 +49,8 @@ describe("settings sheet state", () => {
     expect(findMatchingSettingsTabs("github")).toEqual(["git"]);
     expect(findMatchingSettingsTabs("constant")).toEqual(["sync"]);
     expect(findMatchingSettingsTabs("formatter")).toContain("editor");
+    expect(findMatchingSettingsTabs("vimtex")).toEqual(["editor"]);
+    expect(findMatchingSettingsTabs("text objects")).toEqual(["editor"]);
     expect(findMatchingSettingsTabs("")).toEqual([
       "sync",
       "git",

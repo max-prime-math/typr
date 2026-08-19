@@ -52,6 +52,15 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 | Live compilation | Recompiles the active Typst document automatically while editing. |
 | Lint while editing | Shows browser-available diagnostics in the source editor. |
 | Format on compile | Runs the selected formatter before compile or Markdown preview. |
+| Vim mode | Enables modal motions, operators, and normal-mode editing. |
+| Vim-LaTeX enhancements | Opts LaTeX files into the language-aware Vim editing suite. Each feature below can be toggled independently. |
+| LaTeX text objects and motions | Operates on and moves among LaTeX commands, environments, math, sections, and list items. |
+| Structural editing | Changes or removes surrounding LaTeX structures and toggles supported forms. |
+| Semantic completion | Completes project labels, citations, commands, and file paths from LaTeX context. |
+| Project navigation | Navigates the root document and its included LaTeX files. |
+| Diagnostic navigation | Moves among compiler and editor diagnostics from Vim mode. |
+| LaTeX folding | Folds and unfolds supported LaTeX sections and environments. |
+| Package intelligence | Adds package-aware LaTeX completion and editing context. |
 | Line wrap | Wraps long source lines instead of scrolling sideways. |
 | Relative line numbers | Shows line numbers relative to the cursor line. |
 | Smooth cursor | Animates the source cursor as it moves. |
