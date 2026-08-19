@@ -95,7 +95,9 @@ assert.equal(one(companion, "Privileged").text, "false");
 assert.equal(one(companion, "Category").text, "Tools:Utilities");
 assert.equal(one(companion, "TemplateURL").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/templates/typr-server.xml");
 assert.equal(one(companion, "Icon").text, "https://raw.githubusercontent.com/max-prime-math/typr/main/public/icons/icon-512.png");
+assert.equal(one(companion, "WebUI").text, "http://[IP]:[PORT:8485]/");
 assert.match(one(companion, "Overview").text, /Stateless by default/i);
+assert.match(one(companion, "Description").text, /authenticated management GUI/i);
 assert.match(one(companion, "Description").text, /never be exposed.+public Internet/i);
 assert.match(one(companion, "Description").text, /stateless fallback/i);
 assert.match(one(companion, "Requires").text, /Never expose.+public Internet/i);
@@ -117,10 +119,16 @@ const companionExtraParams = new Set(one(companion, "ExtraParams").text.trim().s
 assert.deepEqual(companionExtraParams, companionRequiredExtraParams);
 
 const companionConfigs = companion.children.filter((child) => child.tag === "Config");
-assert.equal(companionConfigs.length, 6);
+assert.equal(companionConfigs.length, 9);
 const companionConfigByTarget = new Map(companionConfigs.map((config) => [config.attributes.Target, config]));
 assert.equal(companionConfigByTarget.get("8484")?.attributes.Mode, "tcp");
 assert.equal(companionConfigByTarget.get("8484")?.text, "8484");
+assert.equal(companionConfigByTarget.get("8485")?.attributes.Mode, "tcp");
+assert.equal(companionConfigByTarget.get("8485")?.text, "8485");
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_MANAGEMENT_HOST")?.text, "0.0.0.0");
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_MANAGEMENT_PASSWORD")?.attributes.Required, "true");
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_MANAGEMENT_PASSWORD")?.attributes.Mask, "true");
+assert.equal(companionConfigByTarget.get("TYPR_COMPANION_MANAGEMENT_PASSWORD")?.text, "");
 assert.match(companionConfigByTarget.get("TYPR_COMPANION_ALLOWED_ORIGINS")?.attributes.Description || "", /CORS is not authentication/i);
 assert.equal(companionConfigByTarget.get("TYPR_COMPANION_ALLOW_UNSANDBOXED_STATELESS")?.text, "1");
 assert.match(companionConfigByTarget.get("TYPR_COMPANION_ALLOW_UNSANDBOXED_STATELESS")?.attributes.Description || "", /no host workspace is mounted/i);
