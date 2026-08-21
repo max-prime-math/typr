@@ -25,6 +25,7 @@ import { shouldIgnorePath } from "./pathFilters";
 
 const DEFAULT_BRANCH = "main";
 const MERGE_STATE_FILE = "MERGE_STATE.json";
+const UNTRACKED_WORKTREE_OID = "0000000000000000000000000000000000000000";
 const DEFAULT_AUTHOR: RepoAuthor = {
   name: "Typr Local",
   email: "typr-local@example.invalid"
@@ -530,8 +531,9 @@ async function getStatus(storage: GitFileStorage, project: TyprProjectRepository
   const headSha = await getHeadSha(storage, project.id);
   const headFiles = headSha ? await readCommitTreeFiles(storage, project.id, headSha) : new Map<string, IndexEntry>();
   const index = await readIndex(storage, project.id);
-  const workingFiles = await buildWorkingFileMap(storage, project);
   const ignorePatterns = readProjectGitignorePatterns(project);
+  const trackedPaths = new Set([...headFiles.keys(), ...index.map((entry) => entry.path)]);
+  const workingFiles = await buildWorkingFileMap(project, trackedPaths, ignorePatterns);
   const paths = new Set([...headFiles.keys(), ...index.map((entry) => entry.path), ...workingFiles.keys()]);
   const entries: RepoStatusEntry[] = [];
 
@@ -1095,17 +1097,32 @@ async function buildMergeFiles(
 }
 
 async function buildWorkingFileMap(
-  storage: GitFileStorage,
-  project: TyprProjectRepository
+  project: TyprProjectRepository,
+  trackedPaths: ReadonlySet<string>,
+  ignorePatterns: string[]
 ): Promise<Map<string, IndexEntry>> {
   const result = new Map<string, IndexEntry>();
   for (const file of listProjectFiles(project)) {
     assertRepositoryPath(file.path);
+    const isTracked = trackedPaths.has(file.path);
+    if (!isTracked && shouldIgnorePath(file.path, ignorePatterns)) {
+      continue;
+    }
+
+    if (!isTracked) {
+      result.set(file.path, {
+        path: file.path,
+        oid: UNTRACKED_WORKTREE_OID,
+        mode: "100644",
+        size: 0
+      });
+      continue;
+    }
+
     const bytes = typeof file.content === "string" ? encodeUtf8(file.content) : file.content;
-    const oid = await writeObject(storage, project.id, "blob", bytes);
     result.set(file.path, {
       path: file.path,
-      oid,
+      oid: await hashObject("blob", bytes),
       mode: "100644",
       size: bytes.byteLength
     });
@@ -1388,13 +1405,27 @@ async function writeObject(
   type: "blob" | "tree" | "commit",
   content: Uint8Array
 ): Promise<string> {
-  const payload = concatBytes([encodeUtf8(`${type} ${content.byteLength}\0`), content]);
+  const payload = createObjectPayload(type, content);
   const sha = await sha1Hex(payload);
   const path = `objects/${sha.slice(0, 2)}/${sha.slice(2)}`;
   if ((await storage.readFile(projectId, path)) === null) {
     await storage.writeFile(projectId, path, await zlibAsync(payload));
   }
   return sha;
+}
+
+async function hashObject(
+  type: "blob" | "tree" | "commit",
+  content: Uint8Array
+): Promise<string> {
+  return sha1Hex(createObjectPayload(type, content));
+}
+
+function createObjectPayload(
+  type: "blob" | "tree" | "commit",
+  content: Uint8Array
+): Uint8Array {
+  return concatBytes([encodeUtf8(`${type} ${content.byteLength}\0`), content]);
 }
 
 async function readObject(
