@@ -121,6 +121,37 @@ describe("repoBackend", () => {
     ]);
   });
 
+  it("keeps status checks from creating objects for worktree changes", async () => {
+    const gitStorage = createMemoryGitFileStorage();
+    const backend = createRepoBackend(gitStorage);
+    let project = createProject();
+
+    const init = await backend.initRepository(project);
+    expect(init.ok).toBe(true);
+    if (!init.ok) return;
+    project = init.value;
+
+    await backend.stagePaths(project, ["."]);
+    await backend.commit(project, { message: "initial commit" });
+    const before = await backend.getStorageStats(project);
+    expect(before.ok).toBe(true);
+
+    project = writeProjectFile(project, DEFAULT_DOCUMENT_NAME, "Changed but unstaged\n");
+    project = writeProjectFile(project, "resources/large.bin", new Uint8Array(4 * 1024 * 1024));
+
+    const status = await backend.status(project);
+    const after = await backend.getStorageStats(project);
+
+    expect(status.ok && status.value.entries).toEqual([
+      { path: "resources/large.bin", staged: null, worktree: "untracked" },
+      { path: DEFAULT_DOCUMENT_NAME, staged: null, worktree: "modified" }
+    ]);
+    expect(after.ok).toBe(true);
+    if (!before.ok || !after.ok) return;
+    expect(after.value.objectCount).toBe(before.value.objectCount);
+    expect(after.value.objectBytes).toBe(before.value.objectBytes);
+  });
+
   it("blocks unsafe branch switches with local changes", async () => {
     const backend = createRepoBackend(createMemoryGitFileStorage());
     let project = createProject();
