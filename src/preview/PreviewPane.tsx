@@ -62,7 +62,7 @@ export interface PreviewZoomState {
 export interface WorkspacePreviewFile {
   name: string;
   path: string;
-  content: string | Uint8Array;
+  content: string | Uint8Array | ArrayBuffer;
   mimeType: string;
   assets?: readonly WorkspacePreviewAsset[];
 }
@@ -1725,6 +1725,7 @@ function PdfPreview({
       !container ||
       pdfRenderRevision === 0 ||
       renderedPdfArtifactRef.current !== artifactData ||
+      container.dataset.pdfVirtualized === "true" ||
       prewarmedPdfArtifactRef.current === artifactData
     ) {
       return;
@@ -1785,6 +1786,7 @@ function PdfPreview({
     if (
       !container ||
       pdfRenderRevision === 0 ||
+      container.dataset.pdfVirtualized === "true" ||
       renderedPdfArtifactRef.current !== artifactData
     ) {
       return;
@@ -2650,16 +2652,20 @@ function buildWorkspacePreviewBlob(
   return new Blob([normalizedMarkup || markup], { type: file.mimeType });
 }
 
-function encodeWorkspacePreviewBlobPart(content: string | Uint8Array): BlobPart {
+function encodeWorkspacePreviewBlobPart(content: string | Uint8Array | ArrayBuffer): BlobPart {
   const bytes = encodeWorkspacePreviewBytes(content);
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy.buffer;
 }
 
-function encodeWorkspacePreviewBytes(content: string | Uint8Array): Uint8Array {
+function encodeWorkspacePreviewBytes(content: string | Uint8Array | ArrayBuffer): Uint8Array {
   if (content instanceof Uint8Array) {
     return content;
+  }
+
+  if (content instanceof ArrayBuffer) {
+    return new Uint8Array(content);
   }
 
   if (typeof TextEncoder === "undefined") {
@@ -2670,7 +2676,7 @@ function encodeWorkspacePreviewBytes(content: string | Uint8Array): Uint8Array {
 }
 
 
-function decodeWorkspaceTextContent(content: string | Uint8Array): string {
+function decodeWorkspaceTextContent(content: string | Uint8Array | ArrayBuffer): string {
   if (typeof content === "string") {
     return content;
   }
