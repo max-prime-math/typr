@@ -34,6 +34,8 @@ const LATEX_PDFTEX_FONT_MAP_FILE_CONTENT = [
   ""
 ].join("\n");
 const LATEX_PDFTEX_FONT_MAP_PREAMBLE = "\\usepackage{type1ec}";
+const LATEX_GRAPHIC_EXTENSIONS = ["pdf", "png", "jpg", "jpeg", "svg", "webp", "eps"] as const;
+const LATEX_INPUT_EXTENSIONS = ["tex", "ltx", "latex"] as const;
 
 let sharedRunner: BusyTexWorkerRunner | null = null;
 let sharedBasePath: string | null = null;
@@ -210,9 +212,9 @@ export function releaseLatexCompilerMemory(): void {
 }
 
 /**
- * Produces the complete, safe-to-compile LaTeX project view used by BusyTeX
- * and by the Typr Server provider.  Keeping this here means both providers see
- * the same documents, generated diagram assets, and active-editor override.
+ * Produces the dependency-scoped LaTeX project view used by BusyTeX and the
+ * Typr Server provider. Keeping this here means both providers see the same
+ * referenced files, generated diagram assets, and active-editor override.
  */
 export function collectLatexFiles(
   project: TyprProjectRepository,
@@ -220,7 +222,7 @@ export function collectLatexFiles(
   source: string,
   assets: CompileAssetFile[]
 ): FileInput[] {
-  const files = new Map<string, string | Uint8Array>();
+  const filesByPath = new Map<string, string | Uint8Array>();
 
   for (const file of listProjectFiles(project)) {
     const path = normalizeCompilerPath(file.path);
@@ -236,20 +238,178 @@ export function collectLatexFiles(
       continue;
     }
 
-    files.set(path, file.content);
+    filesByPath.set(path, file.content);
   }
 
-  files.set(mainFilePath, source);
+  filesByPath.set(mainFilePath, source);
 
   for (const asset of assets) {
     const path = normalizeCompilerPath(asset.path);
 
     if (path) {
-      files.set(path, asset.content);
+      filesByPath.set(path, asset.content);
     }
   }
 
-  return [...files.entries()].map(([path, content]) => ({ path, content }));
+  const allFiles = [...filesByPath.entries()].map(([path, content]) => ({ path, content }));
+  const activeContent = filesByPath.get(mainFilePath);
+  const rootFile = typeof activeContent === "string" && !isStandaloneLatexDocument(activeContent)
+    ? findLatexRootFile(allFiles, mainFilePath)
+    : null;
+
+  return collectLatexDependencyClosure(
+    filesByPath,
+    rootFile ? [mainFilePath, rootFile.path] : [mainFilePath]
+  );
+}
+
+interface LatexProjectReference {
+  path: string;
+  defaultExtensions: readonly string[];
+  searchDirectories?: string[];
+}
+
+function collectLatexDependencyClosure(
+  filesByPath: Map<string, string | Uint8Array>,
+  entryPaths: string[]
+): FileInput[] {
+  const includedPaths = new Set<string>();
+  const queuedPaths: string[] = [];
+
+  const includePath = (path: string) => {
+    const normalizedPath = normalizeCompilerPath(path);
+    if (!normalizedPath || includedPaths.has(normalizedPath) || !filesByPath.has(normalizedPath)) {
+      return;
+    }
+
+    includedPaths.add(normalizedPath);
+    queuedPaths.push(normalizedPath);
+  };
+
+  entryPaths.forEach(includePath);
+
+  for (let index = 0; index < queuedPaths.length; index += 1) {
+    const sourcePath = queuedPaths[index];
+    const content = filesByPath.get(sourcePath);
+
+    if (typeof content !== "string") {
+      continue;
+    }
+
+    for (const reference of extractLatexProjectReferences(content)) {
+      for (const candidate of resolveLatexProjectReference(reference, sourcePath, filesByPath)) {
+        includePath(candidate);
+      }
+    }
+  }
+
+  return [...includedPaths]
+    .sort((left, right) => left.localeCompare(right))
+    .map((path) => ({ path, content: filesByPath.get(path) ?? "" }));
+}
+
+function extractLatexProjectReferences(content: string): LatexProjectReference[] {
+  const source = stripLatexComments(content);
+  const references: LatexProjectReference[] = [];
+  const graphicSearchDirectories: string[] = [];
+  const addReference = (
+    path: string,
+    defaultExtensions: readonly string[],
+    searchDirectories?: string[]
+  ) => {
+    const normalizedReference = path.trim().replace(/^['"]|['"]$/g, "");
+    if (normalizedReference && !/[\\{}#$]/.test(normalizedReference)) {
+      references.push({ path: normalizedReference, defaultExtensions, searchDirectories });
+    }
+  };
+
+  for (const graphicPathMatch of source.matchAll(/\\graphicspath\s*\{((?:\s*\{[^{}]*}\s*)+)}/gi)) {
+    for (const directoryMatch of graphicPathMatch[1].matchAll(/\{([^{}]+)}/g)) {
+      const directory = directoryMatch[1].trim();
+      if (directory) {
+        graphicSearchDirectories.push(directory);
+      }
+    }
+  }
+
+  for (const match of source.matchAll(/\\(?:input|include|subfile)\s*\{([^}]+)}/gi)) {
+    addReference(match[1], LATEX_INPUT_EXTENSIONS);
+  }
+
+  for (const match of source.matchAll(/\\includegraphics(?:\s*\[[^\]]*])?\s*\{([^}]+)}/gi)) {
+    addReference(match[1], LATEX_GRAPHIC_EXTENSIONS, graphicSearchDirectories);
+  }
+
+  for (const match of source.matchAll(/\\(?:bibliography|addbibresource)(?:\s*\[[^\]]*])?\s*\{([^}]+)}/gi)) {
+    for (const path of match[1].split(",")) {
+      addReference(path, ["bib"]);
+    }
+  }
+
+  for (const match of source.matchAll(/\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*])?\s*\{([^}]+)}/g)) {
+    for (const path of match[1].split(",")) {
+      addReference(path, ["sty"]);
+    }
+  }
+
+  for (const match of source.matchAll(/\\documentclass(?:\s*\[[^\]]*])?\s*\{([^}]+)}/gi)) {
+    addReference(match[1], ["cls"]);
+  }
+
+  for (const match of source.matchAll(/\\bibliographystyle\s*\{([^}]+)}/gi)) {
+    addReference(match[1], ["bst"]);
+  }
+
+  for (const match of source.matchAll(/\\includepdf(?:\s*\[[^\]]*])?\s*\{([^}]+)}/gi)) {
+    addReference(match[1], ["pdf"]);
+  }
+
+  for (const match of source.matchAll(/\\(?:lstinputlisting|verbatiminput)(?:\s*\[[^\]]*])?\s*\{([^}]+)}/gi)) {
+    addReference(match[1], ["tex", "txt", "csv", "dat"]);
+  }
+
+  for (const match of source.matchAll(/\\inputminted(?:\s*\[[^\]]*])?\s*\{[^}]+}\s*\{([^}]+)}/gi)) {
+    addReference(match[1], []);
+  }
+
+  return references;
+}
+
+function resolveLatexProjectReference(
+  reference: LatexProjectReference,
+  sourcePath: string,
+  filesByPath: ReadonlyMap<string, string | Uint8Array>
+): string[] {
+  const sourceDirectory = getCompilerDirname(sourcePath);
+  const searchDirectories = [sourceDirectory, ""];
+
+  for (const directory of reference.searchDirectories ?? []) {
+    searchDirectories.push(
+      normalizeCompilerPath(joinCompilerPath(sourceDirectory, directory)),
+      normalizeCompilerPath(directory)
+    );
+  }
+
+  const referenceHasExtension = /(?:^|\/)[^/]+\.[^/]+$/.test(reference.path);
+  const relativeCandidates = referenceHasExtension
+    ? [reference.path]
+    : [reference.path, ...reference.defaultExtensions.map((extension) => `${reference.path}.${extension}`)];
+  const matches = new Set<string>();
+
+  for (const directory of searchDirectories) {
+    for (const relativeCandidate of relativeCandidates) {
+      const candidate = normalizeCompilerPath(joinCompilerPath(directory, relativeCandidate));
+      if (candidate && !candidate.startsWith("../") && filesByPath.has(candidate)) {
+        matches.add(candidate);
+      }
+    }
+  }
+
+  return [...matches];
+}
+
+function stripLatexComments(content: string): string {
+  return content.replace(/(^|[^\\])%.*$/gm, "$1");
 }
 
 function analyzeLatexDirtyState(

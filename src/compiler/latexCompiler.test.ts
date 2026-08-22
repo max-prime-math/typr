@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeLatexDirtyStateForTest,
+  collectLatexFiles,
   createLatexFilesWithPdfTexFontMapOverridesForTest,
   createLatexQuickPreviewPlan,
   formatLatexErrorForTest,
@@ -9,6 +10,7 @@ import {
   isRuntimeFontGenerationFailure,
   shouldRetryWithFullBusyTexPackages
 } from "./latexCompiler";
+import { createEmptyProjectRepository, writeProjectFile } from "../project/projectState";
 
 describe("LaTeX compiler diagnostics", () => {
   const mktexpkLog = [
@@ -160,6 +162,81 @@ describe("LaTeX quick preview planning", () => {
     expect(mainFile?.content).toContain("\\input{.typr-pdftex-fontmaps.tex}");
     expect(fontMapFile?.content).toContain("\\pdfmapfile{+cm-super-t1.map}");
     expect(fontMapFile?.content).toContain("\\pdfmapfile{+cm-super-ts1.map}");
+  });
+});
+
+describe("LaTeX project file collection", () => {
+  it("collects referenced dependencies without cloning unrelated project binaries", () => {
+    let project = createEmptyProjectRepository({
+      displayName: "Dependency closure",
+      defaultFileName: null
+    });
+    const mainSource = [
+      "\\documentclass{article}",
+      "\\usepackage{styles/local}",
+      "\\addbibresource{refs/sources.bib}",
+      "\\begin{document}",
+      "\\input{chapters/intro}",
+      "\\includegraphics{figures/chart}",
+      "\\end{document}"
+    ].join("\n");
+
+    project = writeProjectFile(project, "main.tex", mainSource);
+    project = writeProjectFile(project, "chapters/intro.tex", "\\lstinputlisting{../data/table.csv}");
+    project = writeProjectFile(project, "styles/local.sty", "\\ProvidesPackage{local}");
+    project = writeProjectFile(project, "refs/sources.bib", "@book{one,title={One}}");
+    project = writeProjectFile(project, "data/table.csv", "x,y\n1,2\n");
+    project = writeProjectFile(project, "figures/chart.pdf", new Uint8Array([1, 2, 3]));
+    project = writeProjectFile(project, "resources/textbook.pdf", new Uint8Array(16 * 1024 * 1024));
+    project = writeProjectFile(
+      project,
+      "notes/unrelated.tex",
+      "\\documentclass{article}\\begin{document}Unrelated\\end{document}"
+    );
+
+    const files = collectLatexFiles(project, "main.tex", mainSource, []);
+
+    expect(files.map((file) => file.path)).toEqual([
+      "chapters/intro.tex",
+      "data/table.csv",
+      "figures/chart.pdf",
+      "main.tex",
+      "refs/sources.bib",
+      "styles/local.sty"
+    ]);
+    expect(files.find((file) => file.path === "figures/chart.pdf")?.content).toEqual(
+      new Uint8Array([1, 2, 3])
+    );
+    expect(files.some((file) => file.path === "resources/textbook.pdf")).toBe(false);
+    expect(files.some((file) => file.path === "notes/unrelated.tex")).toBe(false);
+  });
+
+  it("includes the detected root and its dependencies for an active subfile", () => {
+    let project = createEmptyProjectRepository({
+      displayName: "Subfile closure",
+      defaultFileName: null
+    });
+    const rootSource = [
+      "\\documentclass{book}",
+      "\\begin{document}",
+      "\\include{chapters/one}",
+      "\\includegraphics{figures/root-chart.png}",
+      "\\end{document}"
+    ].join("\n");
+    const chapterSource = "\\chapter{One}\nShort chapter";
+
+    project = writeProjectFile(project, "main.tex", rootSource);
+    project = writeProjectFile(project, "chapters/one.tex", chapterSource);
+    project = writeProjectFile(project, "figures/root-chart.png", new Uint8Array([4, 5, 6]));
+    project = writeProjectFile(project, "resources/unrelated.pdf", new Uint8Array(16 * 1024 * 1024));
+
+    const files = collectLatexFiles(project, "chapters/one.tex", chapterSource, []);
+
+    expect(files.map((file) => file.path)).toEqual([
+      "chapters/one.tex",
+      "figures/root-chart.png",
+      "main.tex"
+    ]);
   });
 });
 

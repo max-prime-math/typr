@@ -32,11 +32,11 @@ function fixtureProject() {
   if (!project) throw new Error("Expected fixture project");
   return writeProjectFile(
     writeProjectFile(
-      writeProjectFile(project, "main.tex", "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}"),
+      writeProjectFile(project, "main.tex", "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\includegraphics{figures/logo.png}\n\\end{document}"),
       "chapters/intro.tex",
       "Hello from a chapter."
     ),
-    "figures/logo.bin",
+    "figures/logo.png",
     new Uint8Array([0, 1, 2, 255])
   );
 }
@@ -49,7 +49,7 @@ describe("LaTeX compiler providers", () => {
     expect(busyTexProvider.isAvailable({ companion: { ...availableConnection, state: "unavailable" }, compileDriver: "pdftex_bibtex8" })).toBe(true);
   });
 
-  it("serializes the complete multi-file project with the detected root main file", () => {
+  it("serializes the detected root and its referenced project files", () => {
     const request = createCompanionCompileRequest({
       project: fixtureProject(),
       mainFilePath: "chapters/intro.tex",
@@ -59,9 +59,9 @@ describe("LaTeX compiler providers", () => {
 
     expect(request.mainFilePath).toBe("main.tex");
     expect(request.files.map((file) => file.path)).toEqual(expect.arrayContaining([
-      "main.tex", "chapters/intro.tex", "figures/logo.bin"
+      "main.tex", "chapters/intro.tex", "figures/logo.png"
     ]));
-    expect(request.files.find((file) => file.path === "figures/logo.bin")).toMatchObject({
+    expect(request.files.find((file) => file.path === "figures/logo.png")).toMatchObject({
       kind: "binary",
       encoding: "base64",
       content: "AAEC/w=="
