@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PreviewZoomState } from "./PreviewPane";
 import type { TexpressoLivePage, TexpressoLiveSnapshot } from "./texpressoClient";
+import { useTheme } from "../theme/ThemeProvider";
+import { rethemePreviewRasterCanvas } from "./previewRasterTheme";
 
 const CSS_DPI = 96;
 const VIEWPORT_PADDING = 28;
@@ -22,6 +24,7 @@ export function TexpressoPreview({
   paperView?: boolean;
   onRevisionCommitted: (sessionGeneration: number, revision: number) => void;
 }) {
+  const { theme } = useTheme();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const anchorRef = useRef({ page: 0, ratio: 0 });
   const previousRevisionRef = useRef<string | null>(null);
@@ -154,12 +157,11 @@ export function TexpressoPreview({
                     height: `${(dimensions?.height ?? page.height) * scale}px`
                   }}
                 >
-                  <img
-                    alt={`Live preview page ${page.page + 1}`}
-                    draggable={false}
-                    height={page.height}
-                    src={page.blobUrl}
-                    width={page.width}
+                  <TexpressoPageRaster
+                    background={theme.palette.editorBackground}
+                    foreground={theme.palette.editorForeground}
+                    page={page}
+                    paperView={paperView}
                   />
                 </figure>
               );
@@ -169,6 +171,104 @@ export function TexpressoPreview({
         <TexpressoPreviewStatus snapshot={snapshot} />
       </div>
     </div>
+  );
+}
+
+function TexpressoPageRaster({
+  background,
+  foreground,
+  page,
+  paperView
+}: {
+  background: string;
+  foreground: string;
+  page: TexpressoLivePage;
+  paperView: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [renderedKey, setRenderedKey] = useState<string | null>(null);
+  const renderKey = `${page.blobUrl}:${paperView ? "paper" : `${background}:${foreground}`}`;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const image = new Image();
+    const releaseImage = () => {
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute("src");
+    };
+
+    image.onload = () => {
+      if (controller.signal.aborted) {
+        return;
+      }
+      const context = canvas.getContext("2d", {
+        alpha: false,
+        willReadFrequently: !paperView
+      });
+      if (!context) {
+        releaseImage();
+        return;
+      }
+      context.drawImage(image, 0, 0, page.width, page.height);
+
+      const themed = paperView
+        ? Promise.resolve()
+        : rethemePreviewRasterCanvas(canvas, context, { background, foreground }, controller.signal);
+      void themed.then(() => {
+        if (!controller.signal.aborted) {
+          setRenderedKey(renderKey);
+        }
+        releaseImage();
+      }).catch((error) => {
+        if (!controller.signal.aborted) {
+          console.warn("[typr] TeXpresso page theming failed.", error);
+        }
+        releaseImage();
+      });
+    };
+    image.onerror = () => {
+      if (!controller.signal.aborted) {
+        console.warn(`[typr] Could not decode TeXpresso page ${page.page + 1}.`);
+      }
+      releaseImage();
+    };
+    image.src = page.blobUrl;
+
+    return () => {
+      controller.abort();
+      releaseImage();
+    };
+  }, [background, foreground, page.blobUrl, page.height, page.page, page.width, paperView, renderKey]);
+
+  return (
+    <>
+      {renderedKey !== renderKey ? (
+        <img
+          alt={`Live preview page ${page.page + 1}`}
+          className="texpresso-page__source"
+          draggable={false}
+          height={page.height}
+          src={page.blobUrl}
+          width={page.width}
+        />
+      ) : null}
+      <canvas
+        aria-label={`Live preview page ${page.page + 1}`}
+        aria-hidden={renderedKey !== renderKey}
+        className={renderedKey === renderKey ? "texpresso-page__canvas texpresso-page__canvas--ready" : "texpresso-page__canvas"}
+        data-source-url={page.blobUrl}
+        height={page.height}
+        ref={canvasRef}
+        role="img"
+        width={page.width}
+      />
+    </>
   );
 }
 

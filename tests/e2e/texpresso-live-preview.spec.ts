@@ -30,16 +30,36 @@ async function replaceEditor(page: Page, source: string) {
 }
 
 async function imageSources(page: Page) {
-  return page.locator(".texpresso-page img").evaluateAll((images) =>
-    images.map((image) => (image as HTMLImageElement).src)
+  return page.locator(".texpresso-page canvas").evaluateAll((canvases) =>
+    canvases.map((canvas) => (canvas as HTMLCanvasElement).dataset.sourceUrl ?? "")
   );
 }
 
 async function waitForChangedPages(page: Page, previous: string[]) {
   await page.waitForFunction((sources) => {
-    const images = [...document.querySelectorAll<HTMLImageElement>(".texpresso-page img")];
-    return images.length > 0 && images.some((image, index) => image.src !== sources[index]);
+    const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".texpresso-page canvas")];
+    return canvases.length > 0 && canvases.some((canvas, index) => canvas.dataset.sourceUrl !== sources[index]);
   }, previous, { timeout: 45_000 });
+}
+
+async function pageCornerColor(page: Page) {
+  return page.locator(".texpresso-page canvas").first().evaluate((canvas) => {
+    const context = (canvas as HTMLCanvasElement).getContext("2d")!;
+    return [...context.getImageData(4, 4, 1, 1).data.slice(0, 3)];
+  });
+}
+
+async function activeThemeBackground(page: Page) {
+  return page.evaluate(() => {
+    const value = getComputedStyle(document.documentElement).getPropertyValue("--editor-background").trim();
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = value;
+    const normalized = context.fillStyle.match(/^#([0-9a-f]{6})$/i)?.[1];
+    if (!normalized) throw new Error(`Expected a six-digit theme color, received ${context.fillStyle}.`);
+    const numeric = Number.parseInt(normalized, 16);
+    return [(numeric >> 16) & 255, (numeric >> 8) & 255, numeric & 255];
+  });
 }
 
 test.beforeAll(() => {
@@ -59,6 +79,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
     if (!error.message.includes("WebAssembly.instantiate()")) pageErrors.push(error.message);
   });
 
+  await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   console.log("live-e2e: app loaded");
   await page.getByRole("treeitem", { name: /markdown\.md/ }).waitFor();
@@ -93,6 +114,15 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await expect(mode).toHaveAttribute("aria-pressed", "true");
   console.log("live-e2e: live mode selected");
   await expect(page.locator(".texpresso-page")).toHaveCount(3);
+  const firstCanvas = page.locator(".texpresso-page__canvas").first();
+  await expect(firstCanvas).toHaveClass(/texpresso-page__canvas--ready/);
+  expect(await pageCornerColor(page)).toEqual(await activeThemeBackground(page));
+
+  const contrast = page.getByRole("button", { name: "Paper contrast" });
+  await contrast.click();
+  await expect.poll(() => pageCornerColor(page)).toEqual([255, 255, 255]);
+  await page.getByRole("button", { name: "Theme contrast" }).click();
+  await expect.poll(() => pageCornerColor(page)).toEqual(await activeThemeBackground(page));
   console.log("live-e2e: initial pages ready");
   await expect(page.locator(".texpresso-status--ready")).toBeVisible();
   const startupMs = performance.now() - startupStartedAt;
@@ -172,7 +202,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await expect(page.locator(".texpresso-preview")).toHaveCount(0);
   await mode.click();
   await expect(mode).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".texpresso-page img").first()).toBeVisible();
+  await expect(page.locator(".texpresso-page canvas").first()).toBeVisible();
 
   await mode.click();
   await expect(mode).toHaveAttribute("aria-pressed", "false");
