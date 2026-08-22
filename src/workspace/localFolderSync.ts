@@ -28,6 +28,14 @@ export interface LocalFolderSyncEntry {
 
 export type LocalFolderSyncTree = Map<string, LocalFolderSyncEntry>;
 
+export const LOCAL_FOLDER_GIT_FILE_BYTE_LIMIT = 32 * 1024 * 1024;
+
+const syncByteSignatureCache = new WeakMap<Uint8Array, string>();
+
+export function shouldSyncLocalFolderGitFile(byteLength: number): boolean {
+  return byteLength <= LOCAL_FOLDER_GIT_FILE_BYTE_LIMIT;
+}
+
 export interface ResolvedSyncTrees {
   desired: LocalFolderSyncTree;
   signatures: Record<string, string>;
@@ -170,7 +178,7 @@ export function createProjectSyncTree(
         entry.kind === "file"
           ? typeof entry.content === "string"
             ? new TextEncoder().encode(entry.content)
-            : new Uint8Array(entry.content)
+            : entry.content
           : undefined,
       modifiedAt: Date.parse(entry.updatedAt) || Date.parse(project.updatedAt) || 0
     });
@@ -323,7 +331,9 @@ export async function readLocalFolderDirectory(
   for await (const [name, handle] of iterateDirectoryEntries(root)) {
     if (name === ".git") {
       if (handle.kind === "directory") {
-        await collectDirectoryTree(handle as FileSystemDirectoryHandle, git);
+        await collectDirectoryTree(handle as FileSystemDirectoryHandle, git, "", {
+          maxFileBytes: LOCAL_FOLDER_GIT_FILE_BYTE_LIMIT
+        });
       }
       continue;
     }
@@ -407,7 +417,7 @@ export async function createBrowserGitSyncTree(
     tree.set(path, {
       kind: "file",
       path,
-      bytes: new Uint8Array(bytes),
+      bytes,
       modifiedAt: 0
     });
   }
@@ -525,15 +535,27 @@ export function updateProjectGitMetadataFromTree(
 }
 
 function getSyncEntrySignature(entry: LocalFolderSyncEntry): string {
-  return entry.kind === "folder"
-    ? "folder"
-    : createFullContentSignature(entry.bytes ?? new Uint8Array());
+  if (entry.kind === "folder") {
+    return "folder";
+  }
+
+  const bytes = entry.bytes ?? new Uint8Array();
+  const cached = syncByteSignatureCache.get(bytes);
+  if (cached) {
+    return cached;
+  }
+
+  const signature = createFullContentSignature(bytes);
+  syncByteSignatureCache.set(bytes, signature);
+  return signature;
 }
 
 function cloneSyncEntry(entry: LocalFolderSyncEntry): LocalFolderSyncEntry {
   return {
     ...entry,
-    bytes: entry.bytes ? new Uint8Array(entry.bytes) : undefined
+    // Sync entries are treated as immutable. Sharing their byte view avoids
+    // multiplying large folder assets (and .git packs) during reconciliation.
+    bytes: entry.bytes
   };
 }
 
@@ -600,18 +622,20 @@ function hasConcurrentDescendant(
 async function collectDirectoryTree(
   directory: FileSystemDirectoryHandle,
   tree: LocalFolderSyncTree,
-  pathPrefix = ""
+  pathPrefix = "",
+  options: { maxFileBytes?: number } = {}
 ): Promise<void> {
   for await (const [name, handle] of iterateDirectoryEntries(directory)) {
     const path = pathPrefix ? `${pathPrefix}/${name}` : name;
-    await collectHandle(handle, path, tree);
+    await collectHandle(handle, path, tree, options);
   }
 }
 
 async function collectHandle(
   handle: FileSystemHandle,
   rawPath: string,
-  tree: LocalFolderSyncTree
+  tree: LocalFolderSyncTree,
+  options: { maxFileBytes?: number } = {}
 ): Promise<void> {
   const path = normalizeExternalPath(rawPath);
   if (!path) {
@@ -624,11 +648,14 @@ async function collectHandle(
       path,
       modifiedAt: 0
     });
-    await collectDirectoryTree(handle as FileSystemDirectoryHandle, tree, path);
+    await collectDirectoryTree(handle as FileSystemDirectoryHandle, tree, path, options);
     return;
   }
 
   const file = await (handle as FileSystemFileHandle).getFile();
+  if (options.maxFileBytes !== undefined && file.size > options.maxFileBytes) {
+    return;
+  }
   tree.set(path, {
     kind: "file",
     path,
@@ -671,6 +698,9 @@ async function collectHandleFingerprint(
   }
 
   const file = await (handle as FileSystemFileHandle).getFile();
+  if (namespace === "git" && !shouldSyncLocalFolderGitFile(file.size)) {
+    return;
+  }
   parts.push(
     `${namespace}:file:${path}:${file.size}:${file.lastModified}`
   );
