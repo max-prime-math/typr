@@ -64,6 +64,7 @@ export interface TexpressoLiveSnapshot {
   pages: readonly TexpressoLivePage[];
   diagnostics: readonly TexpressoDiagnostic[];
   nativeThemeRendered: boolean;
+  nativeTheme?: NativePreviewRasterThemeColors;
   initialCompileMs?: number;
   lastTimings?: { updateMs: number; renderMs: number; serverMs: number };
 }
@@ -254,6 +255,7 @@ export class TexpressoClient {
   private retiredUrls = new Set<string>();
   private sessionReady = false;
   private sessionNativeThemeRendered = false;
+  private sessionNativeTheme: NativePreviewRasterThemeColors | undefined;
   private intentionalClose = false;
   private visibleSessionGeneration = 0;
   private state: TexpressoLiveSnapshot = {
@@ -288,6 +290,7 @@ export class TexpressoClient {
     this.sourceFiles = getTextFileMap(project.files);
     this.sessionReady = false;
     this.sessionNativeThemeRendered = false;
+    this.sessionNativeTheme = undefined;
     this.pendingPageFrame = null;
     this.intentionalClose = false;
     const generation = this.state.sessionGeneration + 1;
@@ -462,6 +465,8 @@ export class TexpressoClient {
     }
     this.closeSocket(true);
     this.sessionReady = false;
+    this.sessionNativeThemeRendered = false;
+    this.sessionNativeTheme = undefined;
     this.clearStaged();
     this.project = null;
     this.sourceFiles.clear();
@@ -476,7 +481,9 @@ export class TexpressoClient {
         latestCompletedRevision: null,
         lastGoodRevision: null,
         visibleRevision: null,
-        diagnostics: []
+        diagnostics: [],
+        nativeThemeRendered: false,
+        nativeTheme: undefined
       });
     }
   }
@@ -535,6 +542,9 @@ export class TexpressoClient {
         this.sessionNativeThemeRendered = Boolean(
           this.project?.nativeTheme && sameNativeTheme(acknowledgedTheme, this.project.nativeTheme)
         );
+        this.sessionNativeTheme = this.sessionNativeThemeRendered && acknowledgedTheme
+          ? { ...acknowledgedTheme }
+          : undefined;
         this.patchState({
           status: "updating",
           statusDetail: "Rendering initial live preview",
@@ -699,6 +709,7 @@ export class TexpressoClient {
       pages,
       diagnostics: [],
       nativeThemeRendered: this.sessionNativeThemeRendered,
+      nativeTheme: this.sessionNativeTheme,
       lastTimings: message.timings
     });
     markDevelopmentTiming(`complete-${this.state.sessionGeneration}-${message.revision}`);

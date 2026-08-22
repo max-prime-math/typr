@@ -2,16 +2,21 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { PreviewZoomState } from "./PreviewPane";
 import type { TexpressoLivePage, TexpressoLiveSnapshot } from "./texpressoClient";
 import { useTheme } from "../theme/ThemeProvider";
-import { rethemePreviewRasterCanvas } from "./previewRasterTheme";
+import {
+  resolveNativePreviewRasterThemeColors,
+  rethemeNativePreviewRasterCanvas,
+  rethemePreviewRasterCanvas,
+  type NativePreviewRasterThemeColors
+} from "./previewRasterTheme";
 
 const CSS_DPI = 96;
-const VIEWPORT_PADDING = 28;
 
 interface DisplayedRevision {
   sessionGeneration: number;
   revision: number | null;
   pages: readonly TexpressoLivePage[];
   nativeThemeRendered: boolean;
+  nativeTheme?: NativePreviewRasterThemeColors;
 }
 
 export function TexpressoPreview({
@@ -34,7 +39,8 @@ export function TexpressoPreview({
     sessionGeneration: snapshot.sessionGeneration,
     revision: snapshot.visibleRevision,
     pages: snapshot.pages,
-    nativeThemeRendered: snapshot.nativeThemeRendered
+    nativeThemeRendered: snapshot.nativeThemeRendered,
+    nativeTheme: snapshot.nativeTheme
   }));
   const pageDimensions = useMemo(
     () => displayed.pages.map((page) => ({
@@ -44,7 +50,17 @@ export function TexpressoPreview({
     })),
     [displayed.pages]
   );
-  const scale = resolveRasterScale(zoom, viewport, pageDimensions);
+  const pageScales = pageDimensions.map((dimensions) =>
+    resolveTexpressoPageScale(zoom, viewport, dimensions)
+  );
+  const desiredNativeTheme = !paperView && theme.mode === "dark"
+    ? resolveNativePreviewRasterThemeColors({
+        background: theme.palette.editorBackground,
+        foreground: theme.palette.editorForeground
+      })
+    : undefined;
+  const displayNativeRaster = displayed.nativeThemeRendered &&
+    sameNativeTheme(displayed.nativeTheme, desiredNativeTheme);
   const revisionKey = `${displayed.sessionGeneration}:${displayed.revision ?? 0}`;
   const incomingRevisionKey = `${snapshot.sessionGeneration}:${snapshot.visibleRevision ?? 0}`;
 
@@ -105,7 +121,8 @@ export function TexpressoPreview({
           sessionGeneration: snapshot.sessionGeneration,
           revision: snapshot.visibleRevision,
           pages: snapshot.pages,
-          nativeThemeRendered: snapshot.nativeThemeRendered
+          nativeThemeRendered: snapshot.nativeThemeRendered,
+          nativeTheme: snapshot.nativeTheme
         });
       }
     }).catch(() => {
@@ -115,7 +132,7 @@ export function TexpressoPreview({
     return () => {
       cancelled = true;
     };
-  }, [incomingRevisionKey, revisionKey, snapshot.nativeThemeRendered, snapshot.pages, snapshot.sessionGeneration, snapshot.status, snapshot.visibleRevision]);
+  }, [incomingRevisionKey, revisionKey, snapshot.nativeTheme, snapshot.nativeThemeRendered, snapshot.pages, snapshot.sessionGeneration, snapshot.status, snapshot.visibleRevision]);
 
   useLayoutEffect(() => {
     const viewportElement = viewportRef.current;
@@ -150,6 +167,7 @@ export function TexpressoPreview({
           <div className="texpresso-preview__pages">
             {displayed.pages.map((page, index) => {
               const dimensions = pageDimensions[index];
+              const scale = pageScales[index] ?? 1;
               return (
                 <figure
                   className="texpresso-page canvas"
@@ -160,7 +178,7 @@ export function TexpressoPreview({
                     height: `${(dimensions?.height ?? page.height) * scale}px`
                   }}
                 >
-                  {displayed.nativeThemeRendered ? (
+                  {displayNativeRaster ? (
                     <img
                       alt={`Live preview page ${page.page + 1}`}
                       className="texpresso-page__native"
@@ -176,6 +194,7 @@ export function TexpressoPreview({
                       foreground={theme.palette.editorForeground}
                       page={page}
                       paperView={paperView}
+                      sourceTheme={displayed.nativeThemeRendered ? displayed.nativeTheme : undefined}
                     />
                   )}
                 </figure>
@@ -193,16 +212,19 @@ function TexpressoPageRaster({
   background,
   foreground,
   page,
-  paperView
+  paperView,
+  sourceTheme
 }: {
   background: string;
   foreground: string;
   page: TexpressoLivePage;
   paperView: boolean;
+  sourceTheme?: NativePreviewRasterThemeColors;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [rendered, setRendered] = useState<{ styleKey: string; sourceUrl: string } | null>(null);
-  const styleKey = paperView ? "paper" : `${background}:${foreground}`;
+  const sourceThemeKey = sourceTheme ? `${sourceTheme.background}:${sourceTheme.foreground}` : "paper";
+  const styleKey = `${sourceThemeKey}->${paperView ? "paper" : `${background}:${foreground}`}`;
   const showRenderedCanvas = rendered?.styleKey === styleKey;
 
   useEffect(() => {
@@ -241,9 +263,14 @@ function TexpressoPageRaster({
       }
       context.drawImage(image, 0, 0, page.width, page.height);
 
-      const themed = paperView
-        ? Promise.resolve()
-        : rethemePreviewRasterCanvas(scratch, context, { background, foreground }, controller.signal);
+      const targetTheme = paperView
+        ? { background: "#ffffff", foreground: "#000000" }
+        : { background, foreground };
+      const themed = sourceTheme
+        ? rethemeNativePreviewRasterCanvas(scratch, context, sourceTheme, targetTheme, controller.signal)
+        : paperView
+          ? Promise.resolve()
+          : rethemePreviewRasterCanvas(scratch, context, targetTheme, controller.signal);
       void themed.then(() => {
         if (!controller.signal.aborted) {
           const visibleContext = canvas.getContext("2d", { alpha: false });
@@ -276,11 +303,11 @@ function TexpressoPageRaster({
       releaseImage();
       releaseScratch();
     };
-  }, [background, foreground, page.blobUrl, page.height, page.page, page.width, paperView, styleKey]);
+  }, [background, foreground, page.blobUrl, page.height, page.page, page.width, paperView, sourceTheme, styleKey]);
 
   return (
     <>
-      {!showRenderedCanvas ? (
+      {!showRenderedCanvas && !sourceTheme ? (
         <img
           alt={`Live preview page ${page.page + 1}`}
           className="texpresso-page__source"
@@ -333,27 +360,31 @@ export function TexpressoPreviewStatus({ snapshot }: { snapshot: TexpressoLiveSn
   );
 }
 
-function resolveRasterScale(
+export function resolveTexpressoPageScale(
   zoom: PreviewZoomState,
   viewport: { width: number; height: number },
-  pages: readonly { width: number; height: number; nativeScale: number }[]
+  page: { width: number; height: number; nativeScale: number }
 ): number {
-  if (pages.length === 0) {
+  if (page.width <= 0 || page.height <= 0) {
     return 1;
   }
-  const maxWidth = Math.max(...pages.map((page) => page.width));
-  const maxHeight = Math.max(...pages.map((page) => page.height));
-  const fitWidth = viewport.width > 0 ? Math.max(0.1, (viewport.width - VIEWPORT_PADDING * 2) / maxWidth) : 1;
-  const fitHeight = viewport.height > 0 ? Math.max(0.1, (viewport.height - VIEWPORT_PADDING * 2) / maxHeight) : 1;
+  const fitWidth = viewport.width > 0 ? viewport.width / page.width : 1;
+  const fitHeight = viewport.height > 0 ? viewport.height / page.height : 1;
   const requested = zoom.mode === "fit-width"
     ? fitWidth
     : zoom.mode === "fit-height"
       ? fitHeight
       : zoom.mode === "fit-page"
         ? Math.min(fitWidth, fitHeight)
-        : zoom.percent / 100;
-  const nativeScale = Math.min(...pages.map((page) => page.nativeScale));
-  return Math.max(0.1, Math.min(requested, nativeScale));
+        : fitWidth * (zoom.percent / 100);
+  return Math.max(0.1, Math.min(requested, page.nativeScale));
+}
+
+function sameNativeTheme(
+  left: NativePreviewRasterThemeColors | undefined,
+  right: NativePreviewRasterThemeColors | undefined
+): boolean {
+  return left?.background === right?.background && left?.foreground === right?.foreground;
 }
 
 function getStatusLabel(status: TexpressoLiveSnapshot["status"]): string {
