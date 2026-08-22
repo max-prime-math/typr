@@ -771,12 +771,14 @@ export function useGoogleDriveSync(options: {
           projectId
         );
         dispatchState(projectId, { type: "unlinked", configured });
-        showNotice(
-          projectId,
-          "info",
-          "Google Drive unlinked",
-          "The Drive folder and all of its contents were left unchanged."
-        );
+        if (binding) {
+          showNotice(
+            projectId,
+            "info",
+            "Google Drive unlinked",
+            "The Drive folder and all of its contents were left unchanged."
+          );
+        }
       } catch (error) {
         if (binding) {
           bindingsRef.current.set(projectId, binding);
