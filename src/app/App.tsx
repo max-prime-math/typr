@@ -627,6 +627,18 @@ function rememberWorkspacePreviewFile(
   }
 }
 
+function toWorkspacePreviewContent(content: Uint8Array): ArrayBuffer {
+  if (
+    content.buffer instanceof ArrayBuffer &&
+    content.byteOffset === 0 &&
+    content.byteLength === content.buffer.byteLength
+  ) {
+    return content.buffer;
+  }
+
+  return content.slice().buffer as ArrayBuffer;
+}
+
 function getProjectLastEditedAt(project: TyprProjectRepository): string {
   const candidates = [
     project.updatedAt,
@@ -4799,7 +4811,7 @@ ${nextLine}` : nextLine;
         const previewFile = {
           name: activePreviewWorkspaceNode.name,
           path: activePreviewWorkspaceNode.path,
-          content: activePreviewWorkspaceNode.content,
+          content: toWorkspacePreviewContent(activePreviewWorkspaceNode.content),
           mimeType
         };
 
@@ -4833,7 +4845,7 @@ ${nextLine}` : nextLine;
         const previewFile = {
           name: activePreviewWorkspaceNode.name,
           path: activePreviewWorkspaceNode.path,
-          content: bytes,
+          content: toWorkspacePreviewContent(bytes),
           mimeType
         };
 
@@ -10966,7 +10978,11 @@ ${nextLine}` : nextLine;
     }, 0);
   };
 
-  const downloadFile = (name: string, content: string | Uint8Array, type = "text/plain") => {
+  const downloadFile = (
+    name: string,
+    content: string | Uint8Array | ArrayBuffer,
+    type = "text/plain"
+  ) => {
     downloadBlob(name, new Blob([content as BlobPart], { type }));
   };
 

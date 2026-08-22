@@ -5,6 +5,7 @@ import {
   type PDFDocumentProxy
 } from "pdfjs-dist";
 import pdfWorkerUrl from "./pdfWorker.ts?worker&url";
+import { shouldVirtualizePdfDocument } from "./pdfVirtualization";
 import {
   resolvePdfCanvasResolution,
   shouldUpgradePdfCanvasResolution,
@@ -24,6 +25,9 @@ const PDF_CANVAS_RENDER_CACHE_LIMIT = 6;
 const PDF_PREWARM_DISPLAY_SCALE = 2;
 const PDF_PREWARM_MAX_PIXELS = 9_000_000;
 const PDF_RASTER_ZOOM: PdfCanvasZoomState = { mode: "fit-width", percent: 100 };
+const VIRTUALIZED_PDF_RENDER_LIMIT = 8;
+
+const virtualizedPdfSessions = new WeakMap<HTMLElement, () => void>();
 
 export interface PdfCanvasRenderOptions {
   cacheKey?: string;
@@ -52,11 +56,13 @@ export async function renderPdfArtifactToCanvas(
   options: PdfCanvasRenderOptions = {}
 ): Promise<void> {
   assertNotAborted(options.signal);
+  disposeVirtualizedPdfSession(container);
   rememberVisiblePdfCanvasScroll(container);
   const scrollAnchor = capturePdfScrollAnchor(container);
   const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
   const useDarkRetheme = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
-  const renderCacheKey = createPdfCanvasRenderCacheKey(options, themeColors);
+  const virtualizeBySize = shouldVirtualizePdfDocument(artifactContent.byteLength, 0);
+  const renderCacheKey = virtualizeBySize ? null : createPdfCanvasRenderCacheKey(options, themeColors);
 
   container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
   container.style.setProperty("--pdf-page-foreground", themeColors?.foregroundCss ?? "#000000");
@@ -72,7 +78,23 @@ export async function renderPdfArtifactToCanvas(
   });
   const pdfDocument = await loadingTask.promise;
 
+  if (virtualizeBySize || shouldVirtualizePdfDocument(artifactContent.byteLength, pdfDocument.numPages)) {
+    try {
+      await renderVirtualizedPdfDocument(container, pdfDocument, loadingTask, {
+        ...options,
+        themeColors,
+        useDarkRetheme
+      });
+      return;
+    } catch (error) {
+      await destroyPdfDocument(pdfDocument);
+      await destroyPdfLoadingTask(loadingTask);
+      throw error;
+    }
+  }
+
   try {
+    delete container.dataset.pdfVirtualized;
     assertNotAborted(options.signal);
     const startPageNumber = restoredEntry ? restoredEntry.pages.length + 1 : 1;
 
@@ -122,6 +144,156 @@ export async function renderPdfArtifactToCanvas(
     await destroyPdfDocument(pdfDocument);
     await destroyPdfLoadingTask(loadingTask);
   }
+}
+
+async function renderVirtualizedPdfDocument(
+  container: HTMLElement,
+  pdfDocument: PDFDocumentProxy,
+  loadingTask: ReturnType<typeof getDocument>,
+  options: Omit<PdfCanvasRenderOptions, "themeColors"> & {
+    themeColors: ResolvedPreviewRasterThemeColors | null;
+    useDarkRetheme: boolean;
+  }
+): Promise<void> {
+  assertNotAborted(options.signal);
+  delete container.dataset.pdfCanvasRenderCacheKey;
+  container.dataset.pdfVirtualized = "true";
+
+  const firstPage = await pdfDocument.getPage(1);
+  const firstViewport = firstPage.getViewport({ scale: 1 });
+  const placeholderGeometry = getPdfPageGeometry(
+    container,
+    firstViewport.width,
+    firstViewport.height,
+    options.zoom
+  );
+  firstPage.cleanup();
+
+  const pages = Array.from({ length: pdfDocument.numPages }, (_, index) => {
+    const pageElement = document.createElement("div");
+    pageElement.className = "pdf-page canvas";
+    pageElement.dataset.pdfNaturalWidth = String(firstViewport.width);
+    pageElement.dataset.pdfNaturalHeight = String(firstViewport.height);
+    pageElement.dataset.pdfPageNumber = String(index + 1);
+    pageElement.setAttribute("aria-label", `PDF page ${index + 1}`);
+    pageElement.style.position = "relative";
+    pageElement.style.width = `${placeholderGeometry.displayWidth}px`;
+    pageElement.style.height = `${placeholderGeometry.displayHeight}px`;
+    pageElement.style.margin = "0 auto";
+    pageElement.style.overflow = "hidden";
+    return pageElement;
+  });
+  container.replaceChildren(...pages);
+
+  let disposed = false;
+  let observer: IntersectionObserver | null = null;
+  let renderQueue = Promise.resolve();
+  const renderedPages = new Set<number>();
+  const queuedPages = new Set<number>();
+  const activePages = new Set<number>();
+
+  const evictDistantPages = (focusPage: number) => {
+    if (renderedPages.size <= VIRTUALIZED_PDF_RENDER_LIMIT) return;
+    const candidates = [...renderedPages]
+      .filter((pageNumber) => !activePages.has(pageNumber))
+      .sort((left, right) => Math.abs(right - focusPage) - Math.abs(left - focusPage));
+    for (const pageNumber of candidates) {
+      if (renderedPages.size <= VIRTUALIZED_PDF_RENDER_LIMIT) break;
+      const pageElement = pages[pageNumber - 1];
+      const canvas = pageElement?.querySelector<HTMLCanvasElement>("canvas");
+      if (canvas) {
+        canvas.width = 1;
+        canvas.height = 1;
+      }
+      pageElement?.replaceChildren();
+      pageElement?.classList.remove("pdf-page--rendering");
+      renderedPages.delete(pageNumber);
+    }
+  };
+
+  const renderPage = async (pageNumber: number) => {
+    if (disposed || renderedPages.has(pageNumber)) return;
+    assertNotAborted(options.signal);
+    const pageElement = pages[pageNumber - 1];
+    if (!pageElement) return;
+    const target = await createPdfPageRenderTarget(
+      pdfDocument,
+      pageNumber,
+      container,
+      PDF_RASTER_ZOOM,
+      Boolean(options.themeColors),
+      pageElement
+    );
+    try {
+      await renderPdfPageTarget(target, {
+        signal: options.signal,
+        themeColors: options.themeColors,
+        useDarkRetheme: options.useDarkRetheme
+      });
+      if (disposed) return;
+      target.canvas.dataset.pdfRasterScale = String(
+        target.canvas.width / Math.max(1, target.pageElement.getBoundingClientRect().width)
+      );
+      renderedPages.add(pageNumber);
+      applyPdfCanvasZoom(container, options.zoom);
+      evictDistantPages(pageNumber);
+    } finally {
+      target.page.cleanup();
+    }
+  };
+
+  const enqueuePage = (pageNumber: number) => {
+    if (disposed || renderedPages.has(pageNumber) || queuedPages.has(pageNumber)) return;
+    queuedPages.add(pageNumber);
+    renderQueue = renderQueue
+      .catch(() => undefined)
+      .then(() => renderPage(pageNumber))
+      .catch((error) => {
+        if (!options.signal?.aborted) {
+          console.warn(`[typr] PDF page ${pageNumber} failed to render.`, error);
+        }
+      })
+      .finally(() => queuedPages.delete(pageNumber));
+  };
+
+  for (let pageNumber = 1; pageNumber <= Math.min(INITIAL_PDF_RENDER_BATCH_SIZE, pages.length); pageNumber += 1) {
+    await renderPage(pageNumber);
+  }
+  applyPdfCanvasZoom(container, options.zoom);
+
+  if (typeof IntersectionObserver !== "undefined") {
+    observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const pageNumber = Number.parseInt((entry.target as HTMLElement).dataset.pdfPageNumber ?? "", 10);
+        if (!Number.isFinite(pageNumber)) continue;
+        if (entry.isIntersecting) {
+          activePages.add(pageNumber);
+          enqueuePage(pageNumber);
+        } else {
+          activePages.delete(pageNumber);
+        }
+      }
+    }, {
+      root: container,
+      rootMargin: "150% 0px"
+    });
+    for (const page of pages) observer.observe(page);
+  }
+
+  const cleanup = () => {
+    if (disposed) return;
+    disposed = true;
+    observer?.disconnect();
+    options.signal?.removeEventListener("abort", cleanup);
+    virtualizedPdfSessions.delete(container);
+    void destroyPdfDocument(pdfDocument).then(() => destroyPdfLoadingTask(loadingTask));
+  };
+  virtualizedPdfSessions.set(container, cleanup);
+  options.signal?.addEventListener("abort", cleanup, { once: true });
+}
+
+function disposeVirtualizedPdfSession(container: HTMLElement): void {
+  virtualizedPdfSessions.get(container)?.();
 }
 
 interface PdfResolutionUpgradeTarget {
@@ -449,7 +621,8 @@ async function createPdfPageRenderTarget(
   pageNumber: number,
   container: HTMLElement,
   zoom: PdfCanvasZoomState = { mode: "fit-width", percent: 100 },
-  needsReadback = false
+  needsReadback = false,
+  existingPageElement?: HTMLElement
 ): Promise<PdfPageRenderTarget> {
   const page = await pdfDocument.getPage(pageNumber);
   const cssViewport = page.getViewport({ scale: 1 });
@@ -461,7 +634,7 @@ async function createPdfPageRenderTarget(
   );
   const viewport = page.getViewport({ scale: geometry.displayScale });
   const outputScale = getPdfOutputScale();
-  const pageElement = document.createElement("div");
+  const pageElement = existingPageElement ?? document.createElement("div");
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d", {
     alpha: false,
@@ -494,7 +667,7 @@ async function createPdfPageRenderTarget(
   pageElement.style.height = `${geometry.displayHeight}px`;
   pageElement.style.margin = "0 auto";
   pageElement.style.overflow = "hidden";
-  pageElement.appendChild(canvas);
+  pageElement.replaceChildren(canvas);
 
   return {
     canvas,
