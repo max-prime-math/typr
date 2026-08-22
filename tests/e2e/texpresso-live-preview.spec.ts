@@ -62,6 +62,15 @@ async function activeThemeBackground(page: Page) {
   });
 }
 
+async function hasVisibleSourceRaster(page: Page) {
+  return page.locator(".texpresso-page__source").evaluateAll((images) =>
+    images.some((image) => {
+      const style = getComputedStyle(image);
+      return style.visibility !== "hidden" && style.opacity !== "0";
+    })
+  );
+}
+
 test.beforeAll(() => {
   stopCompanion();
   startCompanion();
@@ -114,6 +123,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await expect(mode).toHaveAttribute("aria-pressed", "true");
   console.log("live-e2e: live mode selected");
   await expect(page.locator(".texpresso-page")).toHaveCount(3);
+  expect(await hasVisibleSourceRaster(page)).toBe(false);
   const firstCanvas = page.locator(".texpresso-page__canvas").first();
   await expect(firstCanvas).toHaveClass(/texpresso-page__canvas--ready/);
   expect(await pageCornerColor(page)).toEqual(await activeThemeBackground(page));
@@ -122,6 +132,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await contrast.click();
   await expect.poll(() => pageCornerColor(page)).toEqual([255, 255, 255]);
   await page.getByRole("button", { name: "Theme contrast" }).click();
+  expect(await hasVisibleSourceRaster(page)).toBe(false);
   await expect.poll(() => pageCornerColor(page)).toEqual(await activeThemeBackground(page));
   console.log("live-e2e: initial pages ready");
   await expect(page.locator(".texpresso-status--ready")).toBeVisible();
