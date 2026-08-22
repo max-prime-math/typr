@@ -16,7 +16,8 @@ const INITIAL_STATE: TexpressoLiveSnapshot = {
   lastGoodRevision: null,
   visibleRevision: null,
   pages: [],
-  diagnostics: []
+  diagnostics: [],
+  nativeThemeRendered: false
 };
 
 export function useTexpressoLivePreview({
