@@ -11,6 +11,7 @@ interface DisplayedRevision {
   sessionGeneration: number;
   revision: number | null;
   pages: readonly TexpressoLivePage[];
+  nativeThemeRendered: boolean;
 }
 
 export function TexpressoPreview({
@@ -32,7 +33,8 @@ export function TexpressoPreview({
   const [displayed, setDisplayed] = useState<DisplayedRevision>(() => ({
     sessionGeneration: snapshot.sessionGeneration,
     revision: snapshot.visibleRevision,
-    pages: snapshot.pages
+    pages: snapshot.pages,
+    nativeThemeRendered: snapshot.nativeThemeRendered
   }));
   const pageDimensions = useMemo(
     () => displayed.pages.map((page) => ({
@@ -102,7 +104,8 @@ export function TexpressoPreview({
         setDisplayed({
           sessionGeneration: snapshot.sessionGeneration,
           revision: snapshot.visibleRevision,
-          pages: snapshot.pages
+          pages: snapshot.pages,
+          nativeThemeRendered: snapshot.nativeThemeRendered
         });
       }
     }).catch(() => {
@@ -112,7 +115,7 @@ export function TexpressoPreview({
     return () => {
       cancelled = true;
     };
-  }, [incomingRevisionKey, revisionKey, snapshot.pages, snapshot.sessionGeneration, snapshot.status, snapshot.visibleRevision]);
+  }, [incomingRevisionKey, revisionKey, snapshot.nativeThemeRendered, snapshot.pages, snapshot.sessionGeneration, snapshot.status, snapshot.visibleRevision]);
 
   useLayoutEffect(() => {
     const viewportElement = viewportRef.current;
@@ -157,12 +160,24 @@ export function TexpressoPreview({
                     height: `${(dimensions?.height ?? page.height) * scale}px`
                   }}
                 >
-                  <TexpressoPageRaster
-                    background={theme.palette.editorBackground}
-                    foreground={theme.palette.editorForeground}
-                    page={page}
-                    paperView={paperView}
-                  />
+                  {displayed.nativeThemeRendered ? (
+                    <img
+                      alt={`Live preview page ${page.page + 1}`}
+                      className="texpresso-page__native"
+                      data-source-url={page.blobUrl}
+                      draggable={false}
+                      height={page.height}
+                      src={page.blobUrl}
+                      width={page.width}
+                    />
+                  ) : (
+                    <TexpressoPageRaster
+                      background={theme.palette.editorBackground}
+                      foreground={theme.palette.editorForeground}
+                      page={page}
+                      paperView={paperView}
+                    />
+                  )}
                 </figure>
               );
             })}
