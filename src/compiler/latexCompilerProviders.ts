@@ -109,7 +109,7 @@ export async function compileWithCompanion(
   };
 }
 
-/** Serializes every project file, including binary images and diagram PDFs. */
+/** Serializes the active document's project-local dependency closure. */
 export function createCompanionCompileRequest(options: LatexCompileOptions): CompileRequest {
   const files = collectLatexFiles(options.project, options.mainFilePath, options.source, options.assets ?? []);
   const plan = createLatexCompilePlan(files, options.mainFilePath, "full");
