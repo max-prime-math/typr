@@ -10,6 +10,12 @@ import {
   shouldUpgradePdfCanvasResolution,
   type PdfCanvasResolution
 } from "./pdfCanvasResolution";
+import {
+  isDarkPreviewRasterTheme,
+  resolvePreviewRasterThemeColors,
+  rethemeResolvedPreviewRasterCanvas,
+  type ResolvedPreviewRasterThemeColors
+} from "./previewRasterTheme";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -48,8 +54,8 @@ export async function renderPdfArtifactToCanvas(
   assertNotAborted(options.signal);
   rememberVisiblePdfCanvasScroll(container);
   const scrollAnchor = capturePdfScrollAnchor(container);
-  const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
-  const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
+  const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
+  const useDarkRetheme = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
   const renderCacheKey = createPdfCanvasRenderCacheKey(options, themeColors);
 
   container.style.setProperty("--pdf-page-background", themeColors?.backgroundCss ?? "#ffffff");
@@ -146,8 +152,8 @@ export async function refinePdfCanvasResolution(
     return;
   }
 
-  const themeColors = options.paperView ? null : parsePdfThemeColors(options.themeColors);
-  const useDarkRetheme = themeColors ? shouldUsePdfDarkRetheme(themeColors) : false;
+  const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
+  const useDarkRetheme = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
   const loadingTask = getDocument({
     data: copyBytes(artifactContent)
   });
@@ -316,7 +322,7 @@ const pdfCanvasRenderCache = new Map<string, PdfCanvasRenderCacheEntry>();
 
 function createPdfCanvasRenderCacheKey(
   options: PdfCanvasRenderOptions,
-  themeColors: PdfThemeColors | null
+  themeColors: ResolvedPreviewRasterThemeColors | null
 ): string | null {
   if (!options.cacheKey) {
     return null;
@@ -504,7 +510,7 @@ async function renderPdfPageTarget(
   target: PdfPageRenderTarget,
   options: {
     signal?: AbortSignal;
-    themeColors: PdfThemeColors | null;
+    themeColors: ResolvedPreviewRasterThemeColors | null;
     useDarkRetheme: boolean;
   }
 ): Promise<void> {
@@ -531,7 +537,7 @@ async function renderPdfPageTarget(
   assertNotAborted(options.signal);
 
   if (options.themeColors) {
-    await rethemePdfCanvas(
+    await rethemeResolvedPreviewRasterCanvas(
       target.canvas,
       target.context,
       options.themeColors,
@@ -798,236 +804,6 @@ function restorePdfScrollAnchor(
   const nextCenterX = page.offsetLeft + page.offsetWidth * anchor.pageXRatio;
   container.scrollTop = nextCenterY - anchor.viewportY;
   container.scrollLeft = nextCenterX - anchor.viewportX;
-}
-
-interface RgbColor {
-  r: number;
-  g: number;
-  b: number;
-}
-
-interface PdfThemeColors {
-  background: RgbColor;
-  foreground: RgbColor;
-  backgroundCss: string;
-  foregroundCss: string;
-}
-
-let colorParseContext: CanvasRenderingContext2D | null | undefined;
-
-function parsePdfThemeColors(
-  colors: PdfCanvasRenderOptions["themeColors"]
-): PdfThemeColors | null {
-  if (!colors) {
-    return null;
-  }
-
-  const background = parseCssColor(colors.background);
-  const foreground = parseCssColor(colors.foreground);
-
-  if (!background || !foreground) {
-    return null;
-  }
-
-  return {
-    background,
-    foreground,
-    backgroundCss: formatRgb(background),
-    foregroundCss: formatRgb(foreground)
-  };
-}
-
-async function rethemePdfCanvas(
-  canvas: HTMLCanvasElement,
-  context: CanvasRenderingContext2D,
-  colors: PdfThemeColors,
-  forceLuminance: boolean,
-  signal?: AbortSignal
-): Promise<void> {
-  assertNotAborted(signal);
-  const image = context.getImageData(0, 0, canvas.width, canvas.height);
-  const data = image.data;
-  const sourceData = forceLuminance ? new Uint8ClampedArray(data) : null;
-  const chunkLength = 131_072 * 4;
-
-  for (let chunkStart = 0; chunkStart < data.length; chunkStart += chunkLength) {
-    const chunkEnd = Math.min(data.length, chunkStart + chunkLength);
-
-    for (let index = chunkStart; index < chunkEnd; index += 4) {
-      const r = data[index]!;
-      const g = data[index + 1]!;
-      const b = data[index + 2]!;
-
-      if (!forceLuminance && !isNeutralPixel(r, g, b)) {
-        continue;
-      }
-
-      const brightness =
-        forceLuminance && sourceData
-          ? getLightlySmoothedBrightness(sourceData, canvas.width, canvas.height, index)
-          : getPerceivedBrightness({ r, g, b });
-      const ink = 1 - brightness;
-      const mapped = mixRgb(colors.background, colors.foreground, ink);
-      data[index] = mapped.r;
-      data[index + 1] = mapped.g;
-      data[index + 2] = mapped.b;
-    }
-
-    assertNotAborted(signal);
-
-    if (chunkEnd < data.length) {
-      await yieldPdfRethemeTask(signal);
-    }
-  }
-
-  assertNotAborted(signal);
-  context.putImageData(image, 0, 0);
-}
-
-function yieldPdfRethemeTask(signal: AbortSignal | undefined): Promise<void> {
-  assertNotAborted(signal);
-
-  if (typeof window === "undefined") {
-    return Promise.resolve();
-  }
-
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      signal?.removeEventListener("abort", abort);
-      resolve();
-    }, 0);
-    const abort = () => {
-      window.clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-      reject(new DOMException("PDF recoloring was cancelled.", "AbortError"));
-    };
-
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
-function shouldUsePdfDarkRetheme(colors: PdfThemeColors): boolean {
-  return getPerceivedBrightness(colors.background) < getPerceivedBrightness(colors.foreground);
-}
-
-function getLightlySmoothedBrightness(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  index: number
-): number {
-  const center = getPixelBrightness(data, index);
-
-  if (center <= 0.04 || center >= 0.96) {
-    return center;
-  }
-
-  const pixelIndex = index / 4;
-  const x = pixelIndex % width;
-  const y = Math.floor(pixelIndex / width);
-
-  if (x <= 0 || y <= 0 || x >= width - 1 || y >= height - 1) {
-    return center;
-  }
-
-  return (
-    center * 0.82 +
-    getPixelBrightness(data, index - 4) * 0.045 +
-    getPixelBrightness(data, index + 4) * 0.045 +
-    getPixelBrightness(data, index - width * 4) * 0.045 +
-    getPixelBrightness(data, index + width * 4) * 0.045
-  );
-}
-
-function getPixelBrightness(data: Uint8ClampedArray, index: number): number {
-  return getPerceivedBrightness({
-    r: data[index]!,
-    g: data[index + 1]!,
-    b: data[index + 2]!
-  });
-}
-
-function isNeutralPixel(r: number, g: number, b: number): boolean {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  return max - min <= 10;
-}
-
-function mixRgb(from: RgbColor, to: RgbColor, amount: number): RgbColor {
-  const clampedAmount = clamp(amount, 0, 1);
-
-  return {
-    r: Math.round(from.r + (to.r - from.r) * clampedAmount),
-    g: Math.round(from.g + (to.g - from.g) * clampedAmount),
-    b: Math.round(from.b + (to.b - from.b) * clampedAmount)
-  };
-}
-
-function getPerceivedBrightness(color: RgbColor): number {
-  return (0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b) / 255;
-}
-
-function parseCssColor(value: string): RgbColor | null {
-  const normalized = normalizeCssColor(value);
-
-  if (!normalized) {
-    return null;
-  }
-
-  const hex = normalized.match(/^#([0-9a-f]{6})$/i);
-
-  if (hex) {
-    const value = Number.parseInt(hex[1]!, 16);
-    return {
-      r: (value >> 16) & 255,
-      g: (value >> 8) & 255,
-      b: value & 255
-    };
-  }
-
-  const rgb = normalized.match(/^rgba?\(([^)]+)\)$/i);
-
-  if (!rgb) {
-    return null;
-  }
-
-  const parts = rgb[1]!.split(",").map((part) => Number.parseFloat(part.trim()));
-
-  if (parts.length < 3 || parts.some((part) => Number.isNaN(part))) {
-    return null;
-  }
-
-  return {
-    r: clamp(Math.round(parts[0]!), 0, 255),
-    g: clamp(Math.round(parts[1]!), 0, 255),
-    b: clamp(Math.round(parts[2]!), 0, 255)
-  };
-}
-
-function normalizeCssColor(value: string): string | null {
-  const context = getColorParseContext();
-
-  if (!context) {
-    return null;
-  }
-
-  context.fillStyle = "#000000";
-  context.fillStyle = value;
-  return typeof context.fillStyle === "string" ? context.fillStyle : null;
-}
-
-function getColorParseContext(): CanvasRenderingContext2D | null {
-  if (colorParseContext !== undefined) {
-    return colorParseContext;
-  }
-
-  const canvas = document.createElement("canvas");
-  colorParseContext = canvas.getContext("2d");
-  return colorParseContext;
-}
-
-function formatRgb(color: RgbColor): string {
-  return `rgb(${color.r}, ${color.g}, ${color.b})`;
 }
 
 function clamp(value: number, min: number, max: number): number {
