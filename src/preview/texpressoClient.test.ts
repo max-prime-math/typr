@@ -60,7 +60,7 @@ function fixtureProject() {
       writeProjectFile(
         initial,
         "main.tex",
-        "\\documentclass{article}\n\\begin{document}\n\\input{sections/one.tex}\n\\end{document}"
+        "\\documentclass{article}\n\\begin{document}\n\\input{sections/one.tex}\n\\includegraphics{assets/pixel.png}\n\\end{document}"
       ),
       "sections/one.tex",
       "Hello 😀"
@@ -143,7 +143,7 @@ function emitRevision(socket: MockWebSocket, revision: number, pageCount = 1) {
 }
 
 describe("TeXpresso frontend client", () => {
-  it("initializes the complete project with the detected root, unsaved source, binary assets, and 240 DPI", () => {
+  it("initializes the dependency-scoped project with the detected root, unsaved source, binary assets, and 240 DPI", () => {
     const harness = createHarness();
     const project = projectSnapshot();
     expect(project.mainFilePath).toBe("main.tex");
