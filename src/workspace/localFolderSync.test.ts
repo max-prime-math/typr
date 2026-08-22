@@ -4,9 +4,11 @@ import {
   applySyncTreeToProject,
   createProjectSyncTree,
   getLocalFolderDirectoryFingerprint,
+  LOCAL_FOLDER_GIT_FILE_BYTE_LIMIT,
   readLocalFolderDirectory,
   resolveSyncTrees,
   resolveSyncTreesStrict,
+  shouldSyncLocalFolderGitFile,
   updateProjectGitMetadataFromTree,
   writeLocalFolderDirectory,
   type LocalFolderSyncEntry,
@@ -153,7 +155,13 @@ class MemoryDirectoryHandle {
 }
 
 describe("local folder sync reconciliation", () => {
+  it("leaves oversized Git storage files on disk instead of mirroring them into browser memory", () => {
+    expect(shouldSyncLocalFolderGitFile(LOCAL_FOLDER_GIT_FILE_BYTE_LIMIT)).toBe(true);
+    expect(shouldSyncLocalFolderGitFile(LOCAL_FOLDER_GIT_FILE_BYTE_LIMIT + 1)).toBe(false);
+  });
+
   it("merges both sides on first link and lets the folder win same-path conflicts", () => {
+    const largeBinary = file("large.pdf", "binary");
     const result = resolveSyncTrees({
       baseline: {},
       browser: tree(
@@ -162,6 +170,7 @@ describe("local folder sync reconciliation", () => {
       ),
       local: tree(
         file("folder.typ", "folder only"),
+        largeBinary,
         file("shared.typ", "folder")
       )
     });
@@ -169,9 +178,11 @@ describe("local folder sync reconciliation", () => {
     expect([...result.desired.keys()].sort()).toEqual([
       "browser.typ",
       "folder.typ",
+      "large.pdf",
       "shared.typ"
     ]);
     expect(text(result.desired.get("shared.typ"))).toBe("folder");
+    expect(result.desired.get("large.pdf")?.bytes).toBe(largeBinary.bytes);
   });
 
   it("propagates a one-sided browser edit and a one-sided folder deletion", () => {
