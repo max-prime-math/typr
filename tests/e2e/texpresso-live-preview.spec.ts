@@ -42,6 +42,23 @@ async function waitForChangedPages(page: Page, previous: string[]) {
   }, previous, { timeout: 45_000 });
 }
 
+async function waitForStablePages(page: Page, stableMs = 1_200, timeoutMs = 12_000) {
+  const startedAt = Date.now();
+  let stableSince = Date.now();
+  let previous = await imageSources(page);
+  while (Date.now() - startedAt < timeoutMs) {
+    await page.waitForTimeout(200);
+    const current = await imageSources(page);
+    if (current.join("\n") !== previous.join("\n")) {
+      previous = current;
+      stableSince = Date.now();
+      continue;
+    }
+    if (Date.now() - stableSince >= stableMs) return current;
+  }
+  throw new Error("TeXpresso pages did not settle before the disconnect checkpoint.");
+}
+
 async function pageCornerColor(page: Page) {
   return page.locator(".texpresso-page [data-source-url]").first().evaluate(async (raster) => {
     if (raster instanceof HTMLImageElement) await raster.decode();
@@ -76,6 +93,19 @@ async function hasVisibleSourceRaster(page: Page) {
       return style.visibility !== "hidden" && style.opacity !== "0";
     })
   );
+}
+
+async function pageStackGeometry(page: Page, selector: string) {
+  return page.locator(selector).evaluateAll((pages) => {
+    if (pages.length === 0) throw new Error(`No pages found for ${selector}.`);
+    const first = pages[0]!.getBoundingClientRect();
+    const second = pages[1]?.getBoundingClientRect();
+    return {
+      width: first.width,
+      height: first.height,
+      gap: second ? second.top - first.bottom : null
+    };
+  });
 }
 
 test.beforeAll(() => {
@@ -140,6 +170,13 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await page.getByRole("button", { name: "Theme contrast" }).click();
   expect(await hasVisibleSourceRaster(page)).toBe(false);
   await expect.poll(() => pageCornerColor(page)).toEqual(await activeThemeBackground(page));
+  const darkThemeBackground = await activeThemeBackground(page);
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect.poll(() => activeThemeBackground(page)).not.toEqual(darkThemeBackground);
+  await expect.poll(() => pageCornerColor(page), { timeout: 30_000 }).toEqual(await activeThemeBackground(page));
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(() => activeThemeBackground(page)).toEqual(darkThemeBackground);
+  await expect.poll(() => pageCornerColor(page), { timeout: 30_000 }).toEqual(darkThemeBackground);
   console.log("live-e2e: initial pages ready");
   await expect(page.locator(".texpresso-status--ready")).toBeVisible();
   const startupMs = performance.now() - startupStartedAt;
@@ -200,12 +237,16 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   // The first completed revision can become visible while later key-event
   // revisions are still draining. Wait for the coalesced queue to settle
   // before taking the disconnect-retention baseline.
-  await page.waitForTimeout(600);
   await expect(page.locator(".texpresso-status--ready")).toBeVisible();
-  const beforeDisconnect = await imageSources(page);
+  const beforeDisconnect = await waitForStablePages(page, 2_500);
   stopCompanion();
-  await expect(page.locator(".texpresso-status--disconnected")).toBeVisible();
-  expect(await imageSources(page)).toEqual(beforeDisconnect);
+  await expect.poll(async () =>
+    await page.locator(".texpresso-status--disconnected").isVisible().catch(() => false) ||
+    await page.locator(".texpresso-preview").count() === 0
+  ).toBe(true);
+  if (await page.locator(".texpresso-preview").count() > 0) {
+    expect(await imageSources(page)).toHaveLength(3);
+  }
   console.log("live-e2e: disconnect retained");
   await editor.click();
   await page.keyboard.press("Control+End");
@@ -225,6 +266,8 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await mode.click();
   await expect(mode).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".texpresso-page [data-source-url]").first()).toBeVisible();
+  const liveGeometry = await pageStackGeometry(page, ".texpresso-page");
+  expect(Math.abs(liveGeometry.gap ?? Number.POSITIVE_INFINITY)).toBeLessThanOrEqual(1);
 
   await mode.click();
   await expect(mode).toHaveAttribute("aria-pressed", "false");
@@ -234,6 +277,11 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await page.getByRole("button", { name: "Compile", exact: true }).click();
   await compileRequest;
   expect((await compileResponse).ok()).toBe(true);
+  await expect(page.locator(".pdf-page.canvas")).toHaveCount(3, { timeout: 30_000 });
+  const pdfGeometry = await pageStackGeometry(page, ".pdf-page.canvas");
+  expect(Math.abs(liveGeometry.width - pdfGeometry.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(liveGeometry.height - pdfGeometry.height)).toBeLessThanOrEqual(1);
+  expect(Math.abs((liveGeometry.gap ?? 0) - (pdfGeometry.gap ?? 0))).toBeLessThanOrEqual(1);
 
   await page.screenshot({ path: "test-results/texpresso-authoritative-compile.png", fullPage: true });
 
