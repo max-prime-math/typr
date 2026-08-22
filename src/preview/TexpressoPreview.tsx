@@ -186,8 +186,9 @@ function TexpressoPageRaster({
   paperView: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [renderedKey, setRenderedKey] = useState<string | null>(null);
-  const renderKey = `${page.blobUrl}:${paperView ? "paper" : `${background}:${foreground}`}`;
+  const [rendered, setRendered] = useState<{ styleKey: string; sourceUrl: string } | null>(null);
+  const styleKey = paperView ? "paper" : `${background}:${foreground}`;
+  const showRenderedCanvas = rendered?.styleKey === styleKey;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -197,39 +198,53 @@ function TexpressoPageRaster({
 
     const controller = new AbortController();
     const image = new Image();
+    const scratch = document.createElement("canvas");
+    scratch.width = page.width;
+    scratch.height = page.height;
     const releaseImage = () => {
       image.onload = null;
       image.onerror = null;
       image.removeAttribute("src");
+    };
+    const releaseScratch = () => {
+      scratch.width = 1;
+      scratch.height = 1;
     };
 
     image.onload = () => {
       if (controller.signal.aborted) {
         return;
       }
-      const context = canvas.getContext("2d", {
+      const context = scratch.getContext("2d", {
         alpha: false,
         willReadFrequently: !paperView
       });
       if (!context) {
         releaseImage();
+        releaseScratch();
         return;
       }
       context.drawImage(image, 0, 0, page.width, page.height);
 
       const themed = paperView
         ? Promise.resolve()
-        : rethemePreviewRasterCanvas(canvas, context, { background, foreground }, controller.signal);
+        : rethemePreviewRasterCanvas(scratch, context, { background, foreground }, controller.signal);
       void themed.then(() => {
         if (!controller.signal.aborted) {
-          setRenderedKey(renderKey);
+          const visibleContext = canvas.getContext("2d", { alpha: false });
+          if (visibleContext) {
+            visibleContext.drawImage(scratch, 0, 0, page.width, page.height);
+            setRendered({ styleKey, sourceUrl: page.blobUrl });
+          }
         }
         releaseImage();
+        releaseScratch();
       }).catch((error) => {
         if (!controller.signal.aborted) {
           console.warn("[typr] TeXpresso page theming failed.", error);
         }
         releaseImage();
+        releaseScratch();
       });
     };
     image.onerror = () => {
@@ -237,18 +252,20 @@ function TexpressoPageRaster({
         console.warn(`[typr] Could not decode TeXpresso page ${page.page + 1}.`);
       }
       releaseImage();
+      releaseScratch();
     };
     image.src = page.blobUrl;
 
     return () => {
       controller.abort();
       releaseImage();
+      releaseScratch();
     };
-  }, [background, foreground, page.blobUrl, page.height, page.page, page.width, paperView, renderKey]);
+  }, [background, foreground, page.blobUrl, page.height, page.page, page.width, paperView, styleKey]);
 
   return (
     <>
-      {renderedKey !== renderKey ? (
+      {!showRenderedCanvas ? (
         <img
           alt={`Live preview page ${page.page + 1}`}
           className="texpresso-page__source"
@@ -260,9 +277,9 @@ function TexpressoPageRaster({
       ) : null}
       <canvas
         aria-label={`Live preview page ${page.page + 1}`}
-        aria-hidden={renderedKey !== renderKey}
-        className={renderedKey === renderKey ? "texpresso-page__canvas texpresso-page__canvas--ready" : "texpresso-page__canvas"}
-        data-source-url={page.blobUrl}
+        aria-hidden={!showRenderedCanvas}
+        className={showRenderedCanvas ? "texpresso-page__canvas texpresso-page__canvas--ready" : "texpresso-page__canvas"}
+        data-source-url={showRenderedCanvas ? rendered.sourceUrl : ""}
         height={page.height}
         ref={canvasRef}
         role="img"

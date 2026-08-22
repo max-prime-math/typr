@@ -7723,7 +7723,7 @@ button.git-workspace__row:focus-visible {
   flex: 0 0 auto;
   margin: 0;
   overflow: hidden;
-  background: #fff;
+  background: var(--editor-background);
   box-shadow: 0 8px 25px color-mix(in srgb, #000 20%, transparent);
 }
 
@@ -7747,8 +7747,12 @@ button.git-workspace__row:focus-visible {
   opacity: 1;
 }
 
+.texpresso-preview--paper .texpresso-page {
+  background: #fff;
+}
+
 :root[data-theme="dark"] .texpresso-preview:not(.texpresso-preview--paper) .texpresso-page__source {
-  filter: invert(1) hue-rotate(180deg);
+  visibility: hidden;
 }
 
 .texpresso-status {
