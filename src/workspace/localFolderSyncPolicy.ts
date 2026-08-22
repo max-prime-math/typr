@@ -10,7 +10,7 @@ export interface LocalFolderSyncPolicy {
 }
 
 export const DEFAULT_LOCAL_FOLDER_SYNC_POLICY: LocalFolderSyncPolicy = {
-  mode: "constant",
+  mode: "manual",
   intervalMinutes: 5
 };
 export const MIN_LOCAL_FOLDER_SYNC_INTERVAL_MINUTES = 1;

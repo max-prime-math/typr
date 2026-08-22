@@ -7,7 +7,7 @@ import {
 } from "./localFolderSyncPolicy";
 
 describe("local folder sync policy", () => {
-  it("defaults invalid persisted values to constant sync every five minutes", () => {
+  it("defaults invalid persisted values to manual sync", () => {
     expect(normalizeLocalFolderSyncPolicy(undefined)).toEqual(
       DEFAULT_LOCAL_FOLDER_SYNC_POLICY
     );
@@ -17,6 +17,10 @@ describe("local folder sync policy", () => {
         intervalMinutes: Number.NaN
       })
     ).toEqual(DEFAULT_LOCAL_FOLDER_SYNC_POLICY);
+    expect(DEFAULT_LOCAL_FOLDER_SYNC_POLICY).toEqual({
+      mode: "manual",
+      intervalMinutes: 5
+    });
   });
 
   it("normalizes interval bounds and describes each mode", () => {
