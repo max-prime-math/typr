@@ -3,6 +3,11 @@ export interface PreviewRasterThemeColors {
   foreground: string;
 }
 
+export interface NativePreviewRasterThemeColors {
+  background: number;
+  foreground: number;
+}
+
 interface RgbColor {
   r: number;
   g: number;
@@ -30,6 +35,17 @@ export function resolvePreviewRasterThemeColors(
     foreground,
     backgroundCss: formatRgb(background),
     foregroundCss: formatRgb(foreground)
+  };
+}
+
+export function resolveNativePreviewRasterThemeColors(
+  colors: PreviewRasterThemeColors | undefined
+): NativePreviewRasterThemeColors | undefined {
+  const resolved = resolvePreviewRasterThemeColors(colors);
+  if (!resolved) return undefined;
+  return {
+    background: packRgb(resolved.background),
+    foreground: packRgb(resolved.foreground)
   };
 }
 
@@ -151,7 +167,7 @@ function getPerceivedBrightness(color: RgbColor): number {
 }
 
 function parseCssColor(value: string): RgbColor | null {
-  const normalized = normalizeCssColor(value);
+  const normalized = normalizeCssColor(value) ?? value.trim();
   if (!normalized) return null;
   const hex = normalized.match(/^#([0-9a-f]{6})$/i);
   if (hex) {
@@ -190,6 +206,10 @@ function getColorParseContext(): CanvasRenderingContext2D | null {
 
 function formatRgb(color: RgbColor): string {
   return `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+function packRgb(color: RgbColor): number {
+  return (color.r << 16) | (color.g << 8) | color.b;
 }
 
 function clamp(value: number, min: number, max: number): number {

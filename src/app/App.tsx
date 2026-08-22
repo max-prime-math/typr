@@ -395,7 +395,8 @@ import { PreviewZoomControls } from "../preview/PreviewPane";
 import { TexpressoPreview, TexpressoPreviewStatus } from "../preview/TexpressoPreview";
 import {
   createTexpressoProjectSnapshot,
-  getTexpressoProjectCompatibilityIssue
+  getTexpressoProjectCompatibilityIssue,
+  SHARP_TEXPRESSO_RENDER_DPI
 } from "../preview/texpressoClient";
 import { useTexpressoLivePreview } from "../preview/useTexpressoLivePreview";
 import {
@@ -5230,7 +5231,14 @@ ${nextLine}` : nextLine;
         project: selectedProjectRepository,
         activeFilePath: activeSourcePath,
         activeSource: sourceEditorValue,
-        assets: diagramShadowAssets
+        assets: diagramShadowAssets,
+        dpi: SHARP_TEXPRESSO_RENDER_DPI,
+        themeColors: theme.mode === "dark" && !isPaperView
+          ? {
+              background: theme.palette.editorBackground,
+              foreground: theme.palette.editorForeground
+            }
+          : undefined
       });
     } catch {
       return null;
@@ -5238,9 +5246,13 @@ ${nextLine}` : nextLine;
   }, [
     activeSourcePath,
     diagramShadowAssets,
+    isPaperView,
     isTexpressoSourceCandidate,
     selectedProjectRepository,
-    sourceEditorValue
+    sourceEditorValue,
+    theme.mode,
+    theme.palette.editorBackground,
+    theme.palette.editorForeground
   ]);
   const texpressoProjectCompatibilityIssue = texpressoProject
     ? !isLatexMainSourceFile(texpressoProject.mainFilePath)

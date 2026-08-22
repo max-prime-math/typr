@@ -110,12 +110,12 @@ function ready(socket: MockWebSocket, initialCompileMs = 7) {
   });
 }
 
-function emitRevision(socket: MockWebSocket, revision: number, pageCount = 1) {
+function emitRevision(socket: MockWebSocket, revision: number, pageCount = 1, dpi = 240) {
   const pages = Array.from({ length: pageCount }, (_, page) => ({
     page,
     width: 1632,
     height: 2112,
-    dpi: 240,
+    dpi,
     mimeType: "image/png",
     byteLength: PNG.byteLength
   }));
@@ -171,6 +171,35 @@ describe("TeXpresso frontend client", () => {
     expect(initialize.files.map((file: { path: string }) => file.path)).toEqual(
       expect.arrayContaining(["main.tex", "sections/one.tex", "assets/pixel.png"])
     );
+  });
+
+  it("negotiates a 300 DPI native dark raster and enables it only after a complete revision", () => {
+    const harness = createHarness();
+    const project = createTexpressoProjectSnapshot({
+      project: fixtureProject(),
+      activeFilePath: "sections/one.tex",
+      activeSource: "Unsaved chapter",
+      dpi: 300,
+      themeColors: { background: "#1e1e2e", foreground: "#cdd6f4" }
+    });
+    harness.client.start("http://localhost:8484", project);
+    const socket = harness.sockets[0]!;
+    socket.open();
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({
+      render: { dpi: 300, theme: { background: 0x1e1e2e, foreground: 0xcdd6f4 } }
+    });
+    socket.json({
+      type: "session-ready",
+      protocolVersion: 1,
+      sessionId: "session-1",
+      revision: 1,
+      processId: 42,
+      render: { dpi: 300, theme: { background: 0x1e1e2e, foreground: 0xcdd6f4 } },
+      initialCompileMs: 7
+    });
+    expect(harness.client.snapshot.nativeThemeRendered).toBe(false);
+    emitRevision(socket, 1, 1, 300);
+    expect(harness.client.snapshot.nativeThemeRendered).toBe(true);
   });
 
   it("converts UTF-16 offsets correctly and creates a minimal external-file replacement", () => {

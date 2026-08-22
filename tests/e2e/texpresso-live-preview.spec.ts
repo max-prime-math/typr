@@ -30,21 +30,28 @@ async function replaceEditor(page: Page, source: string) {
 }
 
 async function imageSources(page: Page) {
-  return page.locator(".texpresso-page canvas").evaluateAll((canvases) =>
-    canvases.map((canvas) => (canvas as HTMLCanvasElement).dataset.sourceUrl ?? "")
+  return page.locator(".texpresso-page [data-source-url]").evaluateAll((rasters) =>
+    rasters.map((raster) => (raster as HTMLElement).dataset.sourceUrl ?? "")
   );
 }
 
 async function waitForChangedPages(page: Page, previous: string[]) {
   await page.waitForFunction((sources) => {
-    const canvases = [...document.querySelectorAll<HTMLCanvasElement>(".texpresso-page canvas")];
-    return canvases.length > 0 && canvases.some((canvas, index) => canvas.dataset.sourceUrl !== sources[index]);
+    const rasters = [...document.querySelectorAll<HTMLElement>(".texpresso-page [data-source-url]")];
+    return rasters.length > 0 && rasters.some((raster, index) => raster.dataset.sourceUrl !== sources[index]);
   }, previous, { timeout: 45_000 });
 }
 
 async function pageCornerColor(page: Page) {
-  return page.locator(".texpresso-page canvas").first().evaluate((canvas) => {
-    const context = (canvas as HTMLCanvasElement).getContext("2d")!;
+  return page.locator(".texpresso-page [data-source-url]").first().evaluate(async (raster) => {
+    if (raster instanceof HTMLImageElement) await raster.decode();
+    const canvas = raster instanceof HTMLCanvasElement ? raster : document.createElement("canvas");
+    if (raster instanceof HTMLImageElement) {
+      canvas.width = raster.naturalWidth;
+      canvas.height = raster.naturalHeight;
+      canvas.getContext("2d")!.drawImage(raster, 0, 0);
+    }
+    const context = canvas.getContext("2d")!;
     return [...context.getImageData(4, 4, 1, 1).data.slice(0, 3)];
   });
 }
@@ -124,8 +131,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   console.log("live-e2e: live mode selected");
   await expect(page.locator(".texpresso-page")).toHaveCount(3);
   expect(await hasVisibleSourceRaster(page)).toBe(false);
-  const firstCanvas = page.locator(".texpresso-page__canvas").first();
-  await expect(firstCanvas).toHaveClass(/texpresso-page__canvas--ready/);
+  await expect(page.locator(".texpresso-page__native").first()).toBeVisible();
   expect(await pageCornerColor(page)).toEqual(await activeThemeBackground(page));
 
   const contrast = page.getByRole("button", { name: "Paper contrast" });
@@ -191,6 +197,11 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   const rapidSettleMs = performance.now() - rapidStartedAt;
   console.log("live-e2e: rapid edit ready");
 
+  // The first completed revision can become visible while later key-event
+  // revisions are still draining. Wait for the coalesced queue to settle
+  // before taking the disconnect-retention baseline.
+  await page.waitForTimeout(600);
+  await expect(page.locator(".texpresso-status--ready")).toBeVisible();
   const beforeDisconnect = await imageSources(page);
   stopCompanion();
   await expect(page.locator(".texpresso-status--disconnected")).toBeVisible();
@@ -213,7 +224,7 @@ test("real Docker live preview edits, stages, recovers, reconnects, and leaves C
   await expect(page.locator(".texpresso-preview")).toHaveCount(0);
   await mode.click();
   await expect(mode).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".texpresso-page canvas").first()).toBeVisible();
+  await expect(page.locator(".texpresso-page [data-source-url]").first()).toBeVisible();
 
   await mode.click();
   await expect(mode).toHaveAttribute("aria-pressed", "false");

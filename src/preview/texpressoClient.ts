@@ -5,6 +5,7 @@ import {
 } from "../compiler/latexCompilerProviders";
 import {
   DEFAULT_TEXPRESSO_RENDER_DPI,
+  MAX_TEXPRESSO_RENDER_DPI,
   TEXPRESSO_WS_PROTOCOL_VERSION,
   TEXPRESSO_WS_ROUTE,
   type TexpressoChangeMessage,
@@ -14,11 +15,18 @@ import {
   type TexpressoServerMessage
 } from "@max-prime-math/typr-companion-protocol/texpresso";
 import type { ProjectFile } from "@max-prime-math/typr-companion-protocol";
+import {
+  resolveNativePreviewRasterThemeColors,
+  type NativePreviewRasterThemeColors,
+  type PreviewRasterThemeColors
+} from "./previewRasterTheme";
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] as const;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024;
 const COMPANION_WEBSOCKET_PROTOCOL = "typr-companion-v1";
 const COMPANION_API_KEY_PROTOCOL_PREFIX = "typr-api-key.";
+
+export const SHARP_TEXPRESSO_RENDER_DPI = MAX_TEXPRESSO_RENDER_DPI;
 
 export type TexpressoLiveStatus =
   | "inactive"
@@ -32,6 +40,7 @@ export interface TexpressoProjectSnapshot {
   mainFilePath: string;
   files: ProjectFile[];
   dpi: number;
+  nativeTheme?: NativePreviewRasterThemeColors;
 }
 
 export interface TexpressoSourceChange {
@@ -54,6 +63,7 @@ export interface TexpressoLiveSnapshot {
   visibleRevision: number | null;
   pages: readonly TexpressoLivePage[];
   diagnostics: readonly TexpressoDiagnostic[];
+  nativeThemeRendered: boolean;
   initialCompileMs?: number;
   lastTimings?: { updateMs: number; renderMs: number; serverMs: number };
 }
@@ -92,12 +102,16 @@ export function createTexpressoProjectSnapshot({
   project,
   activeFilePath,
   activeSource,
-  assets = []
+  assets = [],
+  dpi = DEFAULT_TEXPRESSO_RENDER_DPI,
+  themeColors
 }: {
   project: TyprProjectRepository;
   activeFilePath: string;
   activeSource: string;
   assets?: CompileAssetFile[];
+  dpi?: number;
+  themeColors?: PreviewRasterThemeColors;
 }): TexpressoProjectSnapshot {
   const request = createCompanionCompileRequest({
     project,
@@ -111,7 +125,8 @@ export function createTexpressoProjectSnapshot({
   return {
     mainFilePath: request.mainFilePath,
     files: request.files,
-    dpi: DEFAULT_TEXPRESSO_RENDER_DPI
+    dpi,
+    nativeTheme: resolveNativePreviewRasterThemeColors(themeColors)
   };
 }
 
@@ -238,6 +253,7 @@ export class TexpressoClient {
   private pendingPageFrame: PendingPageFrame | null = null;
   private retiredUrls = new Set<string>();
   private sessionReady = false;
+  private sessionNativeThemeRendered = false;
   private intentionalClose = false;
   private visibleSessionGeneration = 0;
   private state: TexpressoLiveSnapshot = {
@@ -248,7 +264,8 @@ export class TexpressoClient {
     lastGoodRevision: null,
     visibleRevision: null,
     pages: [],
-    diagnostics: []
+    diagnostics: [],
+    nativeThemeRendered: false
   };
 
   constructor(options: TexpressoClientOptions = {}) {
@@ -270,6 +287,7 @@ export class TexpressoClient {
     this.project = cloneProject(project);
     this.sourceFiles = getTextFileMap(project.files);
     this.sessionReady = false;
+    this.sessionNativeThemeRendered = false;
     this.pendingPageFrame = null;
     this.intentionalClose = false;
     const generation = this.state.sessionGeneration + 1;
@@ -307,7 +325,10 @@ export class TexpressoClient {
         protocolVersion: TEXPRESSO_WS_PROTOCOL_VERSION,
         revision: 1,
         mainFilePath: this.project.mainFilePath,
-        render: { dpi: this.project.dpi },
+        render: {
+          dpi: this.project.dpi,
+          ...(this.project.nativeTheme ? { theme: this.project.nativeTheme } : {})
+        },
         files: this.project.files
       });
       markDevelopmentTiming(`session-${generation}-socket-open`);
@@ -376,7 +397,11 @@ export class TexpressoClient {
       this.project = cloneProject(project);
       return "queued";
     }
-    if (project.mainFilePath !== this.project.mainFilePath || project.dpi !== this.project.dpi) {
+    if (
+      project.mainFilePath !== this.project.mainFilePath ||
+      project.dpi !== this.project.dpi ||
+      !sameNativeTheme(project.nativeTheme, this.project.nativeTheme)
+    ) {
       return "restart-required";
     }
 
@@ -493,7 +518,11 @@ export class TexpressoClient {
 
   private handleControlMessage(message: TexpressoServerMessage): void {
     switch (message.type) {
-      case "session-ready":
+      case "session-ready": {
+        const acknowledgedTheme = (message.render as {
+          dpi: number;
+          theme?: NativePreviewRasterThemeColors;
+        }).theme;
         if (
           message.protocolVersion !== TEXPRESSO_WS_PROTOCOL_VERSION ||
           message.revision !== 1 ||
@@ -503,6 +532,9 @@ export class TexpressoClient {
           return;
         }
         this.sessionReady = true;
+        this.sessionNativeThemeRendered = Boolean(
+          this.project?.nativeTheme && sameNativeTheme(acknowledgedTheme, this.project.nativeTheme)
+        );
         this.patchState({
           status: "updating",
           statusDetail: "Rendering initial live preview",
@@ -510,6 +542,7 @@ export class TexpressoClient {
         });
         markDevelopmentTiming(`session-${this.state.sessionGeneration}-ready`);
         return;
+      }
       case "document": {
         if (!validRevision(message.revision) || !validPageCount(message.pageCount)) {
           this.protocolFailure("TeXpresso sent invalid document metadata.");
@@ -665,6 +698,7 @@ export class TexpressoClient {
       visibleRevision: message.revision,
       pages,
       diagnostics: [],
+      nativeThemeRendered: this.sessionNativeThemeRendered,
       lastTimings: message.timings
     });
     markDevelopmentTiming(`complete-${this.state.sessionGeneration}-${message.revision}`);
@@ -777,8 +811,16 @@ export class TexpressoClient {
 function cloneProject(project: TexpressoProjectSnapshot): TexpressoProjectSnapshot {
   return {
     ...project,
-    files: project.files.map((file) => ({ ...file }))
+    files: project.files.map((file) => ({ ...file })),
+    nativeTheme: project.nativeTheme ? { ...project.nativeTheme } : undefined
   };
+}
+
+function sameNativeTheme(
+  left: NativePreviewRasterThemeColors | undefined,
+  right: NativePreviewRasterThemeColors | undefined
+): boolean {
+  return left?.background === right?.background && left?.foreground === right?.foreground;
 }
 
 function getTextFileMap(files: readonly ProjectFile[]): Map<string, string> {
