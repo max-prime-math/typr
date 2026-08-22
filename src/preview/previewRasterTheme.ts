@@ -67,6 +67,49 @@ export async function rethemePreviewRasterCanvas(
   );
 }
 
+/** Recolors a raster already tinted by TeXpresso from its native color endpoints. */
+export async function rethemeNativePreviewRasterCanvas(
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  source: NativePreviewRasterThemeColors,
+  target: PreviewRasterThemeColors,
+  signal?: AbortSignal
+): Promise<void> {
+  const resolvedTarget = resolvePreviewRasterThemeColors(target);
+  if (!resolvedTarget) return;
+  const sourceBackground = unpackRgb(source.background);
+  const sourceForeground = unpackRgb(source.foreground);
+  const redDelta = sourceForeground.r - sourceBackground.r;
+  const greenDelta = sourceForeground.g - sourceBackground.g;
+  const blueDelta = sourceForeground.b - sourceBackground.b;
+  const magnitudeSquared = redDelta ** 2 + greenDelta ** 2 + blueDelta ** 2;
+  if (magnitudeSquared === 0) return;
+
+  assertNotAborted(signal);
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+  const data = image.data;
+  const chunkLength = 131_072 * 4;
+  for (let chunkStart = 0; chunkStart < data.length; chunkStart += chunkLength) {
+    const chunkEnd = Math.min(data.length, chunkStart + chunkLength);
+    for (let index = chunkStart; index < chunkEnd; index += 4) {
+      const inkAmount = (
+        (data[index]! - sourceBackground.r) * redDelta +
+        (data[index + 1]! - sourceBackground.g) * greenDelta +
+        (data[index + 2]! - sourceBackground.b) * blueDelta
+      ) / magnitudeSquared;
+      const mapped = mixRgb(resolvedTarget.background, resolvedTarget.foreground, inkAmount);
+      data[index] = mapped.r;
+      data[index + 1] = mapped.g;
+      data[index + 2] = mapped.b;
+    }
+    assertNotAborted(signal);
+    if (chunkEnd < data.length) await yieldRethemeTask(signal);
+  }
+
+  assertNotAborted(signal);
+  context.putImageData(image, 0, 0);
+}
+
 export async function rethemeResolvedPreviewRasterCanvas(
   canvas: HTMLCanvasElement,
   context: CanvasRenderingContext2D,
@@ -210,6 +253,10 @@ function formatRgb(color: RgbColor): string {
 
 function packRgb(color: RgbColor): number {
   return (color.r << 16) | (color.g << 8) | color.b;
+}
+
+function unpackRgb(color: number): RgbColor {
+  return { r: (color >> 16) & 255, g: (color >> 8) & 255, b: color & 255 };
 }
 
 function clamp(value: number, min: number, max: number): number {

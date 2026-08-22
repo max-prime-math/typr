@@ -200,6 +200,10 @@ describe("TeXpresso frontend client", () => {
     expect(harness.client.snapshot.nativeThemeRendered).toBe(false);
     emitRevision(socket, 1, 1, 300);
     expect(harness.client.snapshot.nativeThemeRendered).toBe(true);
+    expect(harness.client.snapshot.nativeTheme).toEqual({
+      background: 0x1e1e2e,
+      foreground: 0xcdd6f4
+    });
   });
 
   it("converts UTF-16 offsets correctly and creates a minimal external-file replacement", () => {
