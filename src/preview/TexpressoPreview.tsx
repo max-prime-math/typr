@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PreviewZoomState } from "./PreviewPane";
 import type { TexpressoLivePage, TexpressoLiveSnapshot } from "./texpressoClient";
 import { useTheme } from "../theme/ThemeProvider";
@@ -8,6 +8,11 @@ import {
   rethemePreviewRasterCanvas,
   type NativePreviewRasterThemeColors
 } from "./previewRasterTheme";
+import { usePersistentScrollPosition } from "../utils/scrollPersistence";
+import {
+  subscribeToEditorInputActivity,
+  waitForEditorInputIdle
+} from "../editor/inputPriority";
 
 const CSS_DPI = 96;
 
@@ -23,15 +28,18 @@ export function TexpressoPreview({
   snapshot,
   zoom,
   paperView = false,
+  scrollPersistenceKey,
   onRevisionCommitted
 }: {
   snapshot: TexpressoLiveSnapshot;
   zoom: PreviewZoomState;
   paperView?: boolean;
+  scrollPersistenceKey?: string;
   onRevisionCommitted: (sessionGeneration: number, revision: number) => void;
 }) {
   const { theme } = useTheme();
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  usePersistentScrollPosition(viewportRef, scrollPersistenceKey);
   const anchorRef = useRef({ page: 0, ratio: 0 });
   const previousRevisionRef = useRef<string | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -115,14 +123,16 @@ export function TexpressoPreview({
       return;
     }
     let cancelled = false;
-    void preloadTexpressoPageImages(snapshot.pages).then(() => {
+    void preloadTexpressoPageImages(snapshot.pages).then(waitForEditorInputIdle).then(() => {
       if (!cancelled) {
-        setDisplayed({
-          sessionGeneration: snapshot.sessionGeneration,
-          revision: snapshot.visibleRevision,
-          pages: snapshot.pages,
-          nativeThemeRendered: snapshot.nativeThemeRendered,
-          nativeTheme: snapshot.nativeTheme
+        startTransition(() => {
+          setDisplayed({
+            sessionGeneration: snapshot.sessionGeneration,
+            revision: snapshot.visibleRevision,
+            pages: snapshot.pages,
+            nativeThemeRendered: snapshot.nativeThemeRendered,
+            nativeTheme: snapshot.nativeTheme
+          });
         });
       }
     }).catch(() => {
@@ -223,6 +233,7 @@ function TexpressoPageRaster({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [rendered, setRendered] = useState<{ styleKey: string; sourceUrl: string } | null>(null);
+  const [inputResumeRevision, setInputResumeRevision] = useState(0);
   const sourceThemeKey = sourceTheme ? `${sourceTheme.background}:${sourceTheme.foreground}` : "paper";
   const styleKey = `${sourceThemeKey}->${paperView ? "paper" : `${background}:${foreground}`}`;
   const showRenderedCanvas = rendered?.styleKey === styleKey;
@@ -234,6 +245,19 @@ function TexpressoPageRaster({
     }
 
     const controller = new AbortController();
+    let cancelled = false;
+    const unsubscribeFromEditorInput = subscribeToEditorInputActivity(() => {
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      controller.abort();
+      void waitForEditorInputIdle().then(() => {
+        if (!cancelled) {
+          startTransition(() => setInputResumeRevision((current) => current + 1));
+        }
+      });
+    });
     const image = new Image();
     const scratch = document.createElement("canvas");
     scratch.width = page.width;
@@ -299,11 +323,13 @@ function TexpressoPageRaster({
     image.src = page.blobUrl;
 
     return () => {
+      cancelled = true;
+      unsubscribeFromEditorInput();
       controller.abort();
       releaseImage();
       releaseScratch();
     };
-  }, [background, foreground, page.blobUrl, page.height, page.page, page.width, paperView, sourceTheme, styleKey]);
+  }, [background, foreground, inputResumeRevision, page.blobUrl, page.height, page.page, page.width, paperView, sourceTheme, styleKey]);
 
   return (
     <>

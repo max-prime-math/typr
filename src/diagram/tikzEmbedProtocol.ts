@@ -14,6 +14,20 @@ export interface TikzEditorMessage {
   modified?: boolean;
 }
 
+export const TIKZ_SVG_EXPORT_RETRY_DELAY_MS = 250;
+export const TIKZ_SVG_EXPORT_TIMEOUT_MS = 10_000;
+
+export function isTikzSvgExportPending(
+  message: Pick<TikzEditorMessage, "error">,
+  svg: string
+): boolean {
+  if (svg.trim()) {
+    return false;
+  }
+
+  return !message.error || message.error.startsWith("SVG is not ready yet");
+}
+
 export function parseTikzEditorMessage(value: unknown): TikzEditorMessage | null {
   let parsed = value;
 

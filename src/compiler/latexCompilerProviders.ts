@@ -95,7 +95,8 @@ export async function compileWithCompanion(
       output: {
         kind: "pdf",
         content: result.log,
-        artifactData: base64ToBytes(result.output.content)
+        artifactData: base64ToBytes(result.output.content),
+        sourceMapData: result.synctex ? base64ToBytes(result.synctex.content) : undefined
       },
       metadata
     };

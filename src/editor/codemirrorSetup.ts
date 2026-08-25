@@ -45,9 +45,16 @@ import { toCodeMirrorKeybinding } from "../app/keybindings";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
 import type { CompileDiagnostic } from "../compiler/types";
 import { createEditorDiagnosticExtensions } from "./editorDiagnostics";
-import { toggleMathDelimiterCommand } from "./mathActions";
+import {
+  getMathDelimiterEdit,
+  getSelectedMathDelimiterExit,
+  getMathDelimiterTabEdit,
+  type MathDelimiterEdit,
+  type MathDelimiterKey
+} from "./mathActions";
 import { toggleTextFormatCommand } from "./textFormatting";
 import { latexMathPreview } from "./latexMathPreview";
+import { latexEnvironmentCompletionSource } from "./latexEnvironmentCompletion";
 import { typstMathPreview } from "./typstMathPreview";
 import { smoothCursor } from "./smoothCursor";
 import { EDITOR_INDENT, getSmartNewlineInsertion } from "./editorWhitespace";
@@ -83,6 +90,7 @@ interface EditorSetupOptions {
   onVimLatexContextHelp: (query: string) => void;
   onSearchRequested: () => void;
   onCompileRequested: () => void;
+  onSaveRequested: () => void;
   onFormatRequested: () => void;
   onToggleLineWrap: () => void;
   onCloseRequested: () => void;
@@ -92,6 +100,7 @@ interface EditorSetupOptions {
 export const diagnosticsCompartment = new Compartment();
 
 let latestVimCloseRequested: (() => void) | null = null;
+let latestVimSaveRequested: (() => void) | null = null;
 let vimCloseCommandsRegistered = false;
 let vimIpadInsertEscapePolicyRegistered = false;
 
@@ -118,7 +127,11 @@ function registerVimIpadInsertEscapePolicy(): void {
   vimIpadInsertEscapePolicyRegistered = true;
 }
 
-function registerVimCloseCommands(onCloseRequested: () => void): void {
+function registerVimFileCommands(
+  onSaveRequested: () => void,
+  onCloseRequested: () => void
+): void {
+  latestVimSaveRequested = onSaveRequested;
   latestVimCloseRequested = onCloseRequested;
 
   if (vimCloseCommandsRegistered) {
@@ -128,7 +141,11 @@ function registerVimCloseCommands(onCloseRequested: () => void): void {
   Vim.defineEx("quit", "q", () => {
     latestVimCloseRequested?.();
   });
+  Vim.defineEx("write", "w", () => {
+    latestVimSaveRequested?.();
+  });
   Vim.defineEx("wq", "wq", () => {
+    latestVimSaveRequested?.();
     latestVimCloseRequested?.();
   });
   vimCloseCommandsRegistered = true;
@@ -216,12 +233,21 @@ function createEditorTheme(
           zIndex: 12,
           pointerEvents: "none",
           borderRadius: "0",
+          border: "1px solid transparent",
+          boxSizing: "border-box",
           opacity: 0,
           backgroundColor: "var(--accent)",
           contain: "layout style paint",
           backfaceVisibility: "hidden",
           willChange: "transform, width, height, opacity, clip-path",
-          transition: "opacity 90ms ease"
+          transition: "opacity 90ms ease, background-color 90ms ease, border-color 90ms ease"
+        },
+        ".cm-smooth-cursor--vim-normal": {
+          backgroundColor: "color-mix(in srgb, var(--accent) 50%, transparent)"
+        },
+        ".cm-smooth-cursor--vim-command": {
+          borderColor: "#ff9696",
+          backgroundColor: "transparent"
         },
         ".cm-smooth-cursor-smear": {
           position: "absolute",
@@ -286,6 +312,9 @@ function createEditorTheme(
         backgroundColor:
           "color-mix(in srgb, var(--accent) 22%, var(--editor-background)) !important"
       },
+      ".cm-fat-cursor": {
+        backgroundColor: "rgb(255 150 150 / 50%) !important"
+      },
       ".cm-line::selection, .cm-line > span::selection, .cm-content ::selection": {
         backgroundColor: "transparent !important"
       },
@@ -331,6 +360,7 @@ export function createEditorExtensions({
   onVimLatexContextHelp,
   onSearchRequested,
   onCompileRequested,
+  onSaveRequested,
   onFormatRequested,
   onToggleLineWrap,
   onCloseRequested,
@@ -339,7 +369,7 @@ export function createEditorExtensions({
 }: EditorSetupOptions): Extension[] {
   if (vimMode) {
     registerVimIpadInsertEscapePolicy();
-    registerVimCloseCommands(onCloseRequested);
+    registerVimFileCommands(onSaveRequested, onCloseRequested);
   }
 
   const keymaps = [
@@ -379,6 +409,10 @@ export function createEditorExtensions({
     )
   ];
   const tabCommand: Command = (view) => {
+    if (applyMathDelimiterTab(view, language, vimMode)) {
+      return true;
+    }
+
     if (nextSnippetField(view)) {
       return true;
     }
@@ -389,12 +423,51 @@ export function createEditorExtensions({
 
     return indentMore(view);
   };
-  const mathDelimiterCommand: Command = (view) => {
+  let pendingSlashSelection: PendingSlashSelection | null = null;
+  const selectedBackslashCommand: Command = (view) => {
+    if (
+      (language !== "latex" && language !== "markdown") ||
+      !shouldHandleMathDelimiterShortcut(view, vimMode) ||
+      view.state.selection.ranges.every((selection) => selection.from === selection.to)
+    ) {
+      pendingSlashSelection = null;
+      return false;
+    }
+
+    const selectedTexts = view.state.selection.ranges.map((selection) =>
+      view.state.sliceDoc(selection.from, selection.to)
+    );
+    const transaction = view.state.changeByRange((selection) => ({
+      changes: {
+        from: selection.from,
+        to: selection.to,
+        insert: "\\"
+      },
+      range: EditorSelection.cursor(selection.from + 1)
+    }));
+    view.dispatch({
+      ...transaction,
+      scrollIntoView: true,
+      userEvent: "input.type"
+    });
+    pendingSlashSelection = {
+      source: view.state.doc.toString(),
+      cursors: view.state.selection.ranges.map((selection) => selection.head),
+      selectedTexts
+    };
+    return true;
+  };
+  const mathDelimiterCommand = (key: MathDelimiterKey): Command => (view) => {
     if (!shouldHandleMathDelimiterShortcut(view, vimMode)) {
       return false;
     }
 
-    return toggleMathDelimiterCommand(view);
+    if ((key === "[" || key === "(") && applyPendingSlashSelection(view, key, pendingSlashSelection)) {
+      pendingSlashSelection = null;
+      return true;
+    }
+    pendingSlashSelection = null;
+    return applyMathDelimiterKey(view, key, language);
   };
   const smartNewlineCommand = createSmartNewlineCommand(language);
 
@@ -444,9 +517,12 @@ export function createEditorExtensions({
               ...(vimLatex.completion
                 ? [createLatexLanguageCompletionSource(vimLatex.packageIntelligence)]
                 : []),
+              latexEnvironmentCompletionSource,
               snippetSource
             ]
-          : [snippetSource]
+          : language === "latex"
+            ? [latexEnvironmentCompletionSource, snippetSource]
+            : [snippetSource]
     }),
     syntaxHighlighting(editorHighlightStyle, { fallback: true }),
     createLanguageExtension(
@@ -459,7 +535,28 @@ export function createEditorExtensions({
     ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
     ...(language === "typst" && typstMathPreviewEnabled ? [typstMathPreview()] : []),
     keymap.of([
-      { key: "$", run: mathDelimiterCommand },
+      {
+        any: (_view, event) => {
+          if (
+            pendingSlashSelection &&
+            !(
+              (event.key === "[" || event.key === "(") &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey
+            )
+          ) {
+            pendingSlashSelection = null;
+          }
+          return false;
+        }
+      },
+      { key: "\\", run: selectedBackslashCommand },
+      { key: "$", run: mathDelimiterCommand("$") },
+      { key: "[", run: mathDelimiterCommand("[") },
+      { key: "]", run: mathDelimiterCommand("]") },
+      { key: "(", run: mathDelimiterCommand("(") },
+      { key: ")", run: mathDelimiterCommand(")") },
       { key: "Enter", run: smartNewlineCommand },
       { key: "Tab", run: tabCommand },
       { key: "Shift-Tab", run: prevSnippetField },
@@ -516,6 +613,139 @@ function createLatexLanguageCompletionSource(
       ? null
       : source(context);
   };
+}
+
+export function applyMathDelimiterKey(
+  view: EditorView,
+  key: MathDelimiterKey,
+  language: SourceLanguage
+): boolean {
+  const source = view.state.doc.toString();
+  const edits = view.state.selection.ranges.map((selection) =>
+    getMathDelimiterEdit(source, selection, key, language)
+  );
+  if (edits.every((edit) => edit === null)) {
+    return false;
+  }
+
+  let rangeIndex = 0;
+  const transaction = view.state.changeByRange((selection) => {
+    const edit = edits[rangeIndex++];
+    if (edit) {
+      return mathDelimiterEditToRange(edit);
+    }
+
+    return {
+      changes: {
+        from: selection.from,
+        to: selection.to,
+        insert: key
+      },
+      range: EditorSelection.cursor(selection.from + 1)
+    };
+  });
+
+  view.dispatch({
+    ...transaction,
+    scrollIntoView: true,
+    userEvent: "input.type"
+  });
+  return true;
+}
+
+function applyMathDelimiterTab(
+  view: EditorView,
+  language: SourceLanguage,
+  vimMode: boolean
+): boolean {
+  if (!shouldHandleMathDelimiterShortcut(view, vimMode)) {
+    return false;
+  }
+
+  const source = view.state.doc.toString();
+  let handled = false;
+  const transaction = view.state.changeByRange((selection) => {
+    if (selection.from !== selection.to) {
+      const exit = getSelectedMathDelimiterExit(source, selection, language);
+      if (exit !== null) {
+        handled = true;
+        return { range: EditorSelection.cursor(exit) };
+      }
+      return { range: selection };
+    }
+
+    const edit = getMathDelimiterTabEdit(source, selection.from, language);
+    handled ||= edit !== null;
+    return edit ? mathDelimiterEditToRange(edit) : { range: selection };
+  });
+
+  if (!handled) {
+    return false;
+  }
+
+  view.dispatch({
+    ...transaction,
+    scrollIntoView: true,
+    userEvent: "select"
+  });
+  return true;
+}
+
+function mathDelimiterEditToRange(edit: MathDelimiterEdit) {
+  return {
+    changes: {
+      from: edit.from,
+      to: edit.to,
+      insert: edit.insert
+    },
+    range: edit.selection
+      ? EditorSelection.range(edit.selection.anchor, edit.selection.head)
+      : EditorSelection.cursor(edit.cursor)
+  };
+}
+
+interface PendingSlashSelection {
+  source: string;
+  cursors: number[];
+  selectedTexts: string[];
+}
+
+function applyPendingSlashSelection(
+  view: EditorView,
+  key: "[" | "(",
+  pending: PendingSlashSelection | null
+): boolean {
+  if (
+    !pending ||
+    pending.source !== view.state.doc.toString() ||
+    pending.cursors.length !== view.state.selection.ranges.length ||
+    pending.cursors.some((cursor, index) => cursor !== view.state.selection.ranges[index]?.head)
+  ) {
+    return false;
+  }
+
+  const opener = `\\${key}`;
+  const closer = key === "[" ? "\\]" : "\\)";
+  let rangeIndex = 0;
+  const transaction = view.state.changeByRange((selection) => {
+    const selectedText = pending.selectedTexts[rangeIndex++] ?? "";
+    const start = selection.from - 1;
+    return {
+      changes: {
+        from: start,
+        to: selection.to,
+        insert: `${opener}${selectedText}${closer}`
+      },
+      range: EditorSelection.range(start + opener.length, start + opener.length + selectedText.length)
+    };
+  });
+
+  view.dispatch({
+    ...transaction,
+    scrollIntoView: true,
+    userEvent: "input.type"
+  });
+  return true;
 }
 
 function createSmartNewlineCommand(language: SourceLanguage): Command {

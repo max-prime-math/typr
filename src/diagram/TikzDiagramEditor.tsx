@@ -3,6 +3,9 @@ import { DiagramActionBar } from "./DiagramActionBar";
 import {
   getTikzEditorUrl,
   isTrustedTikzEditorEvent,
+  isTikzSvgExportPending,
+  TIKZ_SVG_EXPORT_RETRY_DELAY_MS,
+  TIKZ_SVG_EXPORT_TIMEOUT_MS,
   parseTikzEditorMessage
 } from "./tikzEmbedProtocol";
 import {
@@ -24,6 +27,7 @@ interface TikzDiagramEditorProps {
   figures: TikzFigureFile[];
   onChange: (path: string, source: string, svg?: string) => void;
   onCreate: () => void;
+  onDuplicate: (path: string) => void;
   onInsert: (
     path: string,
     source: string,
@@ -36,10 +40,19 @@ interface TikzDiagramEditorProps {
   theme: Pick<ThemeDefinition, "mode" | "palette">;
 }
 
-type EditorStatus = "loading" | "ready" | "modified" | "saving" | "saved" | "error";
+type EditorStatus =
+  | "loading"
+  | "ready"
+  | "modified"
+  | "rendering"
+  | "saving"
+  | "saved"
+  | "error";
 type PendingExport = {
   kind: "insert";
   mode: TikzInsertMode;
+  path: string;
+  requestedAt: number;
 } | null;
 
 export function TikzDiagramEditor({
@@ -48,6 +61,7 @@ export function TikzDiagramEditor({
   figures,
   onChange,
   onCreate,
+  onDuplicate,
   onInsert,
   onRename,
   onSelect,
@@ -55,10 +69,14 @@ export function TikzDiagramEditor({
   theme
 }: TikzDiagramEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const fileNameInputRef = useRef<HTMLInputElement | null>(null);
   const loadedPathRef = useRef<string | null>(null);
+  const focusNewFileNameRef = useRef(false);
+  const focusFileNameFrameRef = useRef<number | null>(null);
   const latestSourceRef = useRef(figure?.source ?? "");
   const latestSvgRef = useRef(figure?.svg ?? "");
   const pendingExportRef = useRef<PendingExport>(null);
+  const exportRetryTimerRef = useRef<number | null>(null);
   const [fileNameDraft, setFileNameDraft] = useState(
     figure ? getTikzFileName(figure.path) : "diagram.tikz"
   );
@@ -84,6 +102,11 @@ export function TikzDiagramEditor({
   };
 
   const loadFigure = (nextFigure: TikzFigureFile) => {
+    if (exportRetryTimerRef.current !== null) {
+      window.clearTimeout(exportRetryTimerRef.current);
+      exportRetryTimerRef.current = null;
+    }
+    pendingExportRef.current = null;
     loadedPathRef.current = nextFigure.path;
     latestSourceRef.current = nextFigure.source;
     latestSvgRef.current = nextFigure.svg;
@@ -101,6 +124,18 @@ export function TikzDiagramEditor({
       }
     });
   };
+
+  useEffect(() => {
+    return () => {
+      if (exportRetryTimerRef.current !== null) {
+        window.clearTimeout(exportRetryTimerRef.current);
+      }
+      if (focusFileNameFrameRef.current !== null) {
+        window.cancelAnimationFrame(focusFileNameFrameRef.current);
+      }
+      pendingExportRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     setFileNameDraft(figure ? getTikzFileName(figure.path) : "diagram.tikz");
@@ -130,6 +165,32 @@ export function TikzDiagramEditor({
       latestSvgRef.current = figure.svg;
     }
   }, [figure?.path, figure?.source, figure?.svg]);
+
+  useEffect(() => {
+    if (!figure || !focusNewFileNameRef.current) {
+      return;
+    }
+
+    if (fileNameDraft !== getTikzFileName(figure.path)) {
+      return;
+    }
+
+    focusNewFileNameRef.current = false;
+    if (focusFileNameFrameRef.current !== null) {
+      window.cancelAnimationFrame(focusFileNameFrameRef.current);
+    }
+    focusFileNameFrameRef.current = window.requestAnimationFrame(() => {
+      focusFileNameFrameRef.current = null;
+      const input = fileNameInputRef.current;
+      if (!input) {
+        return;
+      }
+
+      input.focus();
+      const extensionStart = input.value.toLowerCase().lastIndexOf(".tikz");
+      input.setSelectionRange(0, extensionStart >= 0 ? extensionStart : input.value.length);
+    });
+  }, [figure?.path, fileNameDraft]);
 
   useEffect(() => {
     if (!insertionOptions.some((option) => option.mode === insertMode)) {
@@ -181,7 +242,7 @@ export function TikzDiagramEditor({
       }
 
       if (message.event === "loaded") {
-        setStatus("ready");
+        setStatus(pendingExportRef.current ? "rendering" : "ready");
         return;
       }
 
@@ -200,12 +261,24 @@ export function TikzDiagramEditor({
         latestSourceRef.current = source;
         latestSvgRef.current = svg;
         onChange(figure.path, source, svg || undefined);
-        setStatus(message.event === "change" ? "modified" : "saved");
+        setStatus(
+          pendingExportRef.current
+            ? "rendering"
+            : message.event === "change"
+              ? "modified"
+              : "saved"
+        );
         return;
       }
 
       if (message.event === "status" && typeof message.modified === "boolean") {
-        setStatus(message.modified ? "modified" : "saved");
+        setStatus(
+          pendingExportRef.current
+            ? "rendering"
+            : message.modified
+              ? "modified"
+              : "saved"
+        );
         return;
       }
 
@@ -219,23 +292,57 @@ export function TikzDiagramEditor({
               ? message.data
               : latestSvgRef.current;
         const pendingExport = pendingExportRef.current;
-        pendingExportRef.current = null;
 
         if (message.error || !svg.trim()) {
-          setErrorMessage(message.error ?? "The TikZ preview is not ready yet.");
+          const previewPending = isTikzSvgExportPending(message, svg);
+          if (
+            pendingExport?.kind === "insert" &&
+            pendingExport.path === loadedPathRef.current &&
+            Date.now() - pendingExport.requestedAt < TIKZ_SVG_EXPORT_TIMEOUT_MS &&
+            previewPending
+          ) {
+            if (exportRetryTimerRef.current !== null) {
+              window.clearTimeout(exportRetryTimerRef.current);
+            }
+            exportRetryTimerRef.current = window.setTimeout(() => {
+              exportRetryTimerRef.current = null;
+              if (pendingExportRef.current === pendingExport) {
+                postToEditor({ action: "export", format: "svg" });
+              }
+            }, TIKZ_SVG_EXPORT_RETRY_DELAY_MS);
+            setStatus("rendering");
+            return;
+          }
+
+          pendingExportRef.current = null;
+          if (exportRetryTimerRef.current !== null) {
+            window.clearTimeout(exportRetryTimerRef.current);
+            exportRetryTimerRef.current = null;
+          }
+          setErrorMessage(
+            previewPending
+              ? "The TikZ preview did not finish rendering. Check the figure for errors and try again."
+              : message.error ?? "Unable to export the TikZ preview."
+          );
           setStatus("error");
           return;
         }
 
+        pendingExportRef.current = null;
+        if (exportRetryTimerRef.current !== null) {
+          window.clearTimeout(exportRetryTimerRef.current);
+          exportRetryTimerRef.current = null;
+        }
         latestSourceRef.current = source;
         latestSvgRef.current = svg;
 
-        if (figure) {
-          onChange(figure.path, source, svg);
+        const exportedPath = pendingExport?.path ?? figure?.path;
+        if (exportedPath) {
+          onChange(exportedPath, source, svg);
           if (pendingExport?.kind === "insert") {
             setStatus("saving");
             void Promise.resolve(
-              onInsert(figure.path, source, svg, pendingExport.mode)
+              onInsert(exportedPath, source, svg, pendingExport.mode)
             ).then(
               () => setStatus("saved"),
               (error) => {
@@ -274,6 +381,20 @@ export function TikzDiagramEditor({
     onRename(figure.path, normalizedName);
   };
 
+  const handleCreate = () => {
+    focusNewFileNameRef.current = true;
+    onCreate();
+  };
+
+  const handleDuplicate = () => {
+    if (!figure) {
+      return;
+    }
+
+    focusNewFileNameRef.current = true;
+    onDuplicate(figure.path);
+  };
+
   const handleSave = () => {
     if (!figure) {
       return;
@@ -284,15 +405,17 @@ export function TikzDiagramEditor({
   };
 
   const handleInsert = () => {
-    if (!figure) {
+    if (!figure || pendingExportRef.current) {
       return;
     }
 
     pendingExportRef.current = {
       kind: "insert",
-      mode: insertMode
+      mode: insertMode,
+      path: figure.path,
+      requestedAt: Date.now()
     };
-    setStatus("saving");
+    setStatus("rendering");
     setErrorMessage(null);
     postToEditor({ action: "export", format: "svg" });
   };
@@ -306,7 +429,7 @@ export function TikzDiagramEditor({
           <p>
             Draw on a canvas and keep the generated <code>.tikz</code> source in this project.
           </p>
-          <button className="pane__button" onClick={onCreate} type="button">
+          <button className="pane__button" onClick={handleCreate} type="button">
             New TikZ figure
           </button>
         </div>
@@ -341,6 +464,7 @@ export function TikzDiagramEditor({
               event.currentTarget.blur();
             }
           }}
+          ref={fileNameInputRef}
           value={fileNameDraft}
         />
         <span className={`tikz-editor__status tikz-editor__status--${status}`}>
@@ -351,10 +475,12 @@ export function TikzDiagramEditor({
         insertDisabled={
           !canInsert ||
           insertionOptions.length === 0 ||
+          status === "rendering" ||
           status === "saving"
         }
+        onDuplicate={handleDuplicate}
         onInsert={handleInsert}
-        onNew={onCreate}
+        onNew={handleCreate}
         onSave={handleSave}
       >
         <select
@@ -363,6 +489,7 @@ export function TikzDiagramEditor({
           disabled={
             !canInsert ||
             insertionOptions.length < 2 ||
+            status === "rendering" ||
             status === "saving"
           }
           onChange={(event) => setInsertMode(event.currentTarget.value as TikzInsertMode)}
@@ -418,6 +545,8 @@ function formatEditorStatus(status: EditorStatus): string {
       return "Loading…";
     case "modified":
       return "Autosaving…";
+    case "rendering":
+      return "Preparing preview…";
     case "saving":
       return "Saving…";
     case "saved":

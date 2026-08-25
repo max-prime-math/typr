@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { getSmartNewlineInsertion } from "./editorWhitespace";
+import { getOwnLineInsertion, getSmartNewlineInsertion } from "./editorWhitespace";
+
+describe("getOwnLineInsertion", () => {
+  it("replaces a blank line and leaves the cursor at its beginning", () => {
+    const source = "before\n   \nafter";
+
+    expect(getOwnLineInsertion(source, 9, "\\input{figure.tikz}")).toEqual({
+      cursor: 7,
+      from: 7,
+      insert: "\\input{figure.tikz}",
+      to: 10
+    });
+  });
+
+  it("inserts below a line with content and leaves the cursor before the command", () => {
+    const source = "before\nafter";
+
+    expect(getOwnLineInsertion(source, 3, "\\input{figure.tikz}")).toEqual({
+      cursor: 7,
+      from: 6,
+      insert: "\n\\input{figure.tikz}",
+      to: 6
+    });
+  });
+
+  it("inserts below the final line without adding a trailing blank line", () => {
+    const source = "before";
+
+    expect(getOwnLineInsertion(source, source.length, "\\input{figure.tikz}")).toEqual({
+      cursor: 7,
+      from: 6,
+      insert: "\n\\input{figure.tikz}",
+      to: 6
+    });
+  });
+});
 
 describe("getSmartNewlineInsertion", () => {
   it("continues the current indentation on blank content", () => {

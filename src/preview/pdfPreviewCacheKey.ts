@@ -1,6 +1,15 @@
-import { hashSampledByteContent } from "../utils/contentHash";
+import { hashByteContent } from "../utils/contentHash";
 
-/** Builds the stable sampled key used to reuse rendered PDF preview pages. */
+const pdfContentHashCache = new WeakMap<Uint8Array, string>();
+
+/** Builds a content-exact key used to reuse rendered PDF preview pages. */
 export function createPdfPreviewCacheKey(scope: string, content: Uint8Array): string {
-  return `${scope}:${content.byteLength}:${hashSampledByteContent(content, { radix: 36 })}`;
+  let contentHash = pdfContentHashCache.get(content);
+
+  if (!contentHash) {
+    contentHash = hashByteContent(content, 36);
+    pdfContentHashCache.set(content, contentHash);
+  }
+
+  return `${scope}:${content.byteLength}:${contentHash}`;
 }

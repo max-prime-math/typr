@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -6,6 +7,7 @@ import {
   useState,
   type MutableRefObject
 } from "react";
+import { getEditorInputWaitMs } from "../editor/inputPriority";
 import {
   createTypstCompiler,
   type CompileResult,
@@ -124,8 +126,10 @@ export function useCompilePreviewController<CompileTrigger extends string>({
 
   const handleCompilerStatusChange = useCallback(
     (status: CompilerStatus) => {
-      setCompilerStatus(status);
-      onCompilerStatusChange?.(status);
+      startTransition(() => {
+        setCompilerStatus(status);
+        onCompilerStatusChange?.(status);
+      });
     },
     [onCompilerStatusChange]
   );
@@ -150,10 +154,22 @@ export function useCompilePreviewController<CompileTrigger extends string>({
       clearScheduledCompile();
       compileFrameRef.current = window.requestAnimationFrame(() => {
         compileFrameRef.current = null;
-        compileTimerRef.current = window.setTimeout(() => {
+        const startedAt = performance.now();
+        const runWhenInputIsQuiet = () => {
+          const debounceWaitMs = Math.max(0, delayMs - (performance.now() - startedAt));
+          const inputWaitMs = getEditorInputWaitMs();
+          const waitMs = Math.max(debounceWaitMs, inputWaitMs);
+
+          if (waitMs > 0) {
+            compileTimerRef.current = window.setTimeout(runWhenInputIsQuiet, waitMs);
+            return;
+          }
+
           compileTimerRef.current = null;
           void runCompile();
-        }, delayMs);
+        };
+
+        runWhenInputIsQuiet();
       });
     },
     [clearScheduledCompile]
@@ -202,25 +218,27 @@ export function useCompilePreviewController<CompileTrigger extends string>({
             ? "Compiling LaTeX"
             : "Compiling"
       };
-      setIsCompiling(true);
-      if (!isQueuedBehindAnotherCompile) {
-        setCompilerStatus(nextCompilerStatus);
-      }
-      setCompilePreviewsByPath((currentPreviews) => {
-        const currentPreview =
-          currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+      startTransition(() => {
+        setIsCompiling(true);
+        if (!isQueuedBehindAnotherCompile) {
+          setCompilerStatus(nextCompilerStatus);
+        }
+        setCompilePreviewsByPath((currentPreviews) => {
+          const currentPreview =
+            currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
 
-        return {
-          ...currentPreviews,
-          [sourcePathKey]: {
-            ...currentPreview,
-            compilerStatus: {
-              ...nextCompilerStatus,
-              mode: currentPreview.compilerStatus.mode
-            },
-            isCompiling: true
-          }
-        };
+          return {
+            ...currentPreviews,
+            [sourcePathKey]: {
+              ...currentPreview,
+              compilerStatus: {
+                ...nextCompilerStatus,
+                mode: currentPreview.compilerStatus.mode
+              },
+              isCompiling: true
+            }
+          };
+        });
       });
 
       if (compileInFlightRef.current) {
@@ -232,11 +250,13 @@ export function useCompilePreviewController<CompileTrigger extends string>({
 
         if (shouldCancelInFlightLatexCompile) {
           compileRequestRef.current += 1;
-          setCompilerStatus({
-            phase: "compiling",
-            mode: "worker",
-            label: "Cancelling stale LaTeX compile",
-            detail: "A newer edit is ready; stopping the current BusyTeX worker"
+          startTransition(() => {
+            setCompilerStatus({
+              phase: "compiling",
+              mode: "worker",
+              label: "Cancelling stale LaTeX compile",
+              detail: "A newer edit is ready; stopping the current BusyTeX worker"
+            });
           });
           cancelLatexCompile();
         }
@@ -279,32 +299,34 @@ export function useCompilePreviewController<CompileTrigger extends string>({
       if (typstSignature !== undefined) {
         readyTypstPreviewSignatureRef.current = typstSignature;
       }
-      setIsCompiling(false);
-      setCompileResult(result);
-      setLastSuccessfulResult(result);
-      setCompilerStatus(readyStatus);
-      setCompilePreviewsByPath((currentPreviews) => {
-        const nextPreviews = { ...currentPreviews };
+      startTransition(() => {
+        setIsCompiling(false);
+        setCompileResult(result);
+        setLastSuccessfulResult(result);
+        setCompilerStatus(readyStatus);
+        setCompilePreviewsByPath((currentPreviews) => {
+          const nextPreviews = { ...currentPreviews };
 
-        for (const sourcePath of sourcePaths) {
-          const normalizedSourcePath = normalizeWorkspacePath(sourcePath);
+          for (const sourcePath of sourcePaths) {
+            const normalizedSourcePath = normalizeWorkspacePath(sourcePath);
 
-          if (!normalizedSourcePath) {
-            continue;
+            if (!normalizedSourcePath) {
+              continue;
+            }
+
+            nextPreviews[normalizedSourcePath] = createCompilePreviewState(
+              normalizedSourcePath,
+              {
+                result,
+                lastSuccessfulResult: result,
+                compilerStatus: readyStatus,
+                isCompiling: false
+              }
+            );
           }
 
-          nextPreviews[normalizedSourcePath] = createCompilePreviewState(
-            normalizedSourcePath,
-            {
-              result,
-              lastSuccessfulResult: result,
-              compilerStatus: readyStatus,
-              isCompiling: false
-            }
-          );
-        }
-
-        return nextPreviews;
+          return nextPreviews;
+        });
       });
     },
     []

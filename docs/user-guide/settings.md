@@ -52,6 +52,7 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 | Typr Companion URL | Connects Typr to the optional native Companion service. |
 | Typr Companion API key | Authenticates status, compilation, workspace, and live-preview requests when the Companion requires API keys. The masked secret is stored in this browser's IndexedDB. |
 | Live compilation | Recompiles the active Typst document automatically while editing. |
+| Compile on save | Compiles the active document when `:w`, `:write`, or `:wq` is invoked in Vim mode. Enabled by default. |
 | Lint while editing | Shows browser-available diagnostics in the source editor. |
 | Format on compile | Runs the selected formatter before compile or Markdown preview. |
 | Vim mode | Enables modal motions, operators, and normal-mode editing. |

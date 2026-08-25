@@ -1,6 +1,10 @@
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, showTooltip, ViewPlugin, type Tooltip, type ViewUpdate } from "@codemirror/view";
-import { renderTypstSourceToSvg } from "../compiler/typstRuntime";
+import { createIsolatedTypstCompiler } from "../compiler/typstCompiler";
+import {
+  subscribeToEditorInputActivity,
+  waitForEditorInputIdle
+} from "./inputPriority";
 
 interface TypstMathPreviewRange {
   from: number;
@@ -11,6 +15,8 @@ interface TypstMathPreviewRange {
 
 const MIN_PREVIEW_LENGTH = 1;
 const setTypstMathPreviewTooltip = StateEffect.define<Tooltip | null>();
+let mathPreviewCompiler: ReturnType<typeof createIsolatedTypstCompiler> | null = null;
+let isMathPreviewInputPreemptionRegistered = false;
 
 const typstMathPreviewTooltipField = StateField.define<Tooltip | null>({
   create: () => null,
@@ -59,11 +65,36 @@ export function typstMathPreview(): Extension {
         this.dispatchTooltip(null);
         const requestId = ++this.requestId;
 
-        renderTypstSourceToSvg(buildTypstMathPreviewSource(range, getTypstPreviewTextColor(this.view.dom)), [], {
-          mainFilePath: "typst-math-preview.typ"
-        })
-          .then((svg) => {
+        waitForEditorInputIdle()
+          .then(() => {
             if (requestId !== this.requestId || !this.currentRange || !areRangesEqual(this.currentRange, range)) {
+              return null;
+            }
+
+            mathPreviewCompiler ??= createMathPreviewCompiler();
+            return mathPreviewCompiler.compileDocument(
+              buildTypstMathPreviewSource(range, getTypstPreviewTextColor(this.view.dom)),
+              [],
+              { mainFilePath: "typst-math-preview.typ" }
+            );
+          })
+          .then((result) => {
+            if (result === null) {
+              return null;
+            }
+
+            if (!result.ok || result.output.kind !== "svg") {
+              throw new Error(
+                result.ok
+                  ? "Typst math preview did not produce SVG output."
+                  : result.errors[0]?.message ?? "Typst math preview failed."
+              );
+            }
+
+            return result.output.content;
+          })
+          .then((svg) => {
+            if (svg === null || requestId !== this.requestId || !this.currentRange || !areRangesEqual(this.currentRange, range)) {
               return;
             }
             this.dispatchTooltip(createTypstMathTooltip(range, svg));
@@ -123,6 +154,18 @@ export function typstMathPreview(): Extension {
       }
     })
   ];
+}
+
+function createMathPreviewCompiler(): ReturnType<typeof createIsolatedTypstCompiler> {
+  if (!isMathPreviewInputPreemptionRegistered) {
+    isMathPreviewInputPreemptionRegistered = true;
+    subscribeToEditorInputActivity(() => {
+      mathPreviewCompiler?.dispose();
+      mathPreviewCompiler = null;
+    });
+  }
+
+  return createIsolatedTypstCompiler();
 }
 
 export function getTypstMathPreviewRange(source: string, position: number): TypstMathPreviewRange | null {

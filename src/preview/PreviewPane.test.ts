@@ -1,16 +1,55 @@
 import { describe, expect, it } from "vitest";
 import { createPdfPreviewCacheKey } from "./pdfPreviewCacheKey";
+import {
+  clampPdfPageNumber,
+  normalizePdfWheelEventDelta,
+  resolveCurrentPdfPage
+} from "./pdfPageNavigation";
 import { zoomPreviewByWheel } from "./previewZoom";
 import { resolvePdfCanvasResolution, shouldUpgradePdfCanvasResolution } from "./pdfCanvasResolution";
 
 describe("PDF preview cache keys", () => {
-  it("preserves the legacy sampled byte key format", () => {
+  it("hashes the complete PDF rather than a sparse byte sample", () => {
     const bytes = Uint8Array.from({ length: 256 }, (_, index) => index);
+    const changedOutsideLegacySample = bytes.slice();
+    changedOutsideLegacySample[1] ^= 0xff;
 
     expect(createPdfPreviewCacheKey("workspace:paper.pdf", bytes)).toBe(
-      "workspace:paper.pdf:256:xq2t6t"
+      "workspace:paper.pdf:256:144sds5"
     );
+    expect(createPdfPreviewCacheKey("workspace:paper.pdf", changedOutsideLegacySample))
+      .not.toBe(createPdfPreviewCacheKey("workspace:paper.pdf", bytes));
   });
+});
+
+describe("PDF page navigation", () => {
+  const pages = [
+    { height: 800, pageNumber: 1, top: 0 },
+    { height: 800, pageNumber: 2, top: 800 },
+    { height: 800, pageNumber: 3, top: 1600 }
+  ];
+
+  it("selects the page occupying most of the viewport", () => {
+    expect(resolveCurrentPdfPage(pages, 650, 500)).toBe(2);
+    expect(resolveCurrentPdfPage(pages, 1450, 500)).toBe(3);
+  });
+
+  it("uses viewport proximity to resolve an exact page boundary", () => {
+    expect(resolveCurrentPdfPage(pages, 600, 400)).toBe(1);
+  });
+
+  it("clamps typed page numbers to the document", () => {
+    expect(clampPdfPageNumber(-4, 12)).toBe(1);
+    expect(clampPdfPageNumber(7, 12)).toBe(7);
+    expect(clampPdfPageNumber(99, 12)).toBe(12);
+  });
+
+  it("normalizes wheel deltas using PDF.js page-navigation units", () => {
+    expect(normalizePdfWheelEventDelta({ deltaMode: 0, deltaX: 0, deltaY: 90 })).toBeCloseTo(-0.1);
+    expect(normalizePdfWheelEventDelta({ deltaMode: 1, deltaX: 0, deltaY: -3 })).toBeCloseTo(0.1);
+    expect(normalizePdfWheelEventDelta({ deltaMode: 2, deltaX: 0, deltaY: 1 })).toBe(-1);
+  });
+
 });
 
 

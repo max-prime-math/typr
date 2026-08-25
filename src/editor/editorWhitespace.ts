@@ -2,6 +2,37 @@ import type { SourceLanguage } from "../compiler/sourceFileTypes";
 
 export const EDITOR_INDENT = "  ";
 
+export interface OwnLineInsertion {
+  cursor: number;
+  from: number;
+  insert: string;
+  to: number;
+}
+
+export function getOwnLineInsertion(
+  source: string,
+  position: number,
+  text: string
+): OwnLineInsertion {
+  const line = getLineAt(source, position);
+
+  if (!line.text.trim()) {
+    return {
+      cursor: line.from,
+      from: line.from,
+      insert: text,
+      to: line.to
+    };
+  }
+
+  return {
+    cursor: line.to + 1,
+    from: line.to,
+    insert: `\n${text}`,
+    to: line.to
+  };
+}
+
 export function getSmartNewlineInsertion(
   source: string,
   position: number,

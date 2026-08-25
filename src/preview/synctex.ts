@@ -216,7 +216,9 @@ function parseSynctexBoxLine(
     .match(/-?\d+/g)
     ?.map((value) => Number.parseInt(value, 10)) ?? [];
 
-  if (numbers.length < 6) {
+  // Character records contain tag, line, x, and y only. Box records add
+  // width, height, and depth; kern/glue records sit between those forms.
+  if (numbers.length < 4) {
     return null;
   }
 

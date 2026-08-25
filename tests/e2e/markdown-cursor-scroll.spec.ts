@@ -22,6 +22,52 @@ async function getPaneScrollOffsets(page: Page) {
   );
 }
 
+async function getDocumentScrollOffset(page: Page) {
+  return page.evaluate(() => ({
+    bodyLeft: document.body.scrollLeft,
+    bodyTop: document.body.scrollTop,
+    documentLeft: document.documentElement.scrollLeft,
+    documentTop: document.documentElement.scrollTop,
+    windowX: window.scrollX,
+    windowY: window.scrollY
+  }));
+}
+
+test("typing scrolls only the editor viewport, never the document", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  const editor = page.locator(".cm-content").first();
+  const editorScroller = page.locator(".cm-scroller").first();
+  await editor.click();
+  await page.keyboard.press("Control+End");
+
+  for (let index = 0; index < 80; index += 1) {
+    await page.keyboard.insertText(`\nTyping line ${index + 1}`);
+  }
+
+  await expect.poll(() => editorScroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await getDocumentScrollOffset(page)).toEqual({
+    bodyLeft: 0,
+    bodyTop: 0,
+    documentLeft: 0,
+    documentTop: 0,
+    windowX: 0,
+    windowY: 0
+  });
+  expect(await getLayoutScrollOffsets(page)).toEqual([
+    { left: 0, top: 0 },
+    { left: 0, top: 0 },
+    { left: 0, top: 0 },
+    { left: 0, top: 0 }
+  ]);
+});
+
 test("Markdown cursor sync scrolls only the preview viewport", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator("html")).toHaveAttribute(
@@ -105,6 +151,58 @@ test("Markdown cursor sync scrolls only the preview viewport", async ({ page }) 
   });
 });
 
+test("source and Markdown preview scroll positions survive a reload", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  const source = Array.from(
+    { length: 240 },
+    (_, index) => `## Persistent section ${index + 1}\n\nPersistent paragraph ${index + 1}.`
+  ).join("\n\n");
+
+  const editor = page.locator(".cm-content").first();
+  await editor.click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(source);
+  const editorScroller = page.locator(".cm-scroller");
+  const previewScroller = page.locator(".preview-document--markdown");
+  await expect(previewScroller).toBeVisible();
+  await expect(page.locator(".preview-markdown")).toContainText("Persistent section 240");
+  await editorScroller.evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 }));
+    element.scrollTop = Math.min(1300, element.scrollHeight - element.clientHeight);
+  });
+  await previewScroller.evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 }));
+    element.scrollTop = Math.min(1700, element.scrollHeight - element.clientHeight);
+  });
+
+  const beforeReload = {
+    editor: await editorScroller.evaluate((element) => element.scrollTop),
+    preview: await previewScroller.evaluate((element) => element.scrollTop)
+  };
+  expect(beforeReload.editor).toBeGreaterThan(500);
+  expect(beforeReload.preview).toBeGreaterThan(500);
+  await page.waitForTimeout(180);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+  await expect(page.locator(".preview-document--markdown")).toBeVisible();
+
+  await expect.poll(() => page.locator(".cm-scroller").evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(beforeReload.editor - 30);
+  await expect.poll(() => page.locator(".preview-document--markdown").evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(beforeReload.preview - 30);
+});
+
 test("file-tree and tab reveals stay inside their own scrollers", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator("html")).toHaveAttribute(
@@ -157,6 +255,120 @@ test("file-tree and tab reveals stay inside their own scrollers", async ({ page 
   paneTopsAfter.forEach((top, index) => {
     expect(top).toBeCloseTo(paneTopsBefore[index], 1);
   });
+});
+
+test("smooth Vim cursor stays aligned with its document position while scrolling", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const settings = page.getByRole("region", { name: "Typr settings" });
+  await settings.getByRole("tab", { name: "Themes", exact: true }).click();
+  await settings.getByRole("checkbox", { name: /Smear Cursor/ }).check();
+  await settings.getByRole("tab", { name: "Editor", exact: true }).click();
+  await settings.getByRole("checkbox", { name: /Vim mode/ }).check();
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
+
+  const source = Array.from(
+    { length: 200 },
+    (_, index) => `Line ${index + 1}: smooth cursor scrolling regression coverage.`
+  ).join("\n");
+
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: "smooth-cursor-scroll.typ",
+    mimeType: "text/plain",
+    buffer: Buffer.from(source)
+  });
+
+  const treeItem = page.getByRole("treeitem", { name: /smooth-cursor-scroll\.typ/ });
+  await treeItem.click();
+  await treeItem.dblclick();
+
+  const editor = page.locator(".cm-content");
+  await editor.click({ position: { x: 180, y: 300 } });
+  await page.keyboard.press("Escape");
+
+  const smoothCursor = page.locator(".cm-smooth-cursor");
+  await expect(smoothCursor).toHaveClass(/cm-smooth-cursor--visible/);
+  await page.waitForTimeout(400);
+  const cursorBefore = await smoothCursor.boundingBox();
+  expect(cursorBefore).not.toBeNull();
+
+  const scroller = page.locator(".cm-scroller");
+  const scrollDelta = 48;
+  await scroller.evaluate((element, delta) => {
+    element.scrollTop += delta;
+  }, scrollDelta);
+
+  await expect.poll(async () => (await smoothCursor.boundingBox())?.y ?? Number.NaN)
+    .toBeLessThan(cursorBefore!.y - 30);
+  const cursorAfter = await smoothCursor.boundingBox();
+  expect(cursorAfter).not.toBeNull();
+  expect(cursorAfter!.y).toBeCloseTo(cursorBefore!.y - scrollDelta, 0);
+
+  const cursorHeightBeforeCommand = cursorAfter!.height;
+  await page.keyboard.press(":");
+  await expect(page.locator(".cm-vim-panel input")).toBeFocused();
+  await expect(smoothCursor).toBeVisible();
+  await expect(smoothCursor).toHaveCSS("opacity", "1");
+  await expect(smoothCursor).toHaveClass(/cm-smooth-cursor--vim-command/);
+  await expect(smoothCursor).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(smoothCursor).toHaveCSS("border-color", "rgb(255, 150, 150)");
+  await expect.poll(async () => (await smoothCursor.boundingBox())?.height ?? 0)
+    .toBeCloseTo(cursorHeightBeforeCommand, 0);
+  await page.keyboard.press("Escape");
+  await expect(editor).toBeFocused();
+  await expect(smoothCursor).not.toHaveClass(/cm-smooth-cursor--vim-command/);
+  await expect.poll(async () => (await smoothCursor.boundingBox())?.height ?? 0)
+    .toBeCloseTo(cursorHeightBeforeCommand, 0);
+});
+
+test("Vim visual selections cycle through inline and display math delimiters", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const settings = page.getByRole("region", { name: "Typr settings" });
+  await settings.getByRole("tab", { name: "Editor", exact: true }).click();
+  await settings.getByRole("checkbox", { name: /^Vim mode/ }).check();
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
+
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: "vim-math-selection.typ",
+    mimeType: "text/plain",
+    buffer: Buffer.from("alpha beta")
+  });
+
+  const treeItem = page.getByRole("treeitem", { name: /vim-math-selection\.typ/ });
+  await treeItem.click();
+  await treeItem.dblclick();
+
+  const editor = page.locator(".cm-content");
+  const line = page.locator(".cm-line").first();
+  await editor.click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("0");
+  await page.keyboard.press("v");
+  await page.keyboard.press("4");
+  await page.keyboard.press("l");
+  await expect(page.locator(".cm-selectionBackground")).toHaveCount(1);
+
+  await page.keyboard.press("$");
+  await expect(line).toHaveText("$alpha$ beta");
+
+  await page.keyboard.press("$");
+  await expect(line).toHaveText("$$alpha$$ beta");
+
+  await page.keyboard.press("$");
+  await expect(line).toHaveText("alpha beta");
 });
 
 test("plain-text cursor movement and terminal focus cannot move pane containers", async ({

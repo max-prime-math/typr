@@ -5,11 +5,23 @@ import {
   type CompanionCapabilities,
   type CompanionStatusResponse,
   type CompileRequest,
-  type CompileResult,
+  type CompileResult as ProtocolCompileResult,
   type WorkspaceFileListResponse,
   type WorkspaceFileMetadata,
   type WorkspaceFileResponse
 } from "@max-prime-math/typr-companion-protocol";
+
+export interface CompanionSynctexOutput {
+  path: string;
+  mediaType: "application/gzip";
+  encoding: "base64";
+  content: string;
+}
+
+/** v1-compatible extension implemented by newer Typr Server releases. */
+export type CompanionCompileResult =
+  | (Extract<ProtocolCompileResult, { ok: true }> & { synctex?: CompanionSynctexOutput })
+  | Extract<ProtocolCompileResult, { ok: false }>;
 
 export const DEFAULT_COMPANION_BASE_URL =
   import.meta.env.VITE_TYPR_COMPANION_URL?.trim() || "http://127.0.0.1:8484";
@@ -108,7 +120,7 @@ export class CompanionClient {
     }
   }
 
-  async compile(request: CompileRequest): Promise<CompileResult> {
+  async compile(request: CompileRequest): Promise<CompanionCompileResult> {
     let response: Response;
     try {
       response = await this.fetchImplementation(this.url(TYPR_COMPANION_ROUTES.compile), this.authenticatedRequest({
@@ -337,7 +349,7 @@ export function parseCompanionStatus(value: unknown): Result<CompanionStatusResp
     : capabilities;
 }
 
-export function parseCompileResult(value: unknown): Result<CompileResult> {
+export function parseCompileResult(value: unknown): Result<CompanionCompileResult> {
   if (!isRecord(value) || typeof value.ok !== "boolean" || typeof value.engine !== "string" || typeof value.log !== "string") {
     return invalid("Companion compile response has an invalid shape.");
   }
@@ -345,12 +357,15 @@ export function parseCompileResult(value: unknown): Result<CompileResult> {
     if (!isRecord(value.output) || value.output.mediaType !== "application/pdf" || value.output.encoding !== "base64" || typeof value.output.path !== "string" || !isBase64(value.output.content) || !isFiniteNumber(value.durationMs)) {
       return invalid("Companion success response is missing a valid PDF output.");
     }
-    return { ok: true, value: value as unknown as CompileResult };
+    if (value.synctex !== undefined && (!isRecord(value.synctex) || value.synctex.mediaType !== "application/gzip" || value.synctex.encoding !== "base64" || typeof value.synctex.path !== "string" || !isBase64(value.synctex.content))) {
+      return invalid("Typr Server success response has invalid SyncTeX output.");
+    }
+    return { ok: true, value: value as unknown as CompanionCompileResult };
   }
   if (!Array.isArray(value.errors) || !value.errors.every(isCompileError) || (value.durationMs !== undefined && !isFiniteNumber(value.durationMs))) {
     return invalid("Companion failure response has invalid errors.");
   }
-  return { ok: true, value: value as unknown as CompileResult };
+  return { ok: true, value: value as unknown as CompanionCompileResult };
 }
 
 type Result<T> = { ok: true; value: T } | { ok: false; message: string };
