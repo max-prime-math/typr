@@ -52,6 +52,7 @@ Use Editor settings for source editing, compile behavior, and browser tooling.
 | Typr Server URL | Connects Typr to the optional native Typr Server service. |
 | Typr Server API key | Authenticates status, compilation, workspace, and live-preview requests when Typr Server requires API keys. The masked secret is stored in this browser's IndexedDB. |
 | Live compilation | Recompiles the active Typst document automatically while editing. |
+| Compile on save | Compiles the active document when `:w`, `:write`, or `:wq` is invoked in Vim mode. Enabled by default. |
 | Lint while editing | Shows browser-available diagnostics in the source editor. |
 | Format on compile | Runs the selected formatter before compile or Markdown preview. |
 | Line wrap | Wraps long source lines instead of scrolling sideways. |

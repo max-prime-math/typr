@@ -20,6 +20,8 @@ Open **Settings → Keybindings** to view, search, change, reset, or resolve con
 | New file | <kbd>Alt</kbd>+<kbd>N</kbd> |
 | Rename selected file | <kbd>Alt</kbd>+<kbd>R</kbd> |
 
+When Vim mode is enabled, `:w` and `:write` invoke Typr's save action. With **Compile on save** enabled (the default), this compiles the active document. `:wq` invokes the same save action and then closes the source tab.
+
 ## Multiple cursors
 
 | Action | Default |

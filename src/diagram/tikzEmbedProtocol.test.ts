@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isTrustedTikzEditorEvent,
+  isTikzSvgExportPending,
   parseTikzEditorMessage
 } from "./tikzEmbedProtocol";
 
@@ -39,5 +40,17 @@ describe("TikZ embed protocol", () => {
         "https://typr.test"
       )
     ).toBe(false);
+  });
+
+  it("recognizes SVG exports that are still waiting for the preview", () => {
+    expect(isTikzSvgExportPending({}, "")).toBe(true);
+    expect(
+      isTikzSvgExportPending(
+        { error: "SVG is not ready yet. Wait for the preview to finish rendering and try again." },
+        ""
+      )
+    ).toBe(true);
+    expect(isTikzSvgExportPending({ error: "The figure is invalid." }, "")).toBe(false);
+    expect(isTikzSvgExportPending({}, "<svg />")).toBe(false);
   });
 });

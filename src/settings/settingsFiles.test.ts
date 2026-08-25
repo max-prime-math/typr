@@ -14,6 +14,27 @@ describe("settings files", () => {
     expect(result.error).toBeNull();
     expect(result.preferences.vimMode).toBe(true);
     expect(result.preferences.liveCompilation).toBe(false);
+    expect(result.preferences.compileOnSave).toBe(true);
+  });
+
+  it("persists compile on save", () => {
+    const snapshot = createDefaultSnapshot();
+    const result = parseSettingsFile("editor.json", '{"compileOnSave": false}', snapshot);
+
+    expect(result.error).toBeNull();
+    expect(result.preferences.compileOnSave).toBe(false);
+  });
+
+  it("persists the diagram directory anchor", () => {
+    const snapshot = createDefaultSnapshot();
+    const result = parseSettingsFile(
+      "editor.json",
+      '{"diagramDirectoriesRelativeToFile": false}',
+      snapshot
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.preferences.diagramDirectoriesRelativeToFile).toBe(false);
   });
 
   it("ignores a corrupt file and resets only its group", () => {
@@ -31,6 +52,10 @@ describe("settings files", () => {
     const project = createSettingsProject(defaults);
     expect(isSettingsProject(project)).toBe(true);
     expect(readSettingsProjectFile(project, "editor.json")).toContain('"vimMode"');
+    expect(readSettingsProjectFile(project, "editor.json")).toContain('"compileOnSave"');
+    expect(readSettingsProjectFile(project, "editor.json")).toContain(
+      '"diagramDirectoriesRelativeToFile"'
+    );
     expect(project.selection.activeFilePath).toBe("editor.json");
   });
 

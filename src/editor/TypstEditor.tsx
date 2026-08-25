@@ -25,13 +25,18 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { setDiagnostics } from "@codemirror/lint";
 import { getCM, Vim } from "@replit/codemirror-vim";
-import { createEditorState, diagnosticsCompartment } from "./codemirrorSetup";
+import {
+  applyMathDelimiterKey,
+  createEditorState,
+  diagnosticsCompartment
+} from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
 import { toggleTextFormatInView, type TextFormatKind } from "./textFormatting";
 import { smoothCursorJumpEffect } from "./smoothCursor";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
+import { markEditorInputActivity } from "./inputPriority";
 import type { KeybindingMap } from "../app/keybindings";
 import { createEditorDiagnosticExtensions, toCodeMirrorDiagnostics } from "./editorDiagnostics";
 import {
@@ -40,6 +45,9 @@ import {
   isPositionInsideMathMode,
   type SnippetDefinition
 } from "../snippets/snippets";
+import { attachPersistentScrollPosition } from "../utils/scrollPersistence";
+import { getOwnLineInsertion } from "./editorWhitespace";
+import { getMinimalTextChange, resolveControlledValue } from "./controlledValueSync";
 
 export interface TypstEditorSelection {
   lineNumber: number;
@@ -66,8 +74,10 @@ interface TypstEditorProps {
   highlightErrors: boolean;
   language?: SourceLanguage;
   snippets: SnippetDefinition[];
+  scrollPersistenceKey?: string;
   onSearchRequested: () => void;
   onCompileRequested: () => void;
+  onSaveRequested?: () => void;
   onFormatRequested: () => void;
   onToggleLineWrap: () => void;
   onCloseRequested: () => void;
@@ -160,6 +170,7 @@ export interface TypstEditorHandle {
   insertTextAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
   insertLatexGraphic(text: string): void;
   insertLatexGraphicAndSelectRange(text: string, selectionStart: number, selectionEnd: number): { from: number; to: number } | null;
+  insertLatexCommandOnOwnLineWithPackages(command: string, packageNames: string[]): void;
   insertLatexTemplateWithPackages(template: string, packageNames: string[]): void;
   replaceRangeWithLatexTemplateWithPackages(from: number, to: number, template: string, packageNames: string[]): void;
   replaceRangeWithTemplate(from: number, to: number, template: string): void;
@@ -203,8 +214,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   highlightErrors,
   language = "typst",
   snippets,
+  scrollPersistenceKey,
   onSearchRequested,
   onCompileRequested,
+  onSaveRequested,
   onFormatRequested,
   onToggleLineWrap,
   onCloseRequested,
@@ -221,6 +234,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const currentValueRef = useRef(value);
+  const hasPendingLocalValueRef = useRef(false);
   const isApplyingExternalValueRef = useRef(false);
   const latestOnChangeRef = useRef(onChange);
   const latestOnTextChangesRef = useRef(onTextChanges);
@@ -233,6 +247,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const latestOnImageRenameKeyRef = useRef(onImageRenameKey);
   const latestOnSearchRequestedRef = useRef(onSearchRequested);
   const latestOnCompileRequestedRef = useRef(onCompileRequested);
+  const latestOnSaveRequestedRef = useRef(onSaveRequested);
   const latestOnFormatRequestedRef = useRef(onFormatRequested);
   const latestOnCloseRequestedRef = useRef(onCloseRequested);
   const snippetsRef = useRef(snippets);
@@ -292,6 +307,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   }, [onCompileRequested]);
 
   useEffect(() => {
+    latestOnSaveRequestedRef.current = onSaveRequested;
+  }, [onSaveRequested]);
+
+  useEffect(() => {
     latestOnFormatRequestedRef.current = onFormatRequested;
   }, [onFormatRequested]);
 
@@ -349,7 +368,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertTextIntoView(view, text);
-        view.focus();
+        focusEditorView(view);
       },
       insertTextAndSelect(text) {
         const view = viewRef.current;
@@ -359,7 +378,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertTextIntoView(view, text, true);
-        view.focus();
+        focusEditorView(view);
       },
       insertTextAndSelectRange(text, selectionStart, selectionEnd) {
         const view = viewRef.current;
@@ -369,7 +388,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         const range = insertTextIntoView(view, text, { selectionStart, selectionEnd });
-        view.focus();
+        focusEditorView(view);
         return range;
       },
       insertLatexGraphic(text) {
@@ -380,7 +399,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertLatexGraphicIntoView(view, text, true);
-        view.focus();
+        focusEditorView(view);
       },
       insertLatexGraphicAndSelectRange(text, selectionStart, selectionEnd) {
         const view = viewRef.current;
@@ -390,8 +409,18 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         const range = insertLatexGraphicIntoView(view, text, { selectionStart, selectionEnd });
-        view.focus();
+        focusEditorView(view);
         return range;
+      },
+      insertLatexCommandOnOwnLineWithPackages(command, packageNames) {
+        const view = viewRef.current;
+
+        if (!view) {
+          return;
+        }
+
+        insertLatexCommandOnOwnLineWithPackagesIntoView(view, command, packageNames);
+        focusEditorView(view);
       },
       insertLatexTemplateWithPackages(template, packageNames) {
         const view = viewRef.current;
@@ -401,7 +430,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertLatexTemplateWithPackagesIntoView(view, template, packageNames);
-        view.focus();
+        focusEditorView(view);
       },
       replaceRangeWithLatexTemplateWithPackages(from, to, template, packageNames) {
         const view = viewRef.current;
@@ -411,7 +440,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertLatexTemplateWithPackagesIntoView(view, template, packageNames, { from, to });
-        view.focus();
+        focusEditorView(view);
       },
       replaceRangeWithTemplate(from, to, template) {
         const view = viewRef.current;
@@ -422,7 +451,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
 
         const range = clampEditorRange(view, { from, to });
         insertSnippetIntoView(view, template, range.from, range.to);
-        view.focus();
+        focusEditorView(view);
       },
       insertTemplate(template) {
         const view = viewRef.current;
@@ -432,7 +461,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertSnippetIntoView(view, template);
-        view.focus();
+        focusEditorView(view);
       },
       insertMathTemplate(template) {
         const view = viewRef.current;
@@ -447,7 +476,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
           : `$${template}$`;
 
         insertSnippetIntoView(view, insertion);
-        view.focus();
+        focusEditorView(view);
       },
       insertSymbol(snippet) {
         const view = viewRef.current;
@@ -457,7 +486,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         insertSymbolIntoView(view, snippet);
-        view.focus();
+        focusEditorView(view);
       },
       surroundSelection(before, after = before) {
         const view = viewRef.current;
@@ -467,7 +496,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         wrapSelection(view, before, after);
-        view.focus();
+        focusEditorView(view);
       },
       toggleCurrentLines(prefix, alternatePrefix) {
         const view = viewRef.current;
@@ -477,7 +506,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         toggleCurrentLines(view, prefix, alternatePrefix);
-        view.focus();
+        focusEditorView(view);
       },
       cycleCurrentLinesHeading(maxLevel = 4) {
         const view = viewRef.current;
@@ -487,7 +516,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         cycleCurrentLinesHeading(view, maxLevel);
-        view.focus();
+        focusEditorView(view);
       },
       toggleMathMode() {
         const view = viewRef.current;
@@ -497,7 +526,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         }
 
         cycleMathDelimiter(view);
-        view.focus();
+        focusEditorView(view);
       },
       toggleTextFormat(kind) {
         const view = viewRef.current;
@@ -512,14 +541,14 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         const view = viewRef.current;
         if (view) {
           undo(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       redo() {
         const view = viewRef.current;
         if (view) {
           redo(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       search() {
@@ -529,7 +558,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         const view = viewRef.current;
         if (view) {
           gotoLine(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       selectAll() {
@@ -540,7 +569,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
             selection: EditorSelection.single(0, doc.length),
             scrollIntoView: true
           });
-          view.focus();
+          focusEditorView(view);
         }
       },
       getSearchQuery() {
@@ -589,35 +618,35 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         const view = viewRef.current;
         if (view) {
           cmFindNext(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       findPrevious() {
         const view = viewRef.current;
         if (view) {
           cmFindPrevious(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       selectMatches() {
         const view = viewRef.current;
         if (view) {
           cmSelectMatches(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       replaceNext() {
         const view = viewRef.current;
         if (view) {
           cmReplaceNext(view);
-          view.focus();
+          focusEditorView(view);
         }
       },
       replaceAll() {
         const view = viewRef.current;
         if (view) {
           cmReplaceAll(view);
-          view.focus();
+          focusEditorView(view);
         }
       }
     }),
@@ -640,10 +669,13 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
             return;
           }
 
+          markEditorInputActivity();
           const previousValue = currentValueRef.current;
           const changes = getEditorTextChanges(update);
           latestOnTextChangesRef.current?.(changes, previousValue);
-          latestOnChangeRef.current(applyEditorChanges(currentValueRef, update));
+          const nextValue = applyEditorChanges(currentValueRef, update);
+          hasPendingLocalValueRef.current = true;
+          latestOnChangeRef.current(nextValue);
         },
         onSelectionChange: (update) => {
           latestOnSelectionChangeRef.current(getEditorSelectionSnapshot(update.view));
@@ -667,6 +699,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         snippetSource: snippetCompletionSource,
         onSearchRequested: () => latestOnSearchRequestedRef.current(),
         onCompileRequested: () => latestOnCompileRequestedRef.current(),
+        onSaveRequested: () => latestOnSaveRequestedRef.current?.(),
         onFormatRequested: () => latestOnFormatRequestedRef.current(),
         onToggleLineWrap,
         onCloseRequested: () => latestOnCloseRequestedRef.current(),
@@ -695,7 +728,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       view.scrollDOM.scrollLeft = preservedViewState.scrollLeft;
 
       if (preservedViewState.hadFocus) {
-        view.focus();
+        focusEditorView(view);
       }
     }
 
@@ -716,6 +749,21 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     const handleKeyDown = (event: KeyboardEvent) => {
       const selection = view.state.selection.main;
       const renameHandler = latestOnImageRenameKeyRef.current;
+
+      if (
+        event.key === "$" &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        vimMode &&
+        getCM(view)?.state.vim?.visualMode === true &&
+        selection.from !== selection.to
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        applyMathDelimiterKey(view, "$", language);
+        return;
+      }
 
       if (renameHandler) {
         const result = renameHandler(event, {
@@ -759,6 +807,11 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     viewRef.current = view;
     preservedViewStateRef.current = null;
     latestOnSelectionChangeRef.current(getEditorSelectionSnapshot(view));
+    const disposeScrollPersistence = attachPersistentScrollPosition(
+      view.scrollDOM,
+      scrollPersistenceKey,
+      { restore: preservedViewState === null }
+    );
 
     return () => {
       preservedViewStateRef.current = {
@@ -774,6 +827,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       view.dom.removeEventListener("paste", handlePaste);
       view.dom.removeEventListener("keydown", handleKeyDown, true);
       latestOnFocusChangeRef.current?.(false);
+      disposeScrollPersistence();
       view.destroy();
       viewRef.current = null;
     };
@@ -792,6 +846,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     theme,
     vimMode,
     snippetCompletionSource,
+    scrollPersistenceKey,
     onToggleLineWrap
   ]);
 
@@ -802,34 +857,32 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       return;
     }
 
-    if (value === currentValueRef.current) {
+    const resolution = resolveControlledValue(
+      currentValueRef.current,
+      value,
+      hasPendingLocalValueRef.current
+    );
+
+    if (resolution === "acknowledge") {
+      hasPendingLocalValueRef.current = false;
       return;
     }
 
-    const currentLength = view.state.doc.length;
-    const selection = view.state.selection;
-    const nextDocumentLength = value.length;
-    const selectionRanges = selection.ranges.map((range) =>
-      EditorSelection.range(
-        clampDocumentOffset(range.anchor, nextDocumentLength),
-        clampDocumentOffset(range.head, nextDocumentLength)
-      )
-    );
-    const mainSelectionIndex = Math.min(
-      selection.mainIndex,
-      Math.max(0, selectionRanges.length - 1)
-    );
+    if (resolution === "defer") {
+      return;
+    }
+
+    const change = getMinimalTextChange(currentValueRef.current, value);
+    if (!change) {
+      return;
+    }
 
     isApplyingExternalValueRef.current = true;
     view.dispatch({
-      changes: {
-        from: 0,
-        to: currentLength,
-        insert: value
-      },
-      selection: EditorSelection.create(selectionRanges, mainSelectionIndex)
+      changes: change
     });
     currentValueRef.current = value;
+    hasPendingLocalValueRef.current = false;
   }, [value]);
 
   useEffect(() => {
@@ -1024,6 +1077,42 @@ function insertLatexTemplateWithPackagesIntoView(
   });
 
   insertSnippetIntoView(view, template, nextFrom, nextTo);
+}
+
+function insertLatexCommandOnOwnLineWithPackagesIntoView(
+  view: EditorView,
+  command: string,
+  packageNames: string[]
+): void {
+  const source = view.state.doc.toString();
+  const insertionPosition = resolveInsertionRange(view).to;
+  const lineInsertion = getOwnLineInsertion(source, insertionPosition, command);
+  const packageInsertions = getLatexPackageInsertions(source, packageNames);
+  const commandChange = {
+    from: lineInsertion.from,
+    to: lineInsertion.to,
+    insert: lineInsertion.insert
+  };
+  const changes = [...packageInsertions, commandChange].sort((left, right) => {
+    if (left.from !== right.from) {
+      return left.from - right.from;
+    }
+
+    return left === commandChange ? 1 : right === commandChange ? -1 : 0;
+  });
+  const packageOffset = packageInsertions.reduce((total, insertion) => {
+    if (insertion.from > lineInsertion.cursor) {
+      return total;
+    }
+
+    return total + insertion.insert.length - ((insertion.to ?? insertion.from) - insertion.from);
+  }, 0);
+
+  view.dispatch({
+    changes,
+    selection: EditorSelection.cursor(lineInsertion.cursor + packageOffset),
+    scrollIntoView: true
+  });
 }
 
 function getLatexPackageInsertions(

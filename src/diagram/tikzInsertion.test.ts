@@ -23,7 +23,7 @@ describe("TikZ insertion policy", () => {
     })).toEqual({
       artifact: "source",
       latexPackages: ["tikz"],
-      text: "\n\\input{figures/orbit.tikz}\n"
+      text: "\\input{figures/orbit.tikz}"
     });
   });
 

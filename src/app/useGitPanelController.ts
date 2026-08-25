@@ -613,8 +613,6 @@ export function useGitPanelController({
 
   useEffect(() => {
     if (!activeMergeState || !selectedProjectRepository || !selectedMergePath) {
-      setMergeFilePreview(null);
-      setIsMergeFilePreviewLoading(false);
       return;
     }
     const file = activeMergeState.files.find((entry) => entry.path === selectedMergePath);

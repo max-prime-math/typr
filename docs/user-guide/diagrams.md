@@ -9,7 +9,12 @@ Typr includes a visual diagram tool so supporting figures can live beside source
 The diagram editor supports canvas-based shapes, strokes, assets, and reusable diagram documents. Use it for quick figures that should stay editable in the project rather than being pasted as final images.
 
 The **TikZ** tab embeds a visual TikZ editor. Each figure keeps its canonical
-`.tikz` source and generated SVG in the project's `figures` directory.
+`.tikz` source and generated SVG in a `figures` directory. By default, new Draw
+and TikZ figures use a `figures` directory beside the active document, and the
+inserted source path is relative to that document. Turn off **Document-relative
+diagram folders** under **Settings → Editor** to create new figures in the
+project-root `figures` directory instead. Existing diagrams are not moved when
+this setting changes.
 
 ## Inserting TikZ Figures
 

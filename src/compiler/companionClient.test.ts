@@ -6,6 +6,7 @@ import {
   DEFAULT_COMPANION_BASE_URL,
   isCompanionBaseUrlConfigured,
   normalizeCompanionBaseUrl,
+  parseCompileResult,
   parseCompanionStatus,
   parseWorkspaceFile,
   parseWorkspaceFileList,
@@ -28,6 +29,20 @@ const validStatus = {
 };
 
 describe("CompanionClient", () => {
+  it("accepts optional SyncTeX output and rejects malformed source maps", () => {
+    const success = {
+      ok: true,
+      engine: "pdflatex",
+      output: { path: "main.pdf", mediaType: "application/pdf", encoding: "base64", content: "JVBERg==" },
+      synctex: { path: "main.synctex.gz", mediaType: "application/gzip", encoding: "base64", content: "H4sIAA==" },
+      log: "",
+      durationMs: 10
+    };
+
+    expect(parseCompileResult(success)).toEqual({ ok: true, value: success });
+    expect(parseCompileResult({ ...success, synctex: { ...success.synctex, content: "not base64" } }).ok).toBe(false);
+  });
+
   it("accepts a valid compatible status response", async () => {
     let capturedInit: RequestInit | undefined;
     const apiKey = `typr_${"a".repeat(43)}`;

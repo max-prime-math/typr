@@ -20,7 +20,6 @@ import {
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
-const INITIAL_PDF_RENDER_BATCH_SIZE = 2;
 const PDF_CANVAS_RENDER_CACHE_LIMIT = 6;
 const PDF_PREWARM_DISPLAY_SCALE = 2;
 const PDF_PREWARM_MAX_PIXELS = 9_000_000;
@@ -31,6 +30,7 @@ const virtualizedPdfSessions = new WeakMap<HTMLElement, () => void>();
 
 export interface PdfCanvasRenderOptions {
   cacheKey?: string;
+  onPageCount?: (pageCount: number) => void;
   paperView?: boolean;
   signal?: AbortSignal;
   themeColors?: {
@@ -60,7 +60,7 @@ export async function renderPdfArtifactToCanvas(
   rememberVisiblePdfCanvasScroll(container);
   const scrollAnchor = capturePdfScrollAnchor(container);
   const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
-  const useDarkRetheme = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
+  const useNativePageColors = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
   const virtualizeBySize = shouldVirtualizePdfDocument(artifactContent.byteLength, 0);
   const renderCacheKey = virtualizeBySize ? null : createPdfCanvasRenderCacheKey(options, themeColors);
 
@@ -70,6 +70,9 @@ export async function renderPdfArtifactToCanvas(
   const restoredEntry = restorePdfCanvasRenderFromCache(container, renderCacheKey, options.zoom);
 
   if (restoredEntry?.complete) {
+    const pageCount = container.querySelectorAll(".pdf-page.canvas").length;
+    container.dataset.pdfPageCount = String(pageCount);
+    options.onPageCount?.(pageCount);
     return;
   }
 
@@ -83,8 +86,8 @@ export async function renderPdfArtifactToCanvas(
       await renderVirtualizedPdfDocument(container, pdfDocument, loadingTask, {
         ...options,
         themeColors,
-        useDarkRetheme
-      });
+        useNativePageColors
+      }, scrollAnchor);
       return;
     } catch (error) {
       await destroyPdfDocument(pdfDocument);
@@ -94,16 +97,13 @@ export async function renderPdfArtifactToCanvas(
   }
 
   try {
-    delete container.dataset.pdfVirtualized;
     assertNotAborted(options.signal);
     const startPageNumber = restoredEntry ? restoredEntry.pages.length + 1 : 1;
-
-    if (!restoredEntry) {
-      delete container.dataset.pdfCanvasRenderCacheKey;
-      container.replaceChildren();
-    }
+    const stagedPages = restoredEntry ? [...restoredEntry.pages] : [];
 
     if (restoredEntry && startPageNumber > pdfDocument.numPages) {
+      container.dataset.pdfPageCount = String(pdfDocument.numPages);
+      options.onPageCount?.(pdfDocument.numPages);
       applyPdfCanvasZoom(container, options.zoom);
       restorePdfScrollAnchor(container, scrollAnchor);
       rememberPdfCanvasRender(renderCacheKey, container, true);
@@ -117,31 +117,242 @@ export async function renderPdfArtifactToCanvas(
         pageNumber,
         container,
         PDF_RASTER_ZOOM,
-        Boolean(themeColors)
+        Boolean(themeColors && !useNativePageColors)
       );
 
-      assertNotAborted(options.signal);
-      container.appendChild(target.pageElement);
-      await renderPdfPageTarget(target, {
-        signal: options.signal,
-        themeColors,
-        useDarkRetheme
-      });
-      rememberPdfCanvasRender(renderCacheKey, container, false);
-
-      if (pageNumber === Math.min(INITIAL_PDF_RENDER_BATCH_SIZE, pdfDocument.numPages)) {
-        applyPdfCanvasZoom(container, options.zoom);
-        restorePdfScrollAnchor(container, scrollAnchor);
+      try {
+        assertNotAborted(options.signal);
+        await renderPdfPageTarget(target, {
+          signal: options.signal,
+          themeColors,
+          useNativePageColors
+        });
+        stagedPages.push(target.pageElement);
+      } finally {
+        target.page.cleanup();
       }
-
-      await yieldPdfRenderFrame(options.signal);
     }
 
+    // Keep the previous PDF visible while every page of the replacement is
+    // prepared offscreen, then publish the complete document in one frame.
+    assertNotAborted(options.signal);
+    delete container.dataset.pdfCanvasRenderCacheKey;
+    delete container.dataset.pdfVirtualized;
+    container.replaceChildren(...stagedPages);
+    container.dataset.pdfPageCount = String(pdfDocument.numPages);
+    options.onPageCount?.(pdfDocument.numPages);
     applyPdfCanvasZoom(container, options.zoom);
     restorePdfScrollAnchor(container, scrollAnchor);
     rememberPdfCanvasRender(renderCacheKey, container, true);
   } finally {
     await destroyPdfDocument(pdfDocument);
+    await destroyPdfLoadingTask(loadingTask);
+  }
+}
+
+export interface PdfThumbnail {
+  dataUrl: string;
+  height: number;
+  pageNumber: number;
+  width: number;
+}
+
+export interface PdfMagnifierRegionRenderOptions {
+  canvas: HTMLCanvasElement;
+  diameter: number;
+  displayScale: number;
+  magnification: number;
+  pageNumber: number;
+  pageX: number;
+  pageY: number;
+  signal?: AbortSignal;
+}
+
+export interface PdfMagnifierRenderer {
+  destroy: () => Promise<void>;
+  render: (options: PdfMagnifierRegionRenderOptions) => Promise<void>;
+}
+
+/** Keeps a lightweight PDF.js session alive while the interactive loupe is enabled. */
+export async function createPdfMagnifierRenderer(
+  artifactContent: Uint8Array,
+  options: Pick<PdfCanvasRenderOptions, "paperView" | "themeColors"> = {}
+): Promise<PdfMagnifierRenderer> {
+  const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
+  const useNativePageColors = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
+  const loadingTask = getDocument({ data: copyBytes(artifactContent) });
+  const pdfDocument = await loadingTask.promise;
+  let destroyed = false;
+
+  return {
+    async destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      await destroyPdfDocument(pdfDocument);
+      await destroyPdfLoadingTask(loadingTask);
+    },
+    async render(region) {
+      assertNotAborted(region.signal);
+      if (destroyed || region.pageNumber < 1 || region.pageNumber > pdfDocument.numPages) {
+        return;
+      }
+
+      const page = await pdfDocument.getPage(region.pageNumber);
+
+      try {
+        assertNotAborted(region.signal);
+        const outputScale = getPdfOutputScale();
+        const viewport = page.getViewport({
+          scale: region.displayScale * region.magnification
+        });
+        const canvasSize = Math.max(1, Math.ceil(region.diameter * outputScale));
+        region.canvas.width = canvasSize;
+        region.canvas.height = canvasSize;
+        const context = region.canvas.getContext("2d", {
+          alpha: false,
+          willReadFrequently: Boolean(themeColors && !useNativePageColors)
+        });
+
+        if (!context) {
+          throw new Error("Unable to create a PDF magnifier canvas context.");
+        }
+
+        const offsetX = region.diameter / 2
+          - region.pageX * region.displayScale * region.magnification;
+        const offsetY = region.diameter / 2
+          - region.pageY * region.displayScale * region.magnification;
+        const renderTask = page.render({
+          canvas: region.canvas,
+          canvasContext: context,
+          background: "#ffffff",
+          pageColors: getPdfPageColors(themeColors, useNativePageColors),
+          transform: [
+            outputScale,
+            0,
+            0,
+            outputScale,
+            offsetX * outputScale,
+            offsetY * outputScale
+          ],
+          viewport
+        });
+        const abortRender = () => renderTask.cancel();
+        region.signal?.addEventListener("abort", abortRender, { once: true });
+
+        try {
+          await renderTask.promise;
+        } finally {
+          region.signal?.removeEventListener("abort", abortRender);
+        }
+
+        assertNotAborted(region.signal);
+        if (themeColors && !useNativePageColors) {
+          await rethemeResolvedPreviewRasterCanvas(
+            region.canvas,
+            context,
+            themeColors,
+            false,
+            region.signal
+          );
+        }
+      } finally {
+        page.cleanup();
+      }
+    }
+  };
+}
+
+export interface PdfThumbnailRenderOptions {
+  maxWidth?: number;
+  onPageCount?: (pageCount: number) => void;
+  onThumbnail: (thumbnail: PdfThumbnail) => void;
+  paperView?: boolean;
+  signal?: AbortSignal;
+  themeColors?: {
+    background: string;
+    foreground: string;
+  };
+}
+
+export async function renderPdfArtifactThumbnails(
+  artifactContent: Uint8Array,
+  options: PdfThumbnailRenderOptions
+): Promise<void> {
+  assertNotAborted(options.signal);
+  const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
+  const useNativePageColors = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
+  const loadingTask = getDocument({ data: copyBytes(artifactContent) });
+  let pdfDocument: PDFDocumentProxy | null = null;
+
+  try {
+    pdfDocument = await loadingTask.promise;
+    options.onPageCount?.(pdfDocument.numPages);
+
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      assertNotAborted(options.signal);
+      const page = await pdfDocument.getPage(pageNumber);
+
+      try {
+        const naturalViewport = page.getViewport({ scale: 1 });
+        const cssScale = Math.min(1, Math.max(1, options.maxWidth ?? 112) / naturalViewport.width);
+        const outputScale = typeof window === "undefined"
+          ? 1
+          : Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+        const viewport = page.getViewport({ scale: cssScale * outputScale });
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", {
+          alpha: false,
+          willReadFrequently: Boolean(themeColors && !useNativePageColors)
+        });
+
+        if (!context) {
+          throw new Error("Unable to create a PDF thumbnail canvas context.");
+        }
+
+        canvas.width = Math.max(1, Math.ceil(viewport.width));
+        canvas.height = Math.max(1, Math.ceil(viewport.height));
+        const renderTask = page.render({
+          canvas,
+          canvasContext: context,
+          background: "#ffffff",
+          pageColors: getPdfPageColors(themeColors, useNativePageColors),
+          viewport
+        });
+        const abortRender = () => renderTask.cancel();
+        options.signal?.addEventListener("abort", abortRender, { once: true });
+
+        try {
+          await renderTask.promise;
+        } finally {
+          options.signal?.removeEventListener("abort", abortRender);
+        }
+
+        assertNotAborted(options.signal);
+        if (themeColors && !useNativePageColors) {
+          await rethemeResolvedPreviewRasterCanvas(
+            canvas,
+            context,
+            themeColors,
+            false,
+            options.signal
+          );
+        }
+
+        options.onThumbnail({
+          dataUrl: canvas.toDataURL("image/png"),
+          height: naturalViewport.height,
+          pageNumber,
+          width: naturalViewport.width
+        });
+        await yieldPdfThumbnailIdle(options.signal);
+      } finally {
+        page.cleanup();
+      }
+    }
+  } finally {
+    if (pdfDocument) {
+      await destroyPdfDocument(pdfDocument);
+    }
     await destroyPdfLoadingTask(loadingTask);
   }
 }
@@ -152,12 +363,11 @@ async function renderVirtualizedPdfDocument(
   loadingTask: ReturnType<typeof getDocument>,
   options: Omit<PdfCanvasRenderOptions, "themeColors"> & {
     themeColors: ResolvedPreviewRasterThemeColors | null;
-    useDarkRetheme: boolean;
-  }
+    useNativePageColors: boolean;
+  },
+  scrollAnchor: PdfScrollAnchor | null
 ): Promise<void> {
   assertNotAborted(options.signal);
-  delete container.dataset.pdfCanvasRenderCacheKey;
-  container.dataset.pdfVirtualized = "true";
 
   const firstPage = await pdfDocument.getPage(1);
   const firstViewport = firstPage.getViewport({ scale: 1 });
@@ -183,9 +393,8 @@ async function renderVirtualizedPdfDocument(
     pageElement.style.overflow = "hidden";
     return pageElement;
   });
-  container.replaceChildren(...pages);
-
   let disposed = false;
+  let committed = false;
   let observer: IntersectionObserver | null = null;
   let renderQueue = Promise.resolve();
   const renderedPages = new Set<number>();
@@ -221,22 +430,24 @@ async function renderVirtualizedPdfDocument(
       pageNumber,
       container,
       PDF_RASTER_ZOOM,
-      Boolean(options.themeColors),
+      Boolean(options.themeColors && !options.useNativePageColors),
       pageElement
     );
     try {
       await renderPdfPageTarget(target, {
         signal: options.signal,
         themeColors: options.themeColors,
-        useDarkRetheme: options.useDarkRetheme
+        useNativePageColors: options.useNativePageColors
       });
       if (disposed) return;
       target.canvas.dataset.pdfRasterScale = String(
         target.canvas.width / Math.max(1, target.pageElement.getBoundingClientRect().width)
       );
       renderedPages.add(pageNumber);
-      applyPdfCanvasZoom(container, options.zoom);
-      evictDistantPages(pageNumber);
+      if (committed) {
+        applyPdfCanvasZoom(container, options.zoom);
+        evictDistantPages(pageNumber);
+      }
     } finally {
       target.page.cleanup();
     }
@@ -256,10 +467,19 @@ async function renderVirtualizedPdfDocument(
       .finally(() => queuedPages.delete(pageNumber));
   };
 
-  for (let pageNumber = 1; pageNumber <= Math.min(INITIAL_PDF_RENDER_BATCH_SIZE, pages.length); pageNumber += 1) {
-    await renderPage(pageNumber);
-  }
+  const initialPageNumber = scrollAnchor
+    ? Math.min(scrollAnchor.pageIndex + 1, pages.length)
+    : 1;
+  await renderPage(initialPageNumber);
+  assertNotAborted(options.signal);
+  delete container.dataset.pdfCanvasRenderCacheKey;
+  container.dataset.pdfVirtualized = "true";
+  container.replaceChildren(...pages);
+  committed = true;
+  container.dataset.pdfPageCount = String(pdfDocument.numPages);
+  options.onPageCount?.(pdfDocument.numPages);
   applyPdfCanvasZoom(container, options.zoom);
+  restorePdfScrollAnchor(container, scrollAnchor);
 
   if (typeof IntersectionObserver !== "undefined") {
     observer = new IntersectionObserver((entries) => {
@@ -325,7 +545,7 @@ export async function refinePdfCanvasResolution(
   }
 
   const themeColors = options.paperView ? null : resolvePreviewRasterThemeColors(options.themeColors);
-  const useDarkRetheme = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
+  const useNativePageColors = themeColors ? isDarkPreviewRasterTheme(themeColors) : false;
   const loadingTask = getDocument({
     data: copyBytes(artifactContent)
   });
@@ -346,7 +566,7 @@ export async function refinePdfCanvasResolution(
       const stagingCanvas = document.createElement("canvas");
       const stagingContext = stagingCanvas.getContext("2d", {
         alpha: false,
-        willReadFrequently: Boolean(themeColors)
+        willReadFrequently: Boolean(themeColors && !useNativePageColors)
       });
 
       if (!stagingContext) {
@@ -368,7 +588,7 @@ export async function refinePdfCanvasResolution(
       }, {
         signal: options.signal,
         themeColors,
-        useDarkRetheme
+        useNativePageColors
       });
       assertNotAborted(options.signal);
 
@@ -532,6 +752,7 @@ function restorePdfCanvasRenderFromCache(
   }
 
   container.replaceChildren(...entry.pages);
+  delete container.dataset.pdfVirtualized;
   container.dataset.pdfCanvasRenderCacheKey = cacheKey;
   entry.lastUsedAt = Date.now();
   applyPdfCanvasZoom(container, zoom);
@@ -684,13 +905,14 @@ async function renderPdfPageTarget(
   options: {
     signal?: AbortSignal;
     themeColors: ResolvedPreviewRasterThemeColors | null;
-    useDarkRetheme: boolean;
+    useNativePageColors: boolean;
   }
 ): Promise<void> {
   const renderTask = target.page.render({
     canvas: target.canvas,
     canvasContext: target.context,
     background: "#ffffff",
+    pageColors: getPdfPageColors(options.themeColors, options.useNativePageColors),
     transform:
       target.outputScale === 1
         ? undefined
@@ -709,17 +931,31 @@ async function renderPdfPageTarget(
 
   assertNotAborted(options.signal);
 
-  if (options.themeColors) {
+  if (options.themeColors && !options.useNativePageColors) {
     await rethemeResolvedPreviewRasterCanvas(
       target.canvas,
       target.context,
       options.themeColors,
-      options.useDarkRetheme,
+      false,
       options.signal
     );
   }
 
   target.pageElement.classList.remove("pdf-page--rendering");
+}
+
+function getPdfPageColors(
+  themeColors: ResolvedPreviewRasterThemeColors | null,
+  enabled: boolean
+): { background: string; foreground: string } | undefined {
+  if (!themeColors || !enabled) {
+    return undefined;
+  }
+
+  return {
+    background: themeColors.backgroundCss,
+    foreground: themeColors.foregroundCss
+  };
 }
 
 function yieldPdfRenderFrame(signal: AbortSignal | undefined): Promise<void> {
@@ -740,6 +976,51 @@ function yieldPdfRenderFrame(signal: AbortSignal | undefined): Promise<void> {
     };
 
     signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function yieldPdfThumbnailIdle(signal: AbortSignal | undefined): Promise<void> {
+  assertNotAborted(signal);
+
+  if (typeof window === "undefined") {
+    return Promise.resolve();
+  }
+
+  const idleWindow = window as Window & {
+    cancelIdleCallback?: (handle: number) => void;
+    requestIdleCallback?: (
+      callback: () => void,
+      options?: { timeout: number }
+    ) => number;
+  };
+
+  return new Promise((resolve, reject) => {
+    let timeout = 0;
+    let idleHandle = 0;
+    const cleanup = () => {
+      if (timeout) {
+        window.clearTimeout(timeout);
+      }
+      if (idleHandle) {
+        idleWindow.cancelIdleCallback?.(idleHandle);
+      }
+      signal?.removeEventListener("abort", abort);
+    };
+    const complete = () => {
+      cleanup();
+      resolve();
+    };
+    const abort = () => {
+      cleanup();
+      reject(new DOMException("PDF render was cancelled.", "AbortError"));
+    };
+
+    signal?.addEventListener("abort", abort, { once: true });
+    if (idleWindow.requestIdleCallback) {
+      idleHandle = idleWindow.requestIdleCallback(complete, { timeout: 180 });
+    } else {
+      timeout = window.setTimeout(complete, 16);
+    }
   });
 }
 

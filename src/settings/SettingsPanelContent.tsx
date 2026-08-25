@@ -63,8 +63,11 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
     handleColorfulFileTreeIconsToggle,
     handleCompanionConnectionChange,
     handleCompanionBaseUrlReset,
+    handleCompileOnSaveToggle,
+    handleContinuousPdfScrollToggle,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
+    handleDiagramDirectoryAnchorToggle,
     handleDownloadCustomSnippets,
     handleDownloadSnippetTemplate,
     handleDownloadThemeTemplate,
@@ -908,6 +911,34 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
 
                 <label className="settings-toggle">
                   <span>
+                    <strong>Compile on save</strong>
+                    <small>
+                      Compile the active document when :w, :write, or :wq is invoked in Vim mode.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.compileOnSave}
+                    onChange={handleCompileOnSaveToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Continuous PDF scrolling</strong>
+                    <small>
+                      Show every PDF page in a native scrolling document. When off, show only the selected page and use the preview controls to navigate.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.continuousPdfScroll}
+                    onChange={handleContinuousPdfScrollToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
                     <strong>Lint while editing</strong>
                     <small>
                       Show browser-available linter diagnostics in the source editor.
@@ -985,6 +1016,20 @@ export function SettingsPanelContent({ bindings }: { bindings: SettingsPanelBind
                   <input
                     checked={snapshot.preferences.relativeLineNumbers}
                     onChange={handleRelativeLineNumbersToggle}
+                    type="checkbox"
+                  />
+                </label>
+
+                <label className="settings-toggle">
+                  <span>
+                    <strong>Document-relative diagram folders</strong>
+                    <small>
+                      Create new Draw and TikZ files in a figures folder beside the current document instead of at the project root.
+                    </small>
+                  </span>
+                  <input
+                    checked={snapshot.preferences.diagramDirectoriesRelativeToFile}
+                    onChange={handleDiagramDirectoryAnchorToggle}
                     type="checkbox"
                   />
                 </label>

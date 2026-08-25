@@ -60,7 +60,8 @@ function cloneDiagramAssetForWorkspacePath(
   return {
     ...diagram,
     id: createPrefixedId("diagram"),
-    name: normalizeDiagramFileName(stripFiguresWorkspaceRoot(path)),
+    name: normalizeDiagramFileName(getRelativePathBasename(path)),
+    workspacePath: normalizeWorkspacePath(path),
     updatedAt: now,
     frame: diagram.frame ? { ...diagram.frame } : null,
     strokes: clonePlainValue(diagram.strokes),
@@ -280,15 +281,17 @@ export function moveWorkspaceNodeInSnapshot(
   const movedBaseName = getRelativePathBasename(node.path);
   const movedPath =
     node.source.kind === "diagram"
-      ? joinRelativePaths(
-          "figures",
-          joinRelativePaths(
-            nextDestination === "figures"
-              ? null
-              : nextDestination?.replace(/^figures\/?/, "") ?? null,
-            movedBaseName
+      ? node.path.startsWith("figures/")
+        ? joinRelativePaths(
+            "figures",
+            joinRelativePaths(
+              nextDestination === "figures"
+                ? null
+                : nextDestination?.replace(/^figures\/?/, "") ?? null,
+              movedBaseName
+            )
           )
-        )
+        : joinRelativePaths(nextDestination, movedBaseName)
       : joinRelativePaths(nextDestination, movedBaseName);
 
   if (node.source.kind === "document") {
@@ -299,7 +302,9 @@ export function moveWorkspaceNodeInSnapshot(
   }
   if (node.source.kind === "diagram") {
     const figureDestination =
-      nextDestination === null || nextDestination === "figures"
+      !node.path.startsWith("figures/")
+        ? nextDestination
+        : nextDestination === null || nextDestination === "figures"
         ? null
         : nextDestination.startsWith("figures/")
           ? nextDestination.slice("figures/".length)

@@ -87,7 +87,7 @@ try {
   const previousPreviewSource = await preview.getAttribute("src");
   await compileButton.click();
   await preview.waitFor({ timeout: 60_000 });
-  const compilationError = page.getByText(/^Compile error:/).last();
+  const compilationError = page.locator(".source-compile-notice").last();
   const compilationOutcome = await Promise.race([
     page.waitForFunction((previousSource) => {
       const nextPreview = document.querySelector("img.preview-document__object");

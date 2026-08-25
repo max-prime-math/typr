@@ -1,5 +1,12 @@
 import { getTypstRenderer } from "./typstRendererSession";
 
+export interface TypstCanvasScrollAnchor {
+  pageIndex: number;
+  pageYRatio: number;
+  viewportY: number;
+  fallbackYRatio: number;
+}
+
 export async function renderTypstArtifactToCanvas(
   container: HTMLElement,
   artifactContent: Uint8Array
@@ -68,6 +75,73 @@ export function applyTypstCanvasZoom(
       canvas.style.height = `${height}px`;
     }
   }
+}
+
+export function captureTypstCanvasScrollAnchor(
+  container: HTMLElement
+): TypstCanvasScrollAnchor | null {
+  const pages = Array.from(
+    container.querySelectorAll<HTMLElement>(".typst-page.canvas")
+  );
+  if (pages.length === 0) {
+    return null;
+  }
+
+  const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+  const viewportY = Math.min(32, container.clientHeight / 3);
+  const anchorY = container.scrollTop + viewportY;
+  let pageIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const [index, page] of pages.entries()) {
+    const pageTop = page.offsetTop;
+    const pageBottom = pageTop + page.offsetHeight;
+    const distance =
+      anchorY < pageTop
+        ? pageTop - anchorY
+        : anchorY > pageBottom
+          ? anchorY - pageBottom
+          : 0;
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      pageIndex = index;
+    }
+  }
+
+  const page = pages[pageIndex]!;
+  return {
+    pageIndex,
+    pageYRatio: Math.max(
+      0,
+      Math.min(1, (anchorY - page.offsetTop) / Math.max(1, page.offsetHeight))
+    ),
+    viewportY,
+    fallbackYRatio: maxScrollTop > 0 ? container.scrollTop / maxScrollTop : 0
+  };
+}
+
+export function restoreTypstCanvasScrollAnchor(
+  container: HTMLElement,
+  anchor: TypstCanvasScrollAnchor | null
+): void {
+  if (!anchor) {
+    return;
+  }
+
+  const pages = Array.from(
+    container.querySelectorAll<HTMLElement>(".typst-page.canvas")
+  );
+  const page = pages[Math.min(anchor.pageIndex, pages.length - 1)];
+
+  if (!page) {
+    container.scrollTop =
+      anchor.fallbackYRatio * Math.max(0, container.scrollHeight - container.clientHeight);
+    return;
+  }
+
+  container.scrollTop =
+    page.offsetTop + page.offsetHeight * anchor.pageYRatio - anchor.viewportY;
 }
 
 function getPreviewPixelPerPt(): number {

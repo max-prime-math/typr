@@ -75,6 +75,61 @@ describe("appState", () => {
     expect(normalized.preferences.lineWrap).toBe(true);
   });
 
+  it("enables compile on save by default and migrates snapshots without the preference", () => {
+    const snapshot = createDefaultSnapshot();
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        compileOnSave: undefined as unknown as boolean
+      }
+    });
+
+    expect(snapshot.preferences.compileOnSave).toBe(true);
+    expect(normalized.preferences.compileOnSave).toBe(true);
+  });
+
+  it("enables continuous PDF scrolling by default and for migrated snapshots", () => {
+    const snapshot = createDefaultSnapshot();
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        continuousPdfScroll: undefined as unknown as boolean
+      }
+    });
+
+    expect(snapshot.preferences.continuousPdfScroll).toBe(true);
+    expect(normalized.preferences.continuousPdfScroll).toBe(true);
+  });
+
+  it("preserves an explicit single-page PDF preference in current snapshots", () => {
+    const snapshot = createDefaultSnapshot();
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        continuousPdfScroll: false
+      }
+    });
+
+    expect(normalized.preferences.continuousPdfScroll).toBe(false);
+  });
+
+  it("creates diagram directories relative to the current file by default", () => {
+    const snapshot = createDefaultSnapshot();
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      preferences: {
+        ...snapshot.preferences,
+        diagramDirectoriesRelativeToFile: undefined as unknown as boolean
+      }
+    });
+
+    expect(snapshot.preferences.diagramDirectoriesRelativeToFile).toBe(true);
+    expect(normalized.preferences.diagramDirectoriesRelativeToFile).toBe(true);
+  });
+
   it("persists the experimental preview mode and safely migrates missing or invalid values", () => {
     const snapshot = createDefaultSnapshot();
     const live = updatePreviewModePreference(snapshot, "texpresso");
