@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -56,6 +57,9 @@ import {
   updateDiagram,
   updateActiveDocument,
   updateColorfulFileTreeIconsPreference,
+  updateCompileOnSavePreference,
+  updateContinuousPdfScrollPreference,
+  updateDiagramDirectoriesRelativeToFilePreference,
   updateCursorSmearPreference,
   updateCursorSmoothPreference,
   updateEditorFontSizePreference,
@@ -132,6 +136,10 @@ import {
   type ExternalDiagnosticProviderPreferences
 } from "../diagnostics/externalDiagnostics";
 import { releaseHarperDiagnosticsMemory } from "../diagnostics/harperDiagnosticsWorkerClient";
+import {
+  subscribeToEditorInputActivity,
+  waitForEditorInputIdle
+} from "../editor/inputPriority";
 import { collectDocumentStats, type DocumentStats } from "./documentStats";
 import {
   DEFAULT_KEYBINDINGS,
@@ -263,17 +271,19 @@ import { DiagramEditor } from "../diagram/SvgEditDiagramEditor";
 import { TikzDiagramEditor } from "../diagram/TikzDiagramEditor";
 import { exportSvgToVectorPdfBytes } from "../diagram/diagramPdfExport";
 import {
-  DIAGRAM_DIRECTORY,
-  getDiagramCompilerPath,
-  getDiagramFilePath,
+  getDiagramAssetCompilerPath,
+  getDiagramAssetFilePath,
+  getDiagramAssetPdfFilePath,
+  getDiagramCreationDirectory,
   getDiagramPdfFileName,
-  getDiagramPdfFilePath,
+  getDiagramWorkspacePath,
   normalizeDiagramFileName
 } from "../diagram/diagramFiles";
 import {
   DEFAULT_TIKZ_SOURCE,
   collectTikzFigureFiles,
   createNextTikzPath,
+  duplicateTikzFigureFiles,
   getTikzCetzPath,
   getTikzFileName,
   getTikzPdfPath,
@@ -400,7 +410,6 @@ import {
   type SnippetDefinition,
   type SnippetLanguage
 } from "../snippets/snippets";
-import { PreviewZoomControls } from "../preview/PreviewPane";
 import { TexpressoPreview, TexpressoPreviewStatus } from "../preview/TexpressoPreview";
 import {
   createTexpressoProjectSnapshot,
@@ -634,6 +643,53 @@ function rememberWorkspacePreviewFile(
 
     cache.delete(oldestKey);
   }
+}
+
+function areWorkspacePreviewFilesEqual(
+  current: WorkspacePreviewFile | null,
+  next: WorkspacePreviewFile | null
+): boolean {
+  if (current === next) {
+    return true;
+  }
+  if (
+    !current ||
+    !next ||
+    current.name !== next.name ||
+    current.path !== next.path ||
+    current.mimeType !== next.mimeType ||
+    !areWorkspacePreviewContentsEqual(current.content, next.content)
+  ) {
+    return false;
+  }
+
+  const currentAssets = current.assets ?? [];
+  const nextAssets = next.assets ?? [];
+  return currentAssets.length === nextAssets.length && currentAssets.every((asset, index) => {
+    const nextAsset = nextAssets[index];
+    return Boolean(
+      nextAsset &&
+      asset.path === nextAsset.path &&
+      asset.mimeType === nextAsset.mimeType &&
+      areWorkspacePreviewContentsEqual(asset.content, nextAsset.content)
+    );
+  });
+}
+
+function areWorkspacePreviewContentsEqual(
+  current: string | Uint8Array | ArrayBuffer,
+  next: string | Uint8Array | ArrayBuffer
+): boolean {
+  if (current === next) {
+    return true;
+  }
+  if (typeof current === "string" || typeof next === "string") {
+    return current === next;
+  }
+
+  const currentBytes = current instanceof Uint8Array ? current : new Uint8Array(current);
+  const nextBytes = next instanceof Uint8Array ? next : new Uint8Array(next);
+  return areBytesEqual(currentBytes, nextBytes);
 }
 
 function toWorkspacePreviewContent(content: Uint8Array): ArrayBuffer {
@@ -1003,6 +1059,7 @@ type WorkspaceGitBadgeKind = "modified" | "added" | "deleted" | "conflict";
 
 interface StoredLeftPaneState {
   activeSidebarTool: SidebarTool;
+  diagramPaneMode: DiagramPaneMode;
   mobileWorkspaceTab: MobileWorkspaceTab;
   isTrashViewOpen: boolean;
   scrollByPane: Record<string, number>;
@@ -1978,6 +2035,10 @@ function isMobileWorkspaceTab(value: unknown): value is MobileWorkspaceTab {
   return value === "files" || value === "editor" || value === "preview";
 }
 
+function isDiagramPaneMode(value: unknown): value is DiagramPaneMode {
+  return value === "draw" || value === "tikz";
+}
+
 function normalizeLeftPaneScrollPositions(value: unknown): Record<string, number> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -1995,6 +2056,7 @@ function normalizeLeftPaneScrollPositions(value: unknown): Record<string, number
 function readStoredLeftPaneState(): StoredLeftPaneState {
   const fallback: StoredLeftPaneState = {
     activeSidebarTool: "files",
+    diagramPaneMode: "draw",
     mobileWorkspaceTab: "editor",
     isTrashViewOpen: false,
     scrollByPane: {}
@@ -2016,6 +2078,9 @@ function readStoredLeftPaneState(): StoredLeftPaneState {
       activeSidebarTool: isSidebarTool(parsed?.activeSidebarTool)
         ? parsed.activeSidebarTool
         : fallback.activeSidebarTool,
+      diagramPaneMode: isDiagramPaneMode(parsed?.diagramPaneMode)
+        ? parsed.diagramPaneMode
+        : fallback.diagramPaneMode,
       mobileWorkspaceTab: isMobileWorkspaceTab(parsed?.mobileWorkspaceTab)
         ? parsed.mobileWorkspaceTab
         : fallback.mobileWorkspaceTab,
@@ -2981,7 +3046,7 @@ function buildDiagramShadowFiles(diagrams: DiagramAsset[]): CompileAssetFile[] {
   const assets = new Map<string, CompileAssetFile>();
 
   for (const diagram of diagrams) {
-    const path = getDiagramCompilerPath(diagram.name);
+    const path = getDiagramAssetCompilerPath(diagram);
     assets.set(path, {
       path,
       content: new TextEncoder().encode(serializeDiagramSvg(diagram))
@@ -3235,15 +3300,17 @@ function buildPastedImageInsertion(
 
 function writeDiagramSvgProjectFile(
   project: TyprProjectRepository,
-  diagram: Pick<DiagramAsset, "id" | "name">,
+  diagram: Pick<DiagramAsset, "id" | "name" | "workspacePath">,
   svgMarkup: string
 ): TyprProjectRepository {
+  const path = getDiagramAssetFilePath(diagram);
+  const directory = getWorkspacePathDirectory(path);
   return writeProjectFile(
-    ensureProjectFolder(project, DIAGRAM_DIRECTORY, {
+    ensureProjectFolder(project, directory, {
       kind: "virtual",
-      id: DIAGRAM_DIRECTORY
+      id: `diagram-directory:${directory}`
     }),
-    getDiagramFilePath(diagram.name),
+    path,
     svgMarkup,
     { kind: "diagram", id: diagram.id }
   );
@@ -3251,17 +3318,54 @@ function writeDiagramSvgProjectFile(
 
 function writeDiagramPdfProjectFile(
   project: TyprProjectRepository,
-  diagram: Pick<DiagramAsset, "id" | "name">,
+  diagram: Pick<DiagramAsset, "id" | "name" | "workspacePath">,
   pdfBytes: Uint8Array<ArrayBuffer>
 ): TyprProjectRepository {
+  const path = getDiagramAssetPdfFilePath(diagram);
+  const directory = getWorkspacePathDirectory(path);
   return writeProjectFile(
-    ensureProjectFolder(project, DIAGRAM_DIRECTORY, {
+    ensureProjectFolder(project, directory, {
       kind: "virtual",
-      id: DIAGRAM_DIRECTORY
+      id: `diagram-directory:${directory}`
     }),
-    getDiagramPdfFilePath(diagram.name),
+    path,
     pdfBytes,
     { kind: "virtual", id: `diagram-pdf:${diagram.id}` }
+  );
+}
+
+function locateDiagramForDocument(
+  diagram: DiagramAsset,
+  documentPath: string,
+  relativeToDocument: boolean
+): DiagramAsset {
+  return diagram.workspacePath
+    ? diagram
+    : {
+        ...diagram,
+        workspacePath: getDiagramWorkspacePath(
+          diagram.name,
+          documentPath,
+          relativeToDocument
+        )
+      };
+}
+
+function locateCurrentDiagramInSnapshot(
+  snapshot: AppSnapshot,
+  documentPath: string,
+  relativeToDocument: boolean
+): AppSnapshot {
+  const currentDiagram = snapshot.project.diagram ?? createDefaultDiagram();
+  if (
+    !currentDiagram.workspacePath &&
+    (snapshot.project.figures ?? []).some((figure) => figure.id === currentDiagram.id)
+  ) {
+    return snapshot;
+  }
+
+  return updateDiagram(snapshot, (diagram) =>
+    locateDiagramForDocument(diagram, documentPath, relativeToDocument)
   );
 }
 
@@ -3364,7 +3468,9 @@ export function App() {
   useEffect(() => {
     if (activeSidebarTool !== "sync") setIsGitWorkspaceOpen(false);
   }, [activeSidebarTool]);
-  const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>("draw");
+  const [diagramPaneMode, setDiagramPaneMode] = useState<DiagramPaneMode>(
+    storedLeftPane.diagramPaneMode
+  );
   const [selectedTikzPath, setSelectedTikzPath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<TypstSearchQueryState>({
     search: "",
@@ -3603,6 +3709,7 @@ ${nextLine}` : nextLine;
     pendingCompileTriggerRef,
     isMountedRef,
     clearScheduledCompile,
+    scheduleCompileAfterPaint,
     queueCompile: scheduleCompilePreview,
     hasActiveCompileWork: hasScheduledCompileWork,
     applyRestoredCompilePreview
@@ -3610,6 +3717,25 @@ ${nextLine}` : nextLine;
     initialTrigger: "auto",
     onCompilerStatusChange: appendCompilerStatusToLiveBuildOutput
   });
+  useEffect(() => subscribeToEditorInputActivity(() => {
+    releaseHarperDiagnosticsMemory();
+
+    if (!compileInFlightRef.current) {
+      return;
+    }
+
+    if (compileInFlightLanguageRef.current === "typst") {
+      compileRequestRef.current += 1;
+      releaseTypstCompilerMemory();
+      return;
+    }
+
+    if (compileInFlightLanguageRef.current === "latex") {
+      // This terminates local BusyTeX immediately. A Typr Server request is
+      // unaffected and may finish remotely while its UI result waits for idle.
+      cancelLatexCompile("LaTeX compilation paused to prioritize typing.");
+    }
+  }), [compileInFlightLanguageRef, compileInFlightRef, compileRequestRef]);
   const [companionApiKey, setCompanionApiKey] = useState("");
   const [companionBaseUrl, setCompanionBaseUrl] = useState(readStoredCompanionBaseUrl);
   const [companionConnectionEnabled, setCompanionConnectionEnabled] = useState(
@@ -3683,8 +3809,10 @@ ${nextLine}` : nextLine;
   const tableDragSelectionRef = useRef(false);
   const loadedEditableTableSignatureRef = useRef<string | null>(null);
   const handleSourceEditorSelectionChange = useCallback((selection: TypstEditorSelection) => {
-    setCurrentEditorLineNumber(selection.lineNumber);
-    setSourceEditorSelection(selection);
+    startTransition(() => {
+      setCurrentEditorLineNumber(selection.lineNumber);
+      setSourceEditorSelection(selection);
+    });
   }, []);
   const [isHydrated, setIsHydrated] = useState(false);
   const [hasHydrationError, setHasHydrationError] = useState(false);
@@ -3896,6 +4024,15 @@ ${nextLine}` : nextLine;
       updateLineWrapPreference(
         currentSnapshot,
         !currentSnapshot.preferences.lineWrap
+      )
+    );
+  }, []);
+
+  const handleContinuousPdfScrollToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateContinuousPdfScrollPreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.continuousPdfScroll
       )
     );
   }, []);
@@ -4166,6 +4303,14 @@ ${nextLine}` : nextLine;
       )
     );
   }, []);
+  const handleCompileOnSaveToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateCompileOnSavePreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.compileOnSave
+      )
+    );
+  }, []);
   const handlePreviewModeChange = useCallback((previewMode: "pdf" | "texpresso") => {
     setSnapshot((currentSnapshot) =>
       updatePreviewModePreference(currentSnapshot, previewMode)
@@ -4192,6 +4337,14 @@ ${nextLine}` : nextLine;
       updatePastedImagePreference(currentSnapshot, {
         enabled: !currentSnapshot.preferences.pastedImages.enabled
       })
+    );
+  }, []);
+  const handleDiagramDirectoryAnchorToggle = useCallback(() => {
+    setSnapshot((currentSnapshot) =>
+      updateDiagramDirectoriesRelativeToFilePreference(
+        currentSnapshot,
+        !currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+      )
     );
   }, []);
   const handlePastedImageFormatChange = useCallback((format: "png" | "jpeg") => {
@@ -4611,6 +4764,11 @@ ${nextLine}` : nextLine;
     return () => window.clearTimeout(handle);
   }, [activeDocumentTextContent]);
   const [selectedWorkspacePreview, setSelectedWorkspacePreview] = useState<WorkspacePreviewFile | null>(null);
+  const commitSelectedWorkspacePreview = useCallback((next: WorkspacePreviewFile | null) => {
+    setSelectedWorkspacePreview((current) =>
+      areWorkspacePreviewFilesEqual(current, next) ? current : next
+    );
+  }, []);
   const workspaceContextMenuPosition = useMemo(() => {
     if (!workspaceContextMenu) {
       return null;
@@ -4784,23 +4942,24 @@ ${nextLine}` : nextLine;
   );
   useEffect(() => {
     let cancelled = false;
+    const previewProject = selectedProjectRepositoryRef.current;
 
     async function loadWorkspacePreview() {
       if (!activePreviewWorkspaceNode || activePreviewWorkspaceNode.kind !== "file") {
-        setSelectedWorkspacePreview(null);
+        commitSelectedWorkspacePreview(null);
         return;
       }
 
       const mimeType = getWorkspacePreviewMimeType(activePreviewWorkspaceNode.path);
 
       if (mimeType === "text/markdown") {
-        setSelectedWorkspacePreview({
+        commitSelectedWorkspacePreview({
           name: activePreviewWorkspaceNode.name,
           path: activePreviewWorkspaceNode.path,
           content: activePreviewTextContent,
           mimeType,
           assets: collectMarkdownPreviewAssets(
-            selectedProjectRepository,
+            previewProject,
             activePreviewWorkspaceNode.path,
             activePreviewTextContent
           )
@@ -4809,18 +4968,18 @@ ${nextLine}` : nextLine;
       }
 
       if (isTextWorkspaceFile(activePreviewWorkspaceNode.path)) {
-        setSelectedWorkspacePreview(null);
+        commitSelectedWorkspacePreview(null);
         return;
       }
 
       if (!mimeType) {
-        setSelectedWorkspacePreview(null);
+        commitSelectedWorkspacePreview(null);
         return;
       }
 
-      const previewCacheKey = selectedProjectRepository
+      const previewCacheKey = previewProject
         ? getWorkspacePreviewFileCacheKey(
-            selectedProjectRepository,
+            previewProject,
             activePreviewWorkspaceNode.path
           )
         : null;
@@ -4829,9 +4988,9 @@ ${nextLine}` : nextLine;
         : null;
 
       if (cachedPreview) {
-        setSelectedWorkspacePreview(cachedPreview);
+        commitSelectedWorkspacePreview(cachedPreview);
       } else {
-        setSelectedWorkspacePreview(null);
+        commitSelectedWorkspacePreview(null);
       }
 
       if (activePreviewWorkspaceNode.content instanceof Uint8Array) {
@@ -4850,17 +5009,17 @@ ${nextLine}` : nextLine;
           );
         }
 
-        setSelectedWorkspacePreview(previewFile);
+        commitSelectedWorkspacePreview(previewFile);
         return;
       }
 
-      const projectBytes = selectedProjectRepository
-        ? readProjectFileBytes(selectedProjectRepository, activePreviewWorkspaceNode.path)
+      const projectBytes = previewProject
+        ? readProjectFileBytes(previewProject, activePreviewWorkspaceNode.path)
         : null;
       const opfsBytes = projectBytes
         ? null
-        : selectedProjectRepository
-          ? await readWorkspaceFileFromOpfs(selectedProjectRepository.id, activePreviewWorkspaceNode.path)
+        : previewProject
+          ? await readWorkspaceFileFromOpfs(previewProject.id, activePreviewWorkspaceNode.path)
           : null;
       const bytes = projectBytes ?? opfsBytes;
 
@@ -4884,11 +5043,11 @@ ${nextLine}` : nextLine;
           );
         }
 
-        setSelectedWorkspacePreview(previewFile);
+        commitSelectedWorkspacePreview(previewFile);
         return;
       }
 
-      setSelectedWorkspacePreview(null);
+      commitSelectedWorkspacePreview(null);
     }
 
     void loadWorkspacePreview();
@@ -4896,7 +5055,16 @@ ${nextLine}` : nextLine;
     return () => {
       cancelled = true;
     };
-  }, [activePreviewTextContent, activePreviewWorkspaceNode, selectedProjectRepository]);
+  }, [
+    activePreviewTextContent,
+    activePreviewWorkspaceNode?.content,
+    activePreviewWorkspaceNode?.kind,
+    activePreviewWorkspaceNode?.name,
+    activePreviewWorkspaceNode?.path,
+    commitSelectedWorkspacePreview,
+    selectedProjectRepository?.filesystem.updatedAt,
+    selectedProjectRepository?.id
+  ]);
   const activePreviewCompilePath = activePreviewCompileSourcePath
     ? normalizeWorkspacePath(activePreviewCompileSourcePath)
     : null;
@@ -5094,7 +5262,8 @@ ${nextLine}` : nextLine;
     workspaceFilePathSet
   });
   useEffect(() => {
-    if (!selectedProjectRepository) {
+    const previewProject = selectedProjectRepositoryRef.current;
+    if (!previewProject) {
       return;
     }
 
@@ -5106,42 +5275,46 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    const savedPreviews = pdfPreviewTabs.flatMap((previewPath) => {
+      const sourcePath = resolveLatexSourcePathForPdfPreview(
+        previewPath,
+        previewProject,
+        activeSourcePathRef.current
+      );
+      const sourcePathKey = sourcePath ? normalizeWorkspacePath(sourcePath) : "";
+      const currentPreview = sourcePathKey ? compilePreviewsByPath[sourcePathKey] : null;
+
+      if (!sourcePathKey || currentPreview?.isCompiling || currentPreview?.lastSuccessfulResult?.ok) {
+        return [];
+      }
+
+      const savedResult = loadSavedLatexPdfCompileResult({
+        allowStale: true,
+        project: previewProject,
+        source: readProjectTextFileOrDefault(previewProject, sourcePathKey, ""),
+        sourcePath: sourcePathKey
+      });
+
+      return savedResult?.ok && savedResult.output.kind === "pdf"
+        ? [{ sourcePathKey, savedResult }]
+        : [];
+    });
+
+    if (savedPreviews.length === 0) {
+      return;
+    }
+
     setCompilePreviewsByPath((currentPreviews) => {
       let nextPreviews = currentPreviews;
 
-      for (const previewPath of pdfPreviewTabs) {
-        const sourcePath = resolveLatexSourcePathForPdfPreview(
-          previewPath,
-          selectedProjectRepository,
-          activeSourcePathRef.current
-        );
-        const sourcePathKey = sourcePath ? normalizeWorkspacePath(sourcePath) : "";
-
-        if (!sourcePathKey) {
-          continue;
-        }
-
+      for (const { sourcePathKey, savedResult } of savedPreviews) {
         const currentPreview = currentPreviews[sourcePathKey];
-
         if (currentPreview?.isCompiling || currentPreview?.lastSuccessfulResult?.ok) {
           continue;
         }
-
-        const savedResult = loadSavedLatexPdfCompileResult({
-          allowStale: true,
-          project: selectedProjectRepository,
-          source: readProjectTextFileOrDefault(selectedProjectRepository, sourcePathKey, ""),
-          sourcePath: sourcePathKey
-        });
-
-        if (!savedResult?.ok || savedResult.output.kind !== "pdf") {
-          continue;
-        }
-
         if (nextPreviews === currentPreviews) {
           nextPreviews = { ...currentPreviews };
         }
-
         nextPreviews[sourcePathKey] = createCompilePreviewState(sourcePathKey, {
           result: savedResult,
           lastSuccessfulResult: savedResult
@@ -5150,7 +5323,12 @@ ${nextLine}` : nextLine;
 
       return nextPreviews;
     });
-  }, [previewTabPaths, selectedProjectRepository]);
+  }, [
+    compilePreviewsByPath,
+    previewTabPaths,
+    selectedProjectRepository?.filesystem.updatedAt,
+    selectedProjectRepository?.id
+  ]);
   const projectGitignoreContent = useMemo(
     () =>
       selectedProjectRepository
@@ -5217,6 +5395,21 @@ ${nextLine}` : nextLine;
     () => snapshot.project.diagram ?? createDefaultDiagram(),
     [snapshot.project.diagram]
   );
+  const locatedDiagram = useMemo(
+    () => {
+      const isSavedLegacyDiagram =
+        !diagram.workspacePath &&
+        (snapshot.project.figures ?? []).some((figure) => figure.id === diagram.id);
+      return isSavedLegacyDiagram
+        ? diagram
+        : locateDiagramForDocument(
+            diagram,
+            activeSourcePath,
+            snapshot.preferences.diagramDirectoriesRelativeToFile
+          );
+    },
+    [activeSourcePath, diagram, snapshot.preferences.diagramDirectoriesRelativeToFile, snapshot.project.figures]
+  );
   const tikzFigures = useMemo(
     () => collectTikzFigureFiles(selectedProjectRepository),
     [selectedProjectRepository]
@@ -5254,8 +5447,8 @@ ${nextLine}` : nextLine;
     };
   }, [workspaceContextMenu]);
   const diagramShadowAssets = useMemo(
-    () => buildDiagramShadowFiles([...savedFigures, diagram]),
-    [diagram, savedFigures]
+    () => buildDiagramShadowFiles([...savedFigures, locatedDiagram]),
+    [locatedDiagram, savedFigures]
   );
   const isTexpressoPreviewPreferred = snapshot.preferences.previewMode === "texpresso";
   const isTexpressoSourceCandidate = Boolean(
@@ -5557,7 +5750,7 @@ ${nextLine}` : nextLine;
   }, [isHydrated, workspaceStructureKey]);
 
   const refreshRepoStorageStats = useCallback(
-    async (project: TyprProjectRepository | null = selectedProjectRepository) => {
+    async (project: TyprProjectRepository | null = selectedProjectRepositoryRef.current) => {
       if (!project) {
         setRepoStorageStats(null);
         return;
@@ -5577,7 +5770,7 @@ ${nextLine}` : nextLine;
 
       setRepoStorageStats(result.value);
     },
-    [repoBackend, selectedProjectRepository]
+    [repoBackend]
   );
 
   const handlePruneRepoObjects = useCallback(async () => {
@@ -5615,7 +5808,7 @@ ${nextLine}` : nextLine;
       !selectedProjectRepository ||
       activeSidebarTool !== "sync"
     ) {
-      setRepoStorageStats(null);
+      setRepoStorageStats((current) => current === null ? current : null);
       return;
     }
 
@@ -5674,6 +5867,7 @@ ${nextLine}` : nextLine;
       return;
     }
 
+    let documentScrollResetFrame: number | null = null;
     const updateViewportSize = () => {
       const nextWidth = getCurrentViewportWidth();
       const nextHeight = getCurrentViewportHeight();
@@ -5682,16 +5876,32 @@ ${nextLine}` : nextLine;
       setViewportHeight(nextHeight);
       document.documentElement.style.setProperty("--app-viewport-height", `${Math.round(nextHeight)}px`);
     };
+    const preventDocumentScroll = () => {
+      if (!hasDocumentScrollOffset() || documentScrollResetFrame !== null) {
+        return;
+      }
+
+      documentScrollResetFrame = window.requestAnimationFrame(() => {
+        documentScrollResetFrame = null;
+        resetDocumentScrollPosition();
+      });
+    };
 
     updateViewportSize();
+    resetDocumentScrollPosition();
     window.addEventListener("resize", updateViewportSize);
+    window.addEventListener("scroll", preventDocumentScroll, { passive: true });
     window.visualViewport?.addEventListener("resize", updateViewportSize);
-    window.visualViewport?.addEventListener("scroll", updateViewportSize);
+    window.visualViewport?.addEventListener("scroll", preventDocumentScroll);
 
     return () => {
+      if (documentScrollResetFrame !== null) {
+        window.cancelAnimationFrame(documentScrollResetFrame);
+      }
       window.removeEventListener("resize", updateViewportSize);
+      window.removeEventListener("scroll", preventDocumentScroll);
       window.visualViewport?.removeEventListener("resize", updateViewportSize);
-      window.visualViewport?.removeEventListener("scroll", updateViewportSize);
+      window.visualViewport?.removeEventListener("scroll", preventDocumentScroll);
       document.documentElement.style.removeProperty("--app-viewport-height");
     };
   }, []);
@@ -6818,8 +7028,10 @@ ${nextLine}` : nextLine;
 
       persistencePayloadRef.current = nextPayload;
       selectedProjectRepositoryRef.current = nextProject;
-      setProjectStorage(nextProjectStorage);
-      setRawSnapshot(nextSnapshot);
+      startTransition(() => {
+        setProjectStorage(nextProjectStorage);
+        setRawSnapshot(nextSnapshot);
+      });
       lifecyclePersistenceRef.current?.update(nextPayload);
 
       try {
@@ -6885,7 +7097,9 @@ ${nextLine}` : nextLine;
     const requestedLatexCompileProfile = pendingLatexCompileProfileRef.current;
     const requestedLatexCompileMode = requestedLatexCompileProfile.mode;
     const compileStartedAtIso = new Date().toISOString();
-    setLiveBuildOutput(`[${new Date(compileStartedAtIso).toLocaleTimeString()}] Starting ${formatSourceLanguageLabel(sourceLanguage)} compile for ${sourcePath}`);
+    startTransition(() => {
+      setLiveBuildOutput(`[${new Date(compileStartedAtIso).toLocaleTimeString()}] Starting ${formatSourceLanguageLabel(sourceLanguage)} compile for ${sourcePath}`);
+    });
     const compileStartedAt =
       typeof performance === "undefined" ? 0 : performance.now();
     const handleScopedCompilerStatusChange = (status: CompilerStatus) => {
@@ -6997,6 +7211,8 @@ ${nextLine}` : nextLine;
         } satisfies CompileResult;
       }
 
+      await waitForEditorInputIdle();
+
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
         return;
       }
@@ -7028,46 +7244,48 @@ ${nextLine}` : nextLine;
       const nextResult = compileResolution.diagnosticResult;
       const changedPreview = compileResolution.outputChanged;
 
-      if (nextResult !== currentCompileResult) {
-        setCompileResult(nextResult);
-      }
-
-      if (nextResult.ok) {
-        setLastSuccessfulResult(nextResult);
-      }
-
-      setCompilePreviewsByPath((currentPreviews) => {
-        const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, result);
-        const nextPreviews = { ...currentPreviews };
-
-        for (const sourcePathKey of sourcePathKeys) {
-          const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
-          const previewResult = resolveCompileResultCompletion(
-            currentPreview.result,
-            result
-          ).previewResult;
-          const nextCompilerStatus = createCompletedPreviewCompilerStatus(
-            result,
-            currentPreview.compilerStatus
-          );
-
-          nextPreviews[sourcePathKey] = {
-            ...currentPreview,
-            result: previewResult,
-            lastSuccessfulResult: previewResult.ok
-              ? previewResult
-              : currentPreview.lastSuccessfulResult,
-            compilerStatus: nextCompilerStatus,
-            isCompiling: false
-          };
+      startTransition(() => {
+        if (nextResult !== currentCompileResult) {
+          setCompileResult(nextResult);
         }
 
-        return nextPreviews;
-      });
+        if (nextResult.ok) {
+          setLastSuccessfulResult(nextResult);
+        }
 
-      setCompilerStatus((currentStatus) =>
-        createCompletedPreviewCompilerStatus(result, currentStatus)
-      );
+        setCompilePreviewsByPath((currentPreviews) => {
+          const sourcePathKeys = getCompilePreviewSourcePathsForResult(sourcePath, result);
+          const nextPreviews = { ...currentPreviews };
+
+          for (const sourcePathKey of sourcePathKeys) {
+            const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+            const previewResult = resolveCompileResultCompletion(
+              currentPreview.result,
+              result
+            ).previewResult;
+            const nextCompilerStatus = createCompletedPreviewCompilerStatus(
+              result,
+              currentPreview.compilerStatus
+            );
+
+            nextPreviews[sourcePathKey] = {
+              ...currentPreview,
+              result: previewResult,
+              lastSuccessfulResult: previewResult.ok
+                ? previewResult
+                : currentPreview.lastSuccessfulResult,
+              compilerStatus: nextCompilerStatus,
+              isCompiling: false
+            };
+          }
+
+          return nextPreviews;
+        });
+
+        setCompilerStatus((currentStatus) =>
+          createCompletedPreviewCompilerStatus(result, currentStatus)
+        );
+      });
 
       logCompileTiming({
         durationMs: compileDurationMs,
@@ -7076,22 +7294,24 @@ ${nextLine}` : nextLine;
         diagnosticsCount: compileResolution.buildLog.diagnostics.length,
         metadata: compileResolution.buildLog.metadata
       });
-      appendBuildLogEntry({
-        sourcePath,
-        language: sourceLanguage,
-        engine: result.engine,
-        ok: result.ok,
-        startedAt: compileStartedAtIso,
-        durationMs: compileDurationMs,
-        diagnostics: compileResolution.buildLog.diagnostics,
-        metadata: compileResolution.buildLog.metadata,
-        trigger: pendingCompileTriggerRef.current,
-        compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
-        cached: compileUsedCachedOutput,
-        outputChanged: changedPreview,
-        rawLog: sourceLanguage === "latex" ? result.output?.content : undefined,
-        packageDetails: sourceLanguage === "latex" ? extractBuildLogPackageDetails(result.output?.content ?? "") : [],
-        shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(result.output?.content ?? "")
+      startTransition(() => {
+        appendBuildLogEntry({
+          sourcePath,
+          language: sourceLanguage,
+          engine: result.engine,
+          ok: result.ok,
+          startedAt: compileStartedAtIso,
+          durationMs: compileDurationMs,
+          diagnostics: compileResolution.buildLog.diagnostics,
+          metadata: compileResolution.buildLog.metadata,
+          trigger: pendingCompileTriggerRef.current,
+          compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
+          cached: compileUsedCachedOutput,
+          outputChanged: changedPreview,
+          rawLog: sourceLanguage === "latex" ? result.output?.content : undefined,
+          packageDetails: sourceLanguage === "latex" ? extractBuildLogPackageDetails(result.output?.content ?? "") : [],
+          shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(result.output?.content ?? "")
+        });
       });
     } catch (error) {
       if (!isMountedRef.current || requestId !== compileRequestRef.current) {
@@ -7113,44 +7333,46 @@ ${nextLine}` : nextLine;
           }
         ]
       } satisfies CompileResult;
-      setCompileResult(failedResult);
-      setCompilePreviewsByPath((currentPreviews) => {
-        const sourcePathKey = normalizeWorkspacePath(sourcePath);
-        const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
-        const nextCompilerStatus = createCompletedPreviewCompilerStatus(
-          failedResult,
-          currentPreview.compilerStatus
-        );
+      startTransition(() => {
+        setCompileResult(failedResult);
+        setCompilePreviewsByPath((currentPreviews) => {
+          const sourcePathKey = normalizeWorkspacePath(sourcePath);
+          const currentPreview = currentPreviews[sourcePathKey] ?? createCompilePreviewState(sourcePathKey);
+          const nextCompilerStatus = createCompletedPreviewCompilerStatus(
+            failedResult,
+            currentPreview.compilerStatus
+          );
 
-        return {
-          ...currentPreviews,
-          [sourcePathKey]: {
-            ...currentPreview,
-            result: failedResult,
-            compilerStatus: nextCompilerStatus,
-            isCompiling: false
-          }
-        };
-      });
-      setCompilerStatus((currentStatus) =>
-        createCompletedPreviewCompilerStatus(failedResult, currentStatus)
-      );
-      appendBuildLogEntry({
-        sourcePath,
-        language: sourceLanguage,
-        engine: failedResult.engine,
-        ok: false,
-        startedAt: compileStartedAtIso,
-        durationMs: typeof performance === "undefined" ? 0 : performance.now() - compileStartedAt,
-        diagnostics: failedResult.errors,
-        metadata: failedResult.metadata,
-        trigger: pendingCompileTriggerRef.current,
-        compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
-        cached: false,
-        outputChanged: false,
-        rawLog: sourceLanguage === "latex" ? failedResult.output?.content : undefined,
-        packageDetails: sourceLanguage === "latex" ? extractBuildLogPackageDetails(failedResult.output?.content ?? "") : [],
-        shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(failedResult.output?.content ?? "")
+          return {
+            ...currentPreviews,
+            [sourcePathKey]: {
+              ...currentPreview,
+              result: failedResult,
+              compilerStatus: nextCompilerStatus,
+              isCompiling: false
+            }
+          };
+        });
+        setCompilerStatus((currentStatus) =>
+          createCompletedPreviewCompilerStatus(failedResult, currentStatus)
+        );
+        appendBuildLogEntry({
+          sourcePath,
+          language: sourceLanguage,
+          engine: failedResult.engine,
+          ok: false,
+          startedAt: compileStartedAtIso,
+          durationMs: typeof performance === "undefined" ? 0 : performance.now() - compileStartedAt,
+          diagnostics: failedResult.errors,
+          metadata: failedResult.metadata,
+          trigger: pendingCompileTriggerRef.current,
+          compileMode: sourceLanguage === "latex" ? requestedLatexCompileMode : "none",
+          cached: false,
+          outputChanged: false,
+          rawLog: sourceLanguage === "latex" ? failedResult.output?.content : undefined,
+          packageDetails: sourceLanguage === "latex" ? extractBuildLogPackageDetails(failedResult.output?.content ?? "") : [],
+          shellEscapeUnavailable: sourceLanguage === "latex" && hasShellEscapeConstraint(failedResult.output?.content ?? "")
+        });
       });
     } finally {
       if (sourceLanguage === "latex" && shouldUseLowMemoryCompilerMode()) {
@@ -7183,24 +7405,26 @@ ${nextLine}` : nextLine;
       });
 
       if (completionTransition.type === "schedule") {
-        void runCompile();
+        scheduleCompileAfterPaint(runCompile, COMPILE_DEBOUNCE_MS);
       } else {
-        setIsCompiling(false);
-        setCompilePreviewsByPath((currentPreviews) => {
-          const sourcePathKey = normalizeWorkspacePath(sourcePath);
-          const currentPreview = currentPreviews[sourcePathKey];
+        startTransition(() => {
+          setIsCompiling(false);
+          setCompilePreviewsByPath((currentPreviews) => {
+            const sourcePathKey = normalizeWorkspacePath(sourcePath);
+            const currentPreview = currentPreviews[sourcePathKey];
 
-          if (!currentPreview || !currentPreview.isCompiling) {
-            return currentPreviews;
-          }
-
-          return {
-            ...currentPreviews,
-            [sourcePathKey]: {
-              ...currentPreview,
-              isCompiling: false
+            if (!currentPreview || !currentPreview.isCompiling) {
+              return currentPreviews;
             }
-          };
+
+            return {
+              ...currentPreviews,
+              [sourcePathKey]: {
+                ...currentPreview,
+                isCompiling: false
+              }
+            };
+          });
         });
       }
     }
@@ -7212,6 +7436,7 @@ ${nextLine}` : nextLine;
     isHydrated,
     openPreviewTab,
     prepareForLatexCompile,
+    scheduleCompileAfterPaint,
     saveGeneratedLatexPdfToProject
   ]);
 
@@ -7467,6 +7692,12 @@ ${nextLine}` : nextLine;
     ]
   );
 
+  const handleSaveRequested = useCallback(() => {
+    if (snapshot.preferences.compileOnSave) {
+      handleCompile();
+    }
+  }, [handleCompile, snapshot.preferences.compileOnSave]);
+
   useEffect(() => {
     handleCompileRef.current = handleCompile;
   }, [handleCompile]);
@@ -7630,7 +7861,7 @@ ${nextLine}` : nextLine;
   }, [compileResult]);
 
   const handleDocumentChange = useCallback((content: string) => {
-    setAreHarperDiagnosticsActivated(true);
+    previewSourceDraftRef.current = content;
     editedSourcePathRef.current = normalizeWorkspacePath(activeSourcePath);
     const pastedImageBinding = pastedImageRenameBindingRef.current;
 
@@ -7651,7 +7882,10 @@ ${nextLine}` : nextLine;
       }
     }
 
-    setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
+    startTransition(() => {
+      setAreHarperDiagnosticsActivated(true);
+      setSnapshot((currentSnapshot) => updateActiveDocument(currentSnapshot, content));
+    });
   }, [activeSourcePath]);
 
   const commitPastedImageRename = useCallback(() => {
@@ -11364,7 +11598,13 @@ ${nextLine}` : nextLine;
 
       const renamedDiagram = {
         ...currentDiagram,
-        name: normalizedName
+        name: normalizedName,
+        workspacePath: currentDiagram.workspacePath
+          ? joinWorkspacePath(
+              getWorkspacePathDirectory(currentDiagram.workspacePath),
+              getWorkspaceBaseName(normalizedName)
+            )
+          : undefined
       };
 
       const now = new Date().toISOString();
@@ -11448,36 +11688,69 @@ ${nextLine}` : nextLine;
   }, [rememberNewDocumentFolder, updateWorkspaceOpenFolders]);
 
   const handleNewDiagram = useCallback(() => {
-    setSnapshot((currentSnapshot) => createNextDiagramSnapshot(currentSnapshot));
-  }, []);
+    setSnapshot((currentSnapshot) => {
+      const locatedSnapshot = locateCurrentDiagramInSnapshot(
+        currentSnapshot,
+        activeSourcePath,
+        currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+      );
+      const nextSnapshot = createNextDiagramSnapshot(locatedSnapshot);
+      return locateCurrentDiagramInSnapshot(
+        nextSnapshot,
+        activeSourcePath,
+        currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+      );
+    });
+  }, [activeSourcePath]);
 
   const handleSaveDiagram = useCallback(() => {
-    setSnapshot((currentSnapshot) => saveCurrentDiagram(currentSnapshot));
-    handleCompileRef.current();
-  }, []);
-
-  const handleNewDiagramSvg = useCallback((svgMarkup: string) => {
     setSnapshot((currentSnapshot) =>
-      createNextDiagramSnapshot(
-        updateDiagram(currentSnapshot, (diagramAsset) => ({
-          ...diagramAsset,
-          content: svgMarkup,
-          strokes: [],
-          shapes: []
-        }))
+      saveCurrentDiagram(
+        locateCurrentDiagramInSnapshot(
+          currentSnapshot,
+          activeSourcePath,
+          currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+        )
       )
     );
-  }, []);
+    handleCompileRef.current();
+  }, [activeSourcePath]);
+
+  const handleNewDiagramSvg = useCallback((svgMarkup: string) => {
+    setSnapshot((currentSnapshot) => {
+      const nextSnapshot = createNextDiagramSnapshot(
+        locateCurrentDiagramInSnapshot(
+          updateDiagram(currentSnapshot, (diagramAsset) => ({
+            ...diagramAsset,
+            content: svgMarkup,
+            strokes: [],
+            shapes: []
+          })),
+          activeSourcePath,
+          currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+        )
+      );
+      return locateCurrentDiagramInSnapshot(
+        nextSnapshot,
+        activeSourcePath,
+        currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+      );
+    });
+  }, [activeSourcePath]);
 
   const handleSaveDiagramSvg = useCallback(async (svgMarkup: string) => {
     setSnapshot((currentSnapshot) =>
       saveCurrentDiagram(
-        updateDiagram(currentSnapshot, (diagramAsset) => ({
-          ...diagramAsset,
-          content: svgMarkup,
-          strokes: [],
-          shapes: []
-        }))
+        locateCurrentDiagramInSnapshot(
+          updateDiagram(currentSnapshot, (diagramAsset) => ({
+            ...diagramAsset,
+            content: svgMarkup,
+            strokes: [],
+            shapes: []
+          })),
+          activeSourcePath,
+          currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+        )
       )
     );
 
@@ -11487,19 +11760,19 @@ ${nextLine}` : nextLine;
       try {
         pdfBytes = await exportSvgToVectorPdfBytes(svgMarkup);
       } catch (error) {
-        setProjectRepository((project) => writeDiagramSvgProjectFile(project, diagram, svgMarkup));
+        setProjectRepository((project) => writeDiagramSvgProjectFile(project, locatedDiagram, svgMarkup));
         window.alert(error instanceof Error ? error.message : "Unable to export diagram PDF.");
         return;
       }
     }
 
     setProjectRepository((project) => {
-      const withSvg = writeDiagramSvgProjectFile(project, diagram, svgMarkup);
-      return pdfBytes ? writeDiagramPdfProjectFile(withSvg, diagram, pdfBytes) : withSvg;
+      const withSvg = writeDiagramSvgProjectFile(project, locatedDiagram, svgMarkup);
+      return pdfBytes ? writeDiagramPdfProjectFile(withSvg, locatedDiagram, pdfBytes) : withSvg;
     });
 
     handleCompileRef.current();
-  }, [activeSourceLanguage, diagram.id, diagram.name, setProjectRepository]);
+  }, [activeSourceLanguage, activeSourcePath, locatedDiagram, setProjectRepository]);
 
   const handleDownloadDiagramSvg = useCallback(async (svgMarkup: string) => {
     if (activeSourceLanguage === "latex") {
@@ -11535,19 +11808,44 @@ ${nextLine}` : nextLine;
       return;
     }
 
-    const path = createNextTikzPath(project);
+    const figuresDirectory = getDiagramCreationDirectory(
+      activeSourcePath,
+      snapshot.preferences.diagramDirectoriesRelativeToFile
+    );
+    const path = createNextTikzPath(project, figuresDirectory);
     setProjectRepository((currentProject) =>
       currentProject.id === project.id
         ? writeTikzFigureFiles(currentProject, path, DEFAULT_TIKZ_SOURCE)
         : currentProject
     );
     setSelectedTikzPath(path);
-    updateWorkspaceOpenFolders((currentPaths) => new Set(currentPaths).add("figures"));
-  }, [setProjectRepository, updateWorkspaceOpenFolders]);
+    updateWorkspaceOpenFolders((currentPaths) => new Set(currentPaths).add(figuresDirectory));
+  }, [activeSourcePath, setProjectRepository, snapshot.preferences.diagramDirectoriesRelativeToFile, updateWorkspaceOpenFolders]);
 
   const handleUpdateTikzFigure = useCallback(
     (path: string, source: string, svg?: string) => {
       setProjectRepository((project) => writeTikzFigureFiles(project, path, source, svg));
+    },
+    [setProjectRepository]
+  );
+
+  const handleDuplicateTikzFigure = useCallback(
+    (path: string) => {
+      const project = selectedProjectRepositoryRef.current;
+
+      if (!project) {
+        return;
+      }
+
+      try {
+        const duplicated = duplicateTikzFigureFiles(project, path);
+        setProjectRepository((currentProject) =>
+          currentProject.id === project.id ? duplicated.project : currentProject
+        );
+        setSelectedTikzPath(duplicated.path);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Unable to duplicate TikZ figure.");
+      }
     },
     [setProjectRepository]
   );
@@ -11774,7 +12072,7 @@ ${nextLine}` : nextLine;
         if (insertion.artifact === "pdf") {
           editorRef.current?.insertLatexGraphic(insertion.text);
         } else {
-          editorRef.current?.insertLatexTemplateWithPackages(
+          editorRef.current?.insertLatexCommandOnOwnLineWithPackages(
             insertion.text,
             insertion.latexPackages
           );
@@ -11936,59 +12234,72 @@ ${nextLine}` : nextLine;
   ]);
 
   const handleInsertDiagramIntoDocument = useCallback(() => {
+    const reference = getWorkspaceRelativeReference(
+      activeSourcePath,
+      getDiagramAssetFilePath(locatedDiagram)
+    );
     editorRef.current?.insertTextAndSelect(
-      `\n#figure(image("${getDiagramFilePath(diagram.name)}"))\n`
+      `\n#figure(image("${reference}"))\n`
     );
     window.setTimeout(() => {
       handleCompileRef.current();
     }, 0);
-  }, [diagram.name]);
+  }, [activeSourcePath, locatedDiagram]);
 
   const handleInsertDiagramSvgIntoDocument = useCallback(async (svgMarkup: string) => {
     setSnapshot((currentSnapshot) =>
       saveCurrentDiagram(
-        updateDiagram(currentSnapshot, (diagramAsset) => ({
-          ...diagramAsset,
-          content: svgMarkup,
-          strokes: [],
-          shapes: []
-        }))
+        locateCurrentDiagramInSnapshot(
+          updateDiagram(currentSnapshot, (diagramAsset) => ({
+            ...diagramAsset,
+            content: svgMarkup,
+            strokes: [],
+            shapes: []
+          })),
+          activeSourcePath,
+          currentSnapshot.preferences.diagramDirectoriesRelativeToFile
+        )
       )
     );
 
     if (activeSourceLanguage === "latex") {
       try {
         const pdfBytes = await exportSvgToVectorPdfBytes(svgMarkup);
-        const pdfPath = getDiagramPdfFilePath(diagram.name);
+        const pdfPath = getDiagramAssetPdfFilePath(locatedDiagram);
+        const pdfReference = getWorkspaceRelativeReference(activeSourcePath, pdfPath);
 
         setProjectRepository((project) =>
           writeDiagramPdfProjectFile(
-            writeDiagramSvgProjectFile(project, diagram, svgMarkup),
-            diagram,
+            writeDiagramSvgProjectFile(project, locatedDiagram, svgMarkup),
+            locatedDiagram,
             pdfBytes
           )
         );
-        editorRef.current?.insertLatexGraphic(`\n\\includegraphics{${pdfPath}}\n`);
+        editorRef.current?.insertLatexGraphic(`\n\\includegraphics{${pdfReference}}\n`);
         window.setTimeout(() => {
           handleCompileRef.current();
         }, 0);
         return;
       } catch (error) {
-        setProjectRepository((project) => writeDiagramSvgProjectFile(project, diagram, svgMarkup));
+        setProjectRepository((project) => writeDiagramSvgProjectFile(project, locatedDiagram, svgMarkup));
         window.alert(error instanceof Error ? error.message : "Unable to export diagram PDF.");
         return;
       }
     } else {
-      setProjectRepository((project) => writeDiagramSvgProjectFile(project, diagram, svgMarkup));
+      const svgReference = getWorkspaceRelativeReference(
+        activeSourcePath,
+        getDiagramAssetFilePath(locatedDiagram)
+      );
+      setProjectRepository((project) => writeDiagramSvgProjectFile(project, locatedDiagram, svgMarkup));
       editorRef.current?.insertTextAndSelect(
-        `\n#figure(image("${getDiagramFilePath(diagram.name)}"))\n`
+        `\n#figure(image("${svgReference}"))\n`
       );
     }
 
     window.setTimeout(() => {
       handleCompileRef.current();
     }, 0);
-  }, [activeSourceLanguage, diagram.id, diagram.name, setProjectRepository]);
+  }, [activeSourceLanguage, activeSourcePath, locatedDiagram, setProjectRepository]);
 
   const compileProjectFile = useCallback(async (
     requestedPath?: string,
@@ -12957,6 +13268,8 @@ ${nextLine}` : nextLine;
 
       event.preventDefault();
 
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
       const workspaceWidth = workspace.getBoundingClientRect().width;
       const sidebarPaneWidth = isSidebarCollapsed ? 0 : sidebarWidth;
       const sidebarInlineExpandedDuringResize =
@@ -13038,6 +13351,10 @@ ${nextLine}` : nextLine;
         if (!resizeState || resizeState.edge !== edge) {
           return;
         }
+        if (moveEvent.buttons === 0) {
+          stopResize();
+          return;
+        }
 
         const delta = moveEvent.clientX - resizeState.startX;
         const nextWidth =
@@ -13088,6 +13405,10 @@ ${nextLine}` : nextLine;
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", stopResize);
         window.removeEventListener("pointercancel", stopResize);
+        resizeHandle.removeEventListener("lostpointercapture", stopResize);
+        if (resizeHandle.hasPointerCapture(pointerId)) {
+          resizeHandle.releasePointerCapture(pointerId);
+        }
         const pendingWidth = panelResizePendingWidthRef.current;
         panelResizePendingWidthRef.current = null;
         if (pendingWidth !== null) {
@@ -13110,6 +13431,8 @@ ${nextLine}` : nextLine;
       window.addEventListener("pointermove", handleMove);
       window.addEventListener("pointerup", stopResize);
       window.addEventListener("pointercancel", stopResize);
+      resizeHandle.addEventListener("lostpointercapture", stopResize);
+      resizeHandle.setPointerCapture(pointerId);
     },
     [
       activeMergeState,
@@ -13144,6 +13467,8 @@ ${nextLine}` : nextLine;
 
       event.preventDefault();
 
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
       const workspaceWidth = workspace.getBoundingClientRect().width;
       const effectiveViewportHeight = viewportHeight > 0 ? viewportHeight : getCurrentViewportHeight();
       const isHorizontalResize = edge === "zen-left" || edge === "zen-right";
@@ -13158,6 +13483,10 @@ ${nextLine}` : nextLine;
       const handleMove = (moveEvent: PointerEvent) => {
         const resizeState = panelResizeRef.current;
         if (!resizeState || resizeState.edge !== edge) {
+          return;
+        }
+        if (moveEvent.buttons === 0) {
+          stopResize();
           return;
         }
 
@@ -13183,6 +13512,10 @@ ${nextLine}` : nextLine;
         window.removeEventListener("pointermove", handleMove);
         window.removeEventListener("pointerup", stopResize);
         window.removeEventListener("pointercancel", stopResize);
+        resizeHandle.removeEventListener("lostpointercapture", stopResize);
+        if (resizeHandle.hasPointerCapture(pointerId)) {
+          resizeHandle.releasePointerCapture(pointerId);
+        }
         panelResizeRef.current = null;
         panelResizeCleanupRef.current = null;
         document.body.style.cursor = "";
@@ -13195,6 +13528,8 @@ ${nextLine}` : nextLine;
       window.addEventListener("pointermove", handleMove);
       window.addEventListener("pointerup", stopResize);
       window.addEventListener("pointercancel", stopResize);
+      resizeHandle.addEventListener("lostpointercapture", stopResize);
+      resizeHandle.setPointerCapture(pointerId);
     },
     [viewportHeight, viewportWidth, workspaceMode, zenHeight, zenWidth]
   );
@@ -13801,6 +14136,15 @@ ${nextLine}` : nextLine;
   const sidebarPaneStyle = {
     "--sidebar-font-size": `${snapshot.preferences.sidebarFontSize}px`
   } as CSSProperties;
+  const scrollPersistenceProjectId = selectedProjectRepository?.id ?? snapshot.project.id;
+  const sourceScrollPersistenceKey = normalizedActiveSourcePath
+    ? `project:${scrollPersistenceProjectId}:source:${normalizedActiveSourcePath}`
+    : undefined;
+  const previewScrollPersistencePath =
+    activePreviewCompileSourcePath ?? activePreviewPath ?? normalizedActiveSourcePath;
+  const previewScrollPersistenceKey = previewScrollPersistencePath
+    ? `project:${scrollPersistenceProjectId}:preview:${previewScrollPersistencePath}`
+    : undefined;
 
   const leftPaneScrollKey = activeSidebarTool === "files"
     ? isTrashViewOpen
@@ -13821,11 +14165,12 @@ ${nextLine}` : nextLine;
 
     writeStoredLeftPaneState({
       activeSidebarTool,
+      diagramPaneMode,
       mobileWorkspaceTab,
       isTrashViewOpen,
       scrollByPane: leftPaneScrollByPaneRef.current
     });
-  }, [activeSidebarTool, isTrashViewOpen, leftPaneScrollKey, mobileWorkspaceTab]);
+  }, [activeSidebarTool, diagramPaneMode, isTrashViewOpen, leftPaneScrollKey, mobileWorkspaceTab]);
 
   const handleLeftPaneScroll = useCallback(() => {
     saveCurrentLeftPaneScrollPosition();
@@ -13855,11 +14200,12 @@ ${nextLine}` : nextLine;
   useEffect(() => {
     writeStoredLeftPaneState({
       activeSidebarTool,
+      diagramPaneMode,
       mobileWorkspaceTab,
       isTrashViewOpen,
       scrollByPane: leftPaneScrollByPaneRef.current
     });
-  }, [activeSidebarTool, isTrashViewOpen, mobileWorkspaceTab]);
+  }, [activeSidebarTool, diagramPaneMode, isTrashViewOpen, mobileWorkspaceTab]);
 
   useEffect(() => {
     if (isMobileWorkspace || workspaceMode !== "split" || visibleDesktopPaneCount > 0) {
@@ -13898,6 +14244,12 @@ ${nextLine}` : nextLine;
       setWorkspaceMode("split");
     }
   }, [isMobileWorkspace, workspaceMode]);
+
+  const openBuildLog = useCallback(() => {
+    buildLogController.setFilter("errors");
+    buildLogController.setSearchQuery("");
+    openDebugSidebar();
+  }, [buildLogController, openDebugSidebar]);
 
   const handleOpenSidebarTool = useCallback(
     (tool: SidebarTool) => {
@@ -16030,8 +16382,11 @@ ${nextLine}` : nextLine;
     handleColorfulFileTreeIconsToggle,
     handleCompanionConnectionChange,
     handleCompanionBaseUrlReset,
+    handleCompileOnSaveToggle,
+    handleContinuousPdfScrollToggle,
     handleCursorSmearChange,
     handleCursorSmoothToggle,
+    handleDiagramDirectoryAnchorToggle,
     handleDownloadCustomSnippets,
     handleDownloadSnippetTemplate,
     handleDownloadThemeTemplate,
@@ -17385,6 +17740,7 @@ ${nextLine}` : nextLine;
                           figures={tikzFigures}
                           onChange={handleUpdateTikzFigure}
                           onCreate={handleCreateTikzFigure}
+                          onDuplicate={handleDuplicateTikzFigure}
                           onInsert={handleInsertTikzFigure}
                           onRename={handleRenameTikzFigure}
                           onSelect={setSelectedTikzPath}
@@ -18431,7 +18787,9 @@ ${nextLine}` : nextLine;
                     ? allSnippetsByLanguage[activeEditorSnippetLanguage]
                     : []
                 }
+                scrollPersistenceKey={sourceScrollPersistenceKey}
                 onCompileRequested={handleCompile}
+                onSaveRequested={handleSaveRequested}
                 onFormatRequested={handleFormatDocument}
                 onToggleLineWrap={handleLineWrapToggle}
                 onCloseRequested={handleCloseActiveSourceTab}
@@ -18486,8 +18844,19 @@ ${nextLine}` : nextLine;
             </div>
           ) : null}
           {isSourceFileEditable && visibleSourceTabPaths.includes(normalizedActiveSourcePath) && compileResult && !compileResult.ok ? (
-            <div className="source-inline-status source-inline-status--error">
-              {formatSourceError(compileResult)}
+            <div className="source-compile-notice" role="alert">
+              <span className="source-compile-notice__icon" aria-hidden="true">!</span>
+              <div className="source-compile-notice__content">
+                <strong>{formatSourceLanguageLabel(activeSourceLanguage)} compile failed</strong>
+                <span>{formatSourceErrorNoticeDetail(compileResult)}</span>
+              </div>
+              <button
+                className="source-compile-notice__action"
+                onClick={openBuildLog}
+                type="button"
+              >
+                View log
+              </button>
             </div>
           ) : null}
           {isTexpressoPreviewRequested && texpressoSnapshot.status === "error" && texpressoSnapshot.statusDetail ? (
@@ -18538,19 +18907,7 @@ ${nextLine}` : nextLine;
             <div className="pane__header-group">
               <h2>Preview</h2>
             </div>
-            <div className="pane__header-center pane__header-center--preview-zoom">
-              <PreviewZoomControls
-                onZoomChange={setPreviewZoom}
-                zoom={previewZoom}
-              />
-            </div>
             <div className="pane__header-actions">
-              <div className="pane__header-mobile-zoom">
-                <PreviewZoomControls
-                  onZoomChange={setPreviewZoom}
-                  zoom={previewZoom}
-                />
-              </div>
               {visiblePreviewIsCompiling ? (
                 <span className="pane__meta pane__meta--status">
                   <PreviewStatusIcon kind="compiling" label={visiblePreviewCompilerStatus.label} />
@@ -18638,6 +18995,7 @@ ${nextLine}` : nextLine;
             <TexpressoPreview
               onRevisionCommitted={acknowledgeTexpressoVisibleRevision}
               paperView={isPaperView}
+              scrollPersistenceKey={previewScrollPersistenceKey ? `${previewScrollPersistenceKey}:main:texpresso` : undefined}
               snapshot={texpressoSnapshot}
               zoom={previewZoom}
             />
@@ -18646,16 +19004,19 @@ ${nextLine}` : nextLine;
           <PreviewPane
             activeSource={activePreviewSourcePosition}
             compilerStatus={visiblePreviewCompilerStatus}
+            continuousPdfScroll={snapshot.preferences.continuousPdfScroll}
             forwardSearchSource={previewForwardSearchSource}
             isErrorSettled={isErrorSettled}
             isCompiling={visiblePreviewIsCompiling}
             lastSuccessfulResult={visibleLastSuccessfulResult}
             onDebugRequested={openDebugSidebar}
+            onContinuousPdfScrollToggle={handleContinuousPdfScrollToggle}
             onSourceJump={handlePreviewSourceJump}
             paperView={isPaperView}
             showToolbar={false}
             onZoomChange={setPreviewZoom}
             result={visiblePreviewResult}
+            scrollPersistenceKey={previewScrollPersistenceKey ? `${previewScrollPersistenceKey}:main` : undefined}
             sourceLineCount={activePreviewSourceLineCount}
             sourcePath={activePreviewCompileSourcePath ?? activePreviewPath ?? undefined}
             workspacePreview={visibleWorkspacePreview}
@@ -18721,6 +19082,7 @@ ${nextLine}` : nextLine;
               <TexpressoPreview
                 onRevisionCommitted={acknowledgeTexpressoVisibleRevision}
                 paperView={isPaperView}
+                scrollPersistenceKey={previewScrollPersistenceKey ? `${previewScrollPersistenceKey}:popup:texpresso` : undefined}
                 snapshot={texpressoSnapshot}
                 zoom={previewZoom}
               />
@@ -18729,16 +19091,19 @@ ${nextLine}` : nextLine;
             <PreviewPane
               activeSource={activePreviewSourcePosition}
               compilerStatus={visiblePreviewCompilerStatus}
+              continuousPdfScroll={snapshot.preferences.continuousPdfScroll}
               forwardSearchSource={previewForwardSearchSource}
               isErrorSettled={isErrorSettled}
               isCompiling={visiblePreviewIsCompiling}
               lastSuccessfulResult={visibleLastSuccessfulResult}
               onDebugRequested={openDebugSidebar}
+              onContinuousPdfScrollToggle={handleContinuousPdfScrollToggle}
               onSourceJump={handlePreviewSourceJump}
               paperView={isPaperView}
               showToolbar={true}
               onZoomChange={setPreviewZoom}
               result={visiblePreviewResult}
+              scrollPersistenceKey={previewScrollPersistenceKey ? `${previewScrollPersistenceKey}:popup` : undefined}
               sourceLineCount={activePreviewSourceLineCount}
               sourcePath={activePreviewCompileSourcePath ?? activePreviewPath ?? undefined}
               workspacePreview={visibleWorkspacePreview}
@@ -18756,7 +19121,10 @@ ${nextLine}` : nextLine;
       {isSettingsOpen && !(isMobileWorkspace && activeSidebarTool === "settings") ? (
         <div
           className="sheet-backdrop"
-          onClick={() => {
+          onPointerDown={(event) => {
+            if (event.target !== event.currentTarget) {
+              return;
+            }
             saveCurrentSettingsScrollPosition();
             setIsSettingsOpen(false);
           }}
@@ -19160,9 +19528,30 @@ function resetDocumentScrollPosition(): void {
     return;
   }
 
-  window.scrollTo(0, 0);
-  document.documentElement.scrollTop = 0;
-  document.body.scrollTop = 0;
+  if (hasDocumentScrollOffset()) {
+    window.scrollTo({ left: 0, top: 0, behavior: "instant" });
+    document.documentElement.scrollLeft = 0;
+    document.documentElement.scrollTop = 0;
+    document.body.scrollLeft = 0;
+    document.body.scrollTop = 0;
+  }
+}
+
+function hasDocumentScrollOffset(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return Boolean(
+    window.scrollX ||
+    window.scrollY ||
+    document.documentElement.scrollLeft ||
+    document.documentElement.scrollTop ||
+    document.body.scrollLeft ||
+    document.body.scrollTop ||
+    window.visualViewport?.offsetLeft ||
+    window.visualViewport?.offsetTop
+  );
 }
 
 function revealActiveWorkspaceTab(tab: HTMLElement | null): void {
@@ -19181,11 +19570,11 @@ function countSourceTextLines(source: string): number {
   return source.replace(/\r\n?/g, "\n").split("\n").length;
 }
 
-function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
+function formatSourceErrorDetail(result: Extract<CompileResult, { ok: false }>) {
   const [firstError] = result.errors;
 
   if (!firstError) {
-    return "Compile error.";
+    return "The compiler did not provide any details.";
   }
 
   const range = formatDiagnosticRange(firstError);
@@ -19196,7 +19585,24 @@ function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
   const suffix =
     result.errors.length > 1 ? ` (+${result.errors.length - 1} more)` : "";
 
-  return `Compile error: ${prefix}${firstError.message}${suffix}`;
+  return `${prefix}${firstError.message}${suffix}`;
+}
+
+function formatSourceError(result: Extract<CompileResult, { ok: false }>) {
+  return `Compile error: ${formatSourceErrorDetail(result)}`;
+}
+
+function formatSourceErrorNoticeDetail(result: Extract<CompileResult, { ok: false }>) {
+  const detail = formatSourceErrorDetail(result).replace(/\s+/g, " ").trim();
+  const maximumLength = 240;
+
+  if (detail.length <= maximumLength) {
+    return detail;
+  }
+
+  const wordBoundary = detail.lastIndexOf(" ", maximumLength - 1);
+  const end = wordBoundary >= maximumLength * 0.7 ? wordBoundary : maximumLength - 1;
+  return `${detail.slice(0, end).trimEnd()}…`;
 }
 
 function decodeProjectTextFile(project: TyprProjectRepository, path: string): string {
@@ -21384,7 +21790,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setDebouncedValue(value);
+      startTransition(() => setDebouncedValue(value));
     }, delayMs);
 
     return () => window.clearTimeout(timer);

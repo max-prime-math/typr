@@ -7,6 +7,7 @@ import {
   renderToCanvas,
   type DisplayList
 } from "ratex-wasm";
+import { waitForEditorInputIdle } from "./inputPriority";
 
 interface MathPreviewRange {
   from: number;
@@ -84,10 +85,22 @@ export function latexMathPreview(): Extension {
         this.dispatchTooltip(null);
         const requestId = ++this.requestId;
 
-        getRatexReady()
-          .then(() => renderLatexToDisplayList(range.latex, getRatexTextColor(this.view.dom)))
-          .then((displayList) => {
+        waitForEditorInputIdle()
+          .then(() => {
             if (requestId !== this.requestId || !this.currentRange || !areRangesEqual(this.currentRange, range)) {
+              return null;
+            }
+
+            return getRatexReady().then(() => {
+              if (requestId !== this.requestId || !this.currentRange || !areRangesEqual(this.currentRange, range)) {
+                return null;
+              }
+
+              return renderLatexToDisplayList(range.latex, getRatexTextColor(this.view.dom));
+            });
+          })
+          .then((displayList) => {
+            if (displayList === null || requestId !== this.requestId || !this.currentRange || !areRangesEqual(this.currentRange, range)) {
               return;
             }
             this.dispatchTooltip(createMathTooltip(range, displayList));

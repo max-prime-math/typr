@@ -1,6 +1,7 @@
 import { AUTO_THEME_ID, normalizeThemeId } from "../theme/themes";
 import {
   DEFAULT_DIAGRAM_FILE_NAME,
+  getDiagramAssetFilePath,
   getDiagramFilePath,
   normalizeDiagramFileName
 } from "../diagram/diagramFiles";
@@ -212,6 +213,7 @@ export type DiagramShape =
 export interface DiagramAsset {
   id: string;
   name: string;
+  workspacePath?: string;
   updatedAt: string;
   frame: DiagramCanvasFrame | null;
   content?: string;
@@ -272,7 +274,9 @@ export interface AppPreferences {
   cursorSmooth: boolean;
   cursorSmear: number;
   liveCompilation: boolean;
+  compileOnSave: boolean;
   previewMode: PreviewModePreference;
+  continuousPdfScroll: boolean;
   latexMathPreview: boolean;
   typstMathPreview: boolean;
   autoSyncGitProjects: boolean;
@@ -284,11 +288,12 @@ export interface AppPreferences {
   sidebarFontSize: number;
   colorfulFileTreeIcons: boolean;
   showGitignoreInFileTree: boolean;
+  diagramDirectoriesRelativeToFile: boolean;
   pastedImages: PastedImagePreferences;
 }
 
 export interface AppSnapshot {
-  version: 9;
+  version: 10;
   project: TypstProject;
   preferences: AppPreferences;
 }
@@ -396,7 +401,7 @@ export function createDefaultSnapshot(): AppSnapshot {
   };
 
   return {
-    version: 9,
+    version: 10,
     project: {
       id: createId("project"),
       name: "Typr Project",
@@ -420,7 +425,9 @@ export function createDefaultSnapshot(): AppSnapshot {
       cursorSmooth: false,
       cursorSmear: DEFAULT_CURSOR_SMEAR,
       liveCompilation: false,
+      compileOnSave: true,
       previewMode: "pdf",
+      continuousPdfScroll: true,
       latexMathPreview: true,
       typstMathPreview: false,
       autoSyncGitProjects: true,
@@ -432,6 +439,7 @@ export function createDefaultSnapshot(): AppSnapshot {
       sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
       colorfulFileTreeIcons: false,
       showGitignoreInFileTree: false,
+      diagramDirectoriesRelativeToFile: true,
       pastedImages: DEFAULT_PASTED_IMAGE_PREFERENCES
     }
   };
@@ -460,6 +468,7 @@ type LegacyGraphProjectSnapshot = Omit<TypstProject, "trash"> & {
 };
 
 export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
+  const storedSnapshotVersion = Number((snapshot as { version?: number }).version ?? 0);
   const storedCursorSmear = snapshot.preferences.cursorSmear;
   const legacyProject = snapshot.project as unknown as LegacyGraphProjectSnapshot;
   const diagram = legacyProject.diagram ?? createDefaultDiagram();
@@ -476,6 +485,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
     ...diagram,
     id: diagram.id ?? createDefaultDiagram().id,
     name: normalizedDiagramName,
+    workspacePath: normalizeDiagramAssetWorkspacePath(diagram.workspacePath),
     updatedAt: diagram.updatedAt ?? now,
     frame: normalizeDiagramCanvasFrame(diagram.frame),
     content: normalizeDiagramSvgContent((diagram as Partial<DiagramAsset>).content),
@@ -489,7 +499,7 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
 
   return {
     ...snapshot,
-    version: 9,
+    version: 10,
     preferences: {
       showSettingsProject:
         (snapshot.preferences as Partial<AppPreferences>).showSettingsProject ?? false,
@@ -517,10 +527,18 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
             ? 0
             : DEFAULT_CURSOR_SMEAR,
       liveCompilation: snapshot.preferences.liveCompilation ?? false,
+      compileOnSave:
+        typeof (snapshot.preferences as Partial<AppPreferences>).compileOnSave === "boolean"
+          ? (snapshot.preferences as Partial<AppPreferences>).compileOnSave!
+          : true,
       previewMode:
         (snapshot.preferences as Partial<AppPreferences>).previewMode === "texpresso"
           ? "texpresso"
           : "pdf",
+      continuousPdfScroll:
+        storedSnapshotVersion < 10
+          ? true
+          : (snapshot.preferences as Partial<AppPreferences>).continuousPdfScroll ?? true,
       latexMathPreview:
         (snapshot.preferences as Partial<AppPreferences>).latexMathPreview ?? true,
       typstMathPreview:
@@ -549,6 +567,8 @@ export function normalizeSnapshot(snapshot: AppSnapshot): AppSnapshot {
         (snapshot.preferences as Partial<AppPreferences>).colorfulFileTreeIcons ?? false,
       showGitignoreInFileTree:
         (snapshot.preferences as Partial<AppPreferences>).showGitignoreInFileTree ?? false,
+      diagramDirectoriesRelativeToFile:
+        (snapshot.preferences as Partial<AppPreferences>).diagramDirectoriesRelativeToFile ?? true,
       pastedImages: normalizePastedImagePreferences(
         (snapshot.preferences as Partial<AppPreferences>).pastedImages
       )
@@ -680,6 +700,7 @@ function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
     ...diagram,
     id: diagram.id ?? createDefaultDiagram().id,
     name: normalizedName,
+    workspacePath: normalizeDiagramAssetWorkspacePath(diagram.workspacePath),
     updatedAt: diagram.updatedAt ?? new Date().toISOString(),
     frame: normalizeDiagramCanvasFrame(diagram.frame),
     content: normalizeDiagramSvgContent((diagram as Partial<DiagramAsset>).content),
@@ -690,6 +711,22 @@ function normalizeDiagramAsset(diagram: DiagramAsset): DiagramAsset {
       ? (diagram as DiagramAsset & { shapes?: DiagramShape[] }).shapes.map(normalizeDiagramShape)
       : []
   };
+}
+
+function normalizeDiagramAssetWorkspacePath(path: string | undefined): string | undefined {
+  const normalized = normalizeRelativePath(path ?? "");
+  return normalized || undefined;
+}
+
+function renameDiagramWorkspacePath(
+  workspacePath: string | undefined,
+  nextName: string
+): string | undefined {
+  if (!workspacePath) {
+    return undefined;
+  }
+
+  return joinWorkspacePath(getWorkspaceParentPath(workspacePath), getWorkspaceBaseName(nextName));
 }
 
 function normalizeDiagramSvgContent(content: string | undefined): string | undefined {
@@ -1360,10 +1397,21 @@ export function renameDiagramById(
   const nextDiagram = {
     ...diagram,
     name: diagram.id === diagramId ? finalName : diagram.name,
+    workspacePath:
+      diagram.id === diagramId
+        ? renameDiagramWorkspacePath(diagram.workspacePath, finalName)
+        : diagram.workspacePath,
     updatedAt: diagram.id === diagramId ? now : diagram.updatedAt
   };
   const nextFigures = figures.map((figure) =>
-    figure.id === diagramId ? { ...figure, name: finalName, updatedAt: now } : figure
+    figure.id === diagramId
+      ? {
+          ...figure,
+          name: finalName,
+          workspacePath: renameDiagramWorkspacePath(figure.workspacePath, finalName),
+          updatedAt: now
+        }
+      : figure
   );
 
   return {
@@ -1407,7 +1455,7 @@ export function moveDiagramToTrash(snapshot: AppSnapshot, diagramId: string): Ap
           id: createId("trash"),
           kind: "diagram",
           deletedAt: now,
-          originalPath: getDiagramFilePath(targetFigure.name),
+          originalPath: getDiagramAssetFilePath(targetFigure),
           diagram: targetFigure
         }
       ],
@@ -1426,6 +1474,35 @@ export function moveDiagramToFolder(
 
   if (!targetFigure) {
     return snapshot;
+  }
+
+  if (targetFigure.workspacePath) {
+    const nextWorkspacePath = joinWorkspacePath(
+      destinationFolderPath,
+      getWorkspaceBaseName(targetFigure.workspacePath)
+    );
+    if (nextWorkspacePath === targetFigure.workspacePath) {
+      return snapshot;
+    }
+
+    const now = new Date().toISOString();
+    const currentDiagram = snapshot.project.diagram ?? createDefaultDiagram();
+    return {
+      ...snapshot,
+      project: {
+        ...snapshot.project,
+        diagram:
+          currentDiagram.id === diagramId
+            ? { ...currentDiagram, workspacePath: nextWorkspacePath, updatedAt: now }
+            : currentDiagram,
+        figures: figures.map((figure) =>
+          figure.id === diagramId
+            ? { ...figure, workspacePath: nextWorkspacePath, updatedAt: now }
+            : figure
+        ),
+        updatedAt: now
+      }
+    };
   }
 
   const nextName = createMovedFigureName(
@@ -2093,6 +2170,19 @@ export function updateLineWrapPreference(
   };
 }
 
+export function updateContinuousPdfScrollPreference(
+  snapshot: AppSnapshot,
+  continuousPdfScroll: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      continuousPdfScroll
+    }
+  };
+}
+
 export function updateCursorSmearPreference(
   snapshot: AppSnapshot,
   cursorSmear: number
@@ -2184,6 +2274,19 @@ export function updateShowGitignoreInFileTreePreference(
   };
 }
 
+export function updateDiagramDirectoriesRelativeToFilePreference(
+  snapshot: AppSnapshot,
+  diagramDirectoriesRelativeToFile: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      diagramDirectoriesRelativeToFile
+    }
+  };
+}
+
 export function updateLiveCompilationPreference(
   snapshot: AppSnapshot,
   liveCompilation: boolean
@@ -2193,6 +2296,19 @@ export function updateLiveCompilationPreference(
     preferences: {
       ...snapshot.preferences,
       liveCompilation
+    }
+  };
+}
+
+export function updateCompileOnSavePreference(
+  snapshot: AppSnapshot,
+  compileOnSave: boolean
+): AppSnapshot {
+  return {
+    ...snapshot,
+    preferences: {
+      ...snapshot.preferences,
+      compileOnSave
     }
   };
 }

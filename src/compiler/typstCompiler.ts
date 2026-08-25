@@ -2,7 +2,6 @@ import type {
   CompilerWorkerRequest,
   CompilerWorkerResponse
 } from "./protocol";
-import { createMainThreadTypstCompiler } from "./typstCompilerMainThread";
 import { TYPST_WORKER_REQUEST_TIMEOUT_MS } from "./typstTimeouts";
 import type {
   CompileAssetFile,
@@ -45,6 +44,16 @@ export function createTypstCompiler(options: TypstCompilerOptions = {}): TypstCo
   };
 }
 
+/**
+ * Creates a dedicated compiler worker for latency-sensitive secondary work.
+ * Its requests and status messages stay isolated from the document compiler.
+ */
+export function createIsolatedTypstCompiler(
+  options: TypstCompilerOptions = {}
+): TypstCompiler {
+  return new WorkerBackedTypstCompiler(options);
+}
+
 export function warmTypstCompilerForOffline(): Promise<void> {
   return getSharedCompilerInstance().warmForOffline();
 }
@@ -71,19 +80,16 @@ function broadcastStatus(status: CompilerStatus): void {
 }
 
 class WorkerBackedTypstCompiler implements TypstCompiler {
-  private readonly fallbackCompiler: TypstCompiler;
   private readonly worker: Worker | null = null;
   private readonly pendingRequests = new Map<number, PendingRequest>();
   private nextRequestId = 1;
   private workerAvailable = true;
+  private workerFailureDetail = "Typst compiler worker is unavailable.";
   private readonly workerRequestTimeoutMs = TYPST_WORKER_REQUEST_TIMEOUT_MS;
   private readonly notifyStatus: (status: CompilerStatus) => void;
 
   constructor(options: TypstCompilerOptions) {
     this.notifyStatus = options.onStatusChange ?? (() => {});
-    this.fallbackCompiler = createMainThreadTypstCompiler({
-      onStatusChange: this.notifyStatus
-    });
     try {
       this.worker = new Worker(
         new URL("./typstCompiler.worker.ts", import.meta.url),
@@ -93,11 +99,13 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
       );
     } catch (error) {
       this.workerAvailable = false;
+      this.workerFailureDetail =
+        error instanceof Error ? error.message : "Worker construction failed";
       this.notifyStatus({
-        phase: "fallback-main-thread",
-        mode: "main-thread",
-        label: "Using main-thread fallback",
-        detail: error instanceof Error ? error.message : "Worker construction failed"
+        phase: "error",
+        mode: "worker",
+        label: "Compiler worker unavailable",
+        detail: this.workerFailureDetail
       });
       return;
     }
@@ -126,7 +134,7 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     options: CompileDocumentOptions = {}
   ): Promise<CompileResult> {
     if (!this.workerAvailable) {
-      return this.fallbackCompiler.compileDocument(source, assets, options);
+      return Promise.resolve(createWorkerUnavailableResult(this.workerFailureDetail));
     }
 
     return this.sendRequest({
@@ -137,15 +145,17 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
       options
     })
       .then((result) => result as CompileResult)
-      .catch(() => {
+      .catch((error: unknown) => {
         this.disableWorker();
+        this.workerFailureDetail =
+          error instanceof Error ? error.message : "Worker timed out or failed";
         this.notifyStatus({
-          phase: "fallback-main-thread",
-          mode: "main-thread",
-          label: "Using main-thread fallback",
-          detail: "Worker timed out or failed"
+          phase: "error",
+          mode: "worker",
+          label: "Compiler worker unavailable",
+          detail: this.workerFailureDetail
         });
-        return this.fallbackCompiler.compileDocument(source, assets, options);
+        return createWorkerUnavailableResult(this.workerFailureDetail);
       });
   }
 
@@ -156,7 +166,6 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     );
     this.worker?.removeEventListener("error", this.handleWorkerError);
     this.worker?.terminate();
-    this.fallbackCompiler.dispose();
 
     for (const pendingRequest of this.pendingRequests.values()) {
       pendingRequest.reject(new Error("Typst compiler worker was disposed."));
@@ -226,12 +235,13 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
 
   private handleWorkerError = (event: ErrorEvent): void => {
     const error = new Error(event.message || "Typst compiler worker crashed.");
+    this.workerFailureDetail = error.message;
     this.disableWorker();
     this.notifyStatus({
-      phase: "fallback-main-thread",
-      mode: "main-thread",
-      label: "Using main-thread fallback",
-      detail: event.message || "Worker crashed"
+      phase: "error",
+      mode: "worker",
+      label: "Compiler worker unavailable",
+      detail: this.workerFailureDetail
     });
 
     for (const pendingRequest of this.pendingRequests.values()) {
@@ -249,4 +259,17 @@ class WorkerBackedTypstCompiler implements TypstCompiler {
     this.workerAvailable = false;
     this.worker?.terminate();
   }
+}
+
+function createWorkerUnavailableResult(detail: string): CompileResult {
+  return {
+    ok: false,
+    engine: "typst-ts",
+    errors: [
+      {
+        severity: "error",
+        message: `Typst compilation requires a background worker. ${detail}`
+      }
+    ]
+  };
 }

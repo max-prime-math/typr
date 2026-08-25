@@ -86,17 +86,8 @@ describe("Typst compiler worker lifecycle", () => {
     expect(worker.terminate).not.toHaveBeenCalled();
   });
 
-  it("falls back to the main-thread compiler when module worker construction is blocked", async () => {
-    const fallbackResult = {
-      ok: true as const,
-      engine: "mock" as const,
-      diagnostics: [],
-      output: {
-        kind: "svg" as const,
-        content: "<svg></svg>"
-      }
-    };
-    const fallbackCompile = vi.fn(async () => fallbackResult);
+  it("fails without blocking the UI when module worker construction is blocked", async () => {
+    const fallbackCompile = vi.fn();
     const statusListener = vi.fn();
     const WorkerMock = vi.fn(function WorkerMock() {
       throw new Error("Module workers are blocked");
@@ -115,19 +106,28 @@ describe("Typst compiler worker lifecycle", () => {
 
     await expect(
       compiler.compileDocument("#set page(width: auto)\nHello")
-    ).resolves.toEqual(fallbackResult);
-    await expect(compiler.compileDocument("Hello again")).resolves.toEqual(
-      fallbackResult
-    );
+    ).resolves.toMatchObject({
+      ok: false,
+      engine: "typst-ts",
+      errors: [
+        expect.objectContaining({
+          message: expect.stringContaining("requires a background worker")
+        })
+      ]
+    });
+    await expect(compiler.compileDocument("Hello again")).resolves.toMatchObject({
+      ok: false,
+      engine: "typst-ts"
+    });
 
     expect(WorkerMock).toHaveBeenCalledTimes(1);
     expect(WorkerMock.mock.results[0]?.type).toBe("throw");
-    expect(fallbackCompile).toHaveBeenCalledTimes(2);
+    expect(fallbackCompile).not.toHaveBeenCalled();
     expect(statusListener).toHaveBeenCalledTimes(1);
     expect(statusListener).toHaveBeenCalledWith({
-      phase: "fallback-main-thread",
-      mode: "main-thread",
-      label: "Using main-thread fallback",
+      phase: "error",
+      mode: "worker",
+      label: "Compiler worker unavailable",
       detail: "Module workers are blocked"
     });
   });

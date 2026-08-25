@@ -65,7 +65,7 @@ export function buildTikzInsertion({
       return {
         artifact: "source",
         latexPackages: ["tikz"],
-        text: `\n\\input{${sourceReference}}\n`
+        text: `\\input{${sourceReference}}`
       };
     }
 

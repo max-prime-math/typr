@@ -4,7 +4,7 @@ import type {
   WorkspaceTrashEntry
 } from "../app/appState";
 import type { TyprProjectRepository } from "../project/projectState";
-import { getDiagramFilePath } from "../diagram/diagramFiles";
+import { getDiagramAssetFilePath } from "../diagram/diagramFiles";
 import { serializeDiagramSvg } from "../diagram/diagramSvgSerializer";
 import { normalizeRelativePath } from "../utils/relativePath";
 
@@ -429,7 +429,7 @@ interface MutableWorkspaceNode {
 
 function createDiagramWorkspaceEntry(figure: DiagramAsset): WorkspaceFlatEntry {
   return {
-    path: getDiagramFilePath(figure.name),
+    path: getDiagramAssetFilePath(figure),
     kind: "file",
     content: serializeDiagramSvg(figure),
     source: {

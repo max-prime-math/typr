@@ -4,6 +4,7 @@ import {
   DEFAULT_TIKZ_SOURCE,
   collectTikzFigureFiles,
   createNextTikzPath,
+  duplicateTikzFigureFiles,
   getTikzCetzPath,
   getTikzPdfPath,
   getTikzSvgPath,
@@ -13,6 +14,10 @@ import {
 } from "./tikzFiles";
 
 describe("TikZ project files", () => {
+  it("uses an empty tikzpicture for a new figure", () => {
+    expect(DEFAULT_TIKZ_SOURCE).toBe("\\begin{tikzpicture}\n\\end{tikzpicture}\n");
+  });
+
   it("creates source and SVG companion files as ordinary project documents", () => {
     const project = createEmptyProjectRepository({
       displayName: "TikZ test",
@@ -27,6 +32,9 @@ describe("TikZ project files", () => {
     );
 
     expect(path).toBe("figures/diagram.tikz");
+    expect(createNextTikzPath(project, "chapters/figures")).toBe(
+      "chapters/figures/diagram.tikz"
+    );
     expect(updated.filesystem.entries[path]?.source.kind).toBe("document");
     expect(updated.filesystem.entries[getTikzSvgPath(path)]?.source.kind).toBe("document");
     expect(collectTikzFigureFiles(updated)).toEqual([
@@ -75,6 +83,39 @@ describe("TikZ project files", () => {
     ).toBe("document");
     expect(renamed.project.selection.activeFilePath).toBe("figures/orbit.tikz");
     expect(renamed.project.selection.openFilePaths).toContain("figures/orbit.tikz");
+  });
+
+  it("duplicates every managed figure artifact under a copy name", () => {
+    const project = createEmptyProjectRepository({
+      displayName: "TikZ test",
+      defaultFileName: "main.typ"
+    });
+    const pdf = new Uint8Array([37, 80, 68, 70]);
+    const original = writeTikzFigureFiles(
+      project,
+      "chapters/figures/orbit.tikz",
+      "\\begin{tikzpicture}\n\\draw (0,0) circle (1);\n\\end{tikzpicture}\n",
+      "<svg><circle/></svg>",
+      pdf,
+      "#canvas({ circle(radius: 1cm) })\n"
+    );
+    const firstCopy = duplicateTikzFigureFiles(original, "chapters/figures/orbit.tikz");
+    const secondCopy = duplicateTikzFigureFiles(firstCopy.project, "chapters/figures/orbit.tikz");
+
+    expect(firstCopy.path).toBe("chapters/figures/orbit-copy.tikz");
+    expect(secondCopy.path).toBe("chapters/figures/orbit-copy 2.tikz");
+    expect(collectTikzFigureFiles(firstCopy.project)).toContainEqual({
+      path: firstCopy.path,
+      name: "orbit-copy.tikz",
+      source: "\\begin{tikzpicture}\n\\draw (0,0) circle (1);\n\\end{tikzpicture}\n",
+      svg: "<svg><circle/></svg>",
+      hasCetz: true,
+      hasPdf: true
+    });
+    expect(firstCopy.project.filesystem.entries[getTikzPdfPath(firstCopy.path)]).toMatchObject({
+      kind: "file",
+      content: pdf
+    });
   });
 
   it("invalidates a stale rendered PDF when source or SVG changes", () => {

@@ -9,8 +9,6 @@ import {
 
 export const TIKZ_DIRECTORY = "figures";
 export const DEFAULT_TIKZ_SOURCE = String.raw`\begin{tikzpicture}
-  \draw[thick, blue] (0,0) circle (1cm);
-  \node at (0,0) {TikZ};
 \end{tikzpicture}
 `;
 
@@ -105,12 +103,16 @@ export function normalizeTikzFileName(value: string): string {
   return `${safeStem}.tikz`;
 }
 
-export function createNextTikzPath(project: TyprProjectRepository): string {
+export function createNextTikzPath(
+  project: TyprProjectRepository,
+  directory: string = TIKZ_DIRECTORY
+): string {
+  const normalizedDirectory = normalizeProjectPath(directory) || TIKZ_DIRECTORY;
   let index = 1;
 
   while (true) {
     const suffix = index === 1 ? "" : ` ${index}`;
-    const path = `${TIKZ_DIRECTORY}/diagram${suffix}.tikz`;
+    const path = `${normalizedDirectory}/diagram${suffix}.tikz`;
     const svgPath = getTikzSvgPath(path);
     const pdfPath = getTikzPdfPath(path);
     const cetzPath = getTikzCetzPath(path);
@@ -126,6 +128,63 @@ export function createNextTikzPath(project: TyprProjectRepository): string {
 
     index += 1;
   }
+}
+
+export function duplicateTikzFigureFiles(
+  project: TyprProjectRepository,
+  fromPath: string
+): { path: string; project: TyprProjectRepository } {
+  const normalizedFromPath = normalizeProjectPath(fromPath);
+  const sourceEntry = project.filesystem.entries[normalizedFromPath];
+
+  if (sourceEntry?.kind !== "file") {
+    throw new Error(`TikZ figure "${getTikzFileName(normalizedFromPath)}" was not found.`);
+  }
+
+  const parentPath = normalizedFromPath.split("/").slice(0, -1).join("/");
+  const sourceStem = getTikzFileName(normalizedFromPath).replace(/\.tikz$/i, "");
+  let copyIndex = 1;
+  let copyPath = "";
+
+  while (!copyPath) {
+    const suffix = copyIndex === 1 ? "-copy" : `-copy ${copyIndex}`;
+    const candidatePath = [parentPath, `${sourceStem}${suffix}.tikz`]
+      .filter(Boolean)
+      .join("/");
+
+    if (
+      !project.filesystem.entries[candidatePath] &&
+      !project.filesystem.entries[getTikzSvgPath(candidatePath)] &&
+      !project.filesystem.entries[getTikzPdfPath(candidatePath)] &&
+      !project.filesystem.entries[getTikzCetzPath(candidatePath)]
+    ) {
+      copyPath = candidatePath;
+    } else {
+      copyIndex += 1;
+    }
+  }
+
+  const svgEntry = project.filesystem.entries[getTikzSvgPath(normalizedFromPath)];
+  const pdfEntry = project.filesystem.entries[getTikzPdfPath(normalizedFromPath)];
+  const cetzEntry = project.filesystem.entries[getTikzCetzPath(normalizedFromPath)];
+  const pdf =
+    pdfEntry?.kind === "file"
+      ? typeof pdfEntry.content === "string"
+        ? new TextEncoder().encode(pdfEntry.content)
+        : pdfEntry.content.slice()
+      : undefined;
+
+  return {
+    path: copyPath,
+    project: writeTikzFigureFiles(
+      project,
+      copyPath,
+      decodeProjectFileContent(sourceEntry.content),
+      svgEntry?.kind === "file" ? decodeProjectFileContent(svgEntry.content) : undefined,
+      pdf,
+      cetzEntry?.kind === "file" ? decodeProjectFileContent(cetzEntry.content) : undefined
+    )
+  };
 }
 
 export function writeTikzFigureFiles(

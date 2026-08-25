@@ -56,6 +56,10 @@ class SmoothCursorPlugin implements PluginValue {
   private trailQuad: Quad | null = null;
   private lastMotion: Point | null = null;
   private lastSmearGradient: string | null = null;
+  private snapOnNextMeasure = false;
+  private readonly handleScroll = (): void => {
+    this.measure(true);
+  };
 
   constructor(
     private readonly view: EditorView,
@@ -71,6 +75,7 @@ class SmoothCursorPlugin implements PluginValue {
     this.cursor.setAttribute("aria-hidden", "true");
     this.view.dom.appendChild(this.smear);
     this.view.dom.appendChild(this.cursor);
+    this.view.scrollDOM.addEventListener("scroll", this.handleScroll, { passive: true });
     this.measure();
   }
 
@@ -80,17 +85,20 @@ class SmoothCursorPlugin implements PluginValue {
 
   destroy(): void {
     this.stopAnimation();
+    this.view.scrollDOM.removeEventListener("scroll", this.handleScroll);
     this.view.dom.classList.remove("cm-smooth-cursor-active");
     this.smear.remove();
     this.cursor.remove();
   }
 
   private measure(snapToTarget = false): void {
+    this.snapOnNextMeasure ||= snapToTarget;
     this.view.requestMeasure({
+      key: this,
       read: (view) => {
         const selection = view.state.selection.main;
 
-        if (!view.hasFocus || view.state.selection.ranges.length !== 1) {
+        if (!hasSmoothCursorFocus(view, this.vimMode) || view.state.selection.ranges.length !== 1) {
           return null;
         }
 
@@ -110,6 +118,9 @@ class SmoothCursorPlugin implements PluginValue {
         } satisfies CursorBox;
       },
       write: (box) => {
+        const shouldSnap = this.snapOnNextMeasure;
+        this.snapOnNextMeasure = false;
+
         if (!box) {
           this.reset();
           return;
@@ -129,8 +140,16 @@ class SmoothCursorPlugin implements PluginValue {
         this.targetQuad = nextTarget;
         this.view.dom.classList.add("cm-smooth-cursor-active");
         this.cursor.classList.add("cm-smooth-cursor--visible");
+        this.cursor.classList.toggle(
+          "cm-smooth-cursor--vim-normal",
+          isVimNormalMode(this.view, this.vimMode)
+        );
+        this.cursor.classList.toggle(
+          "cm-smooth-cursor--vim-command",
+          isVimCommandDialogOpen(this.view, this.vimMode)
+        );
 
-        if (snapToTarget || !this.currentQuad || !this.trailQuad) {
+        if (shouldSnap || !this.currentQuad || !this.trailQuad) {
           this.stopAnimation();
           this.currentQuad = cloneQuad(nextTarget);
           this.trailQuad = cloneQuad(nextTarget);
@@ -272,6 +291,8 @@ class SmoothCursorPlugin implements PluginValue {
     this.hideSmear();
     this.view.dom.classList.remove("cm-smooth-cursor-active");
     this.cursor.classList.remove("cm-smooth-cursor--visible");
+    this.cursor.classList.remove("cm-smooth-cursor--vim-normal");
+    this.cursor.classList.remove("cm-smooth-cursor--vim-command");
     this.cursor.style.clipPath = "none";
   }
 
@@ -286,8 +307,12 @@ class SmoothCursorPlugin implements PluginValue {
 }
 
 function shouldSnapSmoothCursor(update: ViewUpdate): boolean {
-  return update.transactions.some((transaction) =>
-    transaction.effects.some((effect) => effect.is(smoothCursorJumpEffect))
+  return (
+    update.viewportMoved ||
+    (!update.docChanged && update.geometryChanged) ||
+    update.transactions.some((transaction) =>
+      transaction.effects.some((effect) => effect.is(smoothCursorJumpEffect))
+    )
   );
 }
 
@@ -495,6 +520,22 @@ function clamp(value: number, min: number, max: number): number {
 
 function isVimInsertMode(view: EditorView): boolean {
   return getCM(view)?.state.vim?.insertMode === true;
+}
+
+function isVimNormalMode(view: EditorView, vimMode: boolean): boolean {
+  return vimMode && !isVimInsertMode(view) && !isVimCommandDialogOpen(view, vimMode);
+}
+
+function hasSmoothCursorFocus(view: EditorView, vimMode: boolean): boolean {
+  if (view.hasFocus) {
+    return true;
+  }
+
+  return isVimCommandDialogOpen(view, vimMode);
+}
+
+function isVimCommandDialogOpen(view: EditorView, vimMode: boolean): boolean {
+  return vimMode && getCM(view)?.state.dialog != null;
 }
 
 export function smoothCursor(vimMode: boolean, smearStrength: number): Extension {

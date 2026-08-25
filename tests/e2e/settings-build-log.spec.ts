@@ -35,6 +35,37 @@ test("Settings preserves accessible desktop and mobile sheet behavior", async ({
   expect(pageErrors).toEqual([]);
 });
 
+test("compile on save defaults on and Vim :w compiles the active document", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const settings = page.getByRole("region", { name: "Typr settings" });
+  await settings.getByRole("tab", { name: "Editor", exact: true }).click();
+  await expect(settings.getByRole("checkbox", { name: /Compile on save/ })).toBeChecked();
+  await settings.getByRole("checkbox", { name: /^Vim mode\b/ }).check();
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
+
+  const sourceFile = page.getByRole("treeitem", { name: /typst\.typ/ });
+  await sourceFile.click();
+  await sourceFile.dblclick();
+
+  const editor = page.locator(".cm-content");
+  await editor.click();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press(":");
+  const commandInput = page.locator(".cm-vim-panel input");
+  await expect(commandInput).toBeFocused();
+  await commandInput.fill("w");
+  await commandInput.press("Enter");
+
+  await expect(page.locator(".preview-document__object")).toBeVisible({ timeout: 60_000 });
+});
+
 test("Settings controls remain within the mobile pane", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/", { waitUntil: "domcontentloaded" });

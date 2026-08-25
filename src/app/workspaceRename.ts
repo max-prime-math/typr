@@ -4,7 +4,7 @@ import {
   renameFolderById,
   type AppSnapshot
 } from "./appState";
-import { getDiagramFilePath } from "../diagram/diagramFiles";
+import { getDiagramAssetFilePath } from "../diagram/diagramFiles";
 import type { WorkspaceTreeNode } from "../workspace/workspaceTree";
 
 export interface WorkspaceRenameTransition {
@@ -75,7 +75,7 @@ export function renameWorkspaceNodeWithPath(
     return {
       snapshot: nextSnapshot,
       previousPath: node.path,
-      nextPath: nextDiagram ? getDiagramFilePath(nextDiagram.name) : node.path
+      nextPath: nextDiagram ? getDiagramAssetFilePath(nextDiagram) : node.path
     };
   }
 

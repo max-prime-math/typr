@@ -80,6 +80,7 @@ describe("LaTeX compiler providers", () => {
         ok: true,
         engine: "pdflatex",
         output: { path: "main.pdf", mediaType: "application/pdf", encoding: "base64", content: "JVBERg==" },
+        synctex: { path: "main.synctex.gz", mediaType: "application/gzip", encoding: "base64", content: "H4sIAA==" },
         log: "native complete",
         durationMs: 10
       })
@@ -87,6 +88,7 @@ describe("LaTeX compiler providers", () => {
     const success = await compileWithCompanion(successClient, options);
     expect(success).toMatchObject({ ok: true, engine: "companion", output: { kind: "pdf", content: "native complete" } });
     expect(success.ok && [...success.output.artifactData ?? []]).toEqual([37, 80, 68, 70]);
+    expect(success.ok && [...success.output.sourceMapData ?? []]).toEqual([31, 139, 8, 0]);
 
     const failureClient = new CompanionClient({
       fetch: async () => jsonResponse({
