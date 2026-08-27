@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getOwnLineInsertion, getSmartNewlineInsertion } from "./editorWhitespace";
+import {
+  getLatexItemNewlineInsertion,
+  getOwnLineInsertion,
+  getSmartNewlineInsertion
+} from "./editorWhitespace";
 
 describe("getOwnLineInsertion", () => {
   it("replaces a blank line and leaves the cursor at its beginning", () => {
@@ -61,5 +65,25 @@ describe("getSmartNewlineInsertion", () => {
     const source = "  3. item";
 
     expect(getSmartNewlineInsertion(source, source.length, "markdown")).toBe("\n  4. ");
+  });
+});
+
+describe("getLatexItemNewlineInsertion", () => {
+  it("starts another item at the current item indentation", () => {
+    const source = "\\begin{itemize}\n  \\item One";
+
+    expect(getLatexItemNewlineInsertion(source, source.length)).toBe("\n  \\item ");
+  });
+
+  it("starts the first item one formatter indent below the environment", () => {
+    const source = "  \\begin{enumerate}";
+
+    expect(getLatexItemNewlineInsertion(source, source.length)).toBe("\n    \\item ");
+  });
+
+  it("leaves Shift+Enter alone outside a list environment", () => {
+    const source = "\\begin{document}\nText";
+
+    expect(getLatexItemNewlineInsertion(source, source.length)).toBeNull();
   });
 });

@@ -18,7 +18,7 @@ Use source tools for common insertions such as matrices and tables. Typst refere
 
 Preview can run inline, side-by-side, in a focused layout, or in a popup. Use the preview controls to zoom, switch paper view where available, and download the rendered output or source-oriented output. Live compilation can be toggled when you want manual control. Build logs and diagnostics show compiler output, and source jumps connect preview diagnostics back to source lines when location data is available.
 
-For PDF output, expand the compact PDF controls and enable the magnifier, then press and drag over a page. The larger desktop loupe is centered on a mouse or pencil; while holding it down, scroll to adjust its diameter. For finger input, a smaller loupe appears to the left and accounts for the reported contact width so it remains tangent to the finger instead of hiding beneath it. Release to dismiss the loupe, or turn the tool off to restore normal page panning.
+For PDF output, expand the compact PDF controls and enable the loupe, then press and drag over a page. The larger desktop loupe is centered on a mouse or pencil; while holding it down, scroll to adjust its size, or right-click while continuing to hold the left button to switch between a circle and a landscape golden-ratio rectangle. The chosen size and shape are remembered. For finger input, a smaller loupe appears to the left and accounts for the reported contact width so it remains tangent to the finger instead of hiding beneath it. Release to dismiss the loupe, or turn the tool off to restore normal page panning.
 
 Typst preview uses the bundled Typst WebAssembly compiler and renderer. LaTeX preview uses the browser LaTeX path included with Typr. Markdown preview is local to the app.
 

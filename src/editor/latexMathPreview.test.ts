@@ -45,6 +45,24 @@ describe("getLatexMathPreviewRange", () => {
     expect(getLatexMathPreviewRange("Cost is \\$5 here", 10)).toBeNull();
   });
 
+  it("does not treat a line break with optional spacing as display math", () => {
+    const source = [
+      "Previous line.\\\\[1em]",
+      "There are a few things to notice here. First of all,",
+      "Let $\\frac{1}{2}$ be useful."
+    ].join("\n");
+
+    expect(
+      getLatexMathPreviewRange(source, source.indexOf("things"))
+    ).toBeNull();
+    expect(
+      getLatexMathPreviewRange(source, source.indexOf("frac") + 1)
+    ).toMatchObject({
+      latex: "\\frac{1}{2}",
+      display: false
+    });
+  });
+
   it("does not preview incomplete commands", () => {
     const source = "Let $\\fra";
 

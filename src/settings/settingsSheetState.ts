@@ -3,7 +3,6 @@ import { KEYBINDING_DEFINITIONS } from "../app/keybindings";
 export const SETTINGS_MENU_STORAGE_KEY = "typr.settings-menu.v1";
 
 export type SettingsTab =
-  | "sync"
   | "git"
   | "themes"
   | "editor"
@@ -17,23 +16,10 @@ export interface StoredSettingsMenuState {
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  "sync", "git", "themes", "editor", "keybindings", "packages"
+  "git", "themes", "editor", "keybindings", "packages"
 ];
 
 const SETTINGS_SEARCH_INDEX: Record<SettingsTab, string[]> = {
-  sync: [
-    "sync",
-    ...(__TYPR_GOOGLE_DRIVE_ENABLED__ ? ["google drive", "drive"] : []),
-    "local folder",
-    "companion workspace",
-    "mapped workspace",
-    "automatic",
-    "compile",
-    "interval",
-    "minutes",
-    "constant",
-    "manual"
-  ],
   git: ["git", "github", "token", "remote", "owner", "repo", "repository", "branch", "gitignore", "status", "push", "sync", "commit"],
   themes: ["theme", "themes", "light", "dark", "system", "import", "palette", "cursor", "smear cursor", "intensity", "follow system default"],
   editor: [
@@ -108,5 +94,5 @@ export function findMatchingSettingsTabs(searchQuery: string): readonly Settings
 }
 
 export function getSettingsTabTitle(tab: SettingsTab): string {
-  return tab === "sync" ? "Sync" : tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : "Packages";
+  return tab === "git" ? "Git" : tab === "themes" ? "Themes" : tab === "editor" ? "Editor" : tab === "keybindings" ? "Keybindings" : "Packages";
 }

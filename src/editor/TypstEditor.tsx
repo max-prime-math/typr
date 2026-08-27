@@ -21,17 +21,33 @@ import {
   SearchQuery,
   setSearchQuery as setEditorSearchQuery
 } from "@codemirror/search";
-import { EditorSelection } from "@codemirror/state";
+import {
+  EditorSelection,
+  EditorState,
+  type StateEffect
+} from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { setDiagnostics } from "@codemirror/lint";
+import { forceParsing } from "@codemirror/language";
 import { getCM, Vim } from "@replit/codemirror-vim";
 import {
   applyMathDelimiterKey,
+  createEditorAppearanceExtensions,
+  createSyntaxHighlightFallback,
+  createMathPreviewExtensions,
+  createMobileScrollExtensions,
   createEditorState,
-  diagnosticsCompartment
+  diagnosticsCompartment,
+  editorAppearanceCompartment,
+  editorReadOnlyCompartment,
+  lineWrapCompartment,
+  mathPreviewCompartment,
+  mobileScrollCompartment,
+  syntaxHighlightFallbackEffect
 } from "./codemirrorSetup";
 import { cycleMathDelimiter } from "./mathActions";
 import { toggleTextFormatInView, type TextFormatKind } from "./textFormatting";
+import { wrappedLineIndent } from "./wrappedLineIndent";
 import { smoothCursorJumpEffect } from "./smoothCursor";
 import type { ThemeDefinition } from "../theme/themes";
 import type { CompileDiagnostic } from "../compiler/types";
@@ -56,7 +72,10 @@ import {
   isPositionInsideMathMode,
   type SnippetDefinition
 } from "../snippets/snippets";
-import { attachPersistentScrollPosition } from "../utils/scrollPersistence";
+import {
+  attachPersistentScrollPosition,
+  readPersistentScrollPosition
+} from "../utils/scrollPersistence";
 import { getOwnLineInsertion } from "./editorWhitespace";
 import { getMinimalTextChange, resolveControlledValue } from "./controlledValueSync";
 
@@ -163,6 +182,7 @@ interface PreservedEditorViewState {
   mainSelectionIndex: number;
   scrollTop: number;
   scrollLeft: number;
+  activeLineViewportTop: number;
   hadFocus: boolean;
 }
 
@@ -281,7 +301,9 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
   const latestOnVimLatexOpenPathRef = useRef(onVimLatexOpenPath);
   const latestOnVimLatexNavigateDiagnosticRef = useRef(onVimLatexNavigateDiagnostic);
   const preservedViewStateRef = useRef<PreservedEditorViewState | null>(null);
-  const diagnosticsSignatureRef = useRef(createDiagnosticsSignature(diagnostics, highlightErrors));
+  const diagnosticsSignatureRef = useRef(
+    createDiagnosticsSignature(diagnostics, highlightErrors, relativeLineNumbers)
+  );
   const snippetCompletionSource = useMemo<CompletionSource>(
     () => {
       const snippetLanguage = isSnippetLanguage(language) ? language : "markdown";
@@ -749,8 +771,20 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     }
 
     const preservedViewState = preservedViewStateRef.current;
+    const persistedScrollPosition = readPersistentScrollPosition(scrollPersistenceKey);
+    const shouldRestorePersistedScroll = preservedViewState === null || Boolean(
+      persistedScrollPosition &&
+      (
+        Math.abs(persistedScrollPosition.top - preservedViewState.scrollTop) > 1 ||
+        Math.abs(persistedScrollPosition.left - preservedViewState.scrollLeft) > 1
+      )
+    );
     currentValueRef.current = value;
-    diagnosticsSignatureRef.current = createDiagnosticsSignature(diagnostics, highlightErrors);
+    diagnosticsSignatureRef.current = createDiagnosticsSignature(
+      diagnostics,
+      highlightErrors,
+      relativeLineNumbers
+    );
     const view = new EditorView({
       state: createEditorState(value, {
         onChange: (update) => {
@@ -840,6 +874,10 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       });
       view.scrollDOM.scrollTop = preservedViewState.scrollTop;
       view.scrollDOM.scrollLeft = preservedViewState.scrollLeft;
+      restoreActiveLineViewportPosition(
+        view,
+        preservedViewState.activeLineViewportTop
+      );
 
       if (preservedViewState.hadFocus) {
         focusEditorView(view);
@@ -924,10 +962,11 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     const disposeScrollPersistence = attachPersistentScrollPosition(
       view.scrollDOM,
       scrollPersistenceKey,
-      { restore: preservedViewState === null }
+      { restore: shouldRestorePersistedScroll }
     );
 
     return () => {
+      const scrollRect = view.scrollDOM.getBoundingClientRect();
       preservedViewStateRef.current = {
         selectionRanges: view.state.selection.ranges.map((range) => ({
           anchor: range.anchor,
@@ -936,6 +975,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
         mainSelectionIndex: view.state.selection.mainIndex,
         scrollTop: view.scrollDOM.scrollTop,
         scrollLeft: view.scrollDOM.scrollLeft,
+        activeLineViewportTop: getActiveLineViewportTop(view, scrollRect),
         hadFocus: view.hasFocus
       };
       view.dom.removeEventListener("paste", handlePaste);
@@ -946,18 +986,8 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       viewRef.current = null;
     };
   }, [
-    constrainMobileScroll,
-    cursorSmear,
-    cursorSmooth,
-    editorFontSize,
-    latexMathPreview,
-    typstMathPreview,
     keybindings,
     language,
-    readOnly,
-    relativeLineNumbers,
-    lineWrap,
-    theme,
     vimMode,
     snippetCompletionSource,
     latexProjectCompletionSource,
@@ -965,6 +995,68 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
     scrollPersistenceKey,
     onToggleLineWrap
   ]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    reconfigureEditorPreservingActiveLine(
+      view,
+      lineWrapCompartment.reconfigure(
+        lineWrap ? [EditorView.lineWrapping, wrappedLineIndent()] : []
+      )
+    );
+  }, [lineWrap]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch({
+      effects: editorReadOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly))
+    });
+  }, [readOnly]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    reconfigureEditorPreservingActiveLine(
+      view,
+      editorAppearanceCompartment.reconfigure(
+        createEditorAppearanceExtensions(
+          theme,
+          cursorSmooth,
+          editorFontSize,
+          vimMode,
+          cursorSmear
+        )
+      )
+    );
+  }, [cursorSmear, cursorSmooth, editorFontSize, theme, vimMode]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    reconfigureEditorPreservingActiveLine(
+      view,
+      mathPreviewCompartment.reconfigure(
+        createMathPreviewExtensions(language, latexMathPreview, typstMathPreview)
+      )
+    );
+  }, [language, latexMathPreview, typstMathPreview]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch({
+      effects: mobileScrollCompartment.reconfigure(
+        createMobileScrollExtensions(constrainMobileScroll)
+      )
+    });
+  }, [constrainMobileScroll]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -1008,7 +1100,11 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       return;
     }
 
-    const nextSignature = createDiagnosticsSignature(diagnostics, highlightErrors);
+    const nextSignature = createDiagnosticsSignature(
+      diagnostics,
+      highlightErrors,
+      relativeLineNumbers
+    );
 
     if (nextSignature === diagnosticsSignatureRef.current) {
       return;
@@ -1021,7 +1117,7 @@ const TypstEditorComponent = forwardRef<TypstEditorHandle, TypstEditorProps>(fun
       )
     });
     view.dispatch(setDiagnostics(view.state, toCodeMirrorDiagnostics(view.state, diagnostics, highlightErrors)));
-  }, [diagnostics, highlightErrors]);
+  }, [diagnostics, highlightErrors, relativeLineNumbers]);
 
   return (
     <div
@@ -1043,9 +1139,10 @@ export const TypstEditor = memo(TypstEditorComponent);
 
 function createDiagnosticsSignature(
   diagnostics: CompileDiagnostic[],
-  highlightErrors: boolean
+  highlightErrors: boolean,
+  relativeLineNumbers: boolean
 ): string {
-  return `${highlightErrors ? "1" : "0"}|${diagnostics
+  return `${highlightErrors ? "1" : "0"}|${relativeLineNumbers ? "1" : "0"}|${diagnostics
     .map((diagnostic) =>
       [
         diagnostic.severity,
@@ -1655,6 +1752,70 @@ function focusEditorView(view: EditorView | null): void {
   }
 
   view.contentDOM.focus({ preventScroll: true });
+}
+
+function restoreActiveLineViewportPosition(
+  view: EditorView,
+  activeLineViewportTop: number,
+  remainingAttempts = 2
+): void {
+  view.requestMeasure({
+    read(measuredView) {
+      const scrollRect = measuredView.scrollDOM.getBoundingClientRect();
+      return getActiveLineViewportTop(measuredView, scrollRect) - activeLineViewportTop;
+    },
+    write(scrollDelta, measuredView) {
+      measuredView.scrollDOM.scrollTop += scrollDelta;
+      if (remainingAttempts > 1) {
+        window.requestAnimationFrame(() => {
+          if (measuredView.dom.isConnected) {
+            restoreActiveLineViewportPosition(
+              measuredView,
+              activeLineViewportTop,
+              remainingAttempts - 1
+            );
+          }
+        });
+      }
+    }
+  });
+}
+
+function reconfigureEditorPreservingActiveLine(
+  view: EditorView,
+  effect: StateEffect<unknown>
+): void {
+  const scrollRect = view.scrollDOM.getBoundingClientRect();
+  const activeLineViewportTop = getActiveLineViewportTop(view, scrollRect);
+  const activeLine = view.state.doc.lineAt(view.state.selection.main.head);
+  const parseFrom = Math.max(0, Math.min(view.viewport.from, activeLine.from) - 5_000);
+  const parseThrough = Math.min(
+    view.state.doc.length,
+    Math.max(view.viewport.to, activeLine.to + 50_000)
+  );
+  forceParsing(view, parseThrough, 100);
+  view.dispatch({
+    effects: [
+      effect,
+      view.scrollSnapshot(),
+      syntaxHighlightFallbackEffect.of(
+        createSyntaxHighlightFallback(view.state, parseFrom, parseThrough)
+      )
+    ]
+  });
+  restoreActiveLineViewportPosition(view, activeLineViewportTop);
+}
+
+function getActiveLineViewportTop(view: EditorView, scrollRect: DOMRect): number {
+  const selectionHead = view.state.selection.main.head;
+  const activeLineStart = view.state.doc.lineAt(selectionHead).from;
+  const lineStartRect = view.coordsAtPos(activeLineStart, 1);
+  if (lineStartRect) {
+    return lineStartRect.top - scrollRect.top;
+  }
+
+  const activeLine = view.lineBlockAt(activeLineStart);
+  return view.documentTop + activeLine.top - scrollRect.top;
 }
 
 function clampLineNumber(view: EditorView, lineNumber: number): number {

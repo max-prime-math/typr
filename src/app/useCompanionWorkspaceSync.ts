@@ -211,6 +211,9 @@ export function useCompanionWorkspaceSync(options: {
         binding: result.binding
       }));
       bindingsRef.current.set(projectId, result.binding);
+      const synchronizedFileCount = [...result.desiredTree.values()]
+        .filter((entry) => entry.kind === "file").length;
+      const synchronizedTarget = `Companion workspace ${JSON.stringify(result.binding.remoteRootId)} at ${client.baseUrl}`;
       setStates((current) => ({
         ...current,
         [projectId]: {
@@ -218,8 +221,8 @@ export function useCompanionWorkspaceSync(options: {
           workspaceId: result.binding.remoteRootId,
           lastSyncedAt: result.binding.lastSyncedAt,
           message: localChangesRemain
-            ? "Workspace synced; newer browser edits remain local. Sync again when ready."
-            : "Manual sync complete. Browser storage remains the primary local copy."
+            ? `${synchronizedTarget} synced ${synchronizedFileCount} ${synchronizedFileCount === 1 ? "file" : "files"}; newer browser edits remain local. Sync again when ready.`
+            : `${synchronizedTarget} synced ${synchronizedFileCount} ${synchronizedFileCount === 1 ? "file" : "files"}. Browser storage remains the primary local copy.`
         }
       }));
     } catch (error) {
@@ -245,7 +248,8 @@ export function useCompanionWorkspaceSync(options: {
   const link = useCallback(async (projectId: string): Promise<void> => {
     if (!capability || !restoredProjectIdsRef.current.has(projectId)) return;
     const confirmed = window.confirm(
-      "Link this project to the mapped Companion workspace? The first sync is additive: files from both sides are kept, and mapped-workspace content wins same-path collisions. Browser storage remains the primary local copy."
+      `Link this project to Companion workspace ${JSON.stringify(capability.workspaceId)} at ${client.baseUrl}? ` +
+      "The first sync is additive: files from both sides are kept, and mapped-workspace content wins same-path collisions. Browser storage remains the primary local copy."
     );
     if (!confirmed) return;
     const binding = createCompanionWorkspaceBinding({

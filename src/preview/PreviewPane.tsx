@@ -41,7 +41,8 @@ import {
   PDF_MAGNIFIER_MAGNIFICATION,
   resolvePdfMagnifierCrop,
   resolvePdfMagnifierPlacement,
-  resizePdfMagnifierDiameter
+  resizePdfMagnifierDiameter,
+  type PdfMagnifierShape
 } from "./pdfMagnifier";
 import { shouldSmoothScrollPdfSyncJump } from "./pdfSyncNavigation";
 import {
@@ -73,6 +74,47 @@ import {
 
 const PDF_CONTROLS_EXPANDED_STORAGE_KEY = "typr.pdf-controls-expanded";
 const PDF_THUMBNAILS_OPEN_STORAGE_KEY = "typr.pdf-thumbnails-open";
+const PDF_MAGNIFIER_PREFERENCES_STORAGE_KEY = "typr.pdf-magnifier.v1";
+
+interface PdfMagnifierPreferences {
+  shape: PdfMagnifierShape;
+  size: number;
+}
+
+function readPdfMagnifierPreferences(): PdfMagnifierPreferences {
+  const fallback: PdfMagnifierPreferences = {
+    shape: "circle",
+    size: PDF_MAGNIFIER_DEFAULT_DESKTOP_DIAMETER
+  };
+
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(PDF_MAGNIFIER_PREFERENCES_STORAGE_KEY) ?? "null"
+    ) as Partial<PdfMagnifierPreferences> | null;
+    const size = typeof stored?.size === "number" && Number.isFinite(stored.size)
+      ? resizePdfMagnifierDiameter(stored.size, 0)
+      : fallback.size;
+    const shape = stored?.shape === "rectangle" ? "rectangle" : "circle";
+    return { shape, size };
+  } catch {
+    return fallback;
+  }
+}
+
+function writePdfMagnifierPreferences(preferences: PdfMagnifierPreferences): void {
+  try {
+    window.localStorage.setItem(
+      PDF_MAGNIFIER_PREFERENCES_STORAGE_KEY,
+      JSON.stringify(preferences)
+    );
+  } catch {
+    // Persistence is best-effort when browser storage is unavailable.
+  }
+}
 
 interface PreviewPaneProps {
   result: CompileResult | null;
@@ -1710,6 +1752,7 @@ function PdfPreview({
   theme: ThemeDefinition;
   zoom: PreviewZoomState;
 }) {
+  const [initialMagnifierPreferences] = useState(readPdfMagnifierPreferences);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const magnifierRef = useRef<HTMLDivElement | null>(null);
@@ -1721,7 +1764,8 @@ function PdfPreview({
     contactWidth: number;
     pointerType: string;
   } | null>(null);
-  const magnifierDesktopDiameterRef = useRef(PDF_MAGNIFIER_DEFAULT_DESKTOP_DIAMETER);
+  const magnifierDesktopDiameterRef = useRef(initialMagnifierPreferences.size);
+  const magnifierShapeRef = useRef<PdfMagnifierShape>(initialMagnifierPreferences.shape);
   const magnifierRendererRef = useRef<Promise<PdfMagnifierRenderer> | null>(null);
   const magnifierRenderAbortRef = useRef<AbortController | null>(null);
   const magnifierRenderTimerRef = useRef(0);
@@ -1793,13 +1837,19 @@ function PdfPreview({
 
     const isTouch = point.pointerType === "touch";
     magnifier.classList.toggle("pdf-magnifier--touch", isTouch);
+    magnifier.classList.toggle(
+      "pdf-magnifier--rectangle",
+      magnifierShapeRef.current === "rectangle"
+    );
     magnifier.style.setProperty(
       "--pdf-magnifier-desktop-diameter",
       `${magnifierDesktopDiameterRef.current}px`
     );
     magnifier.classList.add("pdf-magnifier--visible");
-    const diameter = Math.max(1, magnifier.offsetWidth);
-    const canvasDiameter = Math.max(1, targetCanvas.clientWidth);
+    const lensWidth = Math.max(1, magnifier.offsetWidth);
+    const lensHeight = Math.max(1, magnifier.offsetHeight);
+    const canvasWidth = Math.max(1, targetCanvas.clientWidth);
+    const canvasHeight = Math.max(1, targetCanvas.clientHeight);
     const bodyRect = body.getBoundingClientRect();
     const placement = resolvePdfMagnifierPlacement({
       bounds: {
@@ -1809,7 +1859,8 @@ function PdfPreview({
         width: bodyRect.width
       },
       contactWidth: point.contactWidth,
-      diameter,
+      lensHeight,
+      lensWidth,
       point,
       pointerType: point.pointerType
     });
@@ -1818,7 +1869,8 @@ function PdfPreview({
     drawPdfMagnifierCanvas({
       clientX: point.clientX,
       clientY: point.clientY,
-      diameter: canvasDiameter,
+      height: canvasHeight,
+      width: canvasWidth,
       page,
       sourceCanvas,
       targetCanvas
@@ -1861,7 +1913,8 @@ function PdfPreview({
       void rendererPromise
         .then((renderer) => renderer.render({
           canvas: stagingCanvas,
-          diameter: canvasDiameter,
+          height: canvasHeight,
+          width: canvasWidth,
           displayScale: pageRect.width / naturalWidth,
           magnification: PDF_MAGNIFIER_MAGNIFICATION,
           pageNumber,
@@ -1932,6 +1985,30 @@ function PdfPreview({
     updatePdfMagnifier(point);
   }, [magnifierEnabled, updatePdfMagnifier]);
 
+  const handlePdfMagnifierContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const point = magnifierPointRef.current;
+
+    if (
+      !magnifierEnabled ||
+      magnifierPointerIdRef.current === null ||
+      !point ||
+      event.button !== 2
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    magnifierShapeRef.current = magnifierShapeRef.current === "circle"
+      ? "rectangle"
+      : "circle";
+    writePdfMagnifierPreferences({
+      shape: magnifierShapeRef.current,
+      size: magnifierDesktopDiameterRef.current
+    });
+    updatePdfMagnifier(point);
+  }, [magnifierEnabled, updatePdfMagnifier]);
+
   const handlePdfMagnifierPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (magnifierPointerIdRef.current !== event.pointerId) {
       return;
@@ -1968,6 +2045,10 @@ function PdfPreview({
         magnifierDesktopDiameterRef.current,
         normalizedDeltaY
       );
+      writePdfMagnifierPreferences({
+        shape: magnifierShapeRef.current,
+        size: magnifierDesktopDiameterRef.current
+      });
       updatePdfMagnifier(point);
     };
 
@@ -2720,13 +2801,13 @@ function PdfPreview({
               <span aria-hidden="true" className="pdf-controls__thumbnail-icon" />
             </button>
             <button
-              aria-label={magnifierEnabled ? "Turn off PDF magnifier" : "Turn on PDF magnifier"}
+              aria-label={magnifierEnabled ? "Turn off PDF loupe" : "Turn on PDF loupe"}
               aria-pressed={magnifierEnabled}
               className={`pdf-controls__button ${
                 magnifierEnabled ? "pdf-controls__button--active" : ""
               }`}
               onClick={() => setMagnifierEnabled((current) => !current)}
-              title={magnifierEnabled ? "Turn off magnifier" : "Magnifier: press and drag over a page"}
+              title="Loupe"
               type="button"
             >
               <PdfMagnifierIcon />
@@ -2811,6 +2892,7 @@ function PdfPreview({
           } ${isFaulted ? "preview-document--faulted" : ""} ${
             magnifierEnabled ? "preview-document--pdf-magnifier-enabled" : ""
           }`}
+          onContextMenu={handlePdfMagnifierContextMenu}
           onPointerCancel={handlePdfMagnifierPointerEnd}
           onPointerDown={handlePdfMagnifierPointerDown}
           onPointerMove={(event) => {
@@ -2877,24 +2959,26 @@ function PdfPreview({
 function drawPdfMagnifierCanvas({
   clientX,
   clientY,
-  diameter,
+  height,
   page,
   sourceCanvas,
-  targetCanvas
+  targetCanvas,
+  width
 }: {
   clientX: number;
   clientY: number;
-  diameter: number;
+  height: number;
   page: HTMLElement;
   sourceCanvas: HTMLCanvasElement;
   targetCanvas: HTMLCanvasElement;
+  width: number;
 }): void {
   const pageRect = page.getBoundingClientRect();
   const outputScale = typeof window === "undefined"
     ? 2
     : Math.min(3, Math.max(2, window.devicePixelRatio || 1));
-  const targetWidth = Math.max(1, Math.ceil(diameter * outputScale));
-  const targetHeight = targetWidth;
+  const targetWidth = Math.max(1, Math.ceil(width * outputScale));
+  const targetHeight = Math.max(1, Math.ceil(height * outputScale));
 
   if (targetCanvas.width !== targetWidth || targetCanvas.height !== targetHeight) {
     targetCanvas.width = targetWidth;
@@ -2918,8 +3002,8 @@ function drawPdfMagnifierCanvas({
     canvasWidth: sourceCanvas.width,
     destinationHeight: targetHeight,
     destinationWidth: targetWidth,
-    lensHeight: diameter,
-    lensWidth: diameter,
+    lensHeight: height,
+    lensWidth: width,
     magnification: PDF_MAGNIFIER_MAGNIFICATION,
     pageHeight: pageRect.height,
     pageWidth: pageRect.width,

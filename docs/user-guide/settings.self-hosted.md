@@ -6,11 +6,10 @@ title: Settings
 
 Open Settings from the gear button in the activity bar. The search field at the top filters the Settings tabs and jumps to the first tab that matches the query. Typr remembers the last open tab and each tab's scroll position.
 
-## Sync
-
-Sync settings are scoped to the selected project. Browser-local storage remains authoritative by default. Local-folder sync and an explicitly linked Companion mapped workspace do not replace the browser copy or the project's GitHub remote.
-
-Local folder sync is available in Chromium browsers and can exchange visible project files plus browser-managed Git data with a directory handle. A Companion mapped workspace uses an administrator-configured directory and manual synchronization. It cannot browse or select arbitrary server paths.
+Project-scoped synchronization is configured in each project's expanded card in
+the **Projects** pane, not in Settings. Browser-local storage remains
+authoritative by default. Local-folder sync and an explicitly linked Companion
+mapped workspace do not replace the browser copy or the project's GitHub remote.
 
 ## Git
 

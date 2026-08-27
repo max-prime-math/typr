@@ -18,13 +18,20 @@ Project names are local Typr labels. Deleting a project removes local Typr data 
 
 ### Companion mapped workspace
 
-When the self-hosted administrator maps a workspace into Typr Companion, use **Settings → Sync** to link the selected project and run a manual synchronization. Browser storage remains the primary local copy. Linking and unlinking never selects arbitrary server paths, and unlinking does not delete the mapped files.
+When the self-hosted administrator maps a workspace into Typr Companion, expand
+the project in **Projects** to see the exact Companion URL and workspace ID,
+link it, and run a manual synchronization. Browser storage remains the primary
+local copy. Linking and unlinking never selects arbitrary server paths, and
+unlinking does not delete the mapped files.
 
 ### Local folder sync in Chromium
 
 In a Chromium-based browser, use **Open local folder** to turn an existing folder—including an existing Git checkout—into a linked Typr project in one step. To connect a project that is already in Typr, including one cloned through the GitHub flow, use **Link local folder** in that project's row.
 
-The chosen folder and Typr project synchronize in both directions. Open **Settings → Sync** to choose constant, compile, scheduled, or manual synchronization. On first link, content from both locations is kept; if the same path differs, the chosen folder's version wins that initial conflict.
+The chosen folder and Typr project synchronize in both directions. Expand its
+card in **Projects** to choose constant, compile, scheduled, or manual
+synchronization. On first link, content from both locations is kept; if the same
+path differs, the chosen folder's version wins that initial conflict.
 
 Chromium may require folder access to be granted again after a browser restart. Use **Reconnect** in the project row when prompted. **Unlink** stops synchronization without deleting files from Typr or from the folder.
 

@@ -9,14 +9,12 @@
   background: color-mix(in srgb, var(--surface-strong) 90%, var(--background) 10%);
 }
 
-.google-drive-card.sync-settings-project-card {
-  display: flex;
-  align-items: stretch;
+.project-manager__google-drive-card {
+  gap: 0.55rem;
 }
 
-.google-drive-card.sync-settings-project-card > .google-drive-card__header {
-  flex-direction: row;
-  gap: 0.65rem;
+.project-manager__google-drive-card .google-drive-card__actions .pane__button {
+  flex: 1 1 auto;
 }
 
 .google-drive-card--compact {

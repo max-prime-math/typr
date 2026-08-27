@@ -98,7 +98,11 @@ import { useWorkspaceSelection } from "./useWorkspaceSelection";
 import { useWorkspaceTabs, type WorkspaceTabKind } from "./useWorkspaceTabs";
 import { useWorkspaceTabPersistence } from "./useWorkspaceTabPersistence";
 import { useWorkspacePersistence } from "./useWorkspacePersistence";
-import { GoogleDriveGlobalNotice, useGoogleDriveSync } from "@typr/google-drive-feature";
+import {
+  GoogleDriveConnectionCard,
+  GoogleDriveGlobalNotice,
+  useGoogleDriveSync
+} from "@typr/google-drive-feature";
 import { useLocalFolderSync } from "./useLocalFolderSync";
 import { useCompanionWorkspaceSync } from "./useCompanionWorkspaceSync";
 import {
@@ -734,6 +738,91 @@ function formatProjectLastEditedAt(value: string): string {
     dateStyle: "medium",
     timeStyle: "short"
   });
+}
+
+type ProjectSyncMode = "constant" | "compile" | "interval" | "manual";
+
+function ProjectSyncPolicyControls(props: {
+  constantDescription: string;
+  currentMode?: ProjectSyncMode;
+  defaultIntervalMinutes: number;
+  disabled: boolean;
+  idPrefix: string;
+  intervalDescription: string;
+  intervalMinutes?: number;
+  onChange: (policy: { intervalMinutes?: number; mode: ProjectSyncMode }) => void;
+}) {
+  const options: Array<{
+    description: string;
+    mode: ProjectSyncMode;
+    title: string;
+  }> = [
+    {
+      mode: "constant",
+      title: "Constant sync",
+      description: props.constantDescription
+    },
+    {
+      mode: "compile",
+      title: "Sync on compile",
+      description: "Sync when you explicitly request a document compile."
+    },
+    {
+      mode: "interval",
+      title: "Scheduled sync",
+      description: props.intervalDescription
+    },
+    {
+      mode: "manual",
+      title: "Manual sync",
+      description: "Only sync when you choose Sync now."
+    }
+  ];
+
+  return (
+    <div className="project-manager__sync-policy">
+      <fieldset className="sync-policy-options" disabled={props.disabled}>
+        <legend>Sync mode</legend>
+        {options.map((option) => (
+          <label
+            className={`sync-policy-option ${
+              props.currentMode === option.mode ? "sync-policy-option--active" : ""
+            }`}
+            key={option.mode}
+          >
+            <input
+              checked={props.currentMode === option.mode}
+              name={`${props.idPrefix}-sync-mode`}
+              onChange={() => props.onChange({ mode: option.mode })}
+              type="radio"
+            />
+            <span>
+              <strong>{option.title}</strong>
+              <small>{option.description}</small>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+
+      <label className="sync-field sync-interval-field">
+        <span>Scheduled interval</span>
+        <span className="sync-interval-field__control">
+          <input
+            disabled={props.disabled || props.currentMode !== "interval"}
+            max={1440}
+            min={1}
+            onChange={(event) => props.onChange({
+              intervalMinutes: Number(event.target.value),
+              mode: "interval"
+            })}
+            type="number"
+            value={props.intervalMinutes ?? props.defaultIntervalMinutes}
+          />
+          <span>minutes</span>
+        </span>
+      </label>
+    </div>
+  );
 }
 
 const SIDEBAR_TOOLS: Array<{ id: SidebarTool; label: string }> = [
@@ -3938,9 +4027,6 @@ ${nextLine}` : nextLine;
     setProjectStorage,
     setRawSnapshot
   });
-  const selectedLocalFolderSyncState = selectedProjectRepository
-    ? localFolderSync.states[selectedProjectRepository.id]
-    : undefined;
   const companionWorkspaceSync = useCompanionWorkspaceSync({
     client: companionClient,
     connection: companionConnection,
@@ -3951,9 +4037,6 @@ ${nextLine}` : nextLine;
     setProjectStorage,
     setRawSnapshot
   });
-  const selectedCompanionWorkspaceSyncState = selectedProjectRepository
-    ? companionWorkspaceSync.states[selectedProjectRepository.id]
-    : undefined;
   const googleDriveSync = useGoogleDriveSync({
     clientId: import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID ?? "",
     cloudProjectNumber:
@@ -3964,9 +4047,6 @@ ${nextLine}` : nextLine;
     setProjectStorage,
     setRawSnapshot
   });
-  const selectedGoogleDriveSyncState = selectedProjectRepository
-    ? googleDriveSync.states[selectedProjectRepository.id]
-    : undefined;
   const handledImportedDriveProjectIdRef = useRef<string | null>(null);
   useEffect(() => {
     const importedProjectId = googleDriveSync.importedProjectId;
@@ -15061,6 +15141,16 @@ ${nextLine}` : nextLine;
     jumpToDiagnostic,
     normalizedActiveSourcePath
   ]);
+  const scrollToDebugSection = useCallback((sectionId: string) => {
+    const section = document.getElementById(sectionId);
+
+    if (section instanceof HTMLDetailsElement) {
+      section.open = true;
+    }
+
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
+    section?.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
+  }, []);
 
   const rerunBuildLogEntry = useCallback((entry: BuildLogEntry) => {
     const targetPath = normalizeWorkspacePath(entry.sourcePath);
@@ -16354,8 +16444,6 @@ ${nextLine}` : nextLine;
     companionApiKey,
     companionBaseUrl,
     companionConnection,
-    companionWorkspaceSync,
-    companionWorkspaceSyncState: selectedCompanionWorkspaceSyncState,
     customThemes,
     darkThemes,
     detectedLatexPackages,
@@ -16372,8 +16460,6 @@ ${nextLine}` : nextLine;
     getKeybindingLabel,
     getSnippetImportTemplate,
     gitHubDiscovery,
-    googleDriveSync,
-    googleDriveSyncState: selectedGoogleDriveSyncState,
     handleCacheLatexBundle,
     handleCancelPendingKeybindingConflict,
     handleClearCustomSnippets,
@@ -16450,8 +16536,6 @@ ${nextLine}` : nextLine;
     latexPackageSearchQuery,
     latexPackageSearchResults,
     lightThemes,
-    localFolderSync,
-    localFolderSyncState: selectedLocalFolderSyncState,
     manualExtraLatexPackages,
     packageCacheEntries,
     packageCacheFeedback,
@@ -16829,6 +16913,16 @@ ${nextLine}` : nextLine;
                         const localFolderConnected = Boolean(
                           localFolderState?.directoryName
                         );
+                        const companionWorkspaceState =
+                          companionWorkspaceSync.states[project.id];
+                        const companionWorkspaceLinked = Boolean(
+                          companionWorkspaceState?.workspaceId
+                        );
+                        const companionWorkspaceStatus =
+                          companionWorkspaceState?.status ??
+                          (companionWorkspaceSync.capability
+                            ? "unlinked"
+                            : "unavailable");
                         const googleDriveState = __TYPR_GOOGLE_DRIVE_ENABLED__
                           ? googleDriveSync.states[project.id]
                           : undefined;
@@ -16924,6 +17018,20 @@ ${nextLine}` : nextLine;
                                       GitHub · {connectedGitProject.owner}/{connectedGitProject.repo}
                                     </span>
                                   ) : null}
+                                  {companionWorkspaceLinked ? (
+                                    <span
+                                      className={`project-manager__summary-badge project-manager__summary-badge--connected ${
+                                        companionWorkspaceStatus === "stale" ||
+                                        companionWorkspaceStatus === "conflict" ||
+                                        companionWorkspaceStatus === "error"
+                                          ? "project-manager__summary-badge--warning"
+                                          : ""
+                                      }`}
+                                      title={companionWorkspaceState?.message}
+                                    >
+                                      Companion · {companionWorkspaceState?.workspaceId}
+                                    </span>
+                                  ) : null}
                                   {__TYPR_GOOGLE_DRIVE_ENABLED__ && googleDriveConnected ? (
                                     <span
                                       className={`project-manager__summary-badge project-manager__summary-badge--connected ${
@@ -16946,6 +17054,7 @@ ${nextLine}` : nextLine;
                                     </span>
                                   ) : null}
                                   {!localFolderConnected &&
+                                  !companionWorkspaceLinked &&
                                   !connectedGitProject &&
                                   !googleDriveConnected &&
                                   !hasInitializedGit ? (
@@ -17073,18 +17182,6 @@ ${nextLine}` : nextLine;
                                         <button
                                           className="pane__button pane__button--compact"
                                           onClick={() => {
-                                            if (!isActiveProject) {
-                                              handleSelectLocalProject(project.id);
-                                            }
-                                            handleOpenSettingsTab("sync");
-                                          }}
-                                          type="button"
-                                        >
-                                          Sync settings
-                                        </button>
-                                        <button
-                                          className="pane__button pane__button--compact"
-                                          onClick={() => {
                                             void localFolderSync.disconnect(project.id);
                                           }}
                                           type="button"
@@ -17110,54 +17207,182 @@ ${nextLine}` : nextLine;
                                       </button>
                                     )}
                                   </div>
+                                  <ProjectSyncPolicyControls
+                                    constantDescription="Watch both Typr and the folder and apply changes in real time."
+                                    currentMode={localFolderState?.syncMode}
+                                    defaultIntervalMinutes={5}
+                                    disabled={!localFolderConnected}
+                                    idPrefix={`local-folder-${project.id}`}
+                                    intervalDescription="Sync automatically after the selected number of minutes."
+                                    intervalMinutes={localFolderState?.syncIntervalMinutes}
+                                    onChange={(policy) => {
+                                      void localFolderSync.setSyncPolicy(project.id, policy);
+                                    }}
+                                  />
                                 </section>
 
-                                {__TYPR_GOOGLE_DRIVE_ENABLED__ ? <section className="project-manager__connection">
+                                <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
                                     <div>
-                                      <strong>Google Drive</strong>
+                                      <strong>Companion workspace</strong>
                                       <small>
-                                        {googleDriveConnected
-                                          ? `${googleDriveState?.projectFolderName} · configured in Settings`
-                                          : "Connect Google Drive and choose a folder from Settings."}
+                                        {companionWorkspaceState?.message ??
+                                          (companionWorkspaceSync.capability
+                                            ? `Companion exposes workspace ${companionWorkspaceSync.capability.workspaceId}. Link it to exchange files manually.`
+                                            : companionConnection.message ??
+                                              "The configured Companion does not currently expose a mapped workspace.")}
                                       </small>
+                                      {companionWorkspaceState?.lastSyncedAt ? (
+                                        <small>
+                                          Last synced {new Date(companionWorkspaceState.lastSyncedAt).toLocaleString()}
+                                        </small>
+                                      ) : null}
+                                      {companionWorkspaceState?.conflictPaths?.length ? (
+                                        <small>
+                                          Review: {companionWorkspaceState.conflictPaths.join(", ")}
+                                        </small>
+                                      ) : null}
                                     </div>
-                                    <span className={`project-manager__connection-badge ${googleDriveConnected ? "project-manager__connection-badge--connected" : ""}`}>
-                                      {googleDriveConnected ? "Connected" : "Not linked"}
+                                    <span
+                                      className={`project-manager__connection-badge ${
+                                        companionWorkspaceLinked
+                                          ? companionWorkspaceStatus === "stale" ||
+                                            companionWorkspaceStatus === "conflict" ||
+                                            companionWorkspaceStatus === "error"
+                                            ? "project-manager__connection-badge--error"
+                                            : "project-manager__connection-badge--connected"
+                                          : ""
+                                      }`}
+                                    >
+                                      {companionWorkspaceLinked
+                                        ? companionWorkspaceStatus === "stale"
+                                          ? "Different workspace"
+                                          : "Linked"
+                                        : companionWorkspaceSync.capability
+                                          ? "Available"
+                                          : "Unavailable"}
                                     </span>
                                   </div>
+                                  <dl className="project-manager__connection-details">
+                                    <div>
+                                      <dt>Companion URL</dt>
+                                      <dd>{companionBaseUrl}</dd>
+                                    </div>
+                                    {companionWorkspaceSync.capability ? (
+                                      <>
+                                        <div>
+                                          <dt>Workspace ID</dt>
+                                          <dd>{companionWorkspaceSync.capability.workspaceId}</dd>
+                                        </div>
+                                        <div>
+                                          <dt>Limits</dt>
+                                          <dd>
+                                            {formatByteSize(companionWorkspaceSync.capability.limits.maxFileBytes)} per file
+                                            {" · "}{companionWorkspaceSync.capability.limits.maxEntries} files
+                                            {" · "}{formatByteSize(companionWorkspaceSync.capability.limits.maxWorkspaceBytes)} total
+                                          </dd>
+                                        </div>
+                                      </>
+                                    ) : null}
+                                  </dl>
                                   <div className="project-manager__connection-actions">
-                                    <button
-                                      className="pane__button pane__button--compact"
-                                      onClick={() => {
-                                        if (!isActiveProject) {
-                                          handleSelectLocalProject(project.id);
-                                        }
-                                        if (googleDriveSync.isAuthorized) {
-                                          void googleDriveSync.chooseLocation(project.id);
-                                        } else {
-                                          handleOpenSettingsTab("sync");
-                                        }
-                                      }}
-                                      type="button"
-                                    >
-                                      {googleDriveConnected
-                                        ? "Change Drive location"
-                                        : googleDriveSync.isAuthorized
-                                          ? "Choose Drive location"
-                                          : "Connect Drive in Settings"}
-                                    </button>
-                                    {googleDriveConnected ? (
+                                    {companionWorkspaceLinked ? (
+                                      <>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          disabled={
+                                            companionWorkspaceStatus === "syncing" ||
+                                            companionWorkspaceStatus === "restoring" ||
+                                            companionWorkspaceStatus === "stale" ||
+                                            !companionWorkspaceSync.capability
+                                          }
+                                          onClick={() => {
+                                            void companionWorkspaceSync.syncNow(project.id);
+                                          }}
+                                          type="button"
+                                        >
+                                          {companionWorkspaceStatus === "syncing"
+                                            ? "Syncing…"
+                                            : "Sync Companion workspace"}
+                                        </button>
+                                        <button
+                                          className="pane__button pane__button--compact"
+                                          disabled={
+                                            companionWorkspaceStatus === "syncing" ||
+                                            companionWorkspaceStatus === "restoring"
+                                          }
+                                          onClick={() => {
+                                            void companionWorkspaceSync.unlink(project.id);
+                                          }}
+                                          type="button"
+                                        >
+                                          Unlink
+                                        </button>
+                                      </>
+                                    ) : companionWorkspaceSync.capability ? (
                                       <button
                                         className="pane__button pane__button--compact"
-                                        onClick={() => handleOpenSettingsTab("sync")}
+                                        disabled={
+                                          !companionWorkspaceSync.capability ||
+                                          !companionWorkspaceState ||
+                                          companionWorkspaceStatus === "restoring" ||
+                                          companionWorkspaceStatus === "error"
+                                        }
+                                        onClick={() => {
+                                          void companionWorkspaceSync.link(project.id);
+                                        }}
                                         type="button"
                                       >
-                                        Drive sync settings
+                                        Link Companion workspace
                                       </button>
-                                    ) : null}
+                                    ) : (
+                                      <button
+                                        className="pane__button pane__button--compact"
+                                        onClick={() => handleOpenSettingsTab("editor")}
+                                        type="button"
+                                      >
+                                        Configure Companion
+                                      </button>
+                                    )}
                                   </div>
-                                </section> : null}
+                                  <small className="project-manager__connection-safety">
+                                    The mapped directory is selected by the Companion host, not by this browser.
+                                    First link combines both sides and the mapped copy wins same-path collisions.
+                                  </small>
+                                </section>
+
+                                {__TYPR_GOOGLE_DRIVE_ENABLED__ ? (
+                                  <>
+                                    <GoogleDriveConnectionCard
+                                      className="project-manager__connection project-manager__google-drive-card"
+                                      controller={googleDriveSync}
+                                      projectId={project.id}
+                                      projectName={project.displayName}
+                                      state={googleDriveState}
+                                    />
+                                    <section className="project-manager__connection project-manager__connection--sync-policy">
+                                      <ProjectSyncPolicyControls
+                                        constantDescription="Sync browser edits after a short delay and check Drive periodically."
+                                        currentMode={googleDriveState?.syncMode}
+                                        defaultIntervalMinutes={15}
+                                        disabled={
+                                          !googleDriveState?.projectFolderName ||
+                                          Boolean(googleDriveState.migrationRequired)
+                                        }
+                                        idPrefix={`google-drive-${project.id}`}
+                                        intervalDescription="Sync automatically while Google authorization remains active."
+                                        intervalMinutes={googleDriveState?.syncIntervalMinutes}
+                                        onChange={(policy) => {
+                                          void googleDriveSync.setSyncPolicy(project.id, policy);
+                                        }}
+                                      />
+                                      <small className="project-manager__connection-safety">
+                                        Typr requests access only to Drive files it creates or that you connect through Typr.
+                                        Google authorization may need renewal after a reload or expiry.
+                                      </small>
+                                    </section>
+                                  </>
+                                ) : null}
 
                                 <section className="project-manager__connection">
                                   <div className="project-manager__connection-header">
@@ -18365,7 +18590,20 @@ ${nextLine}` : nextLine;
                   onScroll={handleLeftPaneScroll}
                 >
                   <div className="sync-stack debug-stack">
-                    <details className="sidebar-card debug-section" open>
+                    <nav aria-label="Diagnostics sections" className="debug-section-nav">
+                      <button onClick={() => scrollToDebugSection("debug-current-diagnostics")} type="button">
+                        Issues <span>{editorDiagnostics.length}</span>
+                      </button>
+                      {activeSourceLanguage === "typst" || activeSourceLanguage === "latex" ? (
+                        <button onClick={() => scrollToDebugSection("debug-build-log")} type="button">
+                          Builds <span>{buildLogController.entries.length}</span>
+                        </button>
+                      ) : null}
+                      <button onClick={() => scrollToDebugSection("debug-output")} type="button">Output</button>
+                      <button onClick={() => scrollToDebugSection("debug-providers")} type="button">Providers</button>
+                    </nav>
+
+                    <details className="sidebar-card debug-section" id="debug-current-file" open>
                       <summary className="debug-section__summary">
                         <span>Current file</span>
                         <span className="pane__meta">{debugSourceLanguageLabel}</span>
@@ -18390,7 +18628,7 @@ ${nextLine}` : nextLine;
                       </ul>
                     </details>
 
-                    <details className="sidebar-card debug-section" open>
+                    <details className="sidebar-card debug-section" id="debug-output" open>
                       <summary className="debug-section__summary">
                         <span>Output excerpt</span>
                         <span className="pane__meta">{debugOutputKind}</span>
@@ -18410,7 +18648,7 @@ ${nextLine}` : nextLine;
                     ) : null}
 
                     {activeSourceLanguage === "typst" || activeSourceLanguage === "latex" ? (
-                      <details className="sidebar-card debug-section">
+                      <details className="sidebar-card debug-section" id="debug-compiler-performance">
                         <summary className="debug-section__summary">
                           <span>Compiler and performance</span>
                           <span className="pane__meta">{compilerStatus.label}</span>
@@ -18496,7 +18734,7 @@ ${nextLine}` : nextLine;
                       </details>
                     ) : null}
 
-                    <details className="sidebar-card debug-section" open>
+                    <details className="sidebar-card debug-section" id="debug-providers" open>
                       <summary className="debug-section__summary">
                         <span>Diagnostic providers</span>
                         <span className="pane__meta">{diagnosticProviderStatuses.filter((status) => status.enabled).length} active</span>
@@ -18522,11 +18760,34 @@ ${nextLine}` : nextLine;
                       <p className="sidebar-card__copy">Harper self-test: {harperSelfTestResult}</p>
                     </details>
 
-                    <details className="sidebar-card debug-section">
+                    <details className="sidebar-card debug-section" id="debug-current-diagnostics" open>
                       <summary className="debug-section__summary">
                         <span>Diagnostics</span>
                         <span className="pane__meta">{editorDiagnostics.length}</span>
                       </summary>
+                      <div aria-label="Diagnostic navigation" className="debug-diagnostic-navigation" role="group">
+                        <span>
+                          {editorDiagnostics.filter((diagnostic) => Boolean(diagnostic.line)).length} with source locations
+                        </span>
+                        <div>
+                          <button
+                            className="pane__button pane__button--compact"
+                            disabled={!editorDiagnostics.some((diagnostic) => Boolean(diagnostic.line))}
+                            onClick={() => handleVimLatexNavigateDiagnostic(-1)}
+                            type="button"
+                          >
+                            Previous
+                          </button>
+                          <button
+                            className="pane__button pane__button--compact"
+                            disabled={!editorDiagnostics.some((diagnostic) => Boolean(diagnostic.line))}
+                            onClick={() => handleVimLatexNavigateDiagnostic(1)}
+                            type="button"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
                       {editorDiagnostics.length > 0 ? (
                         <div className="sidebar-diagnostics" role="list">
                           {groupDiagnosticsByFile(editorDiagnostics).map((group) => (
@@ -18547,7 +18808,7 @@ ${nextLine}` : nextLine;
                                   ) : null}
                                   {diagnostic.line ? (
                                     <button className="pane__button pane__button--compact" onClick={() => jumpToDiagnostic(diagnostic, activeSourcePath)} type="button">
-                                      Jump
+                                      Open at line {diagnostic.line}
                                     </button>
                                   ) : null}
                                 </div>
@@ -18561,7 +18822,7 @@ ${nextLine}` : nextLine;
                     </details>
 
                     {shouldShowPreviewInternals ? (
-                      <details className="sidebar-card debug-section">
+                      <details className="sidebar-card debug-section" id="debug-preview-internals">
                         <summary className="debug-section__summary">
                           <span>Preview internals</span>
                           <span className="pane__meta">{isPreviewDebugVisible ? "Visible" : "Hidden"}</span>

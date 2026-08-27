@@ -13,19 +13,35 @@ import {
   defaultKeymap,
   history,
   historyKeymap,
-  indentMore
+  indentLess
 } from "@codemirror/commands";
-import { bracketMatching, foldGutter, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import {
+  bracketMatching,
+  foldGutter,
+  HighlightStyle,
+  indentOnInput,
+  indentUnit,
+  syntaxHighlighting,
+  syntaxTree
+} from "@codemirror/language";
 import {
   search as searchExtension,
   searchKeymap,
   selectNextOccurrence,
   selectSelectionMatches
 } from "@codemirror/search";
-import type { Extension } from "@codemirror/state";
-import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
+import type { Extension, Range } from "@codemirror/state";
+import {
+  Compartment,
+  EditorSelection,
+  EditorState,
+  StateEffect,
+  StateField
+} from "@codemirror/state";
 import {
   crosshairCursor,
+  Decoration,
+  type DecorationSet,
   drawSelection,
   EditorView,
   highlightActiveLineGutter,
@@ -39,7 +55,7 @@ import { getCM, vim, Vim } from "@replit/codemirror-vim";
 import { markdown } from "@codemirror/lang-markdown";
 import { latex, latexCompletionSource } from "codemirror-lang-latex";
 import type { StyleSpec } from "style-mod";
-import { tags } from "@lezer/highlight";
+import { highlightTree, tags } from "@lezer/highlight";
 import type { KeybindingMap } from "../app/keybindings";
 import { toCodeMirrorKeybinding } from "../app/keybindings";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
@@ -57,7 +73,13 @@ import { latexMathPreview } from "./latexMathPreview";
 import { latexEnvironmentCompletionSource } from "./latexEnvironmentCompletion";
 import { typstMathPreview } from "./typstMathPreview";
 import { smoothCursor } from "./smoothCursor";
-import { EDITOR_INDENT, getSmartNewlineInsertion } from "./editorWhitespace";
+import { fullHeightVimCursor } from "./vimCursor";
+import { wrappedLineIndent } from "./wrappedLineIndent";
+import {
+  EDITOR_INDENT,
+  getLatexItemNewlineInsertion,
+  getSmartNewlineInsertion
+} from "./editorWhitespace";
 import { typstLanguage } from "./typstLanguage";
 import type { ThemeDefinition } from "../theme/themes";
 import type { VimLatexPreferences } from "../app/appState";
@@ -98,6 +120,26 @@ interface EditorSetupOptions {
 }
 
 export const diagnosticsCompartment = new Compartment();
+export const editorReadOnlyCompartment = new Compartment();
+export const lineWrapCompartment = new Compartment();
+export const editorAppearanceCompartment = new Compartment();
+export const mathPreviewCompartment = new Compartment();
+export const mobileScrollCompartment = new Compartment();
+export const syntaxHighlightFallbackEffect = StateEffect.define<DecorationSet>();
+
+const syntaxHighlightFallbackField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    let nextValue = transaction.docChanged ? Decoration.none : value;
+    for (const effect of transaction.effects) {
+      if (effect.is(syntaxHighlightFallbackEffect)) {
+        nextValue = effect.value;
+      }
+    }
+    return nextValue;
+  },
+  provide: (field) => EditorView.decorations.from(field)
+});
 
 let latestVimCloseRequested: (() => void) | null = null;
 let latestVimSaveRequested: (() => void) | null = null;
@@ -334,6 +376,52 @@ export function createEditorState(
   });
 }
 
+export function createEditorAppearanceExtensions(
+  theme: ThemeDefinition,
+  cursorSmooth: boolean,
+  editorFontSize: number,
+  vimMode: boolean,
+  cursorSmear: number
+): Extension {
+  return [
+    createEditorTheme(theme, cursorSmooth, editorFontSize),
+    ...(cursorSmooth ? [smoothCursor(vimMode, cursorSmear)] : [])
+  ];
+}
+
+export function createMathPreviewExtensions(
+  language: SourceLanguage,
+  latexMathPreviewEnabled: boolean,
+  typstMathPreviewEnabled: boolean
+): Extension {
+  return [
+    ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
+    ...(language === "typst" && typstMathPreviewEnabled ? [typstMathPreview()] : [])
+  ];
+}
+
+export function createMobileScrollExtensions(constrainMobileScroll: boolean): Extension {
+  return constrainMobileScroll ? [createMobileScrollConstraint()] : [];
+}
+
+export function createSyntaxHighlightFallback(
+  state: EditorState,
+  from: number,
+  to: number
+): DecorationSet {
+  const ranges: Range<Decoration>[] = [];
+  highlightTree(
+    syntaxTree(state),
+    editorHighlightStyle,
+    (rangeFrom, rangeTo, classes) => {
+      ranges.push(Decoration.mark({ class: classes }).range(rangeFrom, rangeTo));
+    },
+    from,
+    to
+  );
+  return Decoration.set(ranges, true);
+}
+
 export function createEditorExtensions({
   onChange,
   onSelectionChange,
@@ -421,7 +509,16 @@ export function createEditorExtensions({
       return acceptCompletion(view);
     }
 
-    return indentMore(view);
+    if (view.state.readOnly) {
+      return false;
+    }
+
+    view.dispatch({
+      ...view.state.replaceSelection(EDITOR_INDENT),
+      scrollIntoView: true,
+      userEvent: "input"
+    });
+    return true;
   };
   let pendingSlashSelection: PendingSlashSelection | null = null;
   const selectedBackslashCommand: Command = (view) => {
@@ -470,9 +567,10 @@ export function createEditorExtensions({
     return applyMathDelimiterKey(view, key, language);
   };
   const smartNewlineCommand = createSmartNewlineCommand(language);
+  const latexItemNewlineCommand = createLatexItemNewlineCommand(language);
 
   return [
-    EditorState.readOnly.of(readOnly),
+    editorReadOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
     EditorState.allowMultipleSelections.of(true),
     EditorState.tabSize.of(2),
     indentUnit.of(EDITOR_INDENT),
@@ -524,6 +622,7 @@ export function createEditorExtensions({
             ? [latexEnvironmentCompletionSource, snippetSource]
             : [snippetSource]
     }),
+    syntaxHighlightFallbackField,
     syntaxHighlighting(editorHighlightStyle, { fallback: true }),
     createLanguageExtension(
       language,
@@ -532,8 +631,13 @@ export function createEditorExtensions({
     ...(language === "latex" && vimMode && vimLatex.enabled && vimLatex.folding
       ? [foldGutter()]
       : []),
-    ...(language === "latex" && latexMathPreviewEnabled ? [latexMathPreview()] : []),
-    ...(language === "typst" && typstMathPreviewEnabled ? [typstMathPreview()] : []),
+    mathPreviewCompartment.of(
+      createMathPreviewExtensions(
+        language,
+        latexMathPreviewEnabled,
+        typstMathPreviewEnabled
+      )
+    ),
     keymap.of([
       {
         any: (_view, event) => {
@@ -557,17 +661,27 @@ export function createEditorExtensions({
       { key: "]", run: mathDelimiterCommand("]") },
       { key: "(", run: mathDelimiterCommand("(") },
       { key: ")", run: mathDelimiterCommand(")") },
+      { key: "Shift-Enter", run: latexItemNewlineCommand },
       { key: "Enter", run: smartNewlineCommand },
       { key: "Tab", run: tabCommand },
-      { key: "Shift-Tab", run: prevSnippetField },
+      { key: "Shift-Tab", run: (view) => prevSnippetField(view) || indentLess(view) },
       { key: "Escape", run: clearSnippet },
       ...keymaps
     ]),
-    ...(lineWrap ? [EditorView.lineWrapping] : []),
+    lineWrapCompartment.of(
+      lineWrap ? [EditorView.lineWrapping, wrappedLineIndent()] : []
+    ),
     scrollPastEnd(),
-    ...(constrainMobileScroll ? [createMobileScrollConstraint()] : []),
-    createEditorTheme(theme, cursorSmooth, editorFontSize),
-    ...(cursorSmooth ? [smoothCursor(vimMode, cursorSmear)] : []),
+    mobileScrollCompartment.of(createMobileScrollExtensions(constrainMobileScroll)),
+    editorAppearanceCompartment.of(
+      createEditorAppearanceExtensions(
+        theme,
+        cursorSmooth,
+        editorFontSize,
+        vimMode,
+        cursorSmear
+      )
+    ),
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         onChange(update);
@@ -592,6 +706,7 @@ export function createEditorExtensions({
                 })
               ]
             : []),
+          fullHeightVimCursor(),
           vim()
         ]
       : [])
@@ -773,6 +888,35 @@ function createSmartNewlineCommand(language: SourceLanguage): Command {
       userEvent: "input"
     });
 
+    return true;
+  };
+}
+
+function createLatexItemNewlineCommand(language: SourceLanguage): Command {
+  return (view) => {
+    if (language !== "latex" || view.state.selection.ranges.length !== 1) {
+      return false;
+    }
+
+    const selection = view.state.selection.main;
+    const insertion = getLatexItemNewlineInsertion(
+      view.state.doc.toString(),
+      selection.from
+    );
+    if (insertion === null) {
+      return false;
+    }
+
+    view.dispatch({
+      changes: {
+        from: selection.from,
+        to: selection.to,
+        insert: insertion
+      },
+      selection: EditorSelection.cursor(selection.from + insertion.length),
+      scrollIntoView: true,
+      userEvent: "input"
+    });
     return true;
   };
 }

@@ -47,12 +47,11 @@ describe("settings sheet state", () => {
 
   it("uses the current settings search vocabulary and falls back safely", () => {
     expect(findMatchingSettingsTabs("github")).toEqual(["git"]);
-    expect(findMatchingSettingsTabs("constant")).toEqual(["sync"]);
+    expect(findMatchingSettingsTabs("constant")).toEqual([]);
     expect(findMatchingSettingsTabs("formatter")).toContain("editor");
     expect(findMatchingSettingsTabs("vimtex")).toEqual(["editor"]);
     expect(findMatchingSettingsTabs("text objects")).toEqual(["editor"]);
     expect(findMatchingSettingsTabs("")).toEqual([
-      "sync",
       "git",
       "themes",
       "editor",
@@ -73,6 +72,12 @@ describe("settings sheet state", () => {
       readStoredSettingsMenuState(createStorage(JSON.stringify({ tab: "files" })))
     ).toEqual({
       tab: "editor",
+      scrollByTab: {}
+    });
+    expect(
+      readStoredSettingsMenuState(createStorage(JSON.stringify({ tab: "sync" })))
+    ).toEqual({
+      tab: "git",
       scrollByTab: {}
     });
   });

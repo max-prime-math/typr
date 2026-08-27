@@ -20,7 +20,7 @@ Project names are local Typr labels. Deleting a project removes local Typr data 
 
 Choose **Connect Google Drive** in a project's expanded card. Typr redirects to Google for authorization, returns to the editor, then creates or reuses an app-managed Drive folder for that project. The first sync is additive: files unique to either location are retained, and Drive wins a same-path conflict on the first connection.
 
-Use **Settings → Sync** to choose an independent Drive policy:
+Expand the project card in **Projects** to choose an independent Drive policy:
 
 - **Constant sync** pushes browser edits after a short delay and checks Drive periodically.
 - **Sync on compile** synchronizes before an explicitly requested compile.
@@ -35,7 +35,8 @@ Drive synchronization covers visible project files and folders. Browser-managed 
 
 In a Chromium-based browser, use **Open local folder** to turn an existing folder—including an existing Git checkout—into a linked Typr project in one step. To connect a project that is already in Typr, including one cloned through the GitHub flow, use **Link local folder** in that project's row.
 
-The chosen folder and Typr project synchronize in both directions. Open **Settings → Sync** to choose a policy for the selected linked project:
+The chosen folder and Typr project synchronize in both directions. Expand the
+project card in **Projects** to choose its policy:
 
 - **Constant sync** watches Typr and the folder for changes in real time.
 - **Sync on compile** synchronizes when you explicitly request a compile.

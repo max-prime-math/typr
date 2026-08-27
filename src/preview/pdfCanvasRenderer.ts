@@ -159,7 +159,8 @@ export interface PdfThumbnail {
 
 export interface PdfMagnifierRegionRenderOptions {
   canvas: HTMLCanvasElement;
-  diameter: number;
+  height: number;
+  width: number;
   displayScale: number;
   magnification: number;
   pageNumber: number;
@@ -205,9 +206,8 @@ export async function createPdfMagnifierRenderer(
         const viewport = page.getViewport({
           scale: region.displayScale * region.magnification
         });
-        const canvasSize = Math.max(1, Math.ceil(region.diameter * outputScale));
-        region.canvas.width = canvasSize;
-        region.canvas.height = canvasSize;
+        region.canvas.width = Math.max(1, Math.ceil(region.width * outputScale));
+        region.canvas.height = Math.max(1, Math.ceil(region.height * outputScale));
         const context = region.canvas.getContext("2d", {
           alpha: false,
           willReadFrequently: Boolean(themeColors && !useNativePageColors)
@@ -217,9 +217,9 @@ export async function createPdfMagnifierRenderer(
           throw new Error("Unable to create a PDF magnifier canvas context.");
         }
 
-        const offsetX = region.diameter / 2
+        const offsetX = region.width / 2
           - region.pageX * region.displayScale * region.magnification;
-        const offsetY = region.diameter / 2
+        const offsetY = region.height / 2
           - region.pageY * region.displayScale * region.magnification;
         const renderTask = page.render({
           canvas: region.canvas,

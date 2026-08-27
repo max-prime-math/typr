@@ -1,5 +1,6 @@
 import type { CompileDiagnostic } from "../compiler/types";
 import type { SourceLanguage } from "../compiler/sourceFileTypes";
+import { EDITOR_INDENT } from "./editorWhitespace";
 
 export type EditorToolLanguage = "typst" | "latex" | "markdown";
 export type EditorFormatterId =
@@ -212,7 +213,7 @@ export function formatTypstSource(source: string): string {
     const leadingClosers = (content.match(/^[\])}]+/)?.[0].length ?? 0);
     const lineIndent = Math.max(0, indentLevel - leadingClosers);
 
-    formattedLines.push(`${"  ".repeat(lineIndent)}${content}`);
+    formattedLines.push(`${EDITOR_INDENT.repeat(lineIndent)}${content}`);
     indentLevel = Math.max(0, lineIndent + getBracketDelta(stripTypstLineComment(content)));
   }
 
@@ -258,7 +259,7 @@ export function formatLatexSource(source: string): string {
     const content = trimmed.replace(/^(\\item(?:\[[^\]]*])?)\s{2,}/, "$1 ");
     const lineIndent = leadingEnvironmentEnd ? Math.max(0, indentLevel - 1) : indentLevel;
 
-    formattedLines.push(`${"  ".repeat(lineIndent)}${content}`);
+    formattedLines.push(`${EDITOR_INDENT.repeat(lineIndent)}${content}`);
 
     if (startingVerbatimEnvironment !== null) {
       verbatimEnvironment = startingVerbatimEnvironment;

@@ -10,6 +10,7 @@ test("Settings preserves accessible desktop and mobile sheet behavior", async ({
   const desktopSheet = page.getByRole("region", { name: "Typr settings" });
   await expect(desktopSheet).toBeVisible();
   await expect(desktopSheet.getByRole("tablist", { name: "Settings tabs" })).toBeVisible();
+  await expect(desktopSheet.getByRole("tab", { name: "Sync", exact: true })).toHaveCount(0);
   await desktopSheet.getByRole("tab", { name: "Themes", exact: true }).click();
   await expect(desktopSheet.getByRole("tab", { name: "Themes", exact: true })).toHaveAttribute("aria-selected", "true");
   await desktopSheet.getByRole("button", { name: "Close", exact: true }).click();
@@ -74,7 +75,7 @@ test("Settings controls remain within the mobile pane", async ({ page }) => {
 
   const mobileSheet = page.getByRole("region", { name: "Typr settings" });
   const mobileNavToggle = mobileSheet.locator(".settings-sheet__mobile-nav-toggle");
-  const tabNames = ["Sync", "Git", "Themes", "Editor", "Keybindings", "Packages", "Snippets"];
+  const tabNames = ["Git", "Themes", "Editor", "Keybindings", "Packages"];
 
   for (const tabName of tabNames) {
     await mobileNavToggle.click();
@@ -85,6 +86,8 @@ test("Settings controls remain within the mobile pane", async ({ page }) => {
     )).toBe(true);
   }
 
+  await mobileNavToggle.click();
+  await mobileSheet.getByRole("tab", { name: "Git", exact: true }).click();
   const tokenField = mobileSheet.getByLabel("Fine-grained token");
   await expect(tokenField).toBeVisible();
   await expect.poll(() => tokenField.locator("xpath=..").evaluate((element) =>
@@ -184,9 +187,11 @@ test("Build Log renders, filters, and clears compile history", async ({ page }) 
   await compileButton.click();
 
   await page.getByRole("button", { name: "Debug", exact: true }).first().click();
+  await expect(page.getByRole("navigation", { name: "Diagnostics sections" })).toBeVisible();
   const buildLog = page.locator("details.debug-section").filter({ hasText: "Build log" }).first();
   await expect(buildLog).toBeVisible();
   await expect(buildLog.locator(".build-log-entry").first()).toBeVisible({ timeout: 30_000 });
+  await expect(buildLog.getByRole("button", { name: /Open build 1:/ })).toBeVisible();
   await expect(buildLog.getByRole("button", { name: "Copy filtered build log" })).toBeVisible();
   await buildLog.getByLabel("Filter").selectOption("current-file");
   await buildLog.getByLabel("Search").fill("typst.typ");

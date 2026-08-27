@@ -45,7 +45,7 @@
     "@codemirror/search": "^6.5.11",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.6",
-    "@max-prime-math/typr-companion-protocol": "https://github.com/max-prime-math/typr-server/archive/44d0b7d4e773209c21ddba7b15e64a5f236e7c7a.tar.gz",
+    "@max-prime-math/typr-companion-protocol": "https://github.com/max-prime-math/typr-server/archive/c77eb89fae9bcad16968b00b76e573ded5c2427d.tar.gz",
     "@myriaddreamin/typst-ts-renderer": "^0.7.0-rc2",
     "@myriaddreamin/typst-ts-web-compiler": "0.7.0-rc2",
     "@myriaddreamin/typst.ts": "^0.7.0-rc2",

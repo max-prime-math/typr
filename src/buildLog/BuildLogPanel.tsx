@@ -22,8 +22,18 @@ export function BuildLogPanel(props: {
   const { controller } = props;
   const timelineMaxMs = Math.max(...controller.filteredEntries.map((entry) => entry.durationMs), 1);
 
+  const focusEntry = (index: number) => {
+    const entry = document.getElementById(`build-log-entry-${index}`);
+
+    if (entry instanceof HTMLDetailsElement) {
+      entry.open = true;
+      entry.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      entry.querySelector("summary")?.focus({ preventScroll: true });
+    }
+  };
+
   return (
-    <details className="sidebar-card debug-section" open>
+    <details className="sidebar-card debug-section" id="debug-build-log" open>
       <summary className="debug-section__summary">
         <span>Build log</span>
         <span className="pane__meta">{controller.filteredEntries.length}/{controller.entries.length}</span>
@@ -65,21 +75,27 @@ export function BuildLogPanel(props: {
         <button className="pane__button pane__button--compact" onClick={() => controller.exportJson(props.downloadFile)} type="button">Export filtered build log JSON</button>
         <button className="pane__button pane__button--compact" onClick={controller.clear} type="button">Clear</button>
       </div>
-      {controller.feedback ? <p className="sidebar-card__copy">{controller.feedback}</p> : null}
+      {controller.feedback ? <p className="sidebar-card__copy" role="status">{controller.feedback}</p> : null}
       {controller.filteredEntries.length > 0 ? (
         <>
-          <div className="build-log-timeline-header"><span>Recent build durations</span></div>
+          <div className="build-log-timeline-header">
+            <span>Recent build durations</span>
+            <span>{controller.filteredEntries.length} shown</span>
+          </div>
           <div className="build-log-timeline" aria-label="Recent build duration timeline">
-            {controller.filteredEntries.slice(0, 12).map((entry) => (
-              <span
+            {controller.filteredEntries.slice(0, 12).map((entry, index) => (
+              <button
+                aria-label={`Open build ${index + 1}: ${entry.sourcePath}`}
                 className={`build-log-timeline__bar build-log-timeline__bar--${entry.ok ? "success" : "error"}`}
                 key={`timeline:${entry.id}`}
+                onClick={() => focusEntry(index)}
                 style={{ height: `${Math.max(12, Math.round((entry.durationMs / timelineMaxMs) * 42))}px` }}
                 title={`${entry.sourcePath}: ${formatDurationMs(entry.durationMs)}`}
+                type="button"
               />
             ))}
           </div>
-          <div className="build-log-list">
+          <div aria-label="Build history results" className="build-log-list" role="list">
             {controller.filteredEntries.map((entry, index) => {
               const previousEntry = getPreviousBuildLogEntry(controller.filteredEntries, index);
               const visibleDiagnostics = controller.hideRepeatedWarnings
@@ -87,18 +103,21 @@ export function BuildLogPanel(props: {
                 : entry.diagnostics;
 
               return (
-                <details className="build-log-entry" key={entry.id}>
+                <details className="build-log-entry" id={`build-log-entry-${index}`} key={entry.id} role="listitem">
                   <summary>
                     <span className={`build-log-status build-log-status--${entry.ok ? "success" : "error"}`}>{entry.ok ? "ok" : "error"}</span>
                     <span className="build-log-entry__main">
                       <strong>{entry.sourcePath}</strong>
                       <span>{formatSourceLanguageLabel(entry.language)} · {entry.engine} · {entry.trigger} · {formatDurationMs(entry.durationMs)}</span>
                     </span>
-                    <time>{new Date(entry.startedAt).toLocaleTimeString()}</time>
+                    <span className="build-log-entry__when">
+                      <span className="build-log-entry__position">{index + 1}/{controller.filteredEntries.length}</span>
+                      <time>{new Date(entry.startedAt).toLocaleTimeString()}</time>
+                    </span>
                   </summary>
                   <div className="sidebar-card__actions build-log-entry__actions">
                     <button className="pane__button pane__button--compact" onClick={() => props.rerunEntry(entry)} type="button">Rerun</button>
-                    <button className="pane__button pane__button--compact" onClick={() => controller.copyEntry(entry)} type="button">Copy</button>
+                    <button className="pane__button pane__button--compact" onClick={() => controller.copyEntry(entry)} type="button">Copy entry</button>
                   </div>
                   <ul className="sidebar-card__list build-log-entry__details">
                     <li><span>Started</span><span>{new Date(entry.startedAt).toLocaleString()}</span></li>
@@ -113,7 +132,18 @@ export function BuildLogPanel(props: {
                     ))}
                   </ul>
                   {entry.packageDetails.length > 0 ? <details className="build-log-nested-details"><summary>Package resolution</summary><pre>{entry.packageDetails.join("\n")}</pre></details> : null}
-                  {entry.rawLog ? <details className="build-log-nested-details"><summary>Raw LaTeX log</summary><pre>{props.formatRawLogExcerpt(entry.rawLog)}</pre></details> : null}
+                  {entry.rawLog ? (
+                    <details className="build-log-nested-details">
+                      <summary>Raw LaTeX log</summary>
+                      <div className="build-log-raw-log__toolbar">
+                        <span>The view may be shortened; copying includes the complete log.</span>
+                        <button className="pane__button pane__button--compact" onClick={() => controller.copyRawLog(entry)} type="button">
+                          Copy raw log
+                        </button>
+                      </div>
+                      <pre>{props.formatRawLogExcerpt(entry.rawLog)}</pre>
+                    </details>
+                  ) : null}
                   {visibleDiagnostics.length > 0 ? (
                     <div className="sidebar-diagnostics build-log-entry__diagnostics" role="list">
                       {groupDiagnosticsByFile(visibleDiagnostics).map((group) => (

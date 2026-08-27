@@ -68,6 +68,136 @@ test("typing scrolls only the editor viewport, never the document", async ({ pag
   ]);
 });
 
+test("toggling line wrap preserves highlighting and the active line position", async ({
+  page
+}) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  const source = Array.from({ length: 80 }, (_, index) =>
+    index === 44
+      ? "#let focused = 45"
+      : `#let long_value_${index + 1} = "${"word ".repeat(100)}"`
+  ).join("\n");
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: "line-wrap-scroll.typ",
+    mimeType: "application/x-typst",
+    buffer: Buffer.from(source)
+  });
+  await page.getByRole("treeitem", { name: /line-wrap-scroll\.typ/ }).dblclick();
+
+  const editor = page.locator(".cm-content");
+  await editor.click({ position: { x: 100, y: 24 } });
+  await page.keyboard.press("Control+Alt+g");
+  const lineInput = page.getByRole("textbox", { name: "Go to line" });
+  await lineInput.fill("45");
+  await lineInput.press("Enter");
+
+  const activeLine = page.locator(".cm-line", { hasText: "#let focused = 45" });
+  await expect(activeLine).toHaveText("#let focused = 45");
+  await expect(activeLine.locator("span").first()).toBeVisible();
+  await expect
+    .poll(() => activeLine.evaluate((element) => element.getBoundingClientRect().top))
+    .toBeLessThan(900);
+  const editorView = page.locator(".cm-editor");
+  const editorScroller = page.locator(".cm-scroller");
+  const visibleLinesAreHighlighted = () =>
+    editorScroller.evaluate((scroller) => {
+      const viewport = scroller.getBoundingClientRect();
+      const visibleLines = [...scroller.querySelectorAll(".cm-line")].filter((line) => {
+        const lineRect = line.getBoundingClientRect();
+        return lineRect.bottom > viewport.top && lineRect.top < viewport.bottom;
+      });
+      return visibleLines.length > 0 && visibleLines.every((line) => line.querySelector("span"));
+    });
+  await editorView.evaluate((element) => {
+    element.setAttribute("data-wrap-test-editor", "original");
+  });
+  const initialTop = await activeLine.evaluate(
+    (element) => element.getBoundingClientRect().top
+  );
+
+  await page.keyboard.press("Alt+w");
+  expect(await editorView.getAttribute("data-wrap-test-editor")).toBe("original");
+  await expect.poll(visibleLinesAreHighlighted).toBe(true);
+  await expect(activeLine).toHaveText("#let focused = 45");
+  expect(await activeLine.locator("span").count()).toBeGreaterThan(0);
+  await expect(activeLine.locator("span").first()).toBeVisible();
+  await expect
+    .poll(() => activeLine.evaluate((element) => element.getBoundingClientRect().top))
+    .toBeCloseTo(initialTop, 0);
+
+  const unwrappedTop = await activeLine.evaluate(
+    (element) => element.getBoundingClientRect().top
+  );
+  await page.keyboard.press("Alt+w");
+  expect(await editorView.getAttribute("data-wrap-test-editor")).toBe("original");
+  await expect.poll(visibleLinesAreHighlighted).toBe(true);
+  await expect(activeLine).toHaveText("#let focused = 45");
+  expect(await activeLine.locator("span").count()).toBeGreaterThan(0);
+  await expect(activeLine.locator("span").first()).toBeVisible();
+  await expect
+    .poll(() => activeLine.evaluate((element) => element.getBoundingClientRect().top))
+    .toBeCloseTo(unwrappedTop, 0);
+});
+
+test("wrapped continuation rows preserve the source line indentation", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const settings = page.getByRole("region", { name: "Typr settings" });
+  await settings.getByRole("tab", { name: "Editor", exact: true }).click();
+  await settings.getByRole("checkbox", { name: /^Line wrap/ }).check();
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
+
+  const source = `    ${"alpha beta gamma delta ".repeat(40)}`;
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: "wrapped-indent.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(source)
+  });
+  await page.getByRole("treeitem", { name: /wrapped-indent\.txt/ }).dblclick();
+
+  const line = page.locator(".cm-line", { hasText: "alpha beta gamma delta" });
+  await expect(line).toHaveClass(/cm-wrapped-line-indent/);
+
+  const rowStarts = await line.evaluate((element) => {
+    const starts: Array<{ left: number; top: number }> = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      for (let offset = 0; offset < node.data.length; offset += 1) {
+        if (/\s/.test(node.data[offset] ?? "")) continue;
+
+        const range = document.createRange();
+        range.setStart(node, offset);
+        range.setEnd(node, offset + 1);
+        const rect = range.getBoundingClientRect();
+        if (!starts.some((start) => Math.abs(start.top - rect.top) < 1)) {
+          starts.push({ left: rect.left, top: rect.top });
+        }
+      }
+    }
+
+    return starts.sort((left, right) => left.top - right.top);
+  });
+
+  expect(rowStarts.length).toBeGreaterThan(1);
+  for (const row of rowStarts.slice(1)) {
+    expect(row.left).toBeCloseTo(rowStarts[0].left, 0);
+  }
+});
+
 test("Markdown cursor sync scrolls only the preview viewport", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator("html")).toHaveAttribute(
@@ -270,7 +400,7 @@ test("smooth Vim cursor stays aligned with its document position while scrolling
   await settings.getByRole("tab", { name: "Themes", exact: true }).click();
   await settings.getByRole("checkbox", { name: /Smear Cursor/ }).check();
   await settings.getByRole("tab", { name: "Editor", exact: true }).click();
-  await settings.getByRole("checkbox", { name: /Vim mode/ }).check();
+  await settings.getByRole("checkbox", { name: /^Vim mode\b/ }).check();
   await settings.getByRole("button", { name: "Close", exact: true }).click();
 
   const source = Array.from(
@@ -325,6 +455,41 @@ test("smooth Vim cursor stays aligned with its document position while scrolling
   await expect(smoothCursor).not.toHaveClass(/cm-smooth-cursor--vim-command/);
   await expect.poll(async () => (await smoothCursor.boundingBox())?.height ?? 0)
     .toBeCloseTo(cursorHeightBeforeCommand, 0);
+});
+
+test("Vim block cursor remains full-height in normal mode", async ({ page }) => {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-typr-app-ready",
+    "true",
+    { timeout: 15_000 }
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  const settings = page.getByRole("region", { name: "Typr settings" });
+  await settings.getByRole("tab", { name: "Editor", exact: true }).click();
+  await settings.getByRole("checkbox", { name: /^Vim mode/ }).check();
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
+
+  const editor = page.locator(".cm-content");
+  await editor.click({ position: { x: 120, y: 80 } });
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("Escape");
+
+  const blockCursor = page.locator(".cm-vimCursorLayer .cm-fat-cursor").first();
+  await expect(blockCursor).toBeAttached();
+  const normalHeight = await blockCursor.evaluate(
+    (element) => element.getBoundingClientRect().height
+  );
+  expect(normalHeight).toBeGreaterThan(0);
+
+  await page.keyboard.press("d");
+  await expect.poll(async () => (await blockCursor.boundingBox())?.height ?? 0)
+    .toBeCloseTo(normalHeight, 0);
+
+  await page.keyboard.press("Escape");
+  await expect.poll(async () => (await blockCursor.boundingBox())?.height ?? 0)
+    .toBeCloseTo(normalHeight, 0);
 });
 
 test("Vim visual selections cycle through inline and display math delimiters", async ({ page }) => {

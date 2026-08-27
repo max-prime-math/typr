@@ -243,7 +243,7 @@ function readMathToken(source: string, index: number):
     };
   }
 
-  if (character !== "\\") {
+  if (character !== "\\" || isEscaped(source, index)) {
     return null;
   }
 

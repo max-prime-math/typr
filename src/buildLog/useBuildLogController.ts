@@ -16,6 +16,7 @@ export interface BuildLogController {
   copyDiagnostics: () => void;
   copyEntries: () => void;
   copyEntry: (entry: BuildLogEntry) => void;
+  copyRawLog: (entry: BuildLogEntry) => void;
   entries: BuildLogEntry[];
   exportJson: (download: DownloadBuildLogFile) => void;
   exportText: (download: DownloadBuildLogFile) => void;
@@ -96,6 +97,7 @@ export function useBuildLogController(options: {
     ),
     copyEntries: () => void copyText(formatBuildLogEntriesText(filteredEntries), "Build log copied."),
     copyEntry: (entry) => void copyText(formatBuildLogEntryText(entry), "Build entry copied."),
+    copyRawLog: (entry) => void copyText(entry.rawLog ?? "", "Raw LaTeX log copied."),
     entries,
     exportJson: (download) => {
       download(`typr-build-log-${options.projectKey}.json`, JSON.stringify(filteredEntries, null, 2), "application/json");

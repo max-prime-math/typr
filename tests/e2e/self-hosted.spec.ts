@@ -72,7 +72,7 @@ test("self-hosted image excludes cloud Drive code and keeps browser storage auth
 
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   const settings = page.getByRole("region", { name: "Typr settings" });
-  await settings.getByRole("tab", { name: "Sync", exact: true }).click();
+  await expect(settings.getByRole("tab", { name: "Sync", exact: true })).toHaveCount(0);
   await expect(settings.getByText("Google Drive", { exact: true })).toHaveCount(0);
   await expect(settings.getByRole("button", { name: /Google Drive/i })).toHaveCount(0);
   await settings.getByRole("tab", { name: "Editor", exact: true }).click();

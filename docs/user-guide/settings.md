@@ -6,13 +6,9 @@ title: Settings
 
 Open Settings from the gear button in the activity bar. The search field at the top filters the Settings tabs and jumps to the first tab that matches the query. Typr remembers the last open tab and each tab's scroll position.
 
-## Sync
-
-Sync settings are scoped to the selected project. Local-folder and Google Drive policies are independent, so either connection can be enabled without replacing the other or the project's GitHub remote.
-
-Local folder sync is available in Chromium browsers and can exchange visible project files plus browser-managed Git data with a directory handle. Google Drive sync exchanges visible project files with an app-managed Drive folder. Both offer constant, compile, scheduled, and manual policies, with separate intervals.
-
-Google Drive access tokens remain in memory. Use **Reconnect** when Google authorization expires; unlinking does not delete the remote Drive folder.
+Project-scoped synchronization is configured in each project's expanded card in
+the **Projects** pane, not in Settings. Local-folder, Companion workspace,
+Google Drive, and GitHub connections remain independent.
 
 ## Git
 

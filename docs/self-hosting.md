@@ -153,8 +153,10 @@ WebSocket connections without being placed in the Companion URL.
 The optional host workspace is mounted into the Companion container—not the Typr
 web container. When an administrator enables that single scoped directory, a
 user may explicitly link the selected browser-local project under
-**Settings → Sync** and run a manual synchronization. Unlinking never deletes
-server files, and browser autosave continues if Companion is unavailable.
+the project's expanded card in the **Projects** pane and run a manual
+synchronization. The card shows the exact Companion URL and workspace ID before
+linking. Unlinking never deletes server files, and browser autosave continues if
+Companion is unavailable.
 
 ## Unraid
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  PDF_MAGNIFIER_GOLDEN_RATIO,
   resolvePdfMagnifierCrop,
+  resolvePdfMagnifierDimensions,
   resolvePdfMagnifierPlacement,
   resizePdfMagnifierDiameter
 } from "./pdfMagnifier";
@@ -10,7 +12,8 @@ describe("PDF magnifier placement", () => {
     const placement = resolvePdfMagnifierPlacement({
       bounds: { height: 700, left: 100, top: 40, width: 900 },
       contactWidth: 44,
-      diameter: 168,
+      lensHeight: 168,
+      lensWidth: 168,
       point: { clientX: 600, clientY: 390 },
       pointerType: "touch"
     });
@@ -24,7 +27,8 @@ describe("PDF magnifier placement", () => {
     const placement = resolvePdfMagnifierPlacement({
       bounds: { height: 700, left: 0, top: 0, width: 900 },
       contactWidth: 0,
-      diameter: 168,
+      lensHeight: 168,
+      lensWidth: 168,
       point: { clientX: 500, clientY: 350 },
       pointerType: "touch"
     });
@@ -36,7 +40,8 @@ describe("PDF magnifier placement", () => {
     const placement = resolvePdfMagnifierPlacement({
       bounds: { height: 700, left: 100, top: 40, width: 900 },
       contactWidth: 1,
-      diameter: 224,
+      lensHeight: 224,
+      lensWidth: 224,
       point: { clientX: 600, clientY: 390 },
       pointerType: "mouse"
     });
@@ -50,7 +55,8 @@ describe("PDF magnifier placement", () => {
     expect(resolvePdfMagnifierPlacement({
       bounds: { height: 400, left: 0, top: 0, width: 600 },
       contactWidth: 40,
-      diameter: 168,
+      lensHeight: 168,
+      lensWidth: 168,
       point: { clientX: 400, clientY: 10 },
       pointerType: "touch"
     }).top).toBe(8);
@@ -58,10 +64,22 @@ describe("PDF magnifier placement", () => {
     expect(resolvePdfMagnifierPlacement({
       bounds: { height: 400, left: 0, top: 0, width: 600 },
       contactWidth: 40,
-      diameter: 168,
+      lensHeight: 168,
+      lensWidth: 168,
       point: { clientX: 400, clientY: 395 },
       pointerType: "touch"
     }).top).toBe(224);
+  });
+});
+
+describe("PDF magnifier shape", () => {
+  it("keeps circles square and makes rectangles landscape golden ratios", () => {
+    expect(resolvePdfMagnifierDimensions(320, "circle")).toEqual({
+      height: 320,
+      width: 320
+    });
+    const rectangle = resolvePdfMagnifierDimensions(320, "rectangle");
+    expect(rectangle.width / rectangle.height).toBeCloseTo(PDF_MAGNIFIER_GOLDEN_RATIO);
   });
 });
 
@@ -119,7 +137,7 @@ describe("PDF magnifier wheel resizing", () => {
   });
 
   it("clamps the diameter at usable desktop limits", () => {
-    expect(resizePdfMagnifierDiameter(410, -200)).toBe(420);
+    expect(resizePdfMagnifierDiameter(550, -200)).toBe(560);
     expect(resizePdfMagnifierDiameter(170, 200)).toBe(160);
   });
 });

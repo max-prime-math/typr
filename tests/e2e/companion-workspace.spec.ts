@@ -1,9 +1,13 @@
 import { expect, test, type Route } from "@playwright/test";
 
-test("mapped workspace stays manual and browser-local storage remains authoritative", async ({ page }) => {
+test("project pane links the exact mapped workspace and keeps browser storage authoritative", async ({ page }) => {
   const workspaceRequests: string[] = [];
   const files = new Map<string, { bytes: Buffer; etag: string; modifiedAt: number }>();
   let revision = 1;
+
+  await page.addInitScript(() => {
+    localStorage.setItem("typr.companion-base-url.v1", "http://127.0.0.1:8484");
+  });
 
   await page.route("http://127.0.0.1:8484/api/v1/**", async (route) => {
     const request = route.request();
@@ -91,23 +95,37 @@ test("mapped workspace stays manual and browser-local storage remains authoritat
 
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   const settings = page.getByRole("region", { name: "Typr settings" });
-  await settings.getByRole("tab", { name: "Sync", exact: true }).click();
-  const link = settings.getByRole("button", { name: "Link mapped workspace" });
+  await expect(settings.getByRole("tab", { name: "Sync", exact: true })).toHaveCount(0);
+  await settings.getByRole("button", { name: "Close", exact: true }).click();
+
+  await page.getByRole("button", { name: "Projects", exact: true }).first().click();
+  const projectRow = page.locator(".project-manager__row--active");
+  await projectRow.getByRole("button", { name: /Show options for/ }).click();
+  const companion = projectRow.locator(".project-manager__connection").filter({
+    hasText: "Companion workspace"
+  });
+  await expect(companion).toContainText("http://127.0.0.1:8484");
+  await expect(companion).toContainText("e2e-workspace");
+  const link = companion.getByRole("button", { name: "Link Companion workspace" });
   await expect(link).toBeEnabled();
-  page.once("dialog", (dialog) => dialog.accept());
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain('Companion workspace "e2e-workspace"');
+    expect(dialog.message()).toContain("http://127.0.0.1:8484");
+    await dialog.accept();
+  });
   await link.click();
 
-  await expect(settings.getByText("Manual sync complete. Browser storage remains the primary local copy.")).toBeVisible();
+  await expect(companion).toContainText(/Companion workspace "e2e-workspace" at http:\/\/127\.0\.0\.1:8484 synced \d+ files/);
   expect(files.size).toBeGreaterThan(0);
   const fileCountAfterLink = files.size;
   const requestsBeforeUnlink = workspaceRequests.length;
-  await settings.getByRole("button", { name: "Unlink", exact: true }).click();
-  await expect(settings.getByRole("button", { name: "Link mapped workspace" })).toBeVisible();
+  await companion.getByRole("button", { name: "Unlink", exact: true }).click();
+  await expect(companion.getByRole("button", { name: "Link Companion workspace" })).toBeVisible();
   expect(files.size).toBe(fileCountAfterLink);
   expect(workspaceRequests.length).toBe(requestsBeforeUnlink);
 
-  await settings.getByRole("button", { name: "Close", exact: true }).click();
   await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Files", exact: true }).first().click();
   await expect(page.getByRole("treeitem", { name: /typst\.typ/ })).toBeVisible();
 });
 

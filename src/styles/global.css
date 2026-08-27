@@ -3582,6 +3582,72 @@ button {
   flex: 1 1 auto;
 }
 
+.project-manager__connection-details {
+  display: grid;
+  gap: 0.36rem;
+  margin: 0;
+}
+
+.project-manager__connection-details > div {
+  display: grid;
+  grid-template-columns: minmax(5.3rem, auto) minmax(0, 1fr);
+  gap: 0.5rem;
+  font-size: 0.72rem;
+}
+
+.project-manager__connection-details dt {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.project-manager__connection-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-manager__connection-safety {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.project-manager__sync-policy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding-top: 0.12rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.project-manager__sync-policy .sync-policy-options {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.38rem;
+}
+
+.project-manager__sync-policy .sync-policy-option {
+  gap: 0.42rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+}
+
+.project-manager__sync-policy .sync-policy-options legend {
+  font-size: 0.76rem;
+}
+
+.project-manager__sync-policy .sync-policy-option strong {
+  font-size: 0.76rem;
+}
+
+.project-manager__sync-policy .sync-policy-option small,
+.project-manager__sync-policy .sync-field {
+  font-size: 0.7rem;
+}
+
+.project-manager__sync-policy .sync-interval-field {
+  max-width: none;
+}
+
 .project-manager__connection .project-clone-card {
   padding: 0.58rem;
   border-color: var(--border);
@@ -5740,53 +5806,6 @@ button.git-workspace__row:focus-visible {
   gap: 0.72rem;
 }
 
-.settings-panel--sync {
-  gap: 0.72rem;
-}
-
-.sync-settings-project-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.8rem;
-  padding: 0.82rem;
-  border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent) 14%);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-strong) 90%, var(--background) 10%);
-}
-
-.sync-settings-project-card > div:first-child {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.18rem;
-}
-
-.sync-settings-project-card strong,
-.sync-settings-project-card small {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.sync-settings-project-card small,
-.sync-settings-project-card__label {
-  color: var(--text-muted);
-}
-
-.sync-settings-project-card__label {
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.sync-settings-project-card__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.45rem;
-}
-
 .sync-connection-notice {
   display: flex;
   min-width: 0;
@@ -6785,8 +6804,11 @@ button.git-workspace__row:focus-visible {
 }
 
 .pasted-image-template-grid input {
+  width: 100%;
+  min-width: 0;
   min-height: 2.35rem;
   max-width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-strong);
@@ -8120,7 +8142,7 @@ button.git-workspace__row:focus-visible {
   left: 0;
   z-index: 8;
   display: none;
-  width: min(var(--pdf-magnifier-desktop-diameter, 18rem), 72vw, 72vh);
+  width: min(var(--pdf-magnifier-desktop-diameter, 18rem), 84vw, 84vh);
   max-width: none;
   aspect-ratio: 1;
   overflow: hidden;
@@ -8135,6 +8157,16 @@ button.git-workspace__row:focus-visible {
   pointer-events: none;
   transform-origin: center;
   will-change: transform;
+}
+
+.pdf-magnifier--rectangle {
+  width: min(
+    var(--pdf-magnifier-desktop-diameter, 18rem),
+    84vw,
+    calc(84vh * 1.61803398875)
+  );
+  aspect-ratio: 1.61803398875;
+  border-radius: 1rem;
 }
 
 .pdf-magnifier--visible {
@@ -9585,26 +9617,8 @@ button.git-workspace__row:focus-visible {
   }
 
   .settings-sheet .settings-embedded-grid,
-  .settings-sheet .sync-policy-options,
   .settings-sheet .git-permission-row {
     grid-template-columns: 1fr;
-  }
-
-  .settings-sheet .sync-settings-project-card {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
-
-  .settings-sheet .sync-settings-project-card__actions {
-    justify-content: flex-start;
-  }
-
-  .settings-sheet .sync-settings-project-card__actions .pane__button {
-    flex: 1 1 8rem;
-  }
-
-  .settings-sheet .sync-interval-field {
-    max-width: none;
   }
 
   .settings-sheet .git-project-connection-row__actions,
@@ -9802,9 +9816,59 @@ button.git-workspace__row:focus-visible {
   gap: 0.45rem;
 }
 
+.debug-section-nav {
+  position: sticky;
+  top: -0.8rem;
+  z-index: 3;
+  isolation: isolate;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: -0.8rem;
+  padding: 0.42rem;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  box-shadow: 0 0.2rem 0.55rem color-mix(in srgb, var(--shadow, #000) 14%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.debug-section-nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  min-height: 1.85rem;
+  padding: 0.28rem 0.48rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.debug-section-nav button:hover,
+.debug-section-nav button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  color: var(--text);
+  outline: none;
+}
+
+.debug-section-nav button span {
+  min-width: 1.15rem;
+  padding: 0.04rem 0.25rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .debug-section {
   padding: 0;
   overflow: hidden;
+  scroll-margin-top: 3.35rem;
   background: color-mix(in srgb, var(--surface-strong) 94%, var(--surface-muted));
 }
 
@@ -9973,9 +10037,18 @@ button.git-workspace__row:focus-visible {
 .build-log-timeline__bar {
   width: 0.55rem;
   min-height: 0.75rem;
+  padding: 0;
   border: 1px solid currentColor;
   background: currentColor;
+  cursor: pointer;
   opacity: 0.76;
+}
+
+.build-log-timeline__bar:hover,
+.build-log-timeline__bar:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .build-log-timeline__bar--success {
@@ -9989,6 +10062,20 @@ button.git-workspace__row:focus-visible {
 .build-log-entry__actions {
   justify-content: flex-start;
   padding: 0 0.7rem 0.45rem;
+}
+
+.build-log-entry__position {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.build-log-entry__when {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 0.08rem;
+  min-width: 0;
 }
 
 .build-log-nested-details {
@@ -10008,6 +10095,36 @@ button.git-workspace__row:focus-visible {
   max-height: 18rem;
   margin: 0;
   border-width: 1px 0 0;
+}
+
+.build-log-raw-log__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.build-log-raw-log__toolbar span {
+  min-width: 0;
+}
+
+.debug-diagnostic-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.debug-diagnostic-navigation > div {
+  display: flex;
+  gap: 0.3rem;
 }
 
 .build-log-diagnostic-group {
@@ -10782,6 +10899,7 @@ body {
 }
 
 .diagram-pane__tab,
+.diagram-pane__controls-toggle,
 .diagram-action-bar button {
   min-height: 28px;
   border: 1px solid transparent;
@@ -10796,6 +10914,8 @@ body {
 
 .diagram-pane__tab:hover,
 .diagram-pane__tab:focus-visible,
+.diagram-pane__controls-toggle:hover,
+.diagram-pane__controls-toggle:focus-visible,
 .diagram-action-bar button:hover:not(:disabled),
 .diagram-action-bar button:focus-visible:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
@@ -10809,6 +10929,35 @@ body {
   color: var(--accent-strong);
   background: var(--surface-strong);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 28%, transparent);
+}
+
+.diagram-pane__controls-toggle {
+  display: grid;
+  width: 30px;
+  min-width: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+}
+
+.diagram-pane__controls-toggle-icon {
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  mask: url("../icons/files/disclosure.svg") center / contain no-repeat;
+  -webkit-mask: url("../icons/files/disclosure.svg") center / contain no-repeat;
+  transition: transform 140ms ease;
+}
+
+.diagram-pane__controls-toggle-icon--collapse {
+  transform: rotate(180deg);
+}
+
+.diagram-pane--controls-hidden .diagram-editor__topbar,
+.diagram-pane--controls-hidden .tikz-editor__filebar,
+.diagram-pane--controls-hidden .tikz-editor__namebar,
+.diagram-pane--controls-hidden .tikz-editor > .diagram-action-bar {
+  display: none;
 }
 
 .diagram-pane__content {

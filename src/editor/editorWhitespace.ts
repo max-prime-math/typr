@@ -73,6 +73,18 @@ export function getSmartNewlineInsertion(
   return `\n${baseIndent}`;
 }
 
+export function getLatexItemNewlineInsertion(
+  source: string,
+  position: number
+): string | null {
+  if (!isInsideLatexListEnvironment(source, position)) {
+    return null;
+  }
+
+  const newline = getSmartNewlineInsertion(source, position, "latex");
+  return newline === null ? null : `${newline}\\item `;
+}
+
 function getLineAt(source: string, position: number): { from: number; to: number; text: string } {
   const clampedPosition = Math.max(0, Math.min(position, source.length));
   const lineStart = source.lastIndexOf("\n", clampedPosition - 1) + 1;
@@ -111,6 +123,55 @@ function shouldIndentAfterLatexLine(trimmedLine: string): boolean {
   }
 
   return !trimmedLine.includes(`\\end{${beginMatch[1]}}`);
+}
+
+function isInsideLatexListEnvironment(source: string, position: number): boolean {
+  const environmentStack: string[] = [];
+  const sourceBeforeCursor = source.slice(0, Math.max(0, Math.min(position, source.length)));
+
+  for (const match of sourceBeforeCursor.matchAll(/\\(begin|end)\s*\{([^{}\r\n]+)\}/g)) {
+    const from = match.index;
+    if (isPositionInLatexComment(sourceBeforeCursor, from)) {
+      continue;
+    }
+
+    const name = match[2].trim();
+    if (match[1] === "begin") {
+      environmentStack.push(name);
+      continue;
+    }
+
+    for (let index = environmentStack.length - 1; index >= 0; index -= 1) {
+      if (environmentStack[index] === name) {
+        environmentStack.splice(index, 1);
+        break;
+      }
+    }
+  }
+
+  const innermostEnvironment = environmentStack.at(-1);
+  return innermostEnvironment === "itemize" || innermostEnvironment === "enumerate";
+}
+
+function isPositionInLatexComment(source: string, position: number): boolean {
+  const lineStart = source.lastIndexOf("\n", Math.max(0, position - 1)) + 1;
+
+  for (let index = lineStart; index < position; index += 1) {
+    if (source[index] !== "%") {
+      continue;
+    }
+
+    let precedingBackslashes = 0;
+    for (let cursor = index - 1; cursor >= lineStart && source[cursor] === "\\"; cursor -= 1) {
+      precedingBackslashes += 1;
+    }
+
+    if (precedingBackslashes % 2 === 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function shouldIndentAfterTypstLine(trimmedLine: string): boolean {

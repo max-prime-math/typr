@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import {
   findUnclosedLatexEnvironments,
+  getLatexEndCompletionEdit,
   latexEnvironmentCompletionSource
 } from "./latexEnvironmentCompletion";
 
@@ -80,3 +81,49 @@ describe("latexEnvironmentCompletionSource", () => {
     }
   });
 });
+
+describe("getLatexEndCompletionEdit", () => {
+  it("turns an end directly below begin into an empty formatted body", () => {
+    const source = "\\begin{itemize}\n  \\end";
+    const from = source.lastIndexOf("\\end");
+    const edit = getLatexEndCompletionEdit(source, from, source.length, "itemize");
+
+    expect(applyEdit(source, edit)).toBe(
+      "\\begin{itemize}\n  \n\\end{itemize}"
+    );
+    expect(edit.cursor).toBe("\\begin{itemize}\n  ".length);
+  });
+
+  it("matches a nested end command to its begin indentation", () => {
+    const source = [
+      "\\begin{document}",
+      "  \\begin{itemize}",
+      "    \\item One",
+      "    \\end"
+    ].join("\n");
+    const from = source.lastIndexOf("\\end");
+    const edit = getLatexEndCompletionEdit(source, from, source.length, "itemize");
+
+    expect(applyEdit(source, edit)).toBe([
+      "\\begin{document}",
+      "  \\begin{itemize}",
+      "    \\item One",
+      "  \\end{itemize}"
+    ].join("\n"));
+  });
+
+  it("only replaces an end command written after other content", () => {
+    const source = "\\begin{itemize}\n  text \\end";
+    const from = source.lastIndexOf("\\end");
+    const edit = getLatexEndCompletionEdit(source, from, source.length, "itemize");
+
+    expect(applyEdit(source, edit)).toBe("\\begin{itemize}\n  text \\end{itemize}");
+  });
+});
+
+function applyEdit(
+  source: string,
+  edit: { from: number; insert: string; to: number }
+): string {
+  return `${source.slice(0, edit.from)}${edit.insert}${source.slice(edit.to)}`;
+}

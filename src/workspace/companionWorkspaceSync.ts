@@ -161,7 +161,7 @@ async function synchronizeCompanionWorkspaceAttempt(options: SyncOptions): Promi
       appliedPaths.push(entry.path);
     }
     const verification = await options.client.listWorkspaceFiles();
-    enforceListingLimits(verification.files, options.limits);
+    enforceListingLimits(verification.files, options.limits, "Synchronized workspace");
     if (verification.workspaceId !== options.workspaceId) {
       throw new Error("Companion workspace identity changed during synchronization.");
     }
@@ -212,7 +212,7 @@ async function readWorkspaceSnapshot(
   if (listing.workspaceId !== expectedWorkspaceId) {
     throw new Error("Companion workspace identity changed; unlink it before connecting another workspace.");
   }
-  enforceListingLimits(listing.files, limits);
+  enforceListingLimits(listing.files, limits, "Mapped workspace");
   const files = await mapWithConcurrency(listing.files, 8, (metadata) => client.readWorkspaceFile(metadata.path, limits.maxFileBytes));
   const tree: LocalFolderSyncTree = new Map();
   const etags = new Map<string, string>();
@@ -256,26 +256,49 @@ export function createCompanionWorkspaceProjectTree(project: TyprProjectReposito
 }
 
 function enforceListingLimits(
-  files: readonly { size: number }[],
-  limits: WorkspaceLimits
+  files: readonly { path?: string; size: number }[],
+  limits: WorkspaceLimits,
+  label: string
 ): void {
-  if (files.length > limits.maxEntries) throw new Error("Mapped workspace exceeds its advertised entry limit.");
+  if (files.length > limits.maxEntries) {
+    throw new Error(
+      `${label} contains ${files.length} files; Companion allows ${limits.maxEntries}.`
+    );
+  }
   let total = 0;
   for (const file of files) {
-    if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > limits.maxFileBytes) {
-      throw new Error("Mapped workspace contains a file above its advertised limit.");
+    if (!Number.isSafeInteger(file.size) || file.size < 0) {
+      throw new Error(`${label} contains a file with an invalid size${file.path ? `: ${file.path}` : "."}`);
+    }
+    if (file.size > limits.maxFileBytes) {
+      const path = file.path ? ` ${JSON.stringify(file.path)}` : "";
+      throw new Error(
+        `${label} file${path} is ${formatByteCount(file.size)}; ` +
+        `Companion's per-file limit is ${formatByteCount(limits.maxFileBytes)}.`
+      );
     }
     total += file.size;
     if (!Number.isSafeInteger(total) || total > limits.maxWorkspaceBytes) {
-      throw new Error("Mapped workspace exceeds its advertised byte limit.");
+      throw new Error(
+        `${label} totals more than Companion's ${formatByteCount(limits.maxWorkspaceBytes)} workspace limit.`
+      );
     }
   }
 }
 
 function enforceTreeLimits(tree: LocalFolderSyncTree, limits: WorkspaceLimits, label: string): void {
   const files = [...tree.values()].filter(isFileEntry);
-  enforceListingLimits(files.map((entry) => ({ size: entry.bytes?.byteLength ?? 0 })), limits);
-  if (files.length > limits.maxEntries) throw new Error(`${label} exceeds the advertised entry limit.`);
+  enforceListingLimits(
+    files.map((entry) => ({ path: entry.path, size: entry.bytes?.byteLength ?? 0 })),
+    limits,
+    label
+  );
+}
+
+function formatByteCount(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function isFileEntry(entry: LocalFolderSyncEntry): entry is LocalFolderSyncEntry & { kind: "file" } {

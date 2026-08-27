@@ -1,7 +1,10 @@
 export const PDF_MAGNIFIER_MAGNIFICATION = 2.25;
 export const PDF_MAGNIFIER_DEFAULT_DESKTOP_DIAMETER = 288;
 export const PDF_MAGNIFIER_MIN_DESKTOP_DIAMETER = 160;
-export const PDF_MAGNIFIER_MAX_DESKTOP_DIAMETER = 420;
+export const PDF_MAGNIFIER_MAX_DESKTOP_DIAMETER = 560;
+export const PDF_MAGNIFIER_GOLDEN_RATIO = (1 + Math.sqrt(5)) / 2;
+
+export type PdfMagnifierShape = "circle" | "rectangle";
 
 const PDF_MAGNIFIER_EDGE_INSET = 8;
 const PDF_MAGNIFIER_MIN_FINGER_RADIUS = 18;
@@ -21,6 +24,11 @@ export interface PdfMagnifierPoint {
 export interface PdfMagnifierPlacement {
   left: number;
   top: number;
+}
+
+export interface PdfMagnifierDimensions {
+  height: number;
+  width: number;
 }
 
 export interface PdfMagnifierCrop {
@@ -45,21 +53,33 @@ export function resizePdfMagnifierDiameter(
   );
 }
 
+export function resolvePdfMagnifierDimensions(
+  width: number,
+  shape: PdfMagnifierShape
+): PdfMagnifierDimensions {
+  return {
+    height: shape === "rectangle" ? width / PDF_MAGNIFIER_GOLDEN_RATIO : width,
+    width
+  };
+}
+
 /**
- * Places the loupe to the left of the pointer. Touch contact width is used when
+ * Places the loupe around the pointer. Touch contact width is used when
  * available so the loupe's right edge is tangent to the user's finger rather
  * than to the center of the touch point.
  */
 export function resolvePdfMagnifierPlacement({
   bounds,
   contactWidth,
-  diameter,
+  lensHeight,
+  lensWidth,
   point,
   pointerType
 }: {
   bounds: PdfMagnifierBounds;
   contactWidth: number;
-  diameter: number;
+  lensHeight: number;
+  lensWidth: number;
   point: PdfMagnifierPoint;
   pointerType: string;
 }): PdfMagnifierPlacement {
@@ -72,17 +92,17 @@ export function resolvePdfMagnifierPlacement({
   );
   const maximumTop = Math.max(
     PDF_MAGNIFIER_EDGE_INSET,
-    bounds.height - diameter - PDF_MAGNIFIER_EDGE_INSET
+    bounds.height - lensHeight - PDF_MAGNIFIER_EDGE_INSET
   );
 
   return {
     // Finger input stays tangent to the left edge of the contact. A mouse or
     // pencil does not obscure the document, so center the larger desktop lens.
     left: isTouch
-      ? localX - contactRadius - diameter
-      : localX - diameter / 2,
+      ? localX - contactRadius - lensWidth
+      : localX - lensWidth / 2,
     top: clamp(
-      localY - diameter / 2,
+      localY - lensHeight / 2,
       PDF_MAGNIFIER_EDGE_INSET,
       maximumTop
     )

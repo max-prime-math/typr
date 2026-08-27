@@ -272,7 +272,9 @@ export default defineConfig(({ command }) => {
       })
     ],
     optimizeDeps: {
-      exclude: ["ratex-wasm"],
+      // Both packages resolve sibling WASM files with import.meta.url. Keeping
+      // them out of Vite's flattened dependency cache preserves those URLs.
+      exclude: ["harper.js", "ratex-wasm"],
       include: ["pdfjs-dist/build/pdf.worker.mjs"]
     },
     test: {

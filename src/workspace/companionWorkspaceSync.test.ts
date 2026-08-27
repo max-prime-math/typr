@@ -152,15 +152,18 @@ describe("Companion mapped-workspace synchronization", () => {
   });
 
   it("enforces advertised limits before upload", async () => {
-    const project = createEmptyProjectRepository({ displayName: "Limits", defaultFileName: "main.typ", defaultContent: "too large" });
+    let project = createEmptyProjectRepository({ displayName: "Limits", defaultFileName: "main.typ", defaultContent: "small" });
+    project = writeProjectFile(project, "assets/large.bin", new Uint8Array(5000));
     const backend = new MemoryWorkspaceBackend({});
     const client = new CompanionClient({ baseUrl: "http://localhost:8484", fetch: backend.fetch });
     const binding = createCompanionWorkspaceBinding({ projectId: project.id, baseUrl: client.baseUrl, workspaceId: "mapped" });
 
     await expect(synchronizeCompanionWorkspace({
       binding, project, client, workspaceId: "mapped",
-      limits: { maxFileBytes: 2, maxEntries: 2, maxWorkspaceBytes: 4 }
-    })).rejects.toThrow(/advertised limit/u);
+      limits: { maxFileBytes: 4096, maxEntries: 512, maxWorkspaceBytes: 8192 }
+    })).rejects.toThrow(
+      'Browser project file "assets/large.bin" is 4.9 KiB; Companion\'s per-file limit is 4.0 KiB.'
+    );
     expect(backend.requestCount).toBe(0);
   });
 
